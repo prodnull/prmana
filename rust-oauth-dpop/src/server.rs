@@ -149,7 +149,7 @@ impl Default for DPoPConfig {
 /// # Example
 ///
 /// ```rust,ignore
-/// use dpop::{validate_proof, DPoPConfig};
+/// use oauth_dpop::{validate_proof, DPoPConfig};
 ///
 /// let config = DPoPConfig {
 ///     max_proof_age_secs: 60,

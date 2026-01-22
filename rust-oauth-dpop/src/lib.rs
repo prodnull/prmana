@@ -17,7 +17,7 @@
 //! ### Client-side: Generate a DPoP proof
 //!
 //! ```rust
-//! use dpop::{DPoPClient, DPoPError};
+//! use oauth_dpop::{DPoPClient, DPoPError};
 //!
 //! // Create a new DPoP client (generates a P-256 keypair)
 //! let client = DPoPClient::generate();
@@ -40,7 +40,7 @@
 //! ### Server-side: Validate a DPoP proof
 //!
 //! ```rust,ignore
-//! use dpop::{validate_proof, DPoPConfig};
+//! use oauth_dpop::{validate_proof, DPoPConfig};
 //!
 //! // Create a validator with configuration
 //! let config = DPoPConfig {

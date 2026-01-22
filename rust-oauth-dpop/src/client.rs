@@ -20,7 +20,7 @@ use crate::DPoPClaims;
 /// # Example
 ///
 /// ```rust
-/// use dpop::DPoPClient;
+/// use oauth_dpop::DPoPClient;
 ///
 /// // Generate a new client with a random keypair
 /// let client = DPoPClient::generate();
@@ -30,7 +30,7 @@ use crate::DPoPClaims;
 ///
 /// // Create a proof for an HTTP request
 /// let proof = client.create_proof("POST", "https://api.example.com/token", None)?;
-/// # Ok::<(), dpop::DPoPError>(())
+/// # Ok::<(), oauth_dpop::DPoPError>(())
 /// ```
 pub struct DPoPClient {
     signing_key: SigningKey,
