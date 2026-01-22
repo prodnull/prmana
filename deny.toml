@@ -30,6 +30,8 @@ allow = [
     "BSL-1.0",
     # pamsm uses GPL-3.0 for PAM bindings (dynamic linking)
     "GPL-3.0",
+    # Project license (educational/non-commercial use)
+    "CC-BY-NC-SA-4.0",
 ]
 confidence-threshold = 0.8
 
