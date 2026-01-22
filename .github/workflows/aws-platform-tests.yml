@@ -12,6 +12,7 @@ on:
         options:
           - amazon-linux-2023
           - amazon-linux-2
+          - rhel-9
           - all
         default: amazon-linux-2023
       instance_type:
@@ -60,7 +61,7 @@ jobs:
           HOURS=0.5
 
           case "$INPUT_PLATFORM" in
-            all) PLATFORMS=2 ;;
+            all) PLATFORMS=3 ;;
             *)   PLATFORMS=1 ;;
           esac
 
@@ -76,13 +77,16 @@ jobs:
         run: |
           case "$INPUT_PLATFORM" in
             all)
-              echo 'platforms=["amazon-linux-2023","amazon-linux-2"]' >> $GITHUB_OUTPUT
+              echo 'platforms=["amazon-linux-2023","amazon-linux-2","rhel-9"]' >> $GITHUB_OUTPUT
               ;;
             amazon-linux-2023)
               echo 'platforms=["amazon-linux-2023"]' >> $GITHUB_OUTPUT
               ;;
             amazon-linux-2)
               echo 'platforms=["amazon-linux-2"]' >> $GITHUB_OUTPUT
+              ;;
+            rhel-9)
+              echo 'platforms=["rhel-9"]' >> $GITHUB_OUTPUT
               ;;
           esac
 
@@ -105,11 +109,19 @@ jobs:
         include:
           - platform: amazon-linux-2023
             ami_parameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+            ami_type: ssm
             pkg_manager: dnf
             pam_dev: pam-devel
           - platform: amazon-linux-2
             ami_parameter: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+            ami_type: ssm
             pkg_manager: yum
+            pam_dev: pam-devel
+          - platform: rhel-9
+            ami_owner: "309956199498"
+            ami_filter: "RHEL-9.*_HVM-*-x86_64-*-Hourly2-GP3"
+            ami_type: marketplace
+            pkg_manager: dnf
             pam_dev: pam-devel
 
     env:
@@ -131,12 +143,26 @@ jobs:
       - name: Resolve AMI
         id: ami
         env:
+          AMI_TYPE: ${{ matrix.ami_type }}
           AMI_PARAMETER: ${{ matrix.ami_parameter }}
+          AMI_OWNER: ${{ matrix.ami_owner }}
+          AMI_FILTER: ${{ matrix.ami_filter }}
         run: |
-          AMI_ID=$(aws ssm get-parameter \
-            --name "$AMI_PARAMETER" \
-            --query 'Parameter.Value' \
-            --output text)
+          if [ "$AMI_TYPE" = "ssm" ]; then
+            # Amazon Linux uses SSM parameter store
+            AMI_ID=$(aws ssm get-parameter \
+              --name "$AMI_PARAMETER" \
+              --query 'Parameter.Value' \
+              --output text)
+          else
+            # RHEL uses marketplace AMI lookup
+            AMI_ID=$(aws ec2 describe-images \
+              --owners "$AMI_OWNER" \
+              --filters "Name=name,Values=$AMI_FILTER" \
+                        "Name=state,Values=available" \
+              --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+              --output text)
+          fi
           echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
           echo "Using AMI: $AMI_ID"
 
