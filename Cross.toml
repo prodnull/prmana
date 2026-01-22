@@ -1,0 +1,9 @@
+# Cross-compilation configuration
+# See: https://github.com/cross-rs/cross
+
+[target.aarch64-unknown-linux-gnu]
+# Install arm64 development libraries for cross-compilation
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update && apt-get install -y libpam0g-dev:arm64 libssl-dev:arm64"
+]

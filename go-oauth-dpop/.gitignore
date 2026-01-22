@@ -1,0 +1,10 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+dpop-test
+
+# IDE
+.idea/
+.vscode/

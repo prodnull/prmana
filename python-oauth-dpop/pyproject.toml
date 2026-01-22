@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "oauth-dpop"
+version = "0.1.0"
+description = "OAuth 2.0 DPoP (Demonstrating Proof of Possession) implementation per RFC 9449"
+readme = "README.md"
+license = "CC-BY-NC-SA-4.0"
+requires-python = ">=3.9"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+keywords = ["oauth", "dpop", "jwt", "security", "rfc9449", "oidc"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+    "cryptography>=41.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/prodnull/unix-oidc"
+Repository = "https://github.com/prodnull/unix-oidc/tree/main/python-oauth-dpop"
+Documentation = "https://github.com/prodnull/unix-oidc/tree/main/python-oauth-dpop#readme"
+
+[tool.hatch.build.targets.wheel]
+packages = ["oauth_dpop"]

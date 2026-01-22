@@ -1,0 +1,120 @@
+# unix-oidc Policy Configuration Example
+# Copy to /etc/unix-oidc/policy.yaml and customize for your environment
+
+# Host classification affects default security requirements
+# Options:
+#   - standard: Regular workstations (minimal step-up)
+#   - elevated: Development/staging servers (step-up for system changes)
+#   - critical: Production/sensitive systems (step-up for all sudo)
+host_classification: elevated
+
+# SSH login requirements
+ssh:
+  # Require OIDC token for SSH authentication
+  require_oidc: true
+
+  # Minimum ACR level required for SSH login
+  # Set to null to accept any ACR
+  # Examples: "urn:keycloak:acr:loa2" (MFA), "phr" (phishing-resistant)
+  minimum_acr: null
+
+  # Maximum age of the authentication event (seconds)
+  # User must have authenticated within this window
+  # Set to null to disable auth_time checking
+  max_auth_age: 3600  # 1 hour
+
+# Sudo step-up authentication requirements
+sudo:
+  # Whether step-up authentication is required for sudo
+  step_up_required: true
+
+  # Allowed step-up methods (in order of preference)
+  allowed_methods:
+    - device_flow  # OAuth 2.0 Device Authorization Grant
+    - webauthn     # FIDO2/WebAuthn passkey authentication
+    # - push       # Push notification to mobile authenticator (future)
+
+  # Timeout for step-up authentication (seconds)
+  timeout_seconds: 300  # 5 minutes
+
+  # Required ACR level for step-up authentication
+  # Set to a higher ACR than SSH to require stronger auth for sudo
+  required_acr: urn:keycloak:acr:loa2  # Require MFA
+
+  # Grace period: Skip re-authentication for same command class (seconds)
+  # After successful step-up, user can run similar commands without re-auth
+  # Set to 0 to require step-up for every command
+  grace_period_seconds: 300  # 5 minutes
+
+  # Grace period scope: How to group commands for grace period
+  # Options:
+  #   - command_class: Group by command category (e.g., all systemctl commands)
+  #   - exact_command: Only exact same command skips re-auth
+  #   - any_sudo: Any sudo command within grace period skips re-auth
+  grace_period_scope: command_class
+
+  # Command classes for grace period grouping
+  command_classes:
+    service_management:
+      - "/usr/bin/systemctl*"
+      - "/usr/sbin/service*"
+    package_management:
+      - "/usr/bin/apt*"
+      - "/usr/bin/apt-get*"
+      - "/usr/bin/yum*"
+      - "/usr/bin/dnf*"
+    user_management:
+      - "/usr/sbin/useradd*"
+      - "/usr/sbin/usermod*"
+      - "/usr/sbin/userdel*"
+      - "/usr/bin/passwd*"
+
+  # Command-specific rules (optional)
+  # Rules are evaluated in order; first match wins
+  # If no rules match, the default step_up_required setting is used
+  commands:
+    # Package management always requires step-up
+    - pattern: "/usr/bin/apt*"
+      step_up_required: true
+    - pattern: "/usr/bin/apt-get*"
+      step_up_required: true
+    - pattern: "/usr/bin/yum*"
+      step_up_required: true
+    - pattern: "/usr/bin/dnf*"
+      step_up_required: true
+
+    # System administration commands
+    - pattern: "/usr/sbin/shutdown*"
+      step_up_required: true
+    - pattern: "/usr/sbin/reboot*"
+      step_up_required: true
+    - pattern: "/usr/bin/systemctl*"
+      step_up_required: true
+    - pattern: "/usr/sbin/service*"
+      step_up_required: true
+
+    # User management
+    - pattern: "/usr/sbin/useradd*"
+      step_up_required: true
+    - pattern: "/usr/sbin/usermod*"
+      step_up_required: true
+    - pattern: "/usr/sbin/userdel*"
+      step_up_required: true
+    - pattern: "/usr/bin/passwd*"
+      step_up_required: true
+
+    # Allow read-only commands without step-up
+    - pattern: "/usr/bin/cat *"
+      step_up_required: false
+    - pattern: "/bin/cat *"
+      step_up_required: false
+    - pattern: "/usr/bin/less *"
+      step_up_required: false
+    - pattern: "/bin/ls *"
+      step_up_required: false
+    - pattern: "/usr/bin/tail *"
+      step_up_required: false
+    - pattern: "/usr/bin/head *"
+      step_up_required: false
+    - pattern: "/usr/bin/grep *"
+      step_up_required: false

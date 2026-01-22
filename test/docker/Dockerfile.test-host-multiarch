@@ -1,0 +1,82 @@
+# test/docker/Dockerfile.test-host-multiarch
+# Multi-architecture test container that builds the PAM module inside
+# Supports: linux/amd64, linux/arm64
+
+FROM rust:1.85-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    libpam0g-dev \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy source code (all workspace members)
+COPY Cargo.toml Cargo.lock ./
+COPY pam-unix-oidc ./pam-unix-oidc
+COPY unix-oidc-agent ./unix-oidc-agent
+COPY examples ./examples
+
+# Build release binaries for the target architecture
+# Only build the packages we need (skip examples)
+RUN cargo build --release --locked -p pam-unix-oidc -p unix-oidc-agent
+
+# Runtime image
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install SSH, PAM, SSSD, sudo, and dependencies
+RUN apt-get update && apt-get install -y \
+    openssh-server \
+    sssd \
+    sssd-ldap \
+    libpam0g \
+    ldap-utils \
+    curl \
+    jq \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create SSH directory
+RUN mkdir /var/run/sshd
+
+# Configure SSH for OIDC authentication
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/ChallengeResponseAuthentication no/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/UsePAM no/UsePAM yes/' /etc/ssh/sshd_config
+
+# Create test user (will be overridden by SSSD in real tests)
+RUN useradd -m -s /bin/bash testuser
+
+# Copy built binaries from builder
+COPY --from=builder /build/target/release/libpam_unix_oidc.so /usr/lib/security/
+COPY --from=builder /build/target/release/unix-oidc-agent /usr/local/bin/
+
+# Make PAM module available
+RUN ln -sf /usr/lib/security/libpam_unix_oidc.so /lib/x86_64-linux-gnu/security/ 2>/dev/null || \
+    ln -sf /usr/lib/security/libpam_unix_oidc.so /lib/aarch64-linux-gnu/security/ 2>/dev/null || \
+    true
+
+# Copy SSSD configuration template
+COPY test/fixtures/sssd/sssd.conf /etc/sssd/sssd.conf
+RUN chmod 600 /etc/sssd/sssd.conf
+
+# Copy PAM configuration
+COPY test/fixtures/pam/sshd /etc/pam.d/sshd.unix-oidc
+COPY test/fixtures/pam/sudo /etc/pam.d/sudo.unix-oidc
+
+# Copy policy configuration
+RUN mkdir -p /etc/unix-oidc
+COPY test/fixtures/policy/policy-step-up.yaml /etc/unix-oidc/policy.yaml
+
+# Startup script
+COPY test/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+
+CMD ["/entrypoint.sh"]

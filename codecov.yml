@@ -1,0 +1,47 @@
+# Codecov configuration
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 2%  # Allow 2% drop without failing
+
+      # Critical security code requires higher coverage
+      pam-unix-oidc:
+        paths:
+          - "pam-unix-oidc/src/**"
+        target: 80%
+        threshold: 1%
+
+      rust-oauth-dpop:
+        paths:
+          - "rust-oauth-dpop/src/**"
+        target: 80%
+        threshold: 1%
+
+      unix-oidc-agent:
+        paths:
+          - "unix-oidc-agent/src/**"
+        target: 75%  # Agent has more I/O, slightly lower threshold
+        threshold: 2%
+
+    patch:
+      default:
+        target: 80%  # New code must meet 80% coverage
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: true
+
+ignore:
+  - "fuzz/**"
+  - "test/**"
+  - "**/tests/**"
+  - "**/*_test.rs"

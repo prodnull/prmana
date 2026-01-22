@@ -1,0 +1,35 @@
+# test/fixtures/policy/policy-step-up.yaml
+# Test policy requiring step-up authentication for sudo
+
+# Host classification for test environment
+host_classification: elevated
+
+# SSH login requirements
+ssh:
+  require_oidc: true
+  minimum_acr: null  # Any ACR accepted
+  max_auth_age: 3600  # 1 hour
+
+# Sudo step-up requirements
+sudo:
+  step_up_required: true
+  allowed_methods:
+    - device_flow
+  timeout_seconds: 300
+  required_acr: urn:keycloak:acr:loa2
+  commands:
+    # Package management always requires step-up
+    - pattern: "/usr/bin/apt*"
+      step_up_required: true
+    - pattern: "/usr/bin/yum*"
+      step_up_required: true
+    # System administration
+    - pattern: "/usr/sbin/shutdown*"
+      step_up_required: true
+    - pattern: "/usr/bin/systemctl*"
+      step_up_required: true
+    # Allow read-only commands without step-up
+    - pattern: "/usr/bin/cat *"
+      step_up_required: false
+    - pattern: "/bin/ls *"
+      step_up_required: false

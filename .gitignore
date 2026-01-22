@@ -1,0 +1,45 @@
+# .gitignore
+/target/
+fuzz/target/
+fuzz/artifacts/
+fuzz/corpus/
+**/*.rs.bk
+# Cargo.lock would normally be ignored here, but it's required for Docker builds
+# so it's excluded from .gitignore and committed to the repo
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Test artifacts
+*.log
+.coverage/
+htmlcov/
+
+# Docker
+.docker-data/
+
+# Environment
+.env
+.env.local
+.venv/
+
+# Marketing materials (keep most local, track presentation)
+docs/marketing/*.md
+docs/marketing/*.py
+docs/marketing/*.pptx
+docs/marketing/executive-*
+docs/marketing/medium-*
+docs/marketing/linkedin-*
+*.cdx.json
+
+# Internal working docs (local only)
+docs/session-notes/
+docs/plans/

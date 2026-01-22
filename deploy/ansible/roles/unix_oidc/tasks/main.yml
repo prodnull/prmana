@@ -1,0 +1,136 @@
+---
+# tasks/main.yml - Main tasks for unix_oidc role
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - unix_oidc_issuer | length > 0
+    fail_msg: "unix_oidc_issuer is required and must be set"
+    success_msg: "Required variables validated"
+
+- name: Check prerequisites - curl
+  ansible.builtin.command: which curl
+  register: curl_check
+  changed_when: false
+  failed_when: false
+
+- name: Check prerequisites - jq
+  ansible.builtin.command: which jq
+  register: jq_check
+  changed_when: false
+  failed_when: false
+
+- name: Install prerequisites on Debian/Ubuntu
+  ansible.builtin.apt:
+    name:
+      - curl
+      - jq
+    state: present
+    update_cache: true
+  when:
+    - ansible_os_family == "Debian"
+    - curl_check.rc != 0 or jq_check.rc != 0
+  become: true
+
+- name: Install prerequisites on RHEL/Rocky
+  ansible.builtin.dnf:
+    name:
+      - curl
+      - jq
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - curl_check.rc != 0 or jq_check.rc != 0
+  become: true
+
+- name: Create installation directory
+  ansible.builtin.file:
+    path: "{{ unix_oidc_install_dir }}"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Create configuration directory
+  ansible.builtin.file:
+    path: "{{ unix_oidc_config_dir }}"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Download unix-oidc installer script
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/unix-oidc/unix-oidc/main/install.sh"
+    dest: "{{ unix_oidc_install_dir }}/install.sh"
+    mode: "0755"
+  become: true
+
+- name: Build installer arguments
+  ansible.builtin.set_fact:
+    unix_oidc_installer_args: >-
+      --issuer "{{ unix_oidc_issuer }}"
+      --client-id "{{ unix_oidc_client_id }}"
+      {% if unix_oidc_version != "latest" %}--version "{{ unix_oidc_version }}"{% endif %}
+      {% if unix_oidc_install_agent %}--install-agent{% endif %}
+      {% if unix_oidc_enable_dpop %}--enable-dpop{% endif %}
+      {% if unix_oidc_required_acr | length > 0 %}--required-acr "{{ unix_oidc_required_acr }}"{% endif %}
+      --non-interactive
+
+- name: Run unix-oidc installer
+  ansible.builtin.command:
+    cmd: "{{ unix_oidc_install_dir }}/install.sh {{ unix_oidc_installer_args }}"
+  register: installer_result
+  changed_when: "'already installed' not in installer_result.stdout"
+  become: true
+
+- name: Template configuration file
+  ansible.builtin.template:
+    src: config.env.j2
+    dest: "{{ unix_oidc_config_dir }}/config.env"
+    mode: "0600"
+    owner: root
+    group: root
+  become: true
+  notify: Restart unix-oidc
+
+- name: Configure PAM services
+  ansible.builtin.lineinfile:
+    path: "/etc/pam.d/{{ item }}"
+    line: "auth sufficient pam_unix_oidc.so"
+    insertbefore: "^auth"
+    state: present
+    backup: true
+  loop: "{{ unix_oidc_pam_services }}"
+  when: unix_oidc_pam_services | length > 0
+  become: true
+  notify: Restart sshd
+
+- name: Ensure sshd is configured to use PAM
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?UsePAM"
+    line: "UsePAM yes"
+    state: present
+    backup: true
+  when: "'sshd' in unix_oidc_pam_services"
+  become: true
+  notify: Restart sshd
+
+- name: Enable ChallengeResponseAuthentication for SSH
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?ChallengeResponseAuthentication"
+    line: "ChallengeResponseAuthentication yes"
+    state: present
+  when: "'sshd' in unix_oidc_pam_services"
+  become: true
+  notify: Restart sshd
+
+- name: Enable KbdInteractiveAuthentication for SSH (newer systems)
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?KbdInteractiveAuthentication"
+    line: "KbdInteractiveAuthentication yes"
+    state: present
+  when: "'sshd' in unix_oidc_pam_services"
+  become: true
+  notify: Restart sshd

@@ -1,0 +1,70 @@
+# docker-compose.test.yaml
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      # Use keycloak hostname for consistent issuer URL
+      KC_HOSTNAME: keycloak
+      KC_HOSTNAME_PORT: "8080"
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./test/fixtures/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  openldap:
+    image: osixia/openldap:1.5.0
+    environment:
+      LDAP_ORGANISATION: "Unix OIDC Test"
+      LDAP_DOMAIN: "test.local"
+      LDAP_ADMIN_PASSWORD: "admin"
+      LDAP_CONFIG_PASSWORD: "config"
+    ports:
+      - "389:389"
+      - "636:636"
+    volumes:
+      - ./test/fixtures/ldap:/container/service/slapd/assets/config/bootstrap/ldif/custom:ro
+    command: --copy-service
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost", "-b", "dc=test,dc=local", "-D", "cn=admin,dc=test,dc=local", "-w", "admin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  test-host:
+    build:
+      context: .
+      dockerfile: test/docker/Dockerfile.test-host
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      openldap:
+        condition: service_healthy
+    ports:
+      - "2222:22"
+    environment:
+      UNIX_OIDC_TEST_MODE: "true"
+      OIDC_ISSUER: "http://keycloak:8080/realms/unix-oidc-test"
+      LDAP_URI: "ldap://openldap:389"
+      LDAP_BASE: "dc=test,dc=local"
+    volumes:
+      - ./target/release:/opt/unix-oidc:ro
+    healthcheck:
+      test: ["CMD", "pgrep", "sshd"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  default:
+    name: unix-oidc-test

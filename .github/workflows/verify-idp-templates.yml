@@ -1,0 +1,228 @@
+name: Verify IdP Templates
+
+on:
+  # Nightly at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      keycloak_version:
+        description: 'Keycloak version to test'
+        required: false
+        default: '24.0'
+        type: string
+  # Also run on changes to IdP templates
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/idp-templates/**'
+      - '.github/workflows/verify-idp-templates.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/idp-templates/**'
+      - '.github/workflows/verify-idp-templates.yml'
+
+permissions:
+  contents: read
+
+env:
+  KEYCLOAK_VERSION: ${{ github.event.inputs.keycloak_version || '24.0' }}
+
+jobs:
+  # ============================================================================
+  # Keycloak IdP Template Verification
+  # ============================================================================
+  verify-keycloak:
+    name: Verify Keycloak Template
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        keycloak_version: ['24.0', '25.0', '26.0']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create test realm from template
+        run: |
+          # Create test directory structure
+          mkdir -p test/fixtures/keycloak-template-test
+
+          # Copy the production realm template and modify for testing
+          cat deploy/idp-templates/keycloak/realm-export.json | \
+            jq '.realm = "unix-oidc-template-test" |
+                .sslRequired = "none" |
+                .clients[0].secret = "test-secret-12345" |
+                .clients[0].directAccessGrantsEnabled = true |
+                .clients[0].standardFlowEnabled = true |
+                .users = [
+                  {
+                    "username": "testuser",
+                    "enabled": true,
+                    "email": "testuser@test.local",
+                    "firstName": "Test",
+                    "lastName": "User",
+                    "credentials": [{
+                      "type": "password",
+                      "value": "testpass",
+                      "temporary": false
+                    }]
+                  }
+                ]' > test/fixtures/keycloak-template-test/realm.json
+
+          echo "Created test realm configuration:"
+          cat test/fixtures/keycloak-template-test/realm.json | jq '.realm, .clients[0].clientId'
+
+      - name: Create docker-compose for testing
+        run: |
+          cat > docker-compose.idp-test.yaml << 'EOF'
+          services:
+            keycloak:
+              image: quay.io/keycloak/keycloak:${{ matrix.keycloak_version }}
+              command: start-dev --import-realm
+              environment:
+                KEYCLOAK_ADMIN: admin
+                KEYCLOAK_ADMIN_PASSWORD: admin
+                KC_HEALTH_ENABLED: "true"
+                KC_HOSTNAME_STRICT: "false"
+              ports:
+                - "8080:8080"
+              volumes:
+                - ./test/fixtures/keycloak-template-test:/opt/keycloak/data/import:ro
+              healthcheck:
+                test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080"]
+                interval: 10s
+                timeout: 5s
+                retries: 20
+                start_period: 60s
+          EOF
+
+      - name: Start Keycloak
+        run: |
+          docker compose -f docker-compose.idp-test.yaml up -d
+          echo "Waiting for Keycloak to start..."
+
+      - name: Wait for Keycloak to be healthy
+        run: |
+          echo "Waiting for Keycloak ${{ matrix.keycloak_version }} to be healthy..."
+          MAX_WAIT=180
+          WAITED=0
+          while [ $WAITED -lt $MAX_WAIT ]; do
+            if docker compose -f docker-compose.idp-test.yaml ps keycloak 2>/dev/null | grep -q "(healthy)"; then
+              echo "Keycloak is healthy!"
+              break
+            fi
+            printf "."
+            sleep 5
+            WAITED=$((WAITED + 5))
+          done
+
+          if [ $WAITED -ge $MAX_WAIT ]; then
+            echo ""
+            echo "Timeout waiting for Keycloak"
+            docker compose -f docker-compose.idp-test.yaml logs keycloak
+            exit 1
+          fi
+
+          # Additional wait for realm import
+          echo "Waiting for realm import to complete..."
+          sleep 10
+
+      - name: Verify OIDC discovery endpoint
+        run: |
+          echo "Testing OIDC discovery endpoint..."
+          DISCOVERY=$(curl -sf http://localhost:8080/realms/unix-oidc-template-test/.well-known/openid-configuration)
+
+          echo "Discovery document:"
+          echo "$DISCOVERY" | jq .
+
+          # Verify required fields
+          echo "$DISCOVERY" | jq -e '.issuer' || { echo "Missing issuer"; exit 1; }
+          echo "$DISCOVERY" | jq -e '.token_endpoint' || { echo "Missing token_endpoint"; exit 1; }
+          echo "$DISCOVERY" | jq -e '.device_authorization_endpoint' || { echo "Missing device_authorization_endpoint"; exit 1; }
+
+          echo "OIDC discovery endpoint verified!"
+
+      - name: Run verification script
+        run: |
+          chmod +x deploy/idp-templates/keycloak/test/verify.sh
+          KEYCLOAK_URL=http://localhost:8080 \
+          REALM=unix-oidc-template-test \
+          CLIENT_ID=unix-oidc \
+          CLIENT_SECRET=test-secret-12345 \
+          TEST_USER=testuser \
+          TEST_PASS=testpass \
+          ./deploy/idp-templates/keycloak/test/verify.sh --skip-pamtester --verbose
+
+      - name: Test Device Authorization Grant flow
+        run: |
+          echo "Testing Device Authorization Grant..."
+
+          # Request device code
+          DEVICE_RESPONSE=$(curl -sf -X POST \
+            "http://localhost:8080/realms/unix-oidc-template-test/protocol/openid-connect/auth/device" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "client_id=unix-oidc" \
+            -d "client_secret=test-secret-12345" \
+            -d "scope=openid profile")
+
+          echo "Device response:"
+          echo "$DEVICE_RESPONSE" | jq .
+
+          # Verify we got a device code
+          DEVICE_CODE=$(echo "$DEVICE_RESPONSE" | jq -r '.device_code')
+          USER_CODE=$(echo "$DEVICE_RESPONSE" | jq -r '.user_code')
+
+          if [ -z "$DEVICE_CODE" ] || [ "$DEVICE_CODE" = "null" ]; then
+            echo "Failed to get device code"
+            exit 1
+          fi
+
+          echo "Device code obtained: ${DEVICE_CODE:0:20}..."
+          echo "User code: $USER_CODE"
+          echo "Device Authorization Grant flow is working!"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Keycloak Logs ==="
+          docker compose -f docker-compose.idp-test.yaml logs keycloak 2>&1 | tail -200
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose -f docker-compose.idp-test.yaml down -v --remove-orphans 2>/dev/null || true
+
+  # ============================================================================
+  # Summary Job
+  # ============================================================================
+  verification-summary:
+    name: Verification Summary
+    runs-on: ubuntu-latest
+    needs: [verify-keycloak]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.verify-keycloak.result }}" = "success" ]; then
+            echo "All IdP template verifications passed!"
+            exit 0
+          else
+            echo "Some IdP template verifications failed"
+            exit 1
+          fi
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## IdP Template Verification Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| IdP | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Keycloak 24.0 | ${{ needs.verify-keycloak.result == 'success' && 'Pass' || 'Fail' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Keycloak 25.0 | ${{ needs.verify-keycloak.result == 'success' && 'Pass' || 'Fail' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Keycloak 26.0 | ${{ needs.verify-keycloak.result == 'success' && 'Pass' || 'Fail' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Run date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY

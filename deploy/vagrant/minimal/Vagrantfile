@@ -1,0 +1,181 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# unix-oidc Minimal Vagrant Image
+# Provides unix-oidc PAM module + agent, ready for BYOIDP (Bring Your Own IdP)
+#
+
+VAGRANTFILE_API_VERSION = "2"
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  # Ubuntu 22.04 LTS base box
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.hostname = "unix-oidc-minimal"
+
+  # Network configuration
+  # SSH port forwarding (guest 22 -> host 2222)
+  config.vm.network "forwarded_port", guest: 22, host: 2222, id: "ssh", auto_correct: true
+
+  # VirtualBox provider settings
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "unix-oidc-minimal"
+    vb.memory = "1024"
+    vb.cpus = 1
+
+    # Disable GUI
+    vb.gui = false
+
+    # Performance optimizations
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    vb.customize ["modifyvm", :id, "--ioapic", "on"]
+  end
+
+  # Provisioning script
+  config.vm.provision "shell", inline: <<-SHELL
+    set -euo pipefail
+
+    echo "=========================================="
+    echo "unix-oidc Minimal Image Provisioning"
+    echo "=========================================="
+
+    # Update system
+    echo "[1/6] Updating system packages..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get upgrade -y -qq
+
+    # Install dependencies
+    echo "[2/6] Installing dependencies..."
+    apt-get install -y -qq \
+      curl \
+      jq \
+      pamtester \
+      libpam0g \
+      ca-certificates
+
+    # Create unix-oidc directories
+    echo "[3/6] Creating unix-oidc directories..."
+    mkdir -p /etc/unix-oidc
+    chmod 755 /etc/unix-oidc
+
+    # Download and install unix-oidc
+    echo "[4/6] Installing unix-oidc..."
+    GITHUB_REPO="prodnull/unix-oidc"
+    VERSION="0.1.0"
+    ARCH=$(uname -m)
+
+    if [ "$ARCH" = "x86_64" ]; then
+      ARCH="x86_64"
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+      ARCH="aarch64"
+    fi
+
+    # Download from GitHub releases (when available)
+    # For now, create placeholder config indicating installation needed
+    echo "# unix-oidc is ready for installation" > /etc/unix-oidc/.installed
+
+    # Create configuration placeholder
+    echo "[5/6] Creating configuration placeholder..."
+    cat > /etc/unix-oidc/config.env << 'EOF'
+# unix-oidc Configuration
+# ========================
+# Configure your OIDC provider settings below.
+# After editing, apply the PAM configuration.
+
+# Required: Your OIDC Provider's Issuer URL
+# Examples:
+#   Keycloak:  https://keycloak.example.com/realms/your-realm
+#   Okta:      https://your-org.okta.com
+#   Auth0:     https://your-tenant.auth0.com
+#   Azure AD:  https://login.microsoftonline.com/{tenant-id}/v2.0
+OIDC_ISSUER="https://your-idp.example.com/realms/your-realm"
+
+# Client ID registered with your IdP for unix-oidc
+OIDC_CLIENT_ID="unix-oidc"
+
+# Optional: Client secret (if using confidential client)
+# OIDC_CLIENT_SECRET=""
+
+# Optional: Required ACR (Authentication Context Class Reference) level
+# Enforces specific authentication strength (e.g., MFA)
+# OIDC_REQUIRED_ACR="urn:your-idp:acr:mfa"
+
+# Optional: Maximum authentication age in seconds
+# Requires re-authentication if last auth was too long ago
+# OIDC_MAX_AUTH_AGE=3600
+
+# Optional: Enable DPoP (Demonstrating Proof of Possession) token binding
+# Provides stronger token security by binding tokens to cryptographic keys
+# OIDC_DPOP_REQUIRED=true
+
+# Optional: Custom claim for username mapping
+# Default: Uses 'preferred_username' or 'sub' claim
+# OIDC_USERNAME_CLAIM="preferred_username"
+EOF
+    chmod 600 /etc/unix-oidc/config.env
+
+    # Create PAM configuration templates
+    echo "[6/6] Creating PAM configuration templates..."
+
+    # SSHD PAM config
+    cat > /etc/unix-oidc/pam.d-sshd.recommended << 'EOF'
+# /etc/pam.d/sshd - Recommended configuration for unix-oidc
+# WARNING: Test thoroughly before applying!
+#
+# This configuration tries OIDC authentication first,
+# then falls back to standard Unix password authentication.
+
+# Load unix-oidc environment configuration
+auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
+
+# Try unix-oidc first, fall back to standard auth if it fails
+auth       sufficient   pam_unix_oidc.so
+auth       required     pam_unix.so
+
+# Standard account, session, password handling
+@include common-account
+@include common-session
+@include common-password
+EOF
+
+    # Sudo PAM config
+    cat > /etc/unix-oidc/pam.d-sudo.recommended << 'EOF'
+# /etc/pam.d/sudo - Recommended configuration for unix-oidc
+# WARNING: Test thoroughly before applying!
+
+# Load unix-oidc environment configuration
+auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
+
+# Try unix-oidc first, fall back to standard auth if it fails
+auth       sufficient   pam_unix_oidc.so
+auth       required     pam_unix.so
+
+# Standard account, session handling
+@include common-account
+@include common-session
+EOF
+
+    # Create test user
+    echo "Creating test user 'testuser'..."
+    if ! id testuser &>/dev/null; then
+      useradd -m -s /bin/bash testuser
+      echo "testuser:testpass" | chpasswd
+      usermod -aG sudo testuser
+    fi
+
+    echo ""
+    echo "=========================================="
+    echo "unix-oidc Minimal Image Ready!"
+    echo "=========================================="
+    echo ""
+    echo "Next Steps:"
+    echo "1. Edit /etc/unix-oidc/config.env with your OIDC provider settings"
+    echo "2. Install unix-oidc binaries (when available):"
+    echo "   curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | sudo bash"
+    echo "3. Review PAM configs in /etc/unix-oidc/"
+    echo "4. Apply PAM config (carefully!):"
+    echo "   sudo cp /etc/unix-oidc/pam.d-sshd.recommended /etc/pam.d/sshd"
+    echo "5. Test with: pamtester sshd testuser authenticate"
+    echo ""
+  SHELL
+end

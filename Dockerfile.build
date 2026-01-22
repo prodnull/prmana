@@ -1,0 +1,23 @@
+# Dockerfile.build - Build the PAM module in a Linux container
+FROM rust:1.85-slim-bookworm
+
+RUN apt-get update && apt-get install -y \
+    libpam0g-dev \
+    libclang-dev \
+    clang \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy source
+COPY Cargo.toml Cargo.lock* ./
+COPY pam-unix-oidc ./pam-unix-oidc
+COPY unix-oidc-agent ./unix-oidc-agent
+COPY examples ./examples
+
+# Build
+RUN cargo build --release
+
+# Output is at /build/target/release/libpam_unix_oidc.so

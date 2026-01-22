@@ -1,0 +1,10 @@
+name 'unix_oidc'
+maintainer 'unix-oidc contributors'
+license 'Apache-2.0'
+description 'Installs and configures unix-oidc PAM module'
+version '0.1.0'
+
+supports 'ubuntu', '>= 20.04'
+supports 'debian', '>= 11'
+supports 'redhat', '>= 8'
+supports 'rocky', '>= 8'

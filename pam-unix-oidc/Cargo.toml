@@ -1,0 +1,41 @@
+[package]
+name = "pam-unix-oidc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+# WARNING: test-mode skips JWT signature verification.
+# NEVER enable this feature in production builds.
+# Use only for integration testing with mock IdPs.
+test-mode = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+libc = "0.2"
+pamsm = { version = "0.5", features = ["libpam"] }
+jsonwebtoken = "9.0"
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+url = "2.5"
+chrono = { version = "0.4", features = ["serde"] }
+once_cell = "1.19"
+base64 = "0.21"
+uzers = "0.12"
+syslog = "6.1"
+serde_yaml = "0.9"
+gethostname = "0.4"
+getrandom = "0.2"
+p256 = { version = "0.13", features = ["ecdsa"] }
+sha2 = "0.10"
+subtle = "2.5"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.0"

@@ -1,0 +1,706 @@
+# Platform Expansion CI - Multi-platform testing using AWS EC2
+#
+# Required GitHub Secrets:
+#   AWS_ACCESS_KEY_ID        - AWS credentials with EC2 permissions
+#   AWS_SECRET_ACCESS_KEY    - AWS secret key
+#   AWS_REGION               - Target AWS region (e.g., us-east-1)
+#   EC2_SUBNET_ID            - Subnet for launching test instances
+#   EC2_SECURITY_GROUP_ID    - Security group allowing SSH access
+#   EC2_KEY_NAME             - Name of SSH key pair in AWS
+#   EC2_SSH_PRIVATE_KEY      - Private key content for SSH access
+#
+# Required GitHub Environments:
+#   rhel-testing             - Environment with manual approval for RHEL 9 tests
+#
+# IAM Permissions Required:
+#   - ec2:RunInstances
+#   - ec2:TerminateInstances
+#   - ec2:DescribeInstances
+#   - ec2:DescribeImages
+#   - ec2:CreateTags
+#   - ssm:GetParameter (for Amazon Linux AMI lookup)
+#   - aws-marketplace:Subscribe (for RHEL 9 AMI)
+
+name: Platform Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'pam/**'
+      - 'nss/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/platform-tests.yml'
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Platforms to test (comma-separated, or "all")'
+        required: false
+        default: 'all'
+      skip_rhel:
+        description: 'Skip RHEL 9 testing'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  INSTANCE_TYPE_X86: t3.medium
+  INSTANCE_TYPE_ARM: t4g.medium
+  # Timeout for instance provisioning and tests (in seconds)
+  PROVISION_TIMEOUT: 300
+  TEST_TIMEOUT: 600
+
+jobs:
+  # Build artifacts for all platforms
+  build:
+    name: Build Artifacts
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.upload.outputs.artifact-name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            libpam0g-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build x86_64 artifacts
+        run: |
+          cargo build --release --target x86_64-unknown-linux-gnu
+          mkdir -p artifacts/x86_64
+          cp target/x86_64-unknown-linux-gnu/release/*.so artifacts/x86_64/ 2>/dev/null || true
+          cp target/x86_64-unknown-linux-gnu/release/unix-oidc* artifacts/x86_64/ 2>/dev/null || true
+
+      - name: Build arm64 artifacts
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+            cargo build --release --target aarch64-unknown-linux-gnu
+          mkdir -p artifacts/arm64
+          cp target/aarch64-unknown-linux-gnu/release/*.so artifacts/arm64/ 2>/dev/null || true
+          cp target/aarch64-unknown-linux-gnu/release/unix-oidc* artifacts/arm64/ 2>/dev/null || true
+
+      - name: Create test scripts bundle
+        run: |
+          mkdir -p artifacts/scripts
+          cp -r tests/integration/* artifacts/scripts/ 2>/dev/null || true
+          # Create installation script
+          cat > artifacts/scripts/install.sh << 'INSTALL_EOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          ARCH=$(uname -m)
+          case "$ARCH" in
+            x86_64) ARTIFACT_DIR="x86_64" ;;
+            aarch64) ARTIFACT_DIR="arm64" ;;
+            *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+          esac
+
+          echo "Installing unix-oidc for $ARCH..."
+
+          # Install PAM module
+          if [ -f "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" ]; then
+            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" /lib64/security/ 2>/dev/null || \
+            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" /lib/x86_64-linux-gnu/security/ 2>/dev/null || \
+            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" /lib/security/
+          fi
+
+          # Install NSS module
+          if [ -f "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" ]; then
+            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" /lib64/ 2>/dev/null || \
+            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" /lib/x86_64-linux-gnu/ 2>/dev/null || \
+            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" /lib/
+            sudo ldconfig
+          fi
+
+          # Install CLI tool
+          if [ -f "/tmp/unix-oidc/$ARTIFACT_DIR/unix-oidc" ]; then
+            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/unix-oidc" /usr/local/bin/
+            sudo chmod +x /usr/local/bin/unix-oidc
+          fi
+
+          echo "Installation complete"
+          INSTALL_EOF
+          chmod +x artifacts/scripts/install.sh
+
+      - name: Upload artifacts
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: unix-oidc-artifacts
+          path: artifacts/
+          retention-days: 1
+
+  # Matrix for standard platforms (every PR)
+  platform-tests:
+    name: Test ${{ matrix.platform }} (${{ matrix.arch }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Amazon Linux 2023 - x86_64
+          - platform: amazon-linux-2023
+            arch: x86_64
+            ami_type: ssm
+            ami_param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+            instance_type: t3.medium
+            user: ec2-user
+            package_manager: dnf
+
+          # Amazon Linux 2023 - arm64
+          - platform: amazon-linux-2023
+            arch: arm64
+            ami_type: ssm
+            ami_param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+            instance_type: t4g.medium
+            user: ec2-user
+            package_manager: dnf
+
+          # Ubuntu 22.04 - x86_64
+          - platform: ubuntu-22.04
+            arch: x86_64
+            ami_type: filter
+            ami_owner: "099720109477"  # Canonical
+            ami_filter: ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*
+            instance_type: t3.medium
+            user: ubuntu
+            package_manager: apt
+
+          # Ubuntu 22.04 - arm64
+          - platform: ubuntu-22.04
+            arch: arm64
+            ami_type: filter
+            ami_owner: "099720109477"  # Canonical
+            ami_filter: ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*
+            instance_type: t4g.medium
+            user: ubuntu
+            package_manager: apt
+
+          # Debian 12 - x86_64
+          - platform: debian-12
+            arch: x86_64
+            ami_type: filter
+            ami_owner: "136693071363"  # Debian
+            ami_filter: debian-12-amd64-*
+            instance_type: t3.medium
+            user: admin
+            package_manager: apt
+
+          # Rocky 9 - x86_64
+          - platform: rocky-9
+            arch: x86_64
+            ami_type: filter
+            ami_owner: "792107900819"  # Rocky Linux
+            ami_filter: Rocky-9-EC2-Base-*.x86_64-*
+            instance_type: t3.medium
+            user: rocky
+            package_manager: dnf
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: unix-oidc-artifacts
+          path: artifacts/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get AMI ID (SSM Parameter)
+        if: matrix.ami_type == 'ssm'
+        id: ami-ssm
+        run: |
+          AMI_ID=$(aws ssm get-parameter \
+            --name "${{ matrix.ami_param }}" \
+            --query "Parameter.Value" \
+            --output text)
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+          echo "Found AMI: $AMI_ID"
+
+      - name: Get AMI ID (Filter)
+        if: matrix.ami_type == 'filter'
+        id: ami-filter
+        env:
+          AMI_OWNER: ${{ matrix.ami_owner }}
+          AMI_FILTER: ${{ matrix.ami_filter }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          if [ "$ARCH" = "arm64" ]; then
+            ARCH_FILTER="arm64"
+          else
+            ARCH_FILTER="x86_64"
+          fi
+          AMI_ID=$(aws ec2 describe-images \
+            --owners "$AMI_OWNER" \
+            --filters "Name=name,Values=$AMI_FILTER" \
+                      "Name=state,Values=available" \
+                      "Name=architecture,Values=$ARCH_FILTER" \
+            --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+            --output text)
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+          echo "Found AMI: $AMI_ID"
+
+      - name: Set AMI ID
+        id: ami
+        env:
+          AMI_TYPE: ${{ matrix.ami_type }}
+          SSM_AMI: ${{ steps.ami-ssm.outputs.ami_id }}
+          FILTER_AMI: ${{ steps.ami-filter.outputs.ami_id }}
+        run: |
+          if [ "$AMI_TYPE" = "ssm" ]; then
+            echo "ami_id=$SSM_AMI" >> "$GITHUB_OUTPUT"
+          else
+            echo "ami_id=$FILTER_AMI" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Launch EC2 instance
+        id: ec2
+        env:
+          AMI_ID: ${{ steps.ami.outputs.ami_id }}
+          INSTANCE_TYPE: ${{ matrix.instance_type }}
+          KEY_NAME: ${{ secrets.EC2_KEY_NAME }}
+          SUBNET_ID: ${{ secrets.EC2_SUBNET_ID }}
+          SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # Create unique instance name
+          INSTANCE_NAME="unix-oidc-test-${PLATFORM}-${ARCH}-${RUN_ID}"
+
+          # Launch instance
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id "$AMI_ID" \
+            --instance-type "$INSTANCE_TYPE" \
+            --key-name "$KEY_NAME" \
+            --subnet-id "$SUBNET_ID" \
+            --security-group-ids "$SECURITY_GROUP_ID" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$INSTANCE_NAME},{Key=Purpose,Value=unix-oidc-ci},{Key=GitHubRunId,Value=$RUN_ID}]" \
+            --instance-initiated-shutdown-behavior terminate \
+            --query "Instances[0].InstanceId" \
+            --output text)
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "Launched instance: $INSTANCE_ID"
+
+          # Wait for instance to be running
+          echo "Waiting for instance to be running..."
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+          # Get public IP
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)
+
+          echo "instance_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "Instance IP: $PUBLIC_IP"
+
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+
+          # Add to known_hosts (disable strict checking for CI)
+          cat >> ~/.ssh/config << EOF
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+
+      - name: Wait for SSH to be available
+        env:
+          SSH_USER: ${{ matrix.user }}
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          echo "Waiting for SSH to be available..."
+          for i in {1..30}; do
+            if ssh -i ~/.ssh/ec2_key -o ConnectTimeout=5 \
+              "${SSH_USER}@${INSTANCE_IP}" "echo 'SSH ready'" 2>/dev/null; then
+              echo "SSH is available"
+              exit 0
+            fi
+            echo "Attempt $i/30 - waiting..."
+            sleep 10
+          done
+          echo "SSH connection failed after 30 attempts"
+          exit 1
+
+      - name: Copy artifacts to instance
+        env:
+          SSH_USER: ${{ matrix.user }}
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          scp -i ~/.ssh/ec2_key -r artifacts/ \
+            "${SSH_USER}@${INSTANCE_IP}:/tmp/unix-oidc/"
+
+      - name: Install dependencies
+        env:
+          SSH_USER: ${{ matrix.user }}
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+          PACKAGE_MANAGER: ${{ matrix.package_manager }}
+        run: |
+          ssh -i ~/.ssh/ec2_key "${SSH_USER}@${INSTANCE_IP}" << DEPS_EOF
+          set -euo pipefail
+
+          case "$PACKAGE_MANAGER" in
+            apt)
+              sudo apt-get update
+              sudo apt-get install -y libpam0g-dev curl jq
+              ;;
+            dnf)
+              sudo dnf install -y pam-devel curl jq
+              ;;
+            yum)
+              sudo yum install -y pam-devel curl jq
+              ;;
+          esac
+          DEPS_EOF
+
+      - name: Install unix-oidc
+        env:
+          SSH_USER: ${{ matrix.user }}
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          ssh -i ~/.ssh/ec2_key "${SSH_USER}@${INSTANCE_IP}" \
+            "chmod +x /tmp/unix-oidc/scripts/install.sh && /tmp/unix-oidc/scripts/install.sh"
+
+      - name: Run integration tests
+        id: tests
+        env:
+          SSH_USER: ${{ matrix.user }}
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          ssh -i ~/.ssh/ec2_key "${SSH_USER}@${INSTANCE_IP}" << 'TEST_EOF'
+          set -euo pipefail
+
+          echo "=== Platform Information ==="
+          cat /etc/os-release || true
+          uname -a
+
+          echo ""
+          echo "=== Verifying Installation ==="
+
+          # Check PAM module
+          echo -n "PAM module: "
+          if [ -f /lib64/security/pam_oidc.so ] || \
+             [ -f /lib/x86_64-linux-gnu/security/pam_oidc.so ] || \
+             [ -f /lib/security/pam_oidc.so ]; then
+            echo "FOUND"
+          else
+            echo "NOT FOUND"
+            exit 1
+          fi
+
+          # Check NSS module
+          echo -n "NSS module: "
+          if ldconfig -p | grep -q libnss_oidc; then
+            echo "FOUND"
+          else
+            echo "NOT FOUND (may be expected if not built)"
+          fi
+
+          # Check CLI tool
+          echo -n "CLI tool: "
+          if command -v unix-oidc &>/dev/null; then
+            unix-oidc --version || echo "version check failed"
+            echo "FOUND"
+          else
+            echo "NOT FOUND"
+          fi
+
+          echo ""
+          echo "=== Running Integration Tests ==="
+
+          # Run test scripts if they exist
+          if [ -d /tmp/unix-oidc/scripts ] && [ -f /tmp/unix-oidc/scripts/run_tests.sh ]; then
+            chmod +x /tmp/unix-oidc/scripts/run_tests.sh
+            /tmp/unix-oidc/scripts/run_tests.sh
+          else
+            echo "No integration test scripts found, running basic verification only"
+          fi
+
+          echo ""
+          echo "=== Tests Completed Successfully ==="
+          TEST_EOF
+
+      - name: Terminate EC2 instance
+        if: always()
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          if [ -n "$INSTANCE_ID" ]; then
+            echo "Terminating instance $INSTANCE_ID..."
+            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" || true
+          fi
+
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          rm -f ~/.ssh/ec2_key
+
+  # RHEL 9 - Release tags only with manual approval
+  rhel9-test:
+    name: Test RHEL 9 (x86_64)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # Hard timeout for RHEL (cost control)
+    environment: rhel-testing  # Requires manual approval
+    # Only run on release tags, unless explicitly requested
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && !inputs.skip_rhel)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: unix-oidc-artifacts
+          path: artifacts/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get RHEL 9 AMI ID (Marketplace)
+        id: ami
+        run: |
+          # RHEL 9 from AWS Marketplace (Red Hat official)
+          # Note: Requires marketplace subscription
+          AMI_ID=$(aws ec2 describe-images \
+            --owners "309956199498" \
+            --filters "Name=name,Values=RHEL-9.*_HVM-*-x86_64-*-Hourly2-GP3" \
+                      "Name=state,Values=available" \
+            --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+            --output text)
+
+          if [ "$AMI_ID" = "None" ] || [ -z "$AMI_ID" ]; then
+            echo "ERROR: Could not find RHEL 9 AMI. Ensure marketplace subscription is active."
+            exit 1
+          fi
+
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+          echo "Found RHEL 9 AMI: $AMI_ID"
+
+      - name: Launch EC2 instance
+        id: ec2
+        env:
+          AMI_ID: ${{ steps.ami.outputs.ami_id }}
+          KEY_NAME: ${{ secrets.EC2_KEY_NAME }}
+          SUBNET_ID: ${{ secrets.EC2_SUBNET_ID }}
+          SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          INSTANCE_NAME="unix-oidc-test-rhel9-x86_64-${RUN_ID}"
+
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id "$AMI_ID" \
+            --instance-type "t3.medium" \
+            --key-name "$KEY_NAME" \
+            --subnet-id "$SUBNET_ID" \
+            --security-group-ids "$SECURITY_GROUP_ID" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$INSTANCE_NAME},{Key=Purpose,Value=unix-oidc-ci-rhel},{Key=GitHubRunId,Value=$RUN_ID}]" \
+            --instance-initiated-shutdown-behavior terminate \
+            --query "Instances[0].InstanceId" \
+            --output text)
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "Launched RHEL 9 instance: $INSTANCE_ID"
+
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)
+
+          echo "instance_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "Instance IP: $PUBLIC_IP"
+
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+          cat >> ~/.ssh/config << EOF
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+
+      - name: Wait for SSH to be available
+        env:
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          for i in {1..30}; do
+            if ssh -i ~/.ssh/ec2_key -o ConnectTimeout=5 \
+              "ec2-user@${INSTANCE_IP}" "echo 'SSH ready'" 2>/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Copy artifacts to instance
+        env:
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          scp -i ~/.ssh/ec2_key -r artifacts/ \
+            "ec2-user@${INSTANCE_IP}:/tmp/unix-oidc/"
+
+      - name: Install dependencies
+        env:
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          ssh -i ~/.ssh/ec2_key "ec2-user@${INSTANCE_IP}" << 'DEPS_EOF'
+          set -euo pipefail
+          sudo dnf install -y pam-devel curl jq
+          DEPS_EOF
+
+      - name: Install unix-oidc
+        env:
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          ssh -i ~/.ssh/ec2_key "ec2-user@${INSTANCE_IP}" \
+            "chmod +x /tmp/unix-oidc/scripts/install.sh && /tmp/unix-oidc/scripts/install.sh"
+
+      - name: Run integration tests
+        env:
+          INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
+        run: |
+          ssh -i ~/.ssh/ec2_key "ec2-user@${INSTANCE_IP}" << 'TEST_EOF'
+          set -euo pipefail
+
+          echo "=== RHEL 9 Platform Information ==="
+          cat /etc/os-release
+          uname -a
+
+          echo ""
+          echo "=== Verifying Installation ==="
+
+          # Check PAM module
+          if [ -f /lib64/security/pam_oidc.so ]; then
+            echo "PAM module: FOUND"
+          else
+            echo "PAM module: NOT FOUND"
+            exit 1
+          fi
+
+          # Check CLI tool
+          if command -v unix-oidc &>/dev/null; then
+            unix-oidc --version || true
+            echo "CLI tool: FOUND"
+          fi
+
+          echo ""
+          echo "=== Running Integration Tests ==="
+
+          if [ -f /tmp/unix-oidc/scripts/run_tests.sh ]; then
+            chmod +x /tmp/unix-oidc/scripts/run_tests.sh
+            /tmp/unix-oidc/scripts/run_tests.sh
+          else
+            echo "Basic verification completed"
+          fi
+
+          echo "=== RHEL 9 Tests Completed Successfully ==="
+          TEST_EOF
+
+      - name: Terminate EC2 instance
+        if: always()
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          if [ -n "$INSTANCE_ID" ]; then
+            echo "Terminating RHEL 9 instance $INSTANCE_ID..."
+            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" || true
+          fi
+
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          rm -f ~/.ssh/ec2_key
+
+  # Summary job
+  platform-test-summary:
+    name: Platform Test Summary
+    needs: [platform-tests, rhel9-test]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test results
+        env:
+          PLATFORM_RESULT: ${{ needs.platform-tests.result }}
+          RHEL_RESULT: ${{ needs.rhel9-test.result }}
+        run: |
+          echo "## Platform Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$PLATFORM_RESULT" = "success" ]; then
+            echo "- Standard platforms: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Standard platforms: $PLATFORM_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$RHEL_RESULT" = "success" ]; then
+            echo "- RHEL 9: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$RHEL_RESULT" = "skipped" ]; then
+            echo "- RHEL 9: SKIPPED (release tags only)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- RHEL 9: $RHEL_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Fail if tests failed
+        env:
+          PLATFORM_RESULT: ${{ needs.platform-tests.result }}
+        if: env.PLATFORM_RESULT == 'failure'
+        run: exit 1

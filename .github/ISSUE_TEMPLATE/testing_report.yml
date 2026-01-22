@@ -1,0 +1,143 @@
+name: Community Testing Report
+description: Report your testing results (success or issues)
+title: "[Testing]: "
+labels: ["testing", "community"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing unix-oidc! Please share your results - even "everything worked" is valuable feedback.
+
+        See the [Community Testing Guide](https://github.com/prodnull/unix-oidc/blob/main/docs/community-testing-guide.md) for instructions.
+
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall Result
+      options:
+        - Everything worked
+        - Partial success (some features worked)
+        - Did not work
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: features
+    attributes:
+      label: What Worked
+      description: Check all that succeeded
+      options:
+        - label: PAM module loaded successfully
+        - label: OIDC discovery succeeded
+        - label: SSH authentication worked
+        - label: Sudo step-up authentication worked
+        - label: Audit logging worked
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Ubuntu 22.04 LTS
+        - Ubuntu 24.04 LTS
+        - Debian 12
+        - RHEL 8
+        - RHEL 9
+        - Rocky Linux 8
+        - Rocky Linux 9
+        - Alma Linux 8
+        - Alma Linux 9
+        - Amazon Linux 2023
+        - Fedora 39
+        - Fedora 40
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - x86_64 (Intel/AMD)
+        - aarch64 (ARM64)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: idp
+    attributes:
+      label: Identity Provider
+      options:
+        - Azure AD (Entra ID)
+        - Auth0
+        - Google Cloud Identity
+        - Okta
+        - Keycloak
+        - Ping Identity
+        - OneLogin
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS Version Details
+      description: Output of `cat /etc/os-release | grep PRETTY_NAME` or similar
+      placeholder: "RHEL 9.3, kernel 5.14.0-362"
+
+  - type: textarea
+    id: worked
+    attributes:
+      label: What Worked Well
+      description: Describe what succeeded
+      placeholder: |
+        - SSH login with device flow worked smoothly
+        - Token caching worked as expected
+        - ...
+
+  - type: textarea
+    id: issues
+    attributes:
+      label: Issues Encountered
+      description: Describe any problems (skip if everything worked)
+      placeholder: |
+        - SELinux blocked network access, needed to run...
+        - PAM module path was different, had to use...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Any helpful log output (redact tokens/secrets!)
+      render: shell
+
+  - type: textarea
+    id: selinux
+    attributes:
+      label: SELinux/AppArmor Status
+      description: Output of `getenforce` or `aa-status` and any AVC denials
+      render: shell
+      placeholder: |
+        $ getenforce
+        Enforcing
+
+        # Any AVC denials from ausearch
+
+  - type: textarea
+    id: suggestions
+    attributes:
+      label: Documentation Suggestions
+      description: Ways we could improve the testing guide
+      placeholder: |
+        - Step 3 could be clearer about...
+        - Missing info about...
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have redacted all secrets and tokens from this report
+          required: true

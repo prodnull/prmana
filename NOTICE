@@ -1,0 +1,51 @@
+unix-oidc
+Copyright 2024-2026 unix-oidc Contributors
+
+EDUCATIONAL USE ONLY - NOT FOR PRODUCTION
+
+This project is provided for educational and discussion purposes only.
+It demonstrates concepts related to OIDC authentication, DPoP token binding,
+and PAM module development. It is NOT intended for production use.
+
+Licensed under CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0)
+
+--------------------------------------------------------------------------------
+
+unix-oidc: OIDC Authentication for Unix/Linux Systems
+
+A PAM module and client agent enabling OpenID Connect (OIDC) authentication
+for SSH and sudo on Unix/Linux systems, with DPoP (Demonstrating Proof of
+Possession) support for enhanced token security.
+
+Project Homepage: https://github.com/prodnull/unix-oidc
+
+--------------------------------------------------------------------------------
+
+This project implements the following IETF standards:
+- RFC 6749: OAuth 2.0 Authorization Framework
+- RFC 8628: OAuth 2.0 Device Authorization Grant
+- RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP)
+- RFC 7638: JSON Web Key (JWK) Thumbprint
+- RFC 7519: JSON Web Token (JWT)
+
+--------------------------------------------------------------------------------
+
+ATTRIBUTION
+
+This project was created by the unix-oidc contributors with assistance from
+Claude (Anthropic's AI assistant).
+
+--------------------------------------------------------------------------------
+
+THIRD-PARTY DEPENDENCIES
+
+This project includes software developed by third parties. See the
+individual Cargo.toml files for a complete list of dependencies and
+their respective licenses.
+
+Key dependencies include:
+- jsonwebtoken (MIT) - JWT validation
+- p256 (Apache-2.0 OR MIT) - Elliptic curve cryptography
+- tokio (MIT) - Async runtime
+- serde (Apache-2.0 OR MIT) - Serialization
+- reqwest (Apache-2.0 OR MIT) - HTTP client

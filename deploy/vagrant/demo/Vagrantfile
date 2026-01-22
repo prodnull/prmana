@@ -1,0 +1,390 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# unix-oidc Demo Vagrant Image
+# Complete demo environment with Keycloak IdP and unix-oidc
+# Works offline after first boot (all images cached locally)
+#
+
+VAGRANTFILE_API_VERSION = "2"
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  # Ubuntu 22.04 LTS base box
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.hostname = "unix-oidc-demo"
+
+  # Network configuration
+  # SSH port forwarding (guest 22 -> host 2222)
+  config.vm.network "forwarded_port", guest: 22, host: 2222, id: "ssh", auto_correct: true
+  # Keycloak port forwarding (guest 8080 -> host 8080)
+  config.vm.network "forwarded_port", guest: 8080, host: 8080, auto_correct: true
+
+  # VirtualBox provider settings
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "unix-oidc-demo"
+    vb.memory = "4096"  # Keycloak needs more memory
+    vb.cpus = 2
+
+    # Disable GUI
+    vb.gui = false
+
+    # Performance optimizations
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    vb.customize ["modifyvm", :id, "--ioapic", "on"]
+  end
+
+  # Provisioning script
+  config.vm.provision "shell", inline: <<-SHELL
+    set -euo pipefail
+
+    echo "=========================================="
+    echo "unix-oidc Demo Image Provisioning"
+    echo "=========================================="
+
+    # Update system
+    echo "[1/8] Updating system packages..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get upgrade -y -qq
+
+    # Install dependencies
+    echo "[2/8] Installing dependencies..."
+    apt-get install -y -qq \
+      curl \
+      jq \
+      pamtester \
+      libpam0g \
+      ca-certificates \
+      apt-transport-https \
+      gnupg \
+      lsb-release
+
+    # Install Docker
+    echo "[3/8] Installing Docker..."
+    if ! command -v docker &> /dev/null; then
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+      apt-get update -qq
+      apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+      usermod -aG docker vagrant
+    fi
+    systemctl enable docker
+    systemctl start docker
+
+    # Create unix-oidc directories
+    echo "[4/8] Creating unix-oidc directories..."
+    mkdir -p /etc/unix-oidc
+    chmod 755 /etc/unix-oidc
+
+    # Create Keycloak realm configuration
+    echo "[5/8] Creating Keycloak configuration..."
+    mkdir -p /opt/keycloak/data
+    cat > /opt/keycloak/realm-export.json << 'REALM_EOF'
+{
+  "realm": "unix-oidc-demo",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "defaultSignatureAlgorithm": "RS256",
+  "clients": [
+    {
+      "clientId": "unix-oidc",
+      "name": "Unix OIDC Client",
+      "description": "OpenID Connect client for unix-oidc PAM authentication",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:*", "urn:ietf:wg:oauth:2.0:oob"],
+      "webOrigins": ["*"],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "oauth2.device.code.lifespan": "300",
+        "oauth2.device.polling.interval": "5"
+      },
+      "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"],
+      "optionalClientScopes": ["address", "phone", "offline_access"],
+      "protocolMappers": [
+        {
+          "name": "preferred_username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "username",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "unix-oidc",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "testuser",
+      "email": "testuser@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Test",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["default-roles-unix-oidc-demo"]
+    },
+    {
+      "username": "adminuser",
+      "email": "adminuser@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Admin",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "adminpass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["default-roles-unix-oidc-demo"]
+    },
+    {
+      "username": "demouser",
+      "email": "demouser@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demopass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["default-roles-unix-oidc-demo"]
+    }
+  ]
+}
+REALM_EOF
+
+    # Create docker-compose file for Keycloak
+    cat > /opt/keycloak/docker-compose.yml << 'COMPOSE_EOF'
+version: '3.8'
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: keycloak
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: true
+      KC_METRICS_ENABLED: true
+    volumes:
+      - ./realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - keycloak_data:/opt/keycloak/data
+    ports:
+      - "8080:8080"
+    command:
+      - start-dev
+      - --import-realm
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\\r\\nhost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3;grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  keycloak_data:
+COMPOSE_EOF
+
+    # Start Keycloak
+    echo "[6/8] Starting Keycloak (this may take a few minutes)..."
+    cd /opt/keycloak
+    docker compose up -d
+
+    # Wait for Keycloak to be ready
+    echo "[6/8] Waiting for Keycloak to be ready..."
+    max_attempts=60
+    attempt=0
+    while [ $attempt -lt $max_attempts ]; do
+      if curl -sf http://localhost:8080/health/ready &>/dev/null; then
+        echo "Keycloak is ready!"
+        break
+      fi
+      attempt=$((attempt + 1))
+      printf "\\rWaiting for Keycloak... (%d/%d)" "$attempt" "$max_attempts"
+      sleep 3
+    done
+    echo ""
+
+    if [ $attempt -eq $max_attempts ]; then
+      echo "Warning: Keycloak may not be fully ready. Check with 'docker logs keycloak'"
+    fi
+
+    # Create unix-oidc configuration pointing to local Keycloak
+    echo "[7/8] Configuring unix-oidc for local Keycloak..."
+    cat > /etc/unix-oidc/config.env << 'EOF'
+# unix-oidc Configuration for Demo Environment
+# =============================================
+# This is pre-configured to use the local Keycloak instance.
+
+# Local Keycloak issuer URL
+OIDC_ISSUER="http://localhost:8080/realms/unix-oidc-demo"
+
+# Client ID (matches Keycloak configuration)
+OIDC_CLIENT_ID="unix-oidc"
+
+# Optional: Enable DPoP token binding (recommended for production)
+# OIDC_DPOP_REQUIRED=true
+
+# Optional: Required ACR level for authentication
+# OIDC_REQUIRED_ACR="urn:keycloak:acr:mfa"
+
+# Optional: Maximum auth age in seconds
+# OIDC_MAX_AUTH_AGE=3600
+EOF
+    chmod 600 /etc/unix-oidc/config.env
+
+    # Create PAM configuration templates
+    cat > /etc/unix-oidc/pam.d-sshd.recommended << 'EOF'
+# /etc/pam.d/sshd - Demo configuration for unix-oidc
+auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
+auth       sufficient   pam_unix_oidc.so
+auth       required     pam_unix.so
+@include common-account
+@include common-session
+@include common-password
+EOF
+
+    cat > /etc/unix-oidc/pam.d-sudo.recommended << 'EOF'
+# /etc/pam.d/sudo - Demo configuration for unix-oidc
+auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
+auth       sufficient   pam_unix_oidc.so
+auth       required     pam_unix.so
+@include common-account
+@include common-session
+EOF
+
+    # Create test users matching Keycloak users
+    echo "[8/8] Creating local test users..."
+    for user in testuser adminuser demouser; do
+      if ! id $user &>/dev/null; then
+        useradd -m -s /bin/bash $user
+        echo "$user:${user}pass" | chpasswd
+        usermod -aG sudo $user
+      fi
+    done
+
+    # Create helper script to get tokens
+    cat > /usr/local/bin/get-oidc-token << 'SCRIPT_EOF'
+#!/bin/bash
+# Helper script to get OIDC access token from local Keycloak
+set -euo pipefail
+
+USERNAME="${1:-testuser}"
+PASSWORD="${2:-testpass}"
+
+TOKEN_RESPONSE=$(curl -s -X POST \
+  http://localhost:8080/realms/unix-oidc-demo/protocol/openid-connect/token \
+  -d "grant_type=password" \
+  -d "client_id=unix-oidc" \
+  -d "username=$USERNAME" \
+  -d "password=$PASSWORD")
+
+ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token')
+
+if [ "$ACCESS_TOKEN" = "null" ] || [ -z "$ACCESS_TOKEN" ]; then
+  echo "Error getting token:" >&2
+  echo "$TOKEN_RESPONSE" | jq . >&2
+  exit 1
+fi
+
+echo "$ACCESS_TOKEN"
+SCRIPT_EOF
+    chmod +x /usr/local/bin/get-oidc-token
+
+    # Create helper script to decode tokens
+    cat > /usr/local/bin/decode-jwt << 'SCRIPT_EOF'
+#!/bin/bash
+# Helper script to decode JWT tokens
+set -euo pipefail
+
+TOKEN="${1:-}"
+if [ -z "$TOKEN" ]; then
+  echo "Usage: decode-jwt <token>" >&2
+  exit 1
+fi
+
+echo "=== Header ==="
+echo "$TOKEN" | cut -d. -f1 | base64 -d 2>/dev/null | jq .
+
+echo ""
+echo "=== Payload ==="
+echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+SCRIPT_EOF
+    chmod +x /usr/local/bin/decode-jwt
+
+    echo ""
+    echo "=========================================="
+    echo "unix-oidc Demo Environment Ready!"
+    echo "=========================================="
+    echo ""
+    echo "Services Running:"
+    echo "  - Keycloak:  http://localhost:8080"
+    echo "  - SSH:       localhost:2222 (from host)"
+    echo ""
+    echo "Keycloak Admin Console:"
+    echo "  URL:      http://localhost:8080/admin"
+    echo "  Username: admin"
+    echo "  Password: admin"
+    echo ""
+    echo "Test Users:"
+    echo "  +------------+------------+"
+    echo "  | Username   | Password   |"
+    echo "  +------------+------------+"
+    echo "  | testuser   | testpass   |"
+    echo "  | adminuser  | adminpass  |"
+    echo "  | demouser   | demopass   |"
+    echo "  +------------+------------+"
+    echo ""
+    echo "Quick Test:"
+    echo "  # Get a token:"
+    echo "  get-oidc-token testuser testpass"
+    echo ""
+    echo "  # Decode a token:"
+    echo "  TOKEN=\\$(get-oidc-token testuser testpass)"
+    echo "  decode-jwt \\$TOKEN"
+    echo ""
+  SHELL
+end

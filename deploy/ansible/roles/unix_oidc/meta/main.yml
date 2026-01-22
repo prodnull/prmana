@@ -1,0 +1,38 @@
+---
+# meta/main.yml - Ansible Galaxy metadata for unix_oidc role
+
+galaxy_info:
+  author: unix-oidc
+  description: Deploy and configure unix-oidc for OIDC-based Unix authentication
+  company: unix-oidc
+
+  license: Apache-2.0 OR MIT
+
+  min_ansible_version: "2.10"
+
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal    # 20.04 LTS
+        - jammy    # 22.04 LTS
+        - noble    # 24.04 LTS
+    - name: Debian
+      versions:
+        - bullseye  # 11
+        - bookworm  # 12
+    - name: EL  # Enterprise Linux (RHEL, Rocky, AlmaLinux)
+      versions:
+        - "8"
+        - "9"
+
+  galaxy_tags:
+    - authentication
+    - oidc
+    - openid
+    - pam
+    - security
+    - ssh
+    - identity
+    - sso
+
+dependencies: []

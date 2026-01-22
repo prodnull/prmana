@@ -1,0 +1,13 @@
+{
+  "name": "unix-oidc-demo",
+  "version": "1.0.0",
+  "description": "Training video capture for unix-oidc authentication flows",
+  "scripts": {
+    "test": "playwright test",
+    "record": "playwright test --headed --project=chromium",
+    "show-report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

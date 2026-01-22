@@ -1,0 +1,15 @@
+---
+# handlers/main.yml - Handlers for unix_oidc role
+
+- name: Restart sshd
+  ansible.builtin.service:
+    name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
+    state: restarted
+  become: true
+
+- name: Restart unix-oidc
+  ansible.builtin.service:
+    name: unix-oidc
+    state: restarted
+  become: true
+  failed_when: false

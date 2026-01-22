@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>unix-oidc E2E Demo Output</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-yellow: #d29922;
+            --border-color: #30363d;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+        }
+
+        h2 {
+            font-size: 1.5em;
+            font-weight: 600;
+            margin-top: 48px;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--accent-blue);
+        }
+
+        .intro {
+            color: var(--text-secondary);
+            font-size: 1.1em;
+            margin-bottom: 32px;
+        }
+
+        .screen {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 32px;
+            overflow: hidden;
+        }
+
+        .screen-header {
+            background-color: var(--bg-tertiary);
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .screen-number {
+            background-color: var(--accent-blue);
+            color: var(--bg-primary);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85em;
+        }
+
+        pre {
+            background-color: var(--bg-primary);
+            padding: 16px;
+            margin: 0;
+            overflow-x: auto;
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        code {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background-color: var(--bg-tertiary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .annotation {
+            background: linear-gradient(135deg, #1a2332 0%, #162029 100%);
+            border-left: 4px solid var(--accent-green);
+            padding: 16px 20px;
+            margin: 0;
+        }
+
+        .annotation-title {
+            color: var(--accent-green);
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .annotation ul {
+            margin: 8px 0 0 0;
+            padding-left: 20px;
+        }
+
+        .annotation li {
+            margin: 4px 0;
+            color: var(--text-secondary);
+        }
+
+        .annotation ol {
+            margin: 8px 0 0 0;
+            padding-left: 20px;
+        }
+
+        .json-key { color: #ff7b72; }
+        .json-string { color: #a5d6ff; }
+        .json-number { color: #79c0ff; }
+        .json-null { color: #8b949e; }
+
+        .success { color: var(--accent-green); }
+        .highlight { color: var(--accent-yellow); }
+
+        .architecture {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 24px;
+            margin: 32px 0;
+        }
+
+        .architecture pre {
+            background: none;
+            padding: 0;
+            font-size: 0.85em;
+        }
+
+        .summary-box {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 24px;
+            margin: 32px 0;
+        }
+
+        .feature-tree {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 0.9em;
+            line-height: 1.8;
+        }
+
+        .feature-category {
+            color: var(--accent-blue);
+            font-weight: 600;
+            margin-top: 16px;
+        }
+
+        .feature-item {
+            color: var(--text-secondary);
+            margin-left: 24px;
+        }
+
+        .checkmark {
+            color: var(--accent-green);
+            font-size: 1.2em;
+        }
+
+        hr {
+            border: none;
+            border-top: 1px solid var(--border-color);
+            margin: 48px 0;
+        }
+
+        .timestamp {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            text-align: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-color);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>unix-oidc E2E Demo Output</h1>
+        <p class="intro">This document captures the complete demo output showing OIDC-based Unix authentication.</p>
+
+        <!-- Screen 1 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">1</span>
+                Environment Check
+            </div>
+            <pre><code>═══════════════════════════════════════════════════════════════════
+                    unix-oidc E2E Demo
+═══════════════════════════════════════════════════════════════════
+
+Checking test environment services...
+
+NAME                    STATUS                    PORTS
+unix-oidc-keycloak-1    Up 51 minutes (healthy)   0.0.0.0:8080->8080/tcp
+unix-oidc-openldap-1    Up 51 minutes (healthy)   0.0.0.0:389->389/tcp, 0.0.0.0:636->636/tcp
+unix-oidc-test-host-1   Up 21 minutes (healthy)   0.0.0.0:2222->22/tcp</code></pre>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                Three services running:
+                <ul>
+                    <li><strong>Keycloak</strong> (OIDC Identity Provider) on port 8080</li>
+                    <li><strong>OpenLDAP</strong> (User Directory) on port 389</li>
+                    <li><strong>Test Host</strong> (SSH + PAM + unix-oidc) on port 2222</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Screen 2 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">2</span>
+                OAuth 2.0 Device Authorization Flow
+            </div>
+            <pre><code>Device Authorization Request sent to Keycloak...
+
+Response:
+{
+  <span class="json-key">"device_code"</span>: <span class="json-string">"iLSQtjI_AtZ5pGXSksqI..."</span>,
+  <span class="json-key">"user_code"</span>: <span class="json-string">"JMAH-GVPX"</span>,
+  <span class="json-key">"verification_uri"</span>: <span class="json-string">"http://keycloak:8080/realms/unix-oidc-test/device"</span>,
+  <span class="json-key">"verification_uri_complete"</span>: <span class="json-string">"http://keycloak:8080/realms/unix-oidc-test/device?user_code=JMAH-GVPX"</span>,
+  <span class="json-key">"expires_in"</span>: <span class="json-number">300</span>,
+  <span class="json-key">"interval"</span>: <span class="json-number">5</span>
+}</code></pre>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                Device Flow is ideal for CLI/headless auth:
+                <ul>
+                    <li>Client requests authorization from IdP</li>
+                    <li>User gets a short code to enter in browser</li>
+                    <li>Client polls until user completes browser auth</li>
+                    <li>No secrets exposed on the command line</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Screen 3 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">3</span>
+                Token Acquisition
+            </div>
+            <pre><code>For demo purposes, using password grant instead of browser flow...
+
+Token Response:
+{
+  <span class="json-key">"token_type"</span>: <span class="json-string">"Bearer"</span>,
+  <span class="json-key">"expires_in"</span>: <span class="json-number">300</span>,
+  <span class="json-key">"access_token_length"</span>: <span class="json-number">1443</span>,
+  <span class="json-key">"scope"</span>: <span class="json-string">"openid profile email"</span>
+}</code></pre>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                Token acquired from Keycloak:
+                <ul>
+                    <li>Bearer token valid for 300 seconds (5 minutes)</li>
+                    <li>~1400 bytes - a signed JWT with user claims</li>
+                    <li>In production: device flow or refresh tokens used</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Screen 4 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">4</span>
+                JWT Token Claims Analysis
+            </div>
+            <pre><code>Decoded Token Claims:
+{
+  <span class="json-key">"issuer"</span>: <span class="json-string">"http://keycloak:8080/realms/unix-oidc-test"</span>,
+  <span class="json-key">"audience"</span>: [
+    <span class="json-string">"unix-oidc"</span>,
+    <span class="json-string">"account"</span>
+  ],
+  <span class="json-key">"subject"</span>: <span class="json-string">"87ebdbc8-2a24-4d35-91a3-5598dd068dd2"</span>,
+  <span class="json-key">"username"</span>: <span class="json-string">"testuser"</span>,
+  <span class="json-key">"name"</span>: <span class="json-string">"Test User"</span>,
+  <span class="json-key">"acr"</span>: <span class="json-string">"1"</span>,
+  <span class="json-key">"jti"</span>: <span class="json-string">"4d31bf7e-3493-439e-871a-cd8f8529122e"</span>,
+  <span class="json-key">"issued_at"</span>: <span class="json-string">"2026-01-20T00:38:29Z"</span>,
+  <span class="json-key">"expires_at"</span>: <span class="json-string">"2026-01-20T00:43:29Z"</span>
+}</code></pre>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                Key claims used by unix-oidc PAM module:
+                <ul>
+                    <li><code>iss</code> (issuer) - must match OIDC_ISSUER config</li>
+                    <li><code>aud</code> (audience) - must include OIDC_CLIENT_ID</li>
+                    <li><code>preferred_username</code> - mapped to Unix user</li>
+                    <li><code>jti</code> - unique token ID for audit/replay detection</li>
+                    <li><code>acr</code> - authentication context class (for step-up auth)</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Screen 5 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">5</span>
+                SSH PAM Authentication
+            </div>
+            <pre><code>Testing PAM authentication for SSH service...
+Command: pamtester -v sshd testuser authenticate
+
+pamtester: invoking pam_start(sshd, testuser, ...)
+pamtester: performing operation - authenticate
+<span class="highlight">unix-oidc-audit:</span> {"event":"SSH_LOGIN_SUCCESS","timestamp":"2026-01-20T00:39:06.831695376+00:00",
+  "session_id":"unix-oidc-188c497b20e8beed-3b1c76ca2da8d1c3","user":"testuser","uid":1000,
+  "source_ip":null,"host":"349b3cce0024","oidc_jti":"4d31bf7e-3493-439e-871a-cd8f8529122e",
+  "oidc_acr":"1","oidc_auth_time":null}
+<span class="success">pamtester: successfully authenticated</span></code></pre>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                PAM module validated the OIDC token:
+                <ol>
+                    <li>Retrieved token from OIDC_TOKEN environment variable</li>
+                    <li>Fetched JWKS from Keycloak to verify signature</li>
+                    <li>Validated issuer, audience, and expiration</li>
+                    <li>Mapped preferred_username to Unix user 'testuser'</li>
+                    <li>Verified user exists via SSSD (uid=1000)</li>
+                    <li>Emitted structured audit event to syslog</li>
+                </ol>
+            </div>
+        </div>
+
+        <!-- Screen 6 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">6</span>
+                Sudo PAM Authentication
+            </div>
+            <pre><code>Testing PAM authentication for sudo service...
+Command: pamtester -v sudo testuser authenticate
+
+pamtester: invoking pam_start(sudo, testuser, ...)
+pamtester: performing operation - authenticate
+<span class="highlight">unix-oidc-audit:</span> {"event":"SSH_LOGIN_SUCCESS","timestamp":"2026-01-20T00:39:21.509211799+00:00",
+  "session_id":"unix-oidc-188c497e8bc1e06e-7cbb2c5a449527ac","user":"testuser","uid":1000,
+  "source_ip":null,"host":"349b3cce0024","oidc_jti":"4d31bf7e-3493-439e-871a-cd8f8529122e",
+  "oidc_acr":"1","oidc_auth_time":null}
+<span class="success">pamtester: successfully authenticated</span></code></pre>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                Same OIDC token works for sudo:
+                <ul>
+                    <li>PAM configuration allows unix-oidc for both sshd and sudo</li>
+                    <li>Step-up authentication can require higher ACR for sudo</li>
+                    <li>Policy file can restrict specific commands</li>
+                    <li>Audit trail shows sudo usage with OIDC authentication</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Screen 7 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">7</span>
+                Audit Event Structure
+            </div>
+            <pre><code>{
+  <span class="json-key">"event"</span>: <span class="json-string">"SSH_LOGIN_SUCCESS"</span>,
+  <span class="json-key">"timestamp"</span>: <span class="json-string">"2026-01-20T00:39:06.831695376+00:00"</span>,
+  <span class="json-key">"session_id"</span>: <span class="json-string">"unix-oidc-188c497b20e8beed-3b1c76ca2da8d1c3"</span>,
+  <span class="json-key">"user"</span>: <span class="json-string">"testuser"</span>,
+  <span class="json-key">"uid"</span>: <span class="json-number">1000</span>,
+  <span class="json-key">"source_ip"</span>: <span class="json-null">null</span>,
+  <span class="json-key">"host"</span>: <span class="json-string">"349b3cce0024"</span>,
+  <span class="json-key">"oidc_jti"</span>: <span class="json-string">"4d31bf7e-3493-439e-871a-cd8f8529122e"</span>,
+  <span class="json-key">"oidc_acr"</span>: <span class="json-string">"1"</span>,
+  <span class="json-key">"oidc_auth_time"</span>: <span class="json-null">null</span>
+}</code></pre>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                Structured audit events for compliance:
+                <ul>
+                    <li>JSON format for easy parsing by SIEM systems</li>
+                    <li><code>session_id</code> links related events across the session</li>
+                    <li><code>oidc_jti</code> enables token replay detection</li>
+                    <li><code>oidc_acr</code> shows authentication strength level</li>
+                    <li>Emitted to syslog for integration with Splunk, Elastic, Datadog, CloudWatch, Stackdriver</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Screen 8 -->
+        <div class="screen">
+            <div class="screen-header">
+                <span class="screen-number">8</span>
+                Demo Summary
+            </div>
+            <div class="summary-box" style="margin: 0; border: none; border-radius: 0;">
+                <div style="font-size: 1.1em; margin-bottom: 24px;">
+                    <span class="checkmark">✅</span> <strong>DEMONSTRATED FEATURES</strong>
+                </div>
+                <div class="feature-tree">
+                    <div class="feature-category">Authentication Flow</div>
+                    <div class="feature-item">├── OAuth 2.0 Device Authorization Flow initiation</div>
+                    <div class="feature-item">├── JWT token acquisition from Keycloak</div>
+                    <div class="feature-item">├── Token claims: iss, aud, sub, preferred_username, acr, jti</div>
+                    <div class="feature-item">└── Token validation via JWKS endpoint</div>
+
+                    <div class="feature-category">PAM Integration</div>
+                    <div class="feature-item">├── SSH authentication via pam_unix_oidc.so</div>
+                    <div class="feature-item">├── Sudo authentication via pam_unix_oidc.so</div>
+                    <div class="feature-item">├── User mapping: OIDC username → Unix user via SSSD</div>
+                    <div class="feature-item">└── Fallback to pam_unix.so for break-glass access</div>
+
+                    <div class="feature-category">Security & Compliance</div>
+                    <div class="feature-item">├── No passwords stored or transmitted</div>
+                    <div class="feature-item">├── Short-lived tokens (5 minute expiry)</div>
+                    <div class="feature-item">├── Token JTI tracking for replay detection</div>
+                    <div class="feature-item">├── ACR-based step-up authentication support</div>
+                    <div class="feature-item">└── Structured JSON audit logging</div>
+                </div>
+            </div>
+            <div class="annotation">
+                <div class="annotation-title">Annotation</div>
+                unix-oidc enables passwordless Unix authentication using enterprise identity providers
+                (Okta, Azure AD, Keycloak) with full audit trails for compliance requirements.
+            </div>
+        </div>
+
+        <hr>
+
+        <h2>Architecture</h2>
+        <div class="architecture">
+            <pre>┌─────────────────────────────────────────────────────────────────────────┐
+│                          Demo Environment                                │
+├─────────────────┬─────────────────┬─────────────────────────────────────┤
+│    Keycloak     │    OpenLDAP     │           Test Host                 │
+│   (OIDC IdP)    │   (Directory)   │    (SSH + PAM + unix-oidc)          │
+│     :8080       │      :389       │           :2222                     │
+└─────────────────┴─────────────────┴─────────────────────────────────────┘
+
+Authentication Flow:
+1. User initiates device flow  →  Keycloak returns verification URL
+2. User authenticates in browser  →  Keycloak issues JWT token
+3. Token used for SSH login  →  PAM validates via JWKS
+4. Sudo command  →  Same token or step-up if ACR insufficient</pre>
+        </div>
+
+        <div class="timestamp">
+            Demo captured: 2026-01-20
+        </div>
+    </div>
+</body>
+</html>

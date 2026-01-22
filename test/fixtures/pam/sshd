@@ -1,0 +1,23 @@
+# test/fixtures/pam/sshd
+# PAM configuration for sshd with unix-oidc
+
+# Load OIDC environment variables from /etc/environment
+auth    required        pam_env.so readenv=1
+
+# unix-oidc authentication (primary)
+auth    sufficient      pam_unix_oidc.so
+
+# Fallback to standard Unix auth (for break-glass)
+auth    required        pam_unix.so try_first_pass
+
+# Account management
+account required        pam_unix.so
+account sufficient      pam_localuser.so
+account sufficient      pam_succeed_if.so uid < 1000 quiet
+account [default=bad success=ok user_unknown=ignore] pam_sss.so
+account required        pam_permit.so
+
+# Session
+session required        pam_limits.so
+session required        pam_unix.so
+session optional        pam_sss.so

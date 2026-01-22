@@ -1,0 +1,776 @@
+# Documentation Validation CI Workflow
+# Validates markdown formatting, links, code blocks, and spelling
+name: Validate Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'deploy/**/*.md'
+      - 'README.md'
+      - '.github/workflows/validate-docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'deploy/**/*.md'
+      - 'README.md'
+      - '.github/workflows/validate-docs.yml'
+  schedule:
+    # Weekly on Sundays at 2 AM UTC to catch stale links
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Job 1: Markdown Linting
+  markdown-lint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install markdownlint-cli2
+        run: npm install -g markdownlint-cli2
+
+      - name: Create markdownlint config
+        run: |
+          cat > .markdownlint.jsonc << 'EOF'
+          {
+            // Allow flexible line length for documentation readability
+            "MD013": false,
+            // Allow $ in code blocks without output (common in examples)
+            "MD014": false,
+            // Allow headings without blank lines around them
+            "MD022": false,
+            // Allow first line to be HTML (badges) instead of heading
+            "MD041": false,
+            // Allow tables with missing cells (intentional formatting)
+            "MD056": false,
+            // Allow multiple headings with same content (common in changelogs)
+            "MD024": {
+              "siblings_only": true
+            },
+            // Allow any trailing punctuation in headings
+            "MD026": false,
+            // Allow flexible ordered list numbering (5. 6. 7. continuation)
+            "MD029": false,
+            // Allow code blocks without surrounding blank lines
+            "MD031": false,
+            // Allow lists without surrounding blank lines
+            "MD032": false,
+            // Allow inline HTML for badges and complex formatting
+            "MD033": false,
+            // Allow bare URLs in certain contexts
+            "MD034": false,
+            // Allow emphasis as heading (for callouts)
+            "MD036": false,
+            // Allow code blocks without language specified
+            "MD040": false,
+            // Require fenced code blocks (not indented)
+            "MD046": {
+              "style": "fenced"
+            },
+            // Allow flexible table column style (compact tables are fine)
+            "MD060": false
+          }
+          EOF
+
+      - name: Run markdownlint
+        run: |
+          markdownlint-cli2 "docs/**/*.md" "deploy/**/*.md" "README.md" || {
+            echo "::warning::Markdown linting found issues. See above for details."
+            exit 1
+          }
+
+  # Job 2: Link Checking
+  link-check:
+    name: Link Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install markdown-link-check
+        run: npm install -g markdown-link-check
+
+      - name: Create link check config
+        run: |
+          cat > .markdown-link-check.json << 'EOF'
+          {
+            "ignorePatterns": [
+              {
+                "pattern": "^https?://localhost"
+              },
+              {
+                "pattern": "^https?://127\\.0\\.0\\.1"
+              },
+              {
+                "pattern": "^https://your-"
+              },
+              {
+                "pattern": "^https://example\\.com"
+              },
+              {
+                "pattern": "^https://idp\\.example"
+              },
+              {
+                "pattern": "^https://.*\\.internal"
+              },
+              {
+                "pattern": "^https://goteleport\\.com"
+              },
+              {
+                "pattern": "^https://claude\\.ai"
+              },
+              {
+                "pattern": "^https://manage\\.auth0\\.com"
+              },
+              {
+                "pattern": "^mailto:"
+              },
+              {
+                "pattern": "screenshots/"
+              },
+              {
+                "pattern": "docs/plans/"
+              },
+              {
+                "pattern": "/discussions$"
+              }
+            ],
+            "replacementPatterns": [
+              {
+                "pattern": "^/",
+                "replacement": "{{BASEURL}}/"
+              }
+            ],
+            "httpHeaders": [
+              {
+                "urls": ["https://github.com"],
+                "headers": {
+                  "Accept-Encoding": "zstd, br, gzip, deflate"
+                }
+              }
+            ],
+            "timeout": "20s",
+            "retryOn429": true,
+            "retryCount": 3,
+            "fallbackRetryDelay": "30s",
+            "aliveStatusCodes": [200, 206, 301, 302, 307, 308]
+          }
+          EOF
+
+      - name: Find markdown files
+        id: find-files
+        run: |
+          files=$(find docs deploy -name "*.md" 2>/dev/null || true)
+          if [ -f "README.md" ]; then
+            files="README.md $files"
+          fi
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$files" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Check links in markdown files
+        env:
+          MD_FILES: ${{ steps.find-files.outputs.files }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          exit_code=0
+          for file in $MD_FILES; do
+            if [ -f "$file" ]; then
+              echo "Checking links in: $file"
+              markdown-link-check --config .markdown-link-check.json "$file" || {
+                echo "::warning file=$file::Link check found broken links"
+                exit_code=1
+              }
+            fi
+          done
+          # For scheduled runs, don't fail the workflow on broken links
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            exit 0
+          fi
+          exit $exit_code
+
+      - name: Report stale links (scheduled runs)
+        if: github.event_name == 'schedule' && failure()
+        run: |
+          echo "::warning::Weekly link check found stale links. Please review and update documentation."
+
+  # Job 3: Shellcheck for Code Blocks in Docs
+  shellcheck-docs:
+    name: Shellcheck Code Blocks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Extract and check bash code blocks
+        run: |
+          #!/bin/bash
+          set -euo pipefail
+
+          temp_dir=$(mktemp -d)
+          trap 'rm -rf "$temp_dir"' EXIT
+
+          file_count=0
+          block_count=0
+
+          # Find all markdown files
+          while IFS= read -r -d '' md_file; do
+            # Extract bash/shell code blocks using awk
+            awk -v outdir="$temp_dir" '
+              /^```(bash|sh|shell)/ {
+                in_block=1;
+                block_num++;
+                next
+              }
+              /^```$/ && in_block {
+                in_block=0;
+                next
+              }
+              in_block {
+                print > (outdir "/block_" block_num ".sh")
+              }
+            ' "$md_file"
+
+            # Check each extracted block
+            for block_file in "$temp_dir"/block_*.sh; do
+              [ -f "$block_file" ] || continue
+
+              block_count=$((block_count + 1))
+
+              # Skip blocks that are clearly examples/placeholders
+              if grep -qE '^\s*(your-|<.*>|\.\.\.|PLACEHOLDER|TODO)' "$block_file" 2>/dev/null; then
+                echo "Skipping example block in $md_file"
+                rm -f "$block_file"
+                continue
+              fi
+
+              # Add shebang if missing for shellcheck
+              if ! head -1 "$block_file" | grep -q '^#!'; then
+                sed -i '1i#!/bin/bash' "$block_file"
+              fi
+
+              # Run shellcheck with relaxed settings for documentation
+              # SC1091: Don't follow sourced files (they may not exist)
+              # SC2086: Allow word splitting (common in examples)
+              # SC2034: Allow unused variables (documentation shows declarations)
+              # SC2154: Allow unset variables (examples may reference env vars)
+              # SC2012: Allow ls parsing (sometimes needed in examples)
+              # SC2164: Allow cd without || exit (common in examples)
+              # SC1090: Allow non-constant source (examples reference env vars)
+              # SC2288: Allow comma at end of command (YAML examples)
+              # SC1036,SC1088: Allow parentheses (Prometheus query syntax)
+              # SC1072,SC1073: Allow redirect syntax variations
+              if ! shellcheck \
+                --severity=error \
+                --exclude=SC1091,SC2086,SC2034,SC2154,SC2012,SC2164,SC1090,SC2288,SC1036,SC1088,SC1072,SC1073 \
+                --shell=bash \
+                "$block_file" 2>&1; then
+                echo "::notice file=$md_file::Shellcheck found issues in bash code block (advisory)"
+                # Don't fail CI for doc code blocks - they're examples, not production scripts
+              fi
+
+              rm -f "$block_file"
+            done
+
+            file_count=$((file_count + 1))
+          done < <(find docs deploy -name "*.md" -print0 2>/dev/null; [ -f "README.md" ] && printf '%s\0' "README.md")
+
+          echo "Checked $block_count bash code blocks in $file_count markdown files"
+          # Documentation shellcheck is advisory - don't fail CI
+
+  # Job 4: Spell Checking
+  spelling:
+    name: Spell Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install cspell
+        run: npm install -g cspell
+
+      - name: Create cspell config
+        run: |
+          cat > cspell.json << 'EOF'
+          {
+            "version": "0.2",
+            "language": "en",
+            "words": [
+              "oidc",
+              "openid",
+              "oauth",
+              "dpop",
+              "jwks",
+              "jwtbearer",
+              "pkce",
+              "pam",
+              "nss",
+              "sssd",
+              "posix",
+              "libc",
+              "glibc",
+              "nsswitch",
+              "passwd",
+              "getpwnam",
+              "getpwuid",
+              "getgrnam",
+              "getgrgid",
+              "authz",
+              "authn",
+              "keycloak",
+              "okta",
+              "entra",
+              "azuread",
+              "cognito",
+              "gitlab",
+              "ldap",
+              "kerberos",
+              "krb5",
+              "gssapi",
+              "spnego",
+              "saml",
+              "scim",
+              "rbac",
+              "abac",
+              "sudoers",
+              "umask",
+              "chroot",
+              "cgroups",
+              "namespaces",
+              "seccomp",
+              "apparmor",
+              "selinux",
+              "fips",
+              "nist",
+              "cve",
+              "cves",
+              "stig",
+              "disa",
+              "fedramp",
+              "hipaa",
+              "pci",
+              "sox",
+              "gdpr",
+              "terraform",
+              "ansible",
+              "puppet",
+              "hiera",
+              "facter",
+              "kubernetes",
+              "systemd",
+              "journald",
+              "syslog",
+              "rsyslog",
+              "logrotate",
+              "cron",
+              "crontab",
+              "xinetd",
+              "inetd",
+              "tmpfiles",
+              "polkit",
+              "dbus",
+              "networkd",
+              "timesyncd",
+              "chrony",
+              "ntp",
+              "resolv",
+              "nscd",
+              "unscd",
+              "dnsmasq",
+              "etcd",
+              "consul",
+              "vault",
+              "hashicorp",
+              "toml",
+              "yaml",
+              "json5",
+              "jmespath",
+              "jsonpath",
+              "globs",
+              "globbing",
+              "regexes",
+              "webhook",
+              "webhooks",
+              "idempotent",
+              "idempotency",
+              "mTLS",
+              "mtls",
+              "x509",
+              "pkcs",
+              "hmac",
+              "ecdsa",
+              "eddsa",
+              "ed25519",
+              "rsa2048",
+              "rsa4096",
+              "sha256",
+              "sha384",
+              "sha512",
+              "argon2",
+              "bcrypt",
+              "scrypt",
+              "pbkdf2",
+              "hkdf",
+              "chacha20",
+              "poly1305",
+              "aead",
+              "gcm",
+              "cbc",
+              "ctr",
+              "nonce",
+              "cnonce",
+              "jti",
+              "iat",
+              "nbf",
+              "exp",
+              "iss",
+              "sub",
+              "aud",
+              "azp",
+              "acr",
+              "amr",
+              "nonce",
+              "ath",
+              "jku",
+              "jwk",
+              "x5c",
+              "x5t",
+              "x5u",
+              "typ",
+              "cty",
+              "alg",
+              "enc",
+              "kid",
+              "kty",
+              "crv",
+              "epk",
+              "apu",
+              "apv",
+              "introspect",
+              "introspection",
+              "userinfo",
+              "wellknown",
+              "openid-configuration",
+              "tokeninfo",
+              "revoke",
+              "revocation",
+              "backchannel",
+              "frontchannel",
+              "logout",
+              "enduser",
+              "samesite",
+              "httponly",
+              "csrf",
+              "xsrf",
+              "xss",
+              "clickjacking",
+              "csp",
+              "hsts",
+              "cors",
+              "preflight",
+              "stdint",
+              "stdbool",
+              "sizeof",
+              "struct",
+              "typedef",
+              "ifdef",
+              "ifndef",
+              "endif",
+              "pragma",
+              "printf",
+              "fprintf",
+              "sprintf",
+              "snprintf",
+              "malloc",
+              "calloc",
+              "realloc",
+              "strdup",
+              "strndup",
+              "memcpy",
+              "memset",
+              "memmove",
+              "memcmp",
+              "strlen",
+              "strncpy",
+              "strcmp",
+              "strncmp",
+              "errno",
+              "perror",
+              "strerror",
+              "getenv",
+              "setenv",
+              "unsetenv",
+              "getuid",
+              "getgid",
+              "geteuid",
+              "getegid",
+              "setuid",
+              "setgid",
+              "seteuid",
+              "setegid",
+              "getpid",
+              "getppid",
+              "getpgrp",
+              "setsid",
+              "chdir",
+              "getcwd",
+              "fopen",
+              "fclose",
+              "fread",
+              "fwrite",
+              "fseek",
+              "ftell",
+              "rewind",
+              "fflush",
+              "feof",
+              "ferror",
+              "fileno",
+              "isatty",
+              "ioctl",
+              "fcntl",
+              "sockaddr",
+              "socklen",
+              "hostent",
+              "addrinfo",
+              "getaddrinfo",
+              "freeaddrinfo",
+              "gethostbyname",
+              "htonl",
+              "htons",
+              "ntohl",
+              "ntohs",
+              "inet_pton",
+              "inet_ntop",
+              "pthread",
+              "mutex",
+              "futex",
+              "semaphore",
+              "spinlock",
+              "sigaction",
+              "sigset",
+              "sigprocmask",
+              "sigsuspend",
+              "sigwait",
+              "mmap",
+              "munmap",
+              "mprotect",
+              "mlockall",
+              "shmget",
+              "shmat",
+              "shmdt",
+              "shmctl",
+              "dlopen",
+              "dlsym",
+              "dlclose",
+              "dlerror",
+              "backtrace",
+              "asan",
+              "ubsan",
+              "tsan",
+              "msan",
+              "lsan",
+              "valgrind",
+              "helgrind",
+              "cachegrind",
+              "callgrind",
+              "massif",
+              "gcov",
+              "lcov",
+              "llvm",
+              "clang",
+              "gcc",
+              "gdb",
+              "lldb",
+              "objdump",
+              "readelf",
+              "strace",
+              "ltrace",
+              "perf",
+              "dtrace",
+              "bpf",
+              "ebpf",
+              "sysctl",
+              "procfs",
+              "sysfs",
+              "devfs",
+              "tmpfs",
+              "ramfs",
+              "overlayfs",
+              "aufs",
+              "btrfs",
+              "xfs",
+              "ext4",
+              "zfs",
+              "lvm",
+              "luks",
+              "dm-crypt",
+              "fstab",
+              "mtab",
+              "blkid",
+              "lsblk",
+              "fdisk",
+              "parted",
+              "mkfs",
+              "fsck",
+              "tunables",
+              "tunable",
+              "configurable",
+              "configurables",
+              "performant",
+              "scalable",
+              "pluggable",
+              "embeddable",
+              "interoperable",
+              "retrofitted",
+              "backported",
+              "hardcoded",
+              "prepopulated",
+              "deduplicated",
+              "deduplication",
+              "TODO",
+              "FIXME",
+              "XXX",
+              "HACK",
+              "NOTE",
+              "WARN",
+              "DEBUG",
+              "INFO",
+              "ERROR",
+              "FATAL",
+              "TRACE"
+            ],
+            "flagWords": [
+              "hte",
+              "teh",
+              "fo",
+              "od"
+            ],
+            "ignorePaths": [
+              "node_modules/**",
+              "vendor/**",
+              "target/**",
+              "build/**",
+              "dist/**",
+              ".git/**",
+              "*.lock",
+              "*.sum",
+              "go.mod"
+            ],
+            "ignoreRegExpList": [
+              "\\b[A-Fa-f0-9]{32,}\\b",
+              "\\b[A-Za-z0-9+/]{40,}={0,2}\\b",
+              "https?://[^\\s]+",
+              "\\b[a-f0-9]{7,40}\\b",
+              "`[^`]+`",
+              "\\$\\{[^}]+\\}",
+              "\\{\\{[^}]+\\}\\}",
+              "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+            ],
+            "patterns": [
+              {
+                "name": "code-fence",
+                "pattern": "/^```[\\s\\S]*?^```/gm"
+              }
+            ],
+            "languageSettings": [
+              {
+                "languageId": "markdown",
+                "ignoreRegExpList": [
+                  "/^```[\\s\\S]*?^```/gm"
+                ]
+              }
+            ]
+          }
+          EOF
+
+      - name: Run spell check
+        run: |
+          cspell lint \
+            --no-progress \
+            --no-summary \
+            --show-suggestions \
+            "docs/**/*.md" \
+            "deploy/**/*.md" \
+            "README.md" 2>&1 | tee spell-results.txt || true
+
+          # Count errors (excluding suggestions)
+          error_count=$(grep -c "Unknown word" spell-results.txt 2>/dev/null || echo "0")
+
+          if [ "$error_count" -gt 0 ]; then
+            echo "::warning::Found $error_count potential spelling issues"
+            echo "Consider adding legitimate technical terms to cspell.json words list"
+            # Don't fail on spelling - just warn
+            # exit 1
+          fi
+
+  # Summary job that depends on all checks
+  docs-validation-summary:
+    name: Documentation Validation Summary
+    runs-on: ubuntu-latest
+    needs: [markdown-lint, link-check, shellcheck-docs, spelling]
+    if: always()
+    steps:
+      - name: Check job results
+        env:
+          MARKDOWN_LINT_RESULT: ${{ needs.markdown-lint.result }}
+          LINK_CHECK_RESULT: ${{ needs.link-check.result }}
+          SHELLCHECK_RESULT: ${{ needs.shellcheck-docs.result }}
+          SPELLING_RESULT: ${{ needs.spelling.result }}
+        run: |
+          echo "## Documentation Validation Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # Function to get status emoji
+          get_status() {
+            case "$1" in
+              success) echo ":white_check_mark: Passed" ;;
+              failure) echo ":x: Failed" ;;
+              skipped) echo ":fast_forward: Skipped" ;;
+              *) echo ":question: Unknown" ;;
+            esac
+          }
+
+          echo "| Check | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Markdown Lint | $(get_status "$MARKDOWN_LINT_RESULT") |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Link Check | $(get_status "$LINK_CHECK_RESULT") |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Shellcheck Docs | $(get_status "$SHELLCHECK_RESULT") |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Spelling | $(get_status "$SPELLING_RESULT") |" >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail if any required job failed (spelling and shellcheck are advisory)
+          if [[ "$MARKDOWN_LINT_RESULT" == "failure" ]] || \
+             [[ "$LINK_CHECK_RESULT" == "failure" ]]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo ":warning: **Some documentation checks failed. Please review and fix the issues above.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo ":tada: **All documentation checks passed!**" >> "$GITHUB_STEP_SUMMARY"

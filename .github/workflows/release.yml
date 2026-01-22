@@ -1,0 +1,214 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Permissions for creating releases and uploading artifacts
+permissions:
+  contents: write
+  id-token: write  # For signing
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Release (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 (PAM module + agent)
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: linux-x86_64
+            build_pam: true
+          # Linux aarch64 (PAM module + agent)
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: linux-aarch64
+            build_pam: true
+          # macOS x86_64 (agent only - PAM not supported)
+          # Using macos-14 (Apple Silicon) with cross-compilation since macos-13 is retired
+          - target: x86_64-apple-darwin
+            os: macos-14
+            name: macos-x86_64
+            build_pam: false
+          # macOS Apple Silicon (agent only - PAM not supported)
+          - target: aarch64-apple-darwin
+            os: macos-14
+            name: macos-aarch64
+            build_pam: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install system dependencies (Linux x86_64)
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config
+
+      - name: Install cross for aarch64 builds
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release (Linux x86_64 with PAM)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build release (Linux aarch64 with cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Build release (macOS agent only)
+        if: matrix.build_pam == false
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} -p unix-oidc-agent
+
+      - name: Generate SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json
+          # Use the main PAM module SBOM
+          cp pam-unix-oidc/pam-unix-oidc.cdx.json sbom.json
+
+      - name: Package artifacts
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          MATRIX_NAME: ${{ matrix.name }}
+          MATRIX_TARGET: ${{ matrix.target }}
+          BUILD_PAM: ${{ matrix.build_pam }}
+        run: |
+          mkdir -p dist
+          # Copy PAM module only for Linux builds
+          if [ "${BUILD_PAM}" = "true" ]; then
+            cp "target/${MATRIX_TARGET}/release/libpam_unix_oidc.so" dist/ 2>/dev/null || true
+          fi
+          # Copy agent binary (works on all platforms)
+          cp "target/${MATRIX_TARGET}/release/unix-oidc-agent" dist/ 2>/dev/null || true
+          cp README.md LICENSE LICENSE-APACHE LICENSE-MIT dist/
+          cp sbom.json dist/
+          cp -r examples dist/
+          cd dist && tar -czvf "../unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz" *
+
+      - name: Generate checksums
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          if command -v sha256sum &> /dev/null; then
+            sha256sum "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz" > "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz.sha256"
+          else
+            # macOS uses shasum
+            shasum -a 256 "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz" > "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz.sha256"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.name }}
+          path: |
+            unix-oidc-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+            unix-oidc-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
+
+  test:
+    name: Pre-release Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config
+
+      - name: Run tests
+        run: cargo test --all-features
+
+      - name: Security audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir release-files
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} release-files/ \;
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          cd release-files
+          for tarball in *.tar.gz; do
+            # Sign with keyless signing (uses OIDC identity from GitHub Actions)
+            cosign sign-blob --yes --output-signature "${tarball}.sig" --output-certificate "${tarball}.pem" "${tarball}"
+          done
+
+      - name: Generate release notes
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${REF_NAME#v}"
+          if grep -q "## \[${VERSION}\]" CHANGELOG.md; then
+            sed -n "/## \[${VERSION}\]/,/## \[/p" CHANGELOG.md | head -n -1 > release-notes.md
+          else
+            echo "See CHANGELOG.md for details." > release-notes.md
+          fi
+          echo "" >> release-notes.md
+          echo "## Checksums" >> release-notes.md
+          cat release-files/*.sha256 >> release-notes.md
+          echo "" >> release-notes.md
+          echo "## Signature Verification" >> release-notes.md
+          echo "All release artifacts are signed using Sigstore keyless signing." >> release-notes.md
+          echo "" >> release-notes.md
+          echo "To verify a release:" >> release-notes.md
+          echo "\`\`\`bash" >> release-notes.md
+          echo "cosign verify-blob --certificate unix-oidc-${REF_NAME}-linux-x86_64.tar.gz.pem \\\\" >> release-notes.md
+          echo "  --signature unix-oidc-${REF_NAME}-linux-x86_64.tar.gz.sig \\\\" >> release-notes.md
+          echo "  --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \\\\" >> release-notes.md
+          echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\\" >> release-notes.md
+          echo "  unix-oidc-${REF_NAME}-linux-x86_64.tar.gz" >> release-notes.md
+          echo "\`\`\`" >> release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            release-files/*.tar.gz
+            release-files/*.sha256
+            release-files/*.sig
+            release-files/*.pem
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

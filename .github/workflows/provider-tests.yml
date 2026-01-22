@@ -1,0 +1,201 @@
+name: Provider Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'Provider to test (all, keycloak, auth0, google)'
+        required: false
+        default: 'all'
+
+# Restrict permissions for security (OSSF Scorecard requirement)
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ============================================================================
+  # Keycloak Integration (Self-hosted, always runs)
+  # ============================================================================
+  keycloak:
+    name: Keycloak Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config jq
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Start Keycloak
+        run: |
+          docker compose -f docker-compose.test.yaml up -d keycloak
+          chmod +x ./test/scripts/wait-for-healthy.sh
+          ./test/scripts/wait-for-healthy.sh keycloak
+
+      - name: Test OIDC Discovery
+        run: |
+          echo "=== OIDC Discovery ==="
+          curl -sf "http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration" | jq .
+
+          echo ""
+          echo "=== JWKS Endpoint ==="
+          JWKS_URI=$(curl -sf "http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration" | jq -r .jwks_uri)
+          curl -sf "$JWKS_URI" | jq .
+
+          echo ""
+          echo "=== Device Authorization Endpoint ==="
+          DEVICE_ENDPOINT=$(curl -sf "http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration" | jq -r .device_authorization_endpoint)
+          echo "Device endpoint: $DEVICE_ENDPOINT"
+
+      - name: Test Token Acquisition
+        run: |
+          echo "=== Getting test token ==="
+          chmod +x ./test/scripts/get-test-token.sh
+          TOKEN=$(./test/scripts/get-test-token.sh testuser testpass)
+
+          echo "Token acquired successfully"
+          echo "Token length: ${#TOKEN}"
+
+          # Decode and display token claims (without signature)
+          echo ""
+          echo "=== Token Claims ==="
+          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq . || echo "Could not decode claims"
+
+      - name: Test Token Validation
+        run: |
+          OIDC_ISSUER="http://localhost:8080/realms/unix-oidc-test" \
+          OIDC_CLIENT_ID="unix-oidc" \
+          cargo test --release -- --test-threads=1 jwks validation
+
+      - name: Stop Keycloak
+        if: always()
+        run: docker compose -f docker-compose.test.yaml down -v
+
+  # ============================================================================
+  # Auth0 Integration (Cloud, requires secrets)
+  # ============================================================================
+  auth0:
+    name: Auth0 Integration
+    runs-on: ubuntu-latest
+    # Only run if we have Auth0 secrets configured
+    if: |
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event.inputs.provider == 'all' || github.event.inputs.provider == 'auth0' || github.event.inputs.provider == '')
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check Auth0 Configuration
+        id: check-auth0
+        run: |
+          if [ -z "${{ secrets.AUTH0_DOMAIN }}" ]; then
+            echo "AUTH0_DOMAIN secret not configured - skipping Auth0 tests"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.check-auth0.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        if: steps.check-auth0.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config jq
+
+      - name: Build
+        if: steps.check-auth0.outputs.skip != 'true'
+        run: cargo build --release
+
+      - name: Test Auth0 Discovery
+        if: steps.check-auth0.outputs.skip != 'true'
+        env:
+          AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
+        run: |
+          echo "=== Auth0 OIDC Discovery ==="
+          curl -sf "https://${AUTH0_DOMAIN}/.well-known/openid-configuration" | jq .
+
+          echo ""
+          echo "=== Auth0 JWKS ==="
+          JWKS_URI=$(curl -sf "https://${AUTH0_DOMAIN}/.well-known/openid-configuration" | jq -r .jwks_uri)
+          curl -sf "$JWKS_URI" | jq '.keys | length' | xargs -I {} echo "Found {} keys"
+
+  # ============================================================================
+  # Google Cloud Identity (Public endpoints)
+  # ============================================================================
+  google:
+    name: Google Cloud Identity
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.provider == 'all' || github.event.inputs.provider == 'google' || github.event.inputs.provider == ''
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Test Google Discovery
+        run: |
+          echo "=== Google OIDC Discovery ==="
+          curl -sf "https://accounts.google.com/.well-known/openid-configuration" | jq .
+
+          echo ""
+          echo "=== Google JWKS ==="
+          curl -sf "https://www.googleapis.com/oauth2/v3/certs" | jq '.keys | length' | xargs -I {} echo "Found {} keys"
+
+          echo ""
+          echo "=== Verify Key Algorithms ==="
+          curl -sf "https://www.googleapis.com/oauth2/v3/certs" | jq '.keys[].alg'
+
+  # ============================================================================
+  # Summary
+  # ============================================================================
+  provider-summary:
+    name: Provider Test Summary
+    runs-on: ubuntu-latest
+    needs: [keycloak, auth0, google]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "=== Provider Test Results ==="
+          echo ""
+          echo "Keycloak: ${{ needs.keycloak.result }}"
+          echo "Auth0: ${{ needs.auth0.result }}"
+          echo "Google: ${{ needs.google.result }}"
+          echo ""
+
+          # Keycloak is required, others are optional
+          if [ "${{ needs.keycloak.result }}" != "success" ]; then
+            echo "ERROR: Keycloak tests failed (required)"
+            exit 1
+          fi
+
+          echo "All required provider tests passed!"

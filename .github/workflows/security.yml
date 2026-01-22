@@ -1,0 +1,183 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at midnight
+    - cron: '0 0 * * 0'
+
+# Default to minimal permissions; jobs override as needed (OSSF Scorecard requirement)
+permissions: {}
+
+jobs:
+  # ============================================================================
+  # Snyk Security Scan (requires SNYK_TOKEN secret)
+  # ============================================================================
+  snyk:
+    name: Snyk Vulnerability Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Don't fail workflow if Snyk unavailable
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check if Snyk token is configured
+        id: check-token
+        run: |
+          if [ -z "${{ secrets.SNYK_TOKEN }}" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "::notice::SNYK_TOKEN not configured, skipping Snyk scan"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.check-token.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        if: steps.check-token.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config
+
+      - name: Setup Snyk
+        if: steps.check-token.outputs.skip != 'true'
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk to check for vulnerabilities
+        if: steps.check-token.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --sarif-file-output=snyk.sarif || true
+
+      - name: Upload Snyk results to GitHub Security tab
+        if: steps.check-token.outputs.skip != 'true'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk.sarif
+
+  # ============================================================================
+  # Cargo Audit (RustSec Advisory Database)
+  # ============================================================================
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: |
+          cargo audit --json > audit-results.json || true
+
+          # Check for high/critical vulnerabilities
+          if cargo audit 2>&1 | grep -E "(RUSTSEC-[0-9]+-[0-9]+.*critical|RUSTSEC-[0-9]+-[0-9]+.*high)"; then
+            echo "::error::High or critical vulnerabilities found"
+            exit 1
+          fi
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: cargo-audit-results
+          path: audit-results.json
+
+  # ============================================================================
+  # License Compliance
+  # ============================================================================
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check licenses
+        run: cargo deny check licenses
+
+      - name: Check advisories
+        run: cargo deny check advisories
+
+  # ============================================================================
+  # Secret Scanning (TruffleHog)
+  # ============================================================================
+  secrets:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for secret scanning
+
+      - name: TruffleHog Secret Scan (PR)
+        if: github.event_name == 'pull_request'
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          extra_args: --only-verified
+
+      - name: TruffleHog Secret Scan (Push)
+        if: github.event_name == 'push'
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: ${{ github.event.after }}
+          extra_args: --only-verified
+
+      - name: TruffleHog Secret Scan (Scheduled)
+        if: github.event_name == 'schedule'
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified --since-commit HEAD~100
+
+  # ============================================================================
+  # OSSF Scorecard
+  # ============================================================================
+  scorecard:
+    name: OSSF Scorecard
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard analysis
+        uses: ossf/scorecard-action@v2.4.3
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload Scorecard results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: scorecard-results.sarif

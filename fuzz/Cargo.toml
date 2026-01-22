@@ -1,0 +1,48 @@
+[package]
+name = "unix-oidc-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+sha2 = "0.10"
+base64 = "0.22"
+regex = "1.0"
+
+[dependencies.pam-unix-oidc]
+path = "../pam-unix-oidc"
+
+[[bin]]
+name = "fuzz_token_parser"
+path = "fuzz_targets/token_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dpop_proof"
+path = "fuzz_targets/dpop_proof.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_policy_parser"
+path = "fuzz_targets/policy_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_username_mapper"
+path = "fuzz_targets/username_mapper.rs"
+test = false
+doc = false
+bench = false

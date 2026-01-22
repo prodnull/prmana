@@ -1,0 +1,20 @@
+# test/fixtures/policy/policy-no-step-up.yaml
+# Test policy that does NOT require step-up authentication for sudo
+
+# Host classification for test environment
+host_classification: standard
+
+# SSH login requirements
+ssh:
+  require_oidc: true
+  minimum_acr: null  # Any ACR accepted
+  max_auth_age: 3600  # 1 hour
+
+# Sudo without step-up (standard hosts)
+sudo:
+  step_up_required: false
+  allowed_methods:
+    - device_flow
+  timeout_seconds: 300
+  required_acr: null
+  commands: []

@@ -1,0 +1,112 @@
+name: Bug Report
+description: Report a bug in unix-oidc
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the form below.
+
+        **Security vulnerabilities**: Do NOT report security issues here. See [SECURITY.md](https://github.com/prodnull/unix-oidc/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of the bug
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Configure...
+        2. Run...
+        3. See error...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: unix-oidc Version
+      description: Output of `pam_unix_oidc --version` or git commit
+      placeholder: "0.1.0 or commit abc123"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Ubuntu 22.04
+        - Ubuntu 24.04
+        - Debian 12
+        - RHEL 8
+        - RHEL 9
+        - Rocky Linux 8
+        - Rocky Linux 9
+        - Fedora 39
+        - Fedora 40
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: idp
+    attributes:
+      label: Identity Provider
+      options:
+        - Azure AD (Entra ID)
+        - Auth0
+        - Google Cloud Identity
+        - Okta
+        - Keycloak
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Relevant configuration (redact secrets!)
+      render: yaml
+      placeholder: |
+        # /etc/unix-oidc/policy.yaml (redacted)
+        defaults:
+          issuer: https://...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Any relevant log output (redact tokens/secrets!)
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I have redacted all secrets and tokens from this report
+          required: true
+        - label: This is NOT a security vulnerability (those go to SECURITY.md)
+          required: true

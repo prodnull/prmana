@@ -1,0 +1,51 @@
+[package]
+name = "unix-oidc-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OIDC authentication agent with DPoP support"
+
+[[bin]]
+name = "unix-oidc-agent"
+path = "src/main.rs"
+
+[dependencies]
+# Crypto
+p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
+sha2 = "0.10"
+base64 = "0.21"
+
+# OIDC/JWT
+jsonwebtoken = "9.0"
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde.workspace = true
+serde_json = "1.0"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Storage
+keyring = "2"
+directories = "5"
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"

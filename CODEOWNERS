@@ -1,0 +1,18 @@
+# unix-oidc Code Owners
+# These owners will be requested for review on PRs affecting their areas
+
+# Default owners for everything
+* @unix-oidc-project
+
+# Security-critical code requires security review
+/pam-unix-oidc/src/dpop/ @unix-oidc-project
+/pam-unix-oidc/src/validation/ @unix-oidc-project
+/pam-unix-oidc/src/crypto/ @unix-oidc-project
+SECURITY.md @unix-oidc-project
+
+# Documentation
+/docs/ @unix-oidc-project
+*.md @unix-oidc-project
+
+# CI/CD configuration
+/.github/ @unix-oidc-project

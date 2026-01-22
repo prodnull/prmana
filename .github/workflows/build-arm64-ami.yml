@@ -1,0 +1,350 @@
+name: Build ARM64 Test AMI
+
+# SECURITY: Manual trigger + monthly schedule
+# Environment protection requires approval before any AWS resources are created
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if AMI exists'
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    # Monthly rebuild on 1st of each month at 3am UTC
+    # Picks up security patches for base image and Docker
+    - cron: '0 3 1 * *'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+  AMI_NAME_PREFIX: unix-oidc-ci-arm64
+  MAX_AMIS_TO_KEEP: 2
+  INSTANCE_TYPE: t4g.small
+
+jobs:
+  build-ami:
+    name: Build ARM64 AMI
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # SECURITY: Requires environment approval
+    environment: aws-testing
+
+    outputs:
+      ami_id: ${{ steps.create-ami.outputs.ami_id }}
+      deleted_amis: ${{ steps.cleanup.outputs.deleted }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: unix-oidc-ami-build-${{ github.run_id }}
+
+      - name: Check if rebuild needed
+        id: check
+        if: ${{ !inputs.force_rebuild }}
+        run: |
+          # Check if we have a recent AMI (less than 30 days old)
+          LATEST_AMI=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=unix-oidc-ci" \
+            --query 'sort_by(Images, &CreationDate)[-1].[ImageId,CreationDate]' \
+            --output text)
+
+          if [ -n "$LATEST_AMI" ] && [ "$LATEST_AMI" != "None" ]; then
+            AMI_ID=$(echo "$LATEST_AMI" | cut -f1)
+            AMI_DATE=$(echo "$LATEST_AMI" | cut -f2)
+            AMI_AGE_DAYS=$(( ($(date +%s) - $(date -d "$AMI_DATE" +%s)) / 86400 ))
+
+            echo "Latest AMI: $AMI_ID (created $AMI_AGE_DAYS days ago)"
+
+            if [ $AMI_AGE_DAYS -lt 30 ]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "AMI is less than 30 days old, skipping rebuild"
+              echo "### AMI Build Skipped" >> $GITHUB_STEP_SUMMARY
+              echo "Existing AMI \`$AMI_ID\` is only $AMI_AGE_DAYS days old." >> $GITHUB_STEP_SUMMARY
+              exit 0
+            fi
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Get base AMI
+        id: base-ami
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          # Get latest Amazon Linux 2023 ARM64 AMI
+          AMI_ID=$(aws ssm get-parameter \
+            --name "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64" \
+            --query 'Parameter.Value' \
+            --output text)
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "Using base AMI: $AMI_ID"
+
+      - name: Get security group
+        id: sg
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=tag:Project,Values=unix-oidc-ci" "Name=group-name,Values=unix-oidc-ci-test-instances" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text)
+          echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
+
+      - name: Launch build instance
+        id: instance
+        if: steps.check.outputs.skip != 'true'
+        env:
+          BASE_AMI: ${{ steps.base-ami.outputs.ami_id }}
+          SG_ID: ${{ steps.sg.outputs.sg_id }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id "$BASE_AMI" \
+            --instance-type "$INSTANCE_TYPE" \
+            --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
+            --iam-instance-profile Name=unix-oidc-ci-instance-profile \
+            --security-group-ids "$SG_ID" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=unix-oidc-ci},{Key=Purpose,Value=ami-build},{Key=GitHubRun,Value=$GH_RUN_ID}]" \
+            --metadata-options 'HttpTokens=required' \
+            --query 'Instances[0].InstanceId' \
+            --output text)
+
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "Launched build instance: $INSTANCE_ID"
+
+          # Wait for instance to be ready
+          echo "Waiting for instance..."
+          aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
+          echo "Instance is ready"
+
+      - name: Install Docker and pre-pull images
+        if: steps.check.outputs.skip != 'true'
+        env:
+          INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
+        run: |
+          # Create setup script
+          cat > /tmp/setup.sh <<'SETUP_EOF'
+          #!/bin/bash
+          set -ex
+          echo "=== Installing Docker ==="
+          sudo dnf install -y docker
+          sudo systemctl enable docker
+          sudo systemctl start docker
+          sudo usermod -aG docker ec2-user
+          echo "=== Installing Docker Buildx ==="
+          ARCH=$(uname -m)
+          # Buildx uses arm64 instead of aarch64
+          BUILDX_ARCH=$ARCH
+          [ "$ARCH" = "aarch64" ] && BUILDX_ARCH="arm64"
+          sudo mkdir -p /usr/local/lib/docker/cli-plugins
+          sudo curl -L "https://github.com/docker/buildx/releases/download/v0.20.0/buildx-v0.20.0.linux-${BUILDX_ARCH}" -o /usr/local/lib/docker/cli-plugins/docker-buildx
+          sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+          echo "=== Installing Docker Compose ==="
+          sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          # Also install as Docker plugin
+          sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}" -o /usr/local/lib/docker/cli-plugins/docker-compose
+          sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          echo "=== Pre-pulling test images ==="
+          sudo docker pull quay.io/keycloak/keycloak:latest
+          sudo docker pull osixia/openldap:latest
+          sudo docker pull debian:bookworm-slim
+          echo "=== Installing build dependencies ==="
+          sudo dnf install -y git gcc make pkg-config openssl-devel pam-devel
+          echo "=== Cleanup ==="
+          sudo dnf clean all
+          sudo rm -rf /var/cache/dnf
+          echo "=== Setup complete ==="
+          docker --version
+          docker-compose --version
+          SETUP_EOF
+
+          # Create JSON input for SSM (avoids shell quoting issues)
+          jq -n --arg cmds "$(cat /tmp/setup.sh)" --arg instance "$INSTANCE_ID" \
+            '{InstanceIds: [$instance], DocumentName: "AWS-RunShellScript", TimeoutSeconds: 1800, Parameters: {commands: [$cmds]}}' \
+            > /tmp/ssm-input.json
+
+          # Send setup script via SSM
+          COMMAND_ID=$(aws ssm send-command \
+            --cli-input-json file:///tmp/ssm-input.json \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Setup command: $COMMAND_ID"
+
+          # Wait for completion
+          for i in {1..60}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            case $STATUS in
+              Success)
+                echo "Setup completed successfully"
+                break
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "Setup failed: $STATUS"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardErrorContent' \
+                  --output text || true
+                exit 1
+                ;;
+              *)
+                echo "Status: $STATUS ($i/60)"
+                sleep 30
+                ;;
+            esac
+          done
+
+      - name: Create AMI
+        id: create-ami
+        if: steps.check.outputs.skip != 'true'
+        env:
+          INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          AMI_NAME="$AMI_NAME_PREFIX-$TIMESTAMP"
+
+          # Use --no-reboot since we can't stop/reboot spot instances
+          AMI_ID=$(aws ec2 create-image \
+            --instance-id "$INSTANCE_ID" \
+            --name "$AMI_NAME" \
+            --no-reboot \
+            --description "unix-oidc CI ARM64 test AMI with Docker and pre-pulled images" \
+            --tag-specifications "ResourceType=image,Tags=[{Key=Project,Value=unix-oidc-ci},{Key=Component,Value=arm64-test-ami},{Key=BuildRun,Value=$GH_RUN_ID}]" \
+            --query 'ImageId' \
+            --output text)
+
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "Created AMI: $AMI_ID ($AMI_NAME)"
+
+          # Wait for AMI to be available
+          echo "Waiting for AMI to be available..."
+          aws ec2 wait image-available --image-ids "$AMI_ID"
+          echo "AMI is ready"
+
+      - name: Cleanup old AMIs
+        id: cleanup
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          echo "Checking for old AMIs to clean up..."
+
+          # Get all our AMIs sorted by creation date (newest first)
+          AMIS=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=unix-oidc-ci" \
+            --query 'sort_by(Images, &CreationDate) | reverse(@) | [*].[ImageId,Name,CreationDate]' \
+            --output text)
+
+          DELETED=""
+          COUNT=0
+
+          while IFS=$'\t' read -r ami_id ami_name ami_date; do
+            COUNT=$((COUNT + 1))
+
+            if [ $COUNT -gt $MAX_AMIS_TO_KEEP ]; then
+              echo "Deleting old AMI: $ami_id ($ami_name, created $ami_date)"
+
+              # Get associated snapshots
+              SNAPSHOTS=$(aws ec2 describe-images \
+                --image-ids "$ami_id" \
+                --query 'Images[0].BlockDeviceMappings[*].Ebs.SnapshotId' \
+                --output text)
+
+              # Deregister AMI
+              aws ec2 deregister-image --image-id "$ami_id"
+
+              # Delete snapshots
+              for snap in $SNAPSHOTS; do
+                if [ -n "$snap" ] && [ "$snap" != "None" ]; then
+                  echo "Deleting snapshot: $snap"
+                  aws ec2 delete-snapshot --snapshot-id "$snap" || true
+                fi
+              done
+
+              DELETED="$DELETED $ami_id"
+            else
+              echo "Keeping AMI: $ami_id ($ami_name)"
+            fi
+          done <<< "$AMIS"
+
+          echo "deleted=$DELETED" >> $GITHUB_OUTPUT
+
+      - name: Terminate build instance
+        if: always() && steps.instance.outputs.instance_id
+        env:
+          INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
+        run: |
+          echo "Terminating build instance..."
+          aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" || true
+
+      - name: Send notification
+        if: always() && steps.check.outputs.skip != 'true'
+        env:
+          AMI_ID: ${{ steps.create-ami.outputs.ami_id }}
+          DELETED: ${{ steps.cleanup.outputs.deleted }}
+          JOB_STATUS: ${{ job.status }}
+          GH_SERVER: ${{ github.server_url }}
+          GH_REPO: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            SUBJECT="[unix-oidc] ARM64 AMI Build Succeeded"
+            MESSAGE="AMI build completed successfully.
+
+          New AMI: $AMI_ID
+          Deleted AMIs:$DELETED
+
+          Run: $GH_SERVER/$GH_REPO/actions/runs/$GH_RUN_ID"
+          else
+            SUBJECT="[unix-oidc] ARM64 AMI Build Failed"
+            MESSAGE="AMI build failed.
+
+          Check the logs: $GH_SERVER/$GH_REPO/actions/runs/$GH_RUN_ID"
+          fi
+
+          # Get SNS topic ARN
+          SNS_TOPIC=$(aws sns list-topics --query "Topics[?contains(TopicArn, 'unix-oidc-ci-notifications')].TopicArn" --output text)
+
+          if [ -n "$SNS_TOPIC" ]; then
+            aws sns publish \
+              --topic-arn "$SNS_TOPIC" \
+              --subject "$SUBJECT" \
+              --message "$MESSAGE" || true
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          AMI_ID: ${{ steps.create-ami.outputs.ami_id }}
+          DELETED: ${{ steps.cleanup.outputs.deleted }}
+          SKIPPED: ${{ steps.check.outputs.skip }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          echo "## ARM64 AMI Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$SKIPPED" = "true" ]; then
+            echo "Build skipped - recent AMI exists" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| New AMI | \`$AMI_ID\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Deleted AMIs | $DELETED |" >> $GITHUB_STEP_SUMMARY
+            echo "| Status | $JOB_STATUS |" >> $GITHUB_STEP_SUMMARY
+          fi
