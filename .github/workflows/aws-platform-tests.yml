@@ -123,6 +123,7 @@ jobs:
             ami_type: marketplace
             pkg_manager: dnf
             pam_dev: pam-devel
+            needs_ssm_install: true
 
     env:
       GITHUB_REPO: ${{ github.repository }}
@@ -182,7 +183,24 @@ jobs:
           AMI_ID: ${{ steps.ami.outputs.ami_id }}
           PLATFORM: ${{ matrix.platform }}
           SECURITY_GROUP_ID: ${{ steps.sg.outputs.sg_id }}
+          NEEDS_SSM_INSTALL: ${{ matrix.needs_ssm_install || 'false' }}
         run: |
+          # Build user-data script for SSM Agent installation (RHEL 9)
+          if [ "$NEEDS_SSM_INSTALL" = "true" ]; then
+            # Create user-data script and base64 encode it
+            cat > /tmp/user-data.sh << 'USERDATA'
+#!/bin/bash
+# Install SSM Agent on RHEL 9
+dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+systemctl enable amazon-ssm-agent
+systemctl start amazon-ssm-agent
+USERDATA
+            USER_DATA_B64=$(base64 -w0 /tmp/user-data.sh)
+            USER_DATA_ARG="--user-data $USER_DATA_B64"
+          else
+            USER_DATA_ARG=""
+          fi
+
           INSTANCE_ID=$(aws ec2 run-instances \
             --image-id "$AMI_ID" \
             --instance-type "$INPUT_INSTANCE_TYPE" \
@@ -191,6 +209,7 @@ jobs:
             --security-group-ids "$SECURITY_GROUP_ID" \
             --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=unix-oidc-ci},{Key=Platform,Value=$PLATFORM},{Key=GitHubRun,Value=$GITHUB_RUN_ID}]" \
             --metadata-options 'HttpTokens=required' \
+            $USER_DATA_ARG \
             --query 'Instances[0].InstanceId' \
             --output text)
 
@@ -200,6 +219,12 @@ jobs:
           # Wait for instance to be ready
           echo "Waiting for instance to be ready..."
           aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
+
+          # Wait extra time for SSM Agent to start on RHEL
+          if [ "$NEEDS_SSM_INSTALL" = "true" ]; then
+            echo "Waiting for SSM Agent to start on RHEL..."
+            sleep 60
+          fi
           echo "Instance is ready"
 
       - name: Build and test PAM module
