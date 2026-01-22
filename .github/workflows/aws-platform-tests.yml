@@ -107,10 +107,12 @@ jobs:
             ami_parameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
             pkg_manager: dnf
             pam_dev: pam-devel
+            rust_install: system  # AL2023 has recent Rust in repos
           - platform: amazon-linux-2
             ami_parameter: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
             pkg_manager: yum
             pam_dev: pam-devel
+            rust_install: rustup  # AL2 needs rustup for recent Rust
 
     env:
       GITHUB_REPO: ${{ github.repository }}
@@ -182,6 +184,7 @@ jobs:
           INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
           PKG_MANAGER: ${{ matrix.pkg_manager }}
           PAM_DEV: ${{ matrix.pam_dev }}
+          RUST_INSTALL: ${{ matrix.rust_install }}
         run: |
           # Build the test script - using heredoc with <<- to strip leading tabs
           cat > /tmp/test-script.sh <<'EOF'
@@ -203,9 +206,15 @@ jobs:
           echo "=== Installing dependencies ==="
           sudo $PKG_MANAGER install -y git $PAM_DEV openssl-devel gcc make pkg-config
 
-          echo "=== Installing Rust ==="
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          export PATH="\$HOME/.cargo/bin:\$PATH"
+          echo "=== Installing Rust (method: $RUST_INSTALL) ==="
+          if [ "$RUST_INSTALL" = "system" ]; then
+            # Use system packages (faster, AL2023)
+            sudo $PKG_MANAGER install -y rust cargo
+          else
+            # Use rustup (AL2 needs newer Rust)
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            export PATH="\$HOME/.cargo/bin:\$PATH"
+          fi
 
           # Verify cargo is available
           echo "Cargo location: \$(which cargo)"
