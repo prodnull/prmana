@@ -72,35 +72,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install cross-compilation dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            libpam0g-dev
-
-          # Add arm64 architecture
-          sudo dpkg --add-architecture arm64
-
-          # Restrict Ubuntu sources to amd64 only (to prevent arm64 fetches from archive.ubuntu.com)
-          # Only modify files that contain ubuntu.com and don't already have [arch=]
-          for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
-            if [ -f "$f" ]; then
-              sudo sed -i 's/^deb \(http\|https\)/deb [arch=amd64] \1/' "$f"
-              sudo sed -i 's/^deb-src \(http\|https\)/deb-src [arch=amd64] \1/' "$f"
-            fi
-          done
-
-          # Add arm64 sources (ports.ubuntu.com for non-x86 architectures)
-          sudo tee /etc/apt/sources.list.d/arm64.list << 'EOF'
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
-          EOF
-
-          sudo apt-get update
-          sudo apt-get install -y libpam0g-dev:arm64
+          sudo apt-get install -y libpam0g-dev
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -120,16 +95,8 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/*.so artifacts/x86_64/ 2>/dev/null || true
           cp target/x86_64-unknown-linux-gnu/release/unix-oidc* artifacts/x86_64/ 2>/dev/null || true
 
-      - name: Build arm64 artifacts
-        run: |
-          rustup target add aarch64-unknown-linux-gnu
-          # Set linker and library paths for arm64 cross-compilation
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          export RUSTFLAGS="-L /usr/lib/aarch64-linux-gnu"
-          cargo build --release --target aarch64-unknown-linux-gnu
-          mkdir -p artifacts/arm64
-          cp target/aarch64-unknown-linux-gnu/release/*.so artifacts/arm64/ 2>/dev/null || true
-          cp target/aarch64-unknown-linux-gnu/release/unix-oidc* artifacts/arm64/ 2>/dev/null || true
+      # Note: arm64 builds happen on actual arm64 EC2 instances via AWS Platform Tests
+      # Cross-compilation was removed due to complexity with Ubuntu 24.04 multiarch setup
 
       - name: Create test scripts bundle
         run: |
@@ -192,21 +159,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # x86_64 platforms only - arm64 testing done via AWS Platform Tests
           # Amazon Linux 2023 - x86_64
           - platform: amazon-linux-2023
             arch: x86_64
             ami_type: ssm
             ami_param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
             instance_type: t3.medium
-            user: ec2-user
-            package_manager: dnf
-
-          # Amazon Linux 2023 - arm64
-          - platform: amazon-linux-2023
-            arch: arm64
-            ami_type: ssm
-            ami_param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
-            instance_type: t4g.medium
             user: ec2-user
             package_manager: dnf
 
@@ -217,16 +176,6 @@ jobs:
             ami_owner: "099720109477"  # Canonical
             ami_filter: ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*
             instance_type: t3.medium
-            user: ubuntu
-            package_manager: apt
-
-          # Ubuntu 22.04 - arm64
-          - platform: ubuntu-22.04
-            arch: arm64
-            ami_type: filter
-            ami_owner: "099720109477"  # Canonical
-            ami_filter: ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*
-            instance_type: t4g.medium
             user: ubuntu
             package_manager: apt
 
