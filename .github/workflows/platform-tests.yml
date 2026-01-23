@@ -80,10 +80,21 @@ jobs:
             libc6-dev-arm64-cross \
             libpam0g-dev
 
-          # Add arm64 architecture and configure ports.ubuntu.com for arm64 packages
+          # Add arm64 architecture
           sudo dpkg --add-architecture arm64
 
-          # Configure apt sources for arm64 (ports.ubuntu.com, not archive.ubuntu.com)
+          # Restrict existing sources to amd64 only and add ports.ubuntu.com for arm64
+          # First, update existing sources.list to be amd64-only
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          sudo sed -i 's/^deb-src /deb-src [arch=amd64] /' /etc/apt/sources.list
+
+          # Also update any sources.list.d files
+          if ls /etc/apt/sources.list.d/*.list 1>/dev/null 2>&1; then
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list
+            sudo sed -i 's/^deb-src /deb-src [arch=amd64] /' /etc/apt/sources.list.d/*.list
+          fi
+
+          # Add arm64 sources (ports.ubuntu.com)
           sudo tee /etc/apt/sources.list.d/arm64.list << 'EOF'
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
