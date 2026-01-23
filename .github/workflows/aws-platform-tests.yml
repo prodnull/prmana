@@ -224,10 +224,14 @@ jobs:
             echo "# Install SSM Agent on $PLATFORM" >> /tmp/user-data.sh
 
             if [ "$PKG_MANAGER" = "apt" ]; then
-              # Debian-based: download .deb and install with dpkg
-              echo 'apt-get update' >> /tmp/user-data.sh
-              echo 'apt-get install -y wget' >> /tmp/user-data.sh
-              echo 'wget -q https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb -O /tmp/amazon-ssm-agent.deb' >> /tmp/user-data.sh
+              # Debian-based: download .deb with curl (pre-installed) and install with dpkg
+              echo 'set -x' >> /tmp/user-data.sh
+              echo 'exec > /var/log/user-data.log 2>&1' >> /tmp/user-data.sh
+              echo '# Wait for cloud-init to complete and apt locks to be released' >> /tmp/user-data.sh
+              echo 'cloud-init status --wait || true' >> /tmp/user-data.sh
+              echo 'while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done' >> /tmp/user-data.sh
+              echo 'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done' >> /tmp/user-data.sh
+              echo 'curl -sL https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb -o /tmp/amazon-ssm-agent.deb' >> /tmp/user-data.sh
               echo 'dpkg -i /tmp/amazon-ssm-agent.deb' >> /tmp/user-data.sh
             else
               # RHEL/Rocky: install RPM directly with dnf
