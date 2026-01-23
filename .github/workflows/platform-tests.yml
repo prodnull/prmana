@@ -80,8 +80,16 @@ jobs:
             libc6-dev-arm64-cross \
             libpam0g-dev
 
-          # Add arm64 architecture and install arm64 PAM library for cross-compilation
+          # Add arm64 architecture and configure ports.ubuntu.com for arm64 packages
           sudo dpkg --add-architecture arm64
+
+          # Configure apt sources for arm64 (ports.ubuntu.com, not archive.ubuntu.com)
+          sudo tee /etc/apt/sources.list.d/arm64.list << 'EOF'
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+          EOF
+
           sudo apt-get update
           sudo apt-get install -y libpam0g-dev:arm64
 
