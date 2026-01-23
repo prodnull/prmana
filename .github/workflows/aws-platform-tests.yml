@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: 'Platform to test'
+        description: 'Platform to test (debian-12/rocky-9 need setup - see workflow comments)'
         required: true
         type: choice
         options:
@@ -14,8 +14,6 @@ on:
           - amazon-linux-2
           - rhel-9
           - ubuntu-22.04
-          - debian-12
-          - rocky-9
           - all
         default: amazon-linux-2023
       instance_type:
@@ -97,12 +95,7 @@ jobs:
             ubuntu-22.04)
               echo 'platforms=["ubuntu-22.04"]' >> $GITHUB_OUTPUT
               ;;
-            debian-12)
-              echo 'platforms=["debian-12"]' >> $GITHUB_OUTPUT
-              ;;
-            rocky-9)
-              echo 'platforms=["rocky-9"]' >> $GITHUB_OUTPUT
-              ;;
+            # debian-12 and rocky-9 removed - see workflow comments for setup instructions
           esac
 
   # ==========================================================================
@@ -145,20 +138,24 @@ jobs:
             ami_type: marketplace
             pkg_manager: apt
             pam_dev: libpam0g-dev
-          - platform: debian-12
-            ami_owner: "136693071363"
-            ami_filter: "debian-12-amd64-*"
-            ami_type: marketplace
-            pkg_manager: apt
-            pam_dev: libpam0g-dev
-            needs_ssm_install: true
-          - platform: rocky-9
-            ami_owner: "679593333241"
-            ami_filter: "Rocky-9-EC2-Base-*x86_64*"
-            ami_type: marketplace
-            pkg_manager: dnf
-            pam_dev: pam-devel
-            needs_ssm_install: true
+          # Note: debian-12 and rocky-9 are commented out - they require additional setup:
+          # - Rocky 9: needs AWS Marketplace subscription at https://aws.amazon.com/marketplace/pp?sku=3qk9e6x2ni81uiqnorll45r3f
+          # - Debian 12: SSM Agent not pre-installed, user-data installation unreliable
+          # Uncomment below after completing the required setup:
+          # - platform: debian-12
+          #   ami_owner: "136693071363"
+          #   ami_filter: "debian-12-amd64-*"
+          #   ami_type: marketplace
+          #   pkg_manager: apt
+          #   pam_dev: libpam0g-dev
+          #   needs_ssm_install: true
+          # - platform: rocky-9
+          #   ami_owner: "679593333241"
+          #   ami_filter: "Rocky-9-EC2-Base-*x86_64*"
+          #   ami_type: marketplace
+          #   pkg_manager: dnf
+          #   pam_dev: pam-devel
+          #   needs_ssm_install: true
 
     env:
       GITHUB_REPO: ${{ github.repository }}
