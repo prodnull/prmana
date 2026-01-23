@@ -64,7 +64,7 @@ jobs:
           HOURS=0.5
 
           case "$INPUT_PLATFORM" in
-            all) PLATFORMS=6 ;;
+            all) PLATFORMS=4 ;;  # AL2023, AL2, RHEL9, Ubuntu (debian-12/rocky-9 excluded)
             *)   PLATFORMS=1 ;;
           esac
 
@@ -80,7 +80,10 @@ jobs:
         run: |
           case "$INPUT_PLATFORM" in
             all)
-              echo 'platforms=["amazon-linux-2023","amazon-linux-2","rhel-9","ubuntu-22.04","debian-12","rocky-9"]' >> $GITHUB_OUTPUT
+              # Note: debian-12 and rocky-9 require additional setup:
+              # - Rocky 9: needs AWS Marketplace subscription
+              # - Debian 12: SSM Agent not pre-installed, user-data install unreliable
+              echo 'platforms=["amazon-linux-2023","amazon-linux-2","rhel-9","ubuntu-22.04"]' >> $GITHUB_OUTPUT
               ;;
             amazon-linux-2023)
               echo 'platforms=["amazon-linux-2023"]' >> $GITHUB_OUTPUT
