@@ -1,9 +1,7 @@
 # Platform Expansion CI - Multi-platform testing using AWS EC2
 #
 # Required GitHub Secrets:
-#   AWS_ACCESS_KEY_ID        - AWS credentials with EC2 permissions
-#   AWS_SECRET_ACCESS_KEY    - AWS secret key
-#   AWS_REGION               - Target AWS region (e.g., us-east-1)
+#   AWS_ROLE_ARN             - IAM role ARN for OIDC authentication
 #   EC2_SUBNET_ID            - Subnet for launching test instances
 #   EC2_SECURITY_GROUP_ID    - Security group allowing SSH access
 #   EC2_KEY_NAME             - Name of SSH key pair in AWS
@@ -22,6 +20,11 @@
 #   - aws-marketplace:Subscribe (for RHEL 9 AMI)
 
 name: Platform Tests
+
+# OIDC permissions for AWS authentication
+permissions:
+  id-token: write
+  contents: read
 
 on:
   pull_request:
@@ -50,6 +53,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  AWS_REGION: us-west-2
   INSTANCE_TYPE_X86: t3.medium
   INSTANCE_TYPE_ARM: t4g.medium
   # Timeout for instance provisioning and tests (in seconds)
@@ -209,12 +213,12 @@ jobs:
           name: unix-oidc-artifacts
           path: artifacts/
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: platform-tests-${{ github.run_id }}
 
       - name: Get AMI ID (SSM Parameter)
         if: matrix.ami_type == 'ssm'
@@ -475,12 +479,12 @@ jobs:
           name: unix-oidc-artifacts
           path: artifacts/
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: platform-tests-${{ github.run_id }}
 
       - name: Get RHEL 9 AMI ID (Marketplace)
         id: ami
