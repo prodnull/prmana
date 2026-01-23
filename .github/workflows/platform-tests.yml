@@ -83,18 +83,16 @@ jobs:
           # Add arm64 architecture
           sudo dpkg --add-architecture arm64
 
-          # Restrict existing sources to amd64 only and add ports.ubuntu.com for arm64
-          # First, update existing sources.list to be amd64-only
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          sudo sed -i 's/^deb-src /deb-src [arch=amd64] /' /etc/apt/sources.list
+          # Restrict Ubuntu sources to amd64 only (to prevent arm64 fetches from archive.ubuntu.com)
+          # Only modify files that contain ubuntu.com and don't already have [arch=]
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -f "$f" ]; then
+              sudo sed -i 's/^deb \(http\|https\)/deb [arch=amd64] \1/' "$f"
+              sudo sed -i 's/^deb-src \(http\|https\)/deb-src [arch=amd64] \1/' "$f"
+            fi
+          done
 
-          # Also update any sources.list.d files
-          if ls /etc/apt/sources.list.d/*.list 1>/dev/null 2>&1; then
-            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list
-            sudo sed -i 's/^deb-src /deb-src [arch=amd64] /' /etc/apt/sources.list.d/*.list
-          fi
-
-          # Add arm64 sources (ports.ubuntu.com)
+          # Add arm64 sources (ports.ubuntu.com for non-x86 architectures)
           sudo tee /etc/apt/sources.list.d/arm64.list << 'EOF'
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
