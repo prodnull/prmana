@@ -150,8 +150,8 @@ jobs:
             pam_dev: libpam0g-dev
             needs_ssm_install: true
           - platform: rocky-9
-            ami_owner: "792107900819"
-            ami_filter: "Rocky-9-EC2-Base-*.x86_64-*"
+            ami_owner: "679593333241"
+            ami_filter: "Rocky-9-EC2-Base-*x86_64*"
             ami_type: marketplace
             pkg_manager: dnf
             pam_dev: pam-devel
@@ -261,10 +261,25 @@ jobs:
           echo "Waiting for instance to be ready..."
           aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
 
-          # Wait extra time for SSM Agent to start on RHEL
+          # Wait extra time for SSM Agent to start on platforms that need installation
           if [ "$NEEDS_SSM_INSTALL" = "true" ]; then
-            echo "Waiting for SSM Agent to start on RHEL..."
-            sleep 60
+            echo "Waiting for SSM Agent to start on $PLATFORM..."
+            sleep 90
+
+            # Verify SSM Agent is ready by checking managed instances
+            echo "Verifying SSM Agent connectivity..."
+            for i in {1..10}; do
+              SSM_STATUS=$(aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+                --query 'InstanceInformationList[0].PingStatus' \
+                --output text 2>/dev/null || echo "NotReady")
+              if [ "$SSM_STATUS" = "Online" ]; then
+                echo "SSM Agent is online!"
+                break
+              fi
+              echo "SSM Status: $SSM_STATUS (attempt $i/10)"
+              sleep 15
+            done
           fi
           echo "Instance is ready"
 
