@@ -188,13 +188,11 @@ jobs:
           # Build user-data script for SSM Agent installation (RHEL 9)
           if [ "$NEEDS_SSM_INSTALL" = "true" ]; then
             # Create user-data script and base64 encode it
-            cat > /tmp/user-data.sh << 'USERDATA'
-#!/bin/bash
-# Install SSM Agent on RHEL 9
-dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
-systemctl enable amazon-ssm-agent
-systemctl start amazon-ssm-agent
-USERDATA
+            echo '#!/bin/bash' > /tmp/user-data.sh
+            echo '# Install SSM Agent on RHEL 9' >> /tmp/user-data.sh
+            echo 'dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm' >> /tmp/user-data.sh
+            echo 'systemctl enable amazon-ssm-agent' >> /tmp/user-data.sh
+            echo 'systemctl start amazon-ssm-agent' >> /tmp/user-data.sh
             USER_DATA_B64=$(base64 -w0 /tmp/user-data.sh)
             USER_DATA_ARG="--user-data $USER_DATA_B64"
           else
