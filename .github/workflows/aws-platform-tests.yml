@@ -13,6 +13,9 @@ on:
           - amazon-linux-2023
           - amazon-linux-2
           - rhel-9
+          - ubuntu-22.04
+          - debian-12
+          - rocky-9
           - all
         default: amazon-linux-2023
       instance_type:
@@ -61,7 +64,7 @@ jobs:
           HOURS=0.5
 
           case "$INPUT_PLATFORM" in
-            all) PLATFORMS=3 ;;
+            all) PLATFORMS=6 ;;
             *)   PLATFORMS=1 ;;
           esac
 
@@ -77,7 +80,7 @@ jobs:
         run: |
           case "$INPUT_PLATFORM" in
             all)
-              echo 'platforms=["amazon-linux-2023","amazon-linux-2","rhel-9"]' >> $GITHUB_OUTPUT
+              echo 'platforms=["amazon-linux-2023","amazon-linux-2","rhel-9","ubuntu-22.04","debian-12","rocky-9"]' >> $GITHUB_OUTPUT
               ;;
             amazon-linux-2023)
               echo 'platforms=["amazon-linux-2023"]' >> $GITHUB_OUTPUT
@@ -87,6 +90,15 @@ jobs:
               ;;
             rhel-9)
               echo 'platforms=["rhel-9"]' >> $GITHUB_OUTPUT
+              ;;
+            ubuntu-22.04)
+              echo 'platforms=["ubuntu-22.04"]' >> $GITHUB_OUTPUT
+              ;;
+            debian-12)
+              echo 'platforms=["debian-12"]' >> $GITHUB_OUTPUT
+              ;;
+            rocky-9)
+              echo 'platforms=["rocky-9"]' >> $GITHUB_OUTPUT
               ;;
           esac
 
@@ -120,6 +132,26 @@ jobs:
           - platform: rhel-9
             ami_owner: "309956199498"
             ami_filter: "RHEL-9.*_HVM-*-x86_64-*-Hourly2-GP3"
+            ami_type: marketplace
+            pkg_manager: dnf
+            pam_dev: pam-devel
+            needs_ssm_install: true
+          - platform: ubuntu-22.04
+            ami_owner: "099720109477"
+            ami_filter: "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"
+            ami_type: marketplace
+            pkg_manager: apt
+            pam_dev: libpam0g-dev
+          - platform: debian-12
+            ami_owner: "136693071363"
+            ami_filter: "debian-12-amd64-*"
+            ami_type: marketplace
+            pkg_manager: apt
+            pam_dev: libpam0g-dev
+            needs_ssm_install: true
+          - platform: rocky-9
+            ami_owner: "792107900819"
+            ami_filter: "Rocky-9-EC2-Base-*.x86_64-*"
             ami_type: marketplace
             pkg_manager: dnf
             pam_dev: pam-devel
@@ -184,13 +216,24 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           SECURITY_GROUP_ID: ${{ steps.sg.outputs.sg_id }}
           NEEDS_SSM_INSTALL: ${{ matrix.needs_ssm_install || 'false' }}
+          PKG_MANAGER: ${{ matrix.pkg_manager }}
         run: |
-          # Build user-data script for SSM Agent installation (RHEL 9)
+          # Build user-data script for SSM Agent installation
           if [ "$NEEDS_SSM_INSTALL" = "true" ]; then
-            # Create user-data script and base64 encode it
             echo '#!/bin/bash' > /tmp/user-data.sh
-            echo '# Install SSM Agent on RHEL 9' >> /tmp/user-data.sh
-            echo 'dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm' >> /tmp/user-data.sh
+            echo "# Install SSM Agent on $PLATFORM" >> /tmp/user-data.sh
+
+            if [ "$PKG_MANAGER" = "apt" ]; then
+              # Debian-based: download .deb and install with dpkg
+              echo 'apt-get update' >> /tmp/user-data.sh
+              echo 'apt-get install -y wget' >> /tmp/user-data.sh
+              echo 'wget -q https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb -O /tmp/amazon-ssm-agent.deb' >> /tmp/user-data.sh
+              echo 'dpkg -i /tmp/amazon-ssm-agent.deb' >> /tmp/user-data.sh
+            else
+              # RHEL/Rocky: install RPM directly with dnf
+              echo 'dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm' >> /tmp/user-data.sh
+            fi
+
             echo 'systemctl enable amazon-ssm-agent' >> /tmp/user-data.sh
             echo 'systemctl start amazon-ssm-agent' >> /tmp/user-data.sh
             USER_DATA_B64=$(base64 -w0 /tmp/user-data.sh)
@@ -247,10 +290,22 @@ jobs:
           uname -a
           EOF
 
+          # Determine SSL development package and update command based on package manager
+          if [ "$PKG_MANAGER" = "apt" ]; then
+            SSL_DEV="libssl-dev"
+            BUILD_TOOLS="build-essential curl"
+            UPDATE_CMD="sudo apt-get update &&"
+          else
+            SSL_DEV="openssl-devel"
+            BUILD_TOOLS="gcc make"
+            UPDATE_CMD=""
+          fi
+
           # Append package-specific commands (variables expanded on runner)
           cat >> /tmp/test-script.sh <<EOF
           echo "=== Installing dependencies ==="
-          sudo $PKG_MANAGER install -y git $PAM_DEV openssl-devel gcc make pkg-config
+          export DEBIAN_FRONTEND=noninteractive
+          $UPDATE_CMD sudo $PKG_MANAGER install -y git $PAM_DEV $SSL_DEV $BUILD_TOOLS pkg-config
 
           echo "=== Installing Rust ==="
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -277,6 +332,7 @@ jobs:
 
           echo "=== Installing PAM module ==="
           sudo cp target/release/libpam_unix_oidc.so /lib64/security/ 2>/dev/null || \\
+          sudo cp target/release/libpam_unix_oidc.so /lib/x86_64-linux-gnu/security/ 2>/dev/null || \\
           sudo cp target/release/libpam_unix_oidc.so /lib/security/
 
           echo "=== SUCCESS: PAM module built and installed ==="
