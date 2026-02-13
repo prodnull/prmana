@@ -60,7 +60,8 @@ impl SecureStorage for KeyringStorage {
     fn delete(&self, key: &str) -> Result<(), StorageError> {
         let entry = self.get_entry(key)?;
 
-        entry.delete_password().map_err(|e| match e {
+        // keyring v3.x uses delete_credential(), v2.x uses delete_password()
+        entry.delete_credential().map_err(|e| match e {
             keyring::Error::NoEntry => StorageError::NotFound(key.to_string()),
             _ => StorageError::Backend(e.to_string()),
         })

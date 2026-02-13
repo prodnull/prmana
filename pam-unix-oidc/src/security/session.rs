@@ -70,7 +70,8 @@ fn generate_random_bytes() -> [u8; 8] {
 
     // Use getrandom crate for secure random bytes
     // Falls back to /dev/urandom on Linux, CryptGenRandom on Windows
-    getrandom::getrandom(&mut bytes).expect(
+    // getrandom v0.3 uses fill(), v0.2 uses getrandom()
+    getrandom::fill(&mut bytes).expect(
         "secure random number generation failed - \
          system may be misconfigured or compromised",
     );
