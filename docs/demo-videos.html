@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>unix-oidc Demo Videos</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-orange: #f0883e;
+            --accent-purple: #a371f7;
+            --border-color: #30363d;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 48px;
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 16px;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            font-weight: 600;
+            margin: 0 0 16px 0;
+        }
+
+        .tagline {
+            color: var(--text-secondary);
+            font-size: 1.2em;
+            margin-bottom: 24px;
+        }
+
+        .badge-row {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 6px 14px;
+            font-size: 0.85em;
+        }
+
+        .badge-icon {
+            font-size: 1.1em;
+        }
+
+        .demo-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 32px;
+        }
+
+        .demo-card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .demo-header {
+            background-color: var(--bg-tertiary);
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .demo-number {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+
+        .demo-1 .demo-number { background-color: var(--accent-blue); color: var(--bg-primary); }
+        .demo-2 .demo-number { background-color: var(--accent-green); color: var(--bg-primary); }
+        .demo-3 .demo-number { background-color: var(--accent-orange); color: var(--bg-primary); }
+        .demo-4 .demo-number { background-color: var(--accent-purple); color: var(--bg-primary); }
+
+        .demo-title {
+            font-weight: 600;
+            font-size: 1.1em;
+        }
+
+        .demo-video-container {
+            background-color: var(--bg-primary);
+            padding: 16px;
+        }
+
+        .demo-video {
+            width: 100%;
+            border-radius: 8px;
+            background-color: #000;
+        }
+
+        .demo-description {
+            padding: 16px 20px;
+            color: var(--text-secondary);
+            font-size: 0.95em;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .demo-description ul {
+            margin: 8px 0 0 0;
+            padding-left: 20px;
+        }
+
+        .demo-description li {
+            margin-bottom: 4px;
+        }
+
+        .highlight {
+            color: var(--accent-blue);
+        }
+
+        footer {
+            margin-top: 64px;
+            padding-top: 32px;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        footer a {
+            color: var(--accent-blue);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        .cta-section {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 32px;
+            margin-top: 48px;
+            text-align: center;
+        }
+
+        .cta-section h2 {
+            margin: 0 0 16px 0;
+            font-size: 1.5em;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .cta-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .cta-button.primary {
+            background-color: var(--accent-green);
+            color: var(--bg-primary);
+        }
+
+        .cta-button.secondary {
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .cta-button:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <svg class="logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="50" cy="50" r="45" stroke="#58a6ff" stroke-width="4" fill="none"/>
+                <circle cx="50" cy="50" r="20" fill="#58a6ff"/>
+                <path d="M50 5 L50 25 M50 75 L50 95 M5 50 L25 50 M75 50 L95 50" stroke="#58a6ff" stroke-width="4" stroke-linecap="round"/>
+            </svg>
+            <h1>unix-oidc Demo Videos</h1>
+            <p class="tagline">Step-up authentication for Linux SSH and sudo with OIDC</p>
+            <div class="badge-row">
+                <span class="badge"><span class="badge-icon">🔐</span> DPoP Token Binding</span>
+                <span class="badge"><span class="badge-icon">📱</span> Device Flow MFA</span>
+                <span class="badge"><span class="badge-icon">🦀</span> Memory-Safe Rust</span>
+                <span class="badge"><span class="badge-icon">📊</span> Structured Audit Logs</span>
+            </div>
+        </header>
+
+        <div class="demo-grid">
+            <div class="demo-card demo-1">
+                <div class="demo-header">
+                    <div class="demo-number">1</div>
+                    <div class="demo-title">OIDC Login Flow</div>
+                </div>
+                <div class="demo-video-container">
+                    <video class="demo-video" controls preload="metadata">
+                        <source src="demo-videos/demo-2-oidc-login.webm" type="video/webm">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+                <div class="demo-description">
+                    Standard <span class="highlight">OpenID Connect authorization code flow</span> for SSH authentication.
+                    <ul>
+                        <li>User authenticates with their existing identity provider</li>
+                        <li>Username maps to Unix account via SSSD/LDAP</li>
+                        <li>Token issued with DPoP cryptographic binding</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="demo-card demo-2">
+                <div class="demo-header">
+                    <div class="demo-number">2</div>
+                    <div class="demo-title">Sudo Step-Up Authentication</div>
+                </div>
+                <div class="demo-video-container">
+                    <video class="demo-video" controls preload="metadata">
+                        <source src="demo-videos/demo-3-sudo-stepup.webm" type="video/webm">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+                <div class="demo-description">
+                    <span class="highlight">OAuth 2.0 Device Authorization Grant</span> (RFC 8628) for privileged command approval.
+                    <ul>
+                        <li>PAM module intercepts sudo commands requiring step-up</li>
+                        <li>Device code displayed in terminal for mobile approval</li>
+                        <li>User approves on phone/browser, command executes</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="demo-card demo-3">
+                <div class="demo-header">
+                    <div class="demo-number">3</div>
+                    <div class="demo-title">Policy Configuration</div>
+                </div>
+                <div class="demo-video-container">
+                    <video class="demo-video" controls preload="metadata">
+                        <source src="demo-videos/demo-4-policy-config.webm" type="video/webm">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+                <div class="demo-description">
+                    <span class="highlight">YAML-based policy configuration</span> for fine-grained access control.
+                    <ul>
+                        <li>Host classification: standard, elevated, critical</li>
+                        <li>Command classes for grace period grouping</li>
+                        <li>Per-command overrides for sensitive operations</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="demo-card demo-4">
+                <div class="demo-header">
+                    <div class="demo-number">4</div>
+                    <div class="demo-title">Audit Events</div>
+                </div>
+                <div class="demo-video-container">
+                    <video class="demo-video" controls preload="metadata">
+                        <source src="demo-videos/demo-5-audit-events.webm" type="video/webm">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+                <div class="demo-description">
+                    <span class="highlight">Structured JSON audit logging</span> for security monitoring and compliance.
+                    <ul>
+                        <li>All auth events logged with session correlation IDs</li>
+                        <li>SIEM-ready format (Splunk, ELK, etc.)</li>
+                        <li>Grace periods, denials, and timeouts tracked</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="cta-section">
+            <h2>Ready to try unix-oidc?</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 24px;">
+                Get started with our 5-minute Docker demo or deploy to your infrastructure.
+            </p>
+            <div class="cta-buttons">
+                <a href="https://github.com/prodnull/unix-oidc" class="cta-button primary">
+                    <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                    </svg>
+                    View on GitHub
+                </a>
+                <a href="https://github.com/prodnull/unix-oidc/blob/main/deploy/quickstart/5-minute-demo.md" class="cta-button secondary">
+                    Quick Start Guide
+                </a>
+            </div>
+        </div>
+
+        <footer>
+            <p>
+                <strong>unix-oidc</strong> is licensed under <a href="https://github.com/prodnull/unix-oidc/blob/main/LICENSE">CC BY-NC-SA 4.0</a>
+                for educational purposes.
+            </p>
+            <p style="margin-top: 16px;">
+                <a href="https://github.com/prodnull/unix-oidc">GitHub</a> &bull;
+                <a href="https://github.com/prodnull/unix-oidc/blob/main/docs/installation.md">Installation</a> &bull;
+                <a href="https://github.com/prodnull/unix-oidc/blob/main/SECURITY.md">Security</a>
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
