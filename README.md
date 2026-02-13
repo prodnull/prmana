@@ -314,16 +314,18 @@ See [docs/deployment-patterns.md](docs/deployment-patterns.md) for detailed guid
 |-----------|-------------|--------|
 | **Identity Providers** | | |
 | Keycloak | CI (automated) | ✅ Fully tested |
-| Auth0 | Manual testing | ✅ Tested |
-| Google Cloud Identity | Manual testing | ✅ Tested |
+| Auth0 | CI (automated) | ✅ Fully tested |
+| Google Cloud Identity | CI (automated) | ✅ Fully tested |
 | Azure AD (Entra ID) | Manual testing | ⚠️ Basic flows tested |
 | Okta | Not yet tested | 🔄 Community reports welcome |
 | **Operating Systems** | | |
 | Ubuntu 22.04 LTS | CI (automated) | ✅ Fully tested |
 | Ubuntu 24.04 LTS | Manual testing | ✅ Tested |
-| Debian 12 | Not yet tested | 🔄 Community reports welcome |
-| RHEL 9 / Rocky 9 | Not yet tested | 🔄 Community reports welcome |
-| Amazon Linux 2023 | Not yet tested | 🔄 Community reports welcome |
+| RHEL 9 | CI (automated) | ✅ Fully tested |
+| Amazon Linux 2023 | CI (automated) | ✅ Fully tested |
+| Amazon Linux 2 | CI (automated) | ✅ Fully tested |
+| Rocky 9 | Not yet tested | 🔄 Marketplace subscription required |
+| Debian 12 | Not yet tested | 🔄 SSM Agent compatibility issues |
 
 ### Enterprise Readiness
 
@@ -343,7 +345,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
 
 ### CI Infrastructure
 
-Our CI uses Keycloak in Docker for automated testing. This is **not** a requirement for production—use whatever OIDC provider your organization already has.
+Our CI includes:
+- **Unit tests**: Rust test suite runs on every PR
+- **Integration tests**: Keycloak in Docker for OIDC flow testing
+- **AWS Platform Tests**: Real EC2 instances testing Ubuntu 22.04, RHEL 9, Amazon Linux 2, and Amazon Linux 2023
+- **Security scanning**: Dependabot, cargo-audit, cargo-deny, Snyk, TruffleHog, OSSF Scorecard
+
+This testing infrastructure is **not** a requirement for production—use whatever OIDC provider your organization already has.
 
 ## Security
 
