@@ -42,14 +42,27 @@ npm run show-report
 
 ## Demo Scenarios
 
-1. **Keycloak Admin Console Overview** - Shows the realm configuration
-2. **OIDC Login Flow** - Demonstrates the standard OIDC authorization code flow
-3. **Device Authorization Flow** - Shows sudo step-up authentication
-4. **User Profile and Token Claims** - Displays user information and claims
-5. **Realm Security Settings** - Shows token and session configuration
+| Demo | Description | Status |
+|------|-------------|--------|
+| 1. Keycloak Admin Console | Shows realm configuration | ⚠️ Requires HTTPS |
+| 2. OIDC Login Flow | Standard OIDC auth code flow | ✅ Working |
+| 3. Device Authorization Flow | Sudo step-up authentication | ✅ Working |
+| 4. Policy Configuration | Policy YAML walkthrough | ✅ Working |
+| 5. Audit Events | Structured audit log demo | ✅ Working |
+| 6. Realm Security Settings | Token/session config | ⚠️ Requires HTTPS |
+
+> Note: Admin console demos (1, 6) require Keycloak HTTPS configuration.
+> The core client interaction demos (2-5) work with HTTP.
 
 ## Output Files
 
+After running demos, videos are saved to:
+- `output/demo-2-oidc-login.webm` - OIDC authentication flow
+- `output/demo-3-sudo-stepup.webm` - Sudo step-up with device flow
+- `output/demo-4-policy-config.webm` - Policy configuration walkthrough
+- `output/demo-5-audit-events.webm` - Audit event log demonstration
+
+Raw test artifacts:
 - `test-results/*.webm` - Video recordings
 - `test-results/*.png` - Screenshots at key moments
 - `test-results/trace.zip` - Full Playwright trace for debugging

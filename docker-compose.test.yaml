@@ -7,10 +7,12 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
       KC_HEALTH_ENABLED: "true"
-      # Use keycloak hostname for consistent issuer URL
-      KC_HOSTNAME: keycloak
+      # Use localhost for browser-accessible URLs (demo recording)
+      KC_HOSTNAME: localhost
       KC_HOSTNAME_PORT: "8080"
       KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
     ports:
       - "8080:8080"
     volumes:

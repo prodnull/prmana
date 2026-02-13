@@ -7,6 +7,8 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: 'html',
+  // Keycloak admin UI is slow to load
+  timeout: 120000,
 
   use: {
     baseURL: 'http://localhost:8080',
@@ -14,7 +16,7 @@ export default defineConfig({
     video: 'on',
     screenshot: 'on',
     // Slow down actions for demo visibility
-    actionTimeout: 10000,
+    actionTimeout: 15000,
   },
 
   projects: [
