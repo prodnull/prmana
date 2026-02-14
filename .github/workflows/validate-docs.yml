@@ -150,6 +150,12 @@ jobs:
               },
               {
                 "pattern": "/discussions$"
+              },
+              {
+                "pattern": "^https://www\\.boundaryproject\\.io"
+              },
+              {
+                "pattern": "^https://www\\.vagrantup\\.com"
               }
             ],
             "replacementPatterns": [

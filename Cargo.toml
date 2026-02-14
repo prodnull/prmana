@@ -11,6 +11,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 license = "CC-BY-NC-SA-4.0"
 repository = "https://github.com/prodnull/unix-oidc"
 homepage = "https://github.com/prodnull/unix-oidc"

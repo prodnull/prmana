@@ -230,15 +230,15 @@ jobs:
   # Minimum Supported Rust Version
   # ============================================================================
   msrv:
-    name: MSRV (Rust 1.85)
+    name: MSRV (Rust 1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust 1.85 (MSRV)
+      - name: Install Rust 1.88 (MSRV)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.88"
 
       - name: Install system dependencies
         run: |
