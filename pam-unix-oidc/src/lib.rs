@@ -16,6 +16,7 @@
 //! - `OIDC_TOKEN` (test mode only): The OIDC token to use for authentication
 
 #![deny(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod approval;
 pub mod audit;
@@ -303,11 +304,14 @@ fn is_base64url(s: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
-    // Mutex to ensure environment variable tests don't interfere with each other
+    // Mutex to ensure environment variable tests don't interfere with each other.
+    // parking_lot::Mutex does not poison on panic, so .lock() returns the guard
+    // directly without needing .unwrap().
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -337,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_test_mode_disabled_by_default() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
         assert!(
             !is_test_mode_enabled(),
@@ -347,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_test_mode_enabled_with_true() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
         std::env::set_var("UNIX_OIDC_TEST_MODE", "true");
         assert!(is_test_mode_enabled());
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
@@ -355,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_test_mode_enabled_with_1() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
         std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
         assert!(is_test_mode_enabled());
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
@@ -363,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_test_mode_not_enabled_with_other_values() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
 
         // Test various values that should NOT enable test mode
         for value in &["yes", "TRUE", "True", "enabled", "on", "0", "false", ""] {
@@ -383,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_pam_env_token_disabled_by_default() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
         std::env::remove_var("UNIX_OIDC_ACCEPT_PAM_ENV");
         assert!(
             !is_pam_env_token_enabled(),
@@ -393,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_pam_env_token_enabled_with_true() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
         std::env::set_var("UNIX_OIDC_ACCEPT_PAM_ENV", "true");
         assert!(is_pam_env_token_enabled());
         std::env::remove_var("UNIX_OIDC_ACCEPT_PAM_ENV");
@@ -401,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_pam_env_token_enabled_with_1() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
         std::env::set_var("UNIX_OIDC_ACCEPT_PAM_ENV", "1");
         assert!(is_pam_env_token_enabled());
         std::env::remove_var("UNIX_OIDC_ACCEPT_PAM_ENV");
@@ -409,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_pam_env_token_not_enabled_with_other_values() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
 
         // Test various values that should NOT enable PAM env token reading
         for value in &["yes", "TRUE", "True", "enabled", "on", "0", "false", ""] {
@@ -429,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_security_invariant_both_modes_disabled_by_default() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
 
         // Clear all relevant environment variables
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
@@ -445,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_security_invariant_explicit_opt_in_required() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock();
 
         // Set variables to non-enabling values
         std::env::set_var("UNIX_OIDC_TEST_MODE", "false");

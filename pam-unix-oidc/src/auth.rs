@@ -80,7 +80,7 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
     // PolicyConfig::from_env() returns Ok(Default) in test mode, and Err when the
     // policy file is absent (e.g. in unit tests). We use .ok() so missing-file is
     // non-fatal; the default Warn mode (already set in from_env()) is used instead.
-    if let Some(policy) = PolicyConfig::from_env().ok() {
+    if let Ok(policy) = PolicyConfig::from_env() {
         config.jti_enforcement = policy.effective_security_modes().jti_enforcement;
     }
 
@@ -210,7 +210,7 @@ pub fn authenticate_with_dpop(
     // Thread JTI enforcement mode from policy config (Issue #10).
     // TODO(Phase 7): Also thread dpop_required enforcement mode once DPoP nonce
     // issuance lands; for now dpop binding is always hard-enforced for bound tokens.
-    if let Some(policy) = PolicyConfig::from_env().ok() {
+    if let Ok(policy) = PolicyConfig::from_env() {
         config.jti_enforcement = policy.effective_security_modes().jti_enforcement;
     }
 
