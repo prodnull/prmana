@@ -64,7 +64,7 @@ serde_yaml = "0.9"
 # rpassword is shared by both backends for PIN prompting.
 yubikey = ["dep:cryptoki", "dep:rpassword"]
 # tpm feature is implemented in Plan 03-02; dep:tss-esapi will be added then.
-tpm = ["dep:rpassword"]
+tpm = ["dep:tss-esapi", "dep:rpassword"]
 
 [dependencies.cryptoki]
 version = "0.7"
@@ -74,11 +74,13 @@ optional = true
 version = "7"
 optional = true
 
-# tss-esapi is added in Plan 03-02; declared here as a placeholder.
-# Uncomment when implementing the TPM backend.
-# [dependencies.tss-esapi]
-# version = "0.10"
-# optional = true
+# tss-esapi-sys ships pre-built FFI bindings only for Linux (x86_64, aarch64).
+# macOS requires `generate-bindings` with tpm2-tss C headers, which are not
+# available via homebrew. The `--features tpm` feature compiles on both platforms
+# but TpmSigner is only available on Linux (cfg(target_os = "linux")).
+[target.'cfg(target_os = "linux")'.dependencies.tss-esapi]
+version = "7.6"
+optional = true
 
 [dev-dependencies]
 tempfile = "3"

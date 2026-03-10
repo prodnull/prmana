@@ -14,6 +14,13 @@ pub mod thumbprint;
 #[cfg(feature = "yubikey")]
 pub mod yubikey_signer;
 
+// tpm_signer is compiled on all platforms when --features tpm is active.
+// The `pad_to_32` helper and its unit tests are platform-independent.
+// `TpmSigner` itself uses tss-esapi (Linux only) and is gated accordingly
+// inside the module.
+#[cfg(feature = "tpm")]
+pub mod tpm_signer;
+
 pub use dpop::{assemble_dpop_proof, build_dpop_message, generate_dpop_proof, DPoPClaims, DPoPError};
 pub use protected_key::{mlock_probe, MlockStatus, ProtectedSigningKey};
 pub use signer::{DPoPSigner, SignerError, SoftwareSigner};
@@ -21,3 +28,6 @@ pub use thumbprint::compute_ec_thumbprint;
 
 #[cfg(feature = "yubikey")]
 pub use yubikey_signer::YubiKeySigner;
+
+#[cfg(all(feature = "tpm", target_os = "linux"))]
+pub use tpm_signer::TpmSigner;
