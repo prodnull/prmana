@@ -1,10 +1,11 @@
 //! Authentication flow combining OIDC token validation and SSSD user resolution.
 
 use crate::oidc::{
-    validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPValidationError, TokenValidator,
-    ValidationConfig, ValidationError,
+    validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPValidationError, DPoPProofResult,
+    TokenValidator, ValidationConfig, ValidationError,
 };
-use crate::policy::config::PolicyConfig;
+use crate::policy::config::{EnforcementMode, PolicyConfig};
+use crate::security::nonce_cache::{global_nonce_cache, NonceConsumeError};
 use crate::security::session::generate_ssh_session_id;
 use crate::sssd::{get_user_info, user_exists, UserError};
 use thiserror::Error;
@@ -207,11 +208,12 @@ pub fn authenticate_with_dpop(
     let mut config =
         ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
 
-    // Thread JTI enforcement mode from policy config (Issue #10).
-    // TODO(Phase 7): Also thread dpop_required enforcement mode once DPoP nonce
-    // issuance lands; for now dpop binding is always hard-enforced for bound tokens.
+    // Thread JTI and dpop_required enforcement modes from policy config (Issue #10).
+    let mut dpop_nonce_enforcement = EnforcementMode::Strict; // safe default
     if let Ok(policy) = PolicyConfig::from_env() {
-        config.jti_enforcement = policy.effective_security_modes().jti_enforcement;
+        let modes = policy.effective_security_modes();
+        config.jti_enforcement = modes.jti_enforcement;
+        dpop_nonce_enforcement = modes.dpop_required;
     }
 
     // Create validator
@@ -231,43 +233,105 @@ pub fn authenticate_with_dpop(
 
     let claims = validator.validate(token)?;
 
+    // Validate DPoP proof and extract result (thumbprint + nonce).
+    //
+    // Helper closure to validate proof and enforce nonce policy.
+    // Returns the proof thumbprint string for cnf.jkt binding comparison.
+    let validate_and_enforce_nonce =
+        |proof: &str| -> Result<DPoPProofResult, AuthError> {
+            let dpop_validation_config = DPoPConfig {
+                max_proof_age: dpop_config.max_proof_age,
+                // Pass require_nonce/expected_nonce to dpop.rs only for the
+                // direct single-value path (expected_nonce set by caller).
+                // Cache-backed enforcement is handled here in auth.rs.
+                require_nonce: dpop_config.require_nonce && dpop_config.expected_nonce.is_some(),
+                expected_nonce: dpop_config.expected_nonce.clone(),
+                expected_method: "SSH".to_string(),
+                expected_target: dpop_config.target_host.clone(),
+            };
+            let result = validate_dpop_proof(proof, &dpop_validation_config)?;
+
+            // Cache-backed nonce enforcement path (require_nonce=true, expected_nonce=None).
+            // This is the primary path for server-issued nonces (RFC 9449 §8).
+            // The single-value path (expected_nonce=Some) is handled inside dpop.rs.
+            if dpop_config.require_nonce && dpop_config.expected_nonce.is_none() {
+                match &result.nonce {
+                    Some(nonce) => {
+                        // Nonce is present — consume it from cache.
+                        // Replay (nonce already consumed) is ALWAYS hard-fail regardless
+                        // of enforcement mode (CLAUDE.md security invariant).
+                        match global_nonce_cache().consume(nonce) {
+                            Ok(()) => {
+                                tracing::debug!(
+                                    nonce_prefix = &nonce[..nonce.len().min(8)],
+                                    "DPoP nonce consumed successfully"
+                                );
+                            }
+                            Err(NonceConsumeError::ConsumedOrExpired) => {
+                                tracing::warn!(
+                                    "DPoP nonce replay or expiry detected — rejecting"
+                                );
+                                return Err(AuthError::DPoPValidation(
+                                    DPoPValidationError::NonceMismatch,
+                                ));
+                            }
+                            Err(NonceConsumeError::EmptyNonce) => {
+                                // Should not happen: dpop.rs only stores non-empty nonces
+                                tracing::warn!("DPoP nonce in proof is empty — rejecting");
+                                return Err(AuthError::DPoPValidation(
+                                    DPoPValidationError::MissingNonce,
+                                ));
+                            }
+                        }
+                    }
+                    None => {
+                        // Nonce is absent from proof — behavior depends on enforcement mode.
+                        match dpop_nonce_enforcement {
+                            EnforcementMode::Strict => {
+                                tracing::warn!(
+                                    "DPoP nonce required (strict) but proof has no nonce"
+                                );
+                                return Err(AuthError::DPoPValidation(
+                                    DPoPValidationError::MissingNonce,
+                                ));
+                            }
+                            EnforcementMode::Warn => {
+                                tracing::warn!(
+                                    "DPoP proof has no nonce (dpop_required=warn) — \
+                                     allowing but this may indicate a misconfigured client"
+                                );
+                            }
+                            EnforcementMode::Disabled => {
+                                // Silently skip nonce check.
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(result)
+        };
+
     // Check for DPoP binding
     let dpop_thumbprint = if let Some(cnf) = &claims.cnf {
         if let Some(token_jkt) = &cnf.jkt {
             // Token is DPoP-bound, require proof
             let proof = dpop_proof.ok_or(AuthError::DPoPRequired)?;
 
-            // Validate the DPoP proof
-            let dpop_validation_config = DPoPConfig {
-                max_proof_age: dpop_config.max_proof_age,
-                require_nonce: dpop_config.require_nonce,
-                expected_nonce: dpop_config.expected_nonce.clone(),
-                expected_method: "SSH".to_string(),
-                expected_target: dpop_config.target_host.clone(),
-            };
-
-            let proof_thumbprint = validate_dpop_proof(proof, &dpop_validation_config)?;
+            let result = validate_and_enforce_nonce(proof)?;
 
             // Verify the proof's key matches the token's bound key
-            verify_dpop_binding(&proof_thumbprint, token_jkt)?;
+            verify_dpop_binding(&result.thumbprint, token_jkt)?;
 
-            Some(proof_thumbprint)
+            Some(result.thumbprint)
         } else {
             None
         }
     } else if let Some(proof) = dpop_proof {
         // Token is not DPoP-bound but proof was provided
         // Validate the proof anyway for logging/audit purposes
-        let dpop_validation_config = DPoPConfig {
-            max_proof_age: dpop_config.max_proof_age,
-            require_nonce: dpop_config.require_nonce,
-            expected_nonce: dpop_config.expected_nonce.clone(),
-            expected_method: "SSH".to_string(),
-            expected_target: dpop_config.target_host.clone(),
-        };
-
-        let proof_thumbprint = validate_dpop_proof(proof, &dpop_validation_config)?;
-        Some(proof_thumbprint)
+        let result = validate_and_enforce_nonce(proof)?;
+        Some(result.thumbprint)
     } else {
         None
     };
@@ -394,5 +458,164 @@ mod tests {
 
         let err = AuthError::UserNotFound("testuser".to_string());
         assert!(err.to_string().contains("testuser"));
+    }
+
+    // ── Nonce enforcement mode tests ──────────────────────────────────────────
+    //
+    // These tests exercise the nonce enforcement logic that lives in auth.rs,
+    // without requiring SSSD. They call validate_dpop_proof() + nonce_cache
+    // directly to mirror the logic in authenticate_with_dpop()'s
+    // validate_and_enforce_nonce closure.
+
+    use crate::oidc::{validate_dpop_proof, DPoPConfig, DPoPValidationError};
+    use crate::security::nonce_cache::{generate_dpop_nonce, DPoPNonceCache};
+
+    fn make_test_proof_with_nonce(
+        target: &str,
+        nonce: Option<&str>,
+    ) -> (String, String) {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        use p256::elliptic_curve::rand_core::OsRng;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let point = verifying_key.to_encoded_point(false);
+
+        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
+        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let claims = serde_json::json!({
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "htm": "SSH",
+            "htu": target,
+            "iat": now,
+            "nonce": nonce,
+        });
+
+        let header = serde_json::json!({
+            "typ": "dpop+jwt",
+            "alg": "ES256",
+            "jwk": { "kty": "EC", "crv": "P-256", "x": x, "y": y }
+        });
+
+        let h = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
+        let c = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
+        let msg = format!("{h}.{c}");
+        let sig: Signature = signing_key.sign(msg.as_bytes());
+        let proof = format!("{}.{}", msg, URL_SAFE_NO_PAD.encode(sig.to_bytes()));
+        (proof, target.to_string())
+    }
+
+    /// Replicate the cache-backed nonce enforcement logic from authenticate_with_dpop
+    /// so we can test it in isolation without SSSD.
+    fn apply_cache_nonce_enforcement(
+        nonce_from_proof: Option<&str>,
+        cache: &DPoPNonceCache,
+        enforcement: EnforcementMode,
+    ) -> Result<(), AuthError> {
+        match nonce_from_proof {
+            Some(nonce) => match cache.consume(nonce) {
+                Ok(()) => Ok(()),
+                Err(crate::security::nonce_cache::NonceConsumeError::ConsumedOrExpired) => {
+                    Err(AuthError::DPoPValidation(DPoPValidationError::NonceMismatch))
+                }
+                Err(crate::security::nonce_cache::NonceConsumeError::EmptyNonce) => {
+                    Err(AuthError::DPoPValidation(DPoPValidationError::MissingNonce))
+                }
+            },
+            None => match enforcement {
+                EnforcementMode::Strict => Err(AuthError::DPoPValidation(
+                    DPoPValidationError::MissingNonce,
+                )),
+                EnforcementMode::Warn => Ok(()),
+                EnforcementMode::Disabled => Ok(()),
+            },
+        }
+    }
+
+    #[test]
+    fn test_nonce_in_proof_and_cache_consume_succeeds() {
+        let cache = DPoPNonceCache::new(100, 60);
+        let nonce = generate_dpop_nonce().unwrap();
+        cache.issue(&nonce).unwrap();
+
+        let result = apply_cache_nonce_enforcement(Some(&nonce), &cache, EnforcementMode::Strict);
+        assert!(result.is_ok(), "valid nonce from cache must succeed");
+    }
+
+    #[test]
+    fn test_nonce_replay_is_always_hard_fail() {
+        // Replay (nonce already consumed) must hard-fail regardless of enforcement mode.
+        let cache = DPoPNonceCache::new(100, 60);
+        let nonce = generate_dpop_nonce().unwrap();
+        cache.issue(&nonce).unwrap();
+        // First consume
+        apply_cache_nonce_enforcement(Some(&nonce), &cache, EnforcementMode::Disabled).unwrap();
+
+        // Second consume — all modes must reject
+        for mode in [EnforcementMode::Strict, EnforcementMode::Warn, EnforcementMode::Disabled] {
+            let result = apply_cache_nonce_enforcement(Some(&nonce), &cache, mode);
+            assert!(
+                matches!(
+                    result,
+                    Err(AuthError::DPoPValidation(DPoPValidationError::NonceMismatch))
+                ),
+                "replay must hard-fail in mode {:?}",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn test_missing_nonce_strict_rejects() {
+        let cache = DPoPNonceCache::new(100, 60);
+        let result = apply_cache_nonce_enforcement(None, &cache, EnforcementMode::Strict);
+        assert!(
+            matches!(
+                result,
+                Err(AuthError::DPoPValidation(DPoPValidationError::MissingNonce))
+            ),
+            "strict mode must reject missing nonce"
+        );
+    }
+
+    #[test]
+    fn test_missing_nonce_warn_allows() {
+        let cache = DPoPNonceCache::new(100, 60);
+        let result = apply_cache_nonce_enforcement(None, &cache, EnforcementMode::Warn);
+        assert!(result.is_ok(), "warn mode must allow missing nonce");
+    }
+
+    #[test]
+    fn test_missing_nonce_disabled_allows() {
+        let cache = DPoPNonceCache::new(100, 60);
+        let result = apply_cache_nonce_enforcement(None, &cache, EnforcementMode::Disabled);
+        assert!(result.is_ok(), "disabled mode must allow missing nonce");
+    }
+
+    #[test]
+    fn test_validate_dpop_proof_result_carries_nonce() {
+        let target = "nonce-result-test.example.com";
+        let (proof, _) = make_test_proof_with_nonce(target, Some("test-nonce-abc"));
+
+        let config = DPoPConfig {
+            max_proof_age: 60,
+            require_nonce: false,
+            expected_nonce: None,
+            expected_method: "SSH".to_string(),
+            expected_target: target.to_string(),
+        };
+
+        let result = validate_dpop_proof(&proof, &config).unwrap();
+        assert_eq!(result.nonce.as_deref(), Some("test-nonce-abc"));
+        assert!(!result.thumbprint.is_empty());
     }
 }

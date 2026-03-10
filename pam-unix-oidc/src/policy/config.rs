@@ -207,7 +207,7 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
 
 // ── Cache configuration ───────────────────────────────────────────────────────
 
-/// Operational tuning for caches (JTI replay cache, etc.).
+/// Operational tuning for caches (JTI replay cache, DPoP nonce cache, etc.).
 ///
 /// Separate from `SecurityModes` because changing cache sizes is operational
 /// tuning, not a security-policy change.
@@ -220,6 +220,14 @@ pub struct CacheConfig {
     /// How often (in seconds) expired JTI entries are swept from the cache.
     /// Default: 300 seconds (5 minutes).
     pub jti_cleanup_interval_secs: u64,
+    /// Maximum number of outstanding (unconsumed) DPoP nonces in the nonce cache.
+    /// Each issued nonce occupies one entry until consumed or TTL-expired.
+    /// Default: 100,000 (matches RFC 9449 §8 operational guidance).
+    pub nonce_max_entries: u64,
+    /// Time-to-live for issued DPoP nonces, in seconds.
+    /// An unconsumed nonce older than this is automatically expired.
+    /// Default: 60 seconds (RFC 9449 §8 recommends short-lived nonces).
+    pub nonce_ttl_secs: u64,
 }
 
 impl Default for CacheConfig {
@@ -227,6 +235,8 @@ impl Default for CacheConfig {
         Self {
             jti_max_entries: 100_000,
             jti_cleanup_interval_secs: 300,
+            nonce_max_entries: 100_000,
+            nonce_ttl_secs: 60,
         }
     }
 }
@@ -238,6 +248,8 @@ impl<'de> serde::de::Deserialize<'de> for CacheConfig {
         struct Raw {
             jti_max_entries: usize,
             jti_cleanup_interval_secs: u64,
+            nonce_max_entries: u64,
+            nonce_ttl_secs: u64,
         }
         impl Default for Raw {
             fn default() -> Self {
@@ -245,6 +257,8 @@ impl<'de> serde::de::Deserialize<'de> for CacheConfig {
                 Self {
                     jti_max_entries: c.jti_max_entries,
                     jti_cleanup_interval_secs: c.jti_cleanup_interval_secs,
+                    nonce_max_entries: c.nonce_max_entries,
+                    nonce_ttl_secs: c.nonce_ttl_secs,
                 }
             }
         }
@@ -252,6 +266,8 @@ impl<'de> serde::de::Deserialize<'de> for CacheConfig {
         Ok(CacheConfig {
             jti_max_entries: r.jti_max_entries,
             jti_cleanup_interval_secs: r.jti_cleanup_interval_secs,
+            nonce_max_entries: r.nonce_max_entries,
+            nonce_ttl_secs: r.nonce_ttl_secs,
         })
     }
 }
@@ -577,6 +593,26 @@ mod tests {
         let cache = CacheConfig::default();
         assert_eq!(cache.jti_max_entries, 100_000);
         assert_eq!(cache.jti_cleanup_interval_secs, 300);
+        assert_eq!(cache.nonce_max_entries, 100_000);
+        assert_eq!(cache.nonce_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_cache_config_nonce_fields_yaml_override() {
+        let yaml = r#"
+cache:
+  nonce_max_entries: 50000
+  nonce_ttl_secs: 30
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("nonce cache yaml should load");
+
+        assert_eq!(policy.cache.nonce_max_entries, 50_000);
+        assert_eq!(policy.cache.nonce_ttl_secs, 30);
+        // JTI defaults still intact
+        assert_eq!(policy.cache.jti_max_entries, 100_000);
     }
 
     #[test]

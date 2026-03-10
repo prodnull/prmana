@@ -203,14 +203,29 @@ pub enum DPoPValidationError {
     InvalidKeyParameters,
 }
 
-/// Validate a DPoP proof and return the JWK thumbprint
+/// Result of a successful DPoP proof validation.
 ///
-/// Returns the thumbprint of the public key that signed the proof.
-/// This should be compared against the token's `cnf.jkt` claim.
+/// Contains both the JWK thumbprint (for binding verification against `cnf.jkt`)
+/// and the nonce extracted from the proof claims (for cache-based single-use enforcement).
+#[derive(Debug, Clone)]
+pub struct DPoPProofResult {
+    /// JWK thumbprint of the key that signed the proof (RFC 7638).
+    /// Compare against the access token's `cnf.jkt` claim.
+    pub thumbprint: String,
+    /// Nonce from the DPoP proof claims, if present.
+    /// Used by auth.rs for cache-based single-use enforcement (RFC 9449 §8).
+    pub nonce: Option<String>,
+}
+
+/// Validate a DPoP proof and return the JWK thumbprint and nonce.
+///
+/// Returns a [`DPoPProofResult`] containing:
+/// - `thumbprint`: the public key thumbprint (compare against `cnf.jkt`)
+/// - `nonce`: the nonce from the proof claims, if any
 pub fn validate_dpop_proof(
     proof: &str,
     config: &DPoPConfig,
-) -> Result<String, DPoPValidationError> {
+) -> Result<DPoPProofResult, DPoPValidationError> {
     // Split proof into parts
     let parts: Vec<&str> = proof.split('.').collect();
     if parts.len() != 3 {
@@ -333,8 +348,11 @@ pub fn validate_dpop_proof(
         return Err(DPoPValidationError::ReplayDetected);
     }
 
-    // Compute and return thumbprint
-    Ok(compute_jwk_thumbprint(&jwk))
+    // Compute thumbprint and capture nonce for caller
+    let thumbprint = compute_jwk_thumbprint(&jwk);
+    let nonce = claims.nonce;
+
+    Ok(DPoPProofResult { thumbprint, nonce })
 }
 
 /// Verify that the proof's key matches the token's cnf.jkt claim
@@ -473,6 +491,8 @@ mod tests {
 
         let result = validate_dpop_proof(&proof, &config);
         assert!(result.is_ok());
+        // nonce should be None for a proof without nonce claim
+        assert!(result.unwrap().nonce.is_none());
     }
 
     #[test]
@@ -489,6 +509,30 @@ mod tests {
 
         let result = validate_dpop_proof(&proof, &config);
         assert!(result.is_ok());
+        let dpop_result = result.unwrap();
+        assert_eq!(dpop_result.nonce.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn test_dpop_proof_result_has_thumbprint_and_nonce() {
+        let (proof, expected_thumbprint) =
+            create_test_proof("SSH", "result-test.example.com", Some("my-nonce-xyz"));
+
+        let config = DPoPConfig {
+            max_proof_age: 60,
+            require_nonce: false, // let the result carry nonce without validating it here
+            expected_nonce: None,
+            expected_method: "SSH".to_string(),
+            expected_target: "result-test.example.com".to_string(),
+        };
+
+        let result = validate_dpop_proof(&proof, &config).unwrap();
+        assert_eq!(result.thumbprint, expected_thumbprint, "thumbprint must match");
+        assert_eq!(
+            result.nonce.as_deref(),
+            Some("my-nonce-xyz"),
+            "nonce must be carried from proof claims"
+        );
     }
 
     #[test]
@@ -557,13 +601,13 @@ mod tests {
             expected_target: "server.example.com".to_string(),
         };
 
-        let proof_thumbprint = validate_dpop_proof(&proof, &config).unwrap();
+        let result = validate_dpop_proof(&proof, &config).unwrap();
 
         // Should match
-        assert!(verify_dpop_binding(&proof_thumbprint, &thumbprint).is_ok());
+        assert!(verify_dpop_binding(&result.thumbprint, &thumbprint).is_ok());
 
         // Should not match different thumbprint
-        assert!(verify_dpop_binding(&proof_thumbprint, "wrong-thumbprint").is_err());
+        assert!(verify_dpop_binding(&result.thumbprint, "wrong-thumbprint").is_err());
     }
 
     #[test]
