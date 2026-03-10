@@ -11,9 +11,18 @@ path = "src/main.rs"
 
 [dependencies]
 # Crypto
+# Note: p256 0.13 does NOT have a `zeroize` feature flag — ZeroizeOnDrop is
+# implemented unconditionally in ecdsa-0.16 for SigningKey<C>. The `ecdsa` and
+# `jwk` features are all that is needed.
 p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
 sha2 = "0.10"
 base64 = "0.21"
+# MEM-01/MEM-02: zeroize for Zeroizing<T> wrapper; ZeroizeOnDrop already implemented
+# unconditionally by ecdsa-0.16's SigningKey. secrecy is added for Plan 02+ usage.
+zeroize = { version = "1", features = ["derive"] }
+secrecy = "0.10"
+# MEM-04: libc for mlock/munlock syscalls (memory locking of key pages)
+libc = "0.2"
 
 # OIDC/JWT
 jsonwebtoken = "9.0"
