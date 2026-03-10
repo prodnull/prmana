@@ -7,6 +7,7 @@
 
 pub mod file_store;
 pub mod keyring_store;
+pub mod router;
 pub mod secure_delete;
 
 use thiserror::Error;
@@ -38,10 +39,15 @@ pub enum StorageError {
     Encryption(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Error during credential migration between backends.
+    /// Carries a human-readable description of which migration step failed.
+    #[error("Migration error: {0}")]
+    Migration(String),
 }
 
 pub use file_store::FileStorage;
 pub use keyring_store::KeyringStorage;
+pub use router::{BackendKind, MigrationStatus, StorageRouter};
 
 /// Storage keys for credentials
 pub const KEY_DPOP_PRIVATE: &str = "unix-oidc-dpop-key";

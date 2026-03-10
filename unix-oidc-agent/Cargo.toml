@@ -39,7 +39,11 @@ serde_json = "1.0"
 clap = { version = "4", features = ["derive"] }
 
 # Storage
-keyring = "3"
+# Enable real keyring backends. Without features, keyring silently uses mock store.
+# sync-secret-service: D-Bus/libsecret on Linux (requires libdbus-1-dev)
+# linux-native: keyutils syscall backend (@u keyring, no daemon needed)
+# apple-native: macOS Keychain Services
+keyring = { version = "3", features = ["sync-secret-service", "linux-native", "apple-native"] }
 directories = "5"
 
 # Error handling
