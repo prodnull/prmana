@@ -11,7 +11,7 @@ pub mod protected_key;
 pub mod signer;
 pub mod thumbprint;
 
-pub use dpop::{generate_dpop_proof, DPoPClaims, DPoPError};
+pub use dpop::{assemble_dpop_proof, build_dpop_message, generate_dpop_proof, DPoPClaims, DPoPError};
 pub use protected_key::{mlock_probe, MlockStatus, ProtectedSigningKey};
 pub use signer::{DPoPSigner, SignerError, SoftwareSigner};
 pub use thumbprint::compute_ec_thumbprint;

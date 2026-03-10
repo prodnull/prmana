@@ -1,4 +1,16 @@
 //! DPoP proof generation (RFC 9449)
+//!
+//! This module exposes three layers of API:
+//!
+//! 1. `build_dpop_message()` — constructs the unsigned `header_b64.claims_b64` string.
+//!    Takes a public key JWK value so hardware signers can call it without exposing
+//!    private key material.
+//!
+//! 2. `assemble_dpop_proof()` — appends a raw r‖s signature (64 bytes for P-256) to
+//!    the unsigned message, producing the final `header.claims.sig` JWT string.
+//!
+//! 3. `generate_dpop_proof()` — convenience wrapper: calls `build_dpop_message` +
+//!    p256 sign + `assemble_dpop_proof`. Used by `SoftwareSigner` unchanged.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
@@ -31,7 +43,68 @@ pub struct EcPublicKeyJwk {
     pub y: String,
 }
 
-/// Generate a DPoP proof JWT
+/// Build the unsigned DPoP message (`header_b64.claims_b64`).
+///
+/// This function takes the public key JWK as a `serde_json::Value` so that
+/// hardware signers (YubiKey, TPM) can call it without exposing private key
+/// material. The returned string is the signing input for the DPoP proof.
+///
+/// # Errors
+///
+/// Returns `DPoPError::ClockError` if the system clock is before the Unix epoch.
+/// Returns `DPoPError::Json` if serialisation fails.
+pub fn build_dpop_message(
+    public_key_jwk: &serde_json::Value,
+    method: &str,
+    target: &str,
+    nonce: Option<&str>,
+) -> Result<String, DPoPError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| DPoPError::ClockError)?
+        .as_secs() as i64;
+
+    let claims = DPoPClaims {
+        jti: Uuid::new_v4().to_string(),
+        htm: method.to_string(),
+        htu: target.to_string(),
+        iat: now,
+        nonce: nonce.map(String::from),
+    };
+
+    // Build header with embedded JWK (RFC 9449 §4.2)
+    let header_json = serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": "ES256",
+        "jwk": public_key_jwk
+    });
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
+    let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims)?.as_bytes());
+
+    Ok(format!("{}.{}", header_b64, claims_b64))
+}
+
+/// Assemble a DPoP JWT from a signed message and raw r‖s signature bytes.
+///
+/// `message` is the `header_b64.claims_b64` string returned by `build_dpop_message`.
+/// `sig_rs_bytes` must be exactly 64 bytes (32-byte r followed by 32-byte s for P-256).
+///
+/// # Errors
+///
+/// Returns `DPoPError::InvalidSignatureLength` if `sig_rs_bytes.len() != 64`.
+pub fn assemble_dpop_proof(message: &str, sig_rs_bytes: &[u8]) -> Result<String, DPoPError> {
+    if sig_rs_bytes.len() != 64 {
+        return Err(DPoPError::InvalidSignatureLength(sig_rs_bytes.len()));
+    }
+    let sig_b64 = URL_SAFE_NO_PAD.encode(sig_rs_bytes);
+    Ok(format!("{}.{}", message, sig_b64))
+}
+
+/// Generate a DPoP proof JWT using a software signing key.
+///
+/// This is a convenience wrapper used by `SoftwareSigner`. Hardware signers
+/// call `build_dpop_message` + `assemble_dpop_proof` directly.
 ///
 /// The proof contains:
 /// - Header with typ=dpop+jwt, alg=ES256, and embedded JWK
@@ -49,39 +122,17 @@ pub fn generate_dpop_proof(
     let x = URL_SAFE_NO_PAD.encode(point.x().ok_or(DPoPError::InvalidKey)?);
     let y = URL_SAFE_NO_PAD.encode(point.y().ok_or(DPoPError::InvalidKey)?);
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| DPoPError::ClockError)?
-        .as_secs() as i64;
-
-    let claims = DPoPClaims {
-        jti: Uuid::new_v4().to_string(),
-        htm: method.to_string(),
-        htu: target.to_string(),
-        iat: now,
-        nonce: nonce.map(String::from),
-    };
-
-    // Build header with embedded JWK
-    let header_json = serde_json::json!({
-        "typ": "dpop+jwt",
-        "alg": "ES256",
-        "jwk": {
-            "kty": "EC",
-            "crv": "P-256",
-            "x": x,
-            "y": y
-        }
+    let public_key_jwk = serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "x": x,
+        "y": y
     });
 
-    let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
-    let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims)?.as_bytes());
-
-    let message = format!("{}.{}", header_b64, claims_b64);
+    let message = build_dpop_message(&public_key_jwk, method, target, nonce)?;
     let signature: Signature = signing_key.sign(message.as_bytes());
-    let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
-
-    Ok(format!("{}.{}", message, sig_b64))
+    // p256 Signature::to_bytes() returns 64-byte raw r‖s (RFC 9449 §4.2)
+    assemble_dpop_proof(&message, &signature.to_bytes())
 }
 
 /// Extract the JWK from a DPoP proof header
@@ -124,6 +175,13 @@ pub enum DPoPError {
     InvalidBase64,
     #[error("Invalid proof type (expected dpop+jwt)")]
     InvalidProofType,
+    /// Returned when `assemble_dpop_proof` receives a signature that is not 64 bytes.
+    /// P-256 ECDSA raw r‖s signatures are always exactly 64 bytes.
+    #[error("Invalid signature length: expected 64 bytes, got {0}")]
+    InvalidSignatureLength(usize),
+    /// Propagated from hardware signer backends (YubiKey, TPM).
+    #[error("Hardware signer error: {0}")]
+    HardwareSigner(String),
 }
 
 #[cfg(test)]
@@ -225,5 +283,88 @@ mod tests {
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts2[1]).unwrap()).unwrap();
 
         assert_ne!(claims1.jti, claims2.jti);
+    }
+
+    // --- Tests for the refactored build/assemble API ---
+
+    #[test]
+    fn test_build_dpop_message_produces_two_part_string() {
+        let jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "test_x_value_base64url",
+            "y": "test_y_value_base64url"
+        });
+        let msg = build_dpop_message(&jwk, "SSH", "server.example.com", None).unwrap();
+        let parts: Vec<&str> = msg.split('.').collect();
+        assert_eq!(parts.len(), 2, "build_dpop_message must return header.claims");
+        // Both parts must be valid base64url
+        for part in &parts {
+            assert!(URL_SAFE_NO_PAD.decode(part).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_build_dpop_message_header_contains_jwk() {
+        let jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "some_x",
+            "y": "some_y"
+        });
+        let msg = build_dpop_message(&jwk, "SSH", "host", None).unwrap();
+        let header_b64 = msg.split('.').next().unwrap();
+        let header_bytes = URL_SAFE_NO_PAD.decode(header_b64).unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert_eq!(header["typ"], "dpop+jwt");
+        assert_eq!(header["alg"], "ES256");
+        assert_eq!(header["jwk"]["kty"], "EC");
+        assert_eq!(header["jwk"]["crv"], "P-256");
+    }
+
+    #[test]
+    fn test_assemble_dpop_proof_valid_64_byte_sig() {
+        let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"x","y":"y"});
+        let msg = build_dpop_message(&jwk, "SSH", "host", None).unwrap();
+        let sig = vec![0u8; 64];
+        let proof = assemble_dpop_proof(&msg, &sig).unwrap();
+        let parts: Vec<&str> = proof.split('.').collect();
+        assert_eq!(parts.len(), 3, "assemble_dpop_proof must produce a 3-part JWT");
+        // Third part must decode to 64 bytes
+        let decoded = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
+        assert_eq!(decoded.len(), 64);
+    }
+
+    #[test]
+    fn test_assemble_dpop_proof_rejects_63_bytes() {
+        let msg = "header.claims".to_string();
+        let sig = vec![0u8; 63];
+        let result = assemble_dpop_proof(&msg, &sig);
+        assert!(matches!(result, Err(DPoPError::InvalidSignatureLength(63))));
+    }
+
+    #[test]
+    fn test_assemble_dpop_proof_rejects_65_bytes() {
+        let msg = "header.claims".to_string();
+        let sig = vec![0u8; 65];
+        let result = assemble_dpop_proof(&msg, &sig);
+        assert!(matches!(result, Err(DPoPError::InvalidSignatureLength(65))));
+    }
+
+    #[test]
+    fn test_generate_dpop_proof_uses_build_assemble_internally() {
+        // Verify that generate_dpop_proof produces the same format as manual build+assemble.
+        // We can't easily verify the signature matches (different random key), but we
+        // verify the structural invariant: 3 parts, header/claims decode correctly.
+        let signing_key = SigningKey::random(&mut OsRng);
+        let proof = generate_dpop_proof(&signing_key, "GET", "https://example.com", None).unwrap();
+        let parts: Vec<&str> = proof.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        let header_bytes = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert_eq!(header["typ"], "dpop+jwt");
+        assert_eq!(header["alg"], "ES256");
+        let sig_bytes = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
+        assert_eq!(sig_bytes.len(), 64);
     }
 }
