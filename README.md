@@ -353,6 +353,42 @@ Our CI includes:
 
 This testing infrastructure is **not** a requirement for production—use whatever OIDC provider your organization already has.
 
+## Security Design
+
+unix-oidc is designed with defense in depth for key material. This section summarizes the memory and storage protection model for operators and contributors.
+
+### Memory protection
+
+| Mechanism | What it protects | Limitation |
+|-----------|-----------------|------------|
+| `zeroize` on drop (`ecdsa-0.16`) | DPoP private key bytes zeroed when struct is dropped | Compiler may not guarantee zeroing in all conditions; zeroize uses volatile writes as best effort |
+| `mlock(2)` / `PR_SET_DUMPABLE` | Key pages pinned to RAM; core dumps disabled | Does not protect against root or kernel access; `mlock` failure is non-fatal |
+| `secrecy::SecretString` for tokens | OAuth tokens show `[REDACTED]` in all logs/traces | Raw value accessible via `.expose_secret()` — audit boundary is grep-searchable |
+| `Box`-only `ProtectedSigningKey` | No stack copies of key material | Only protects within process; memory forensics by root can still access |
+
+### Secure deletion
+
+`FileStorage::delete()` performs a three-pass DoD 5220.22-M overwrite before unlinking:
+- Pass 1: random bytes, `fsync`
+- Pass 2: complement (XOR 0xFF), `fsync`
+- Pass 3: new random bytes, `fsync`, then `unlink`
+
+**CoW filesystem warning**: On btrfs (Linux) and APFS (macOS), copy-on-write semantics mean overwrites may not modify the original data blocks. The agent logs a `WARN` advisory if CoW storage is detected at startup and before each key deletion.
+
+**SSD wear leveling warning**: Flash storage firmware may redirect writes to spare blocks. The agent logs a `WARN` advisory on Linux when non-rotational storage is detected.
+
+**Recommendation**: Use full-disk encryption (LUKS on Linux, FileVault on macOS) when deploying on CoW filesystems or SSDs. Secure overwrite is complementary, not a substitute, for FDE on those platforms. See [NIST SP 800-88 Rev 1](https://csrc.nist.gov/publications/detail/sp/800-88/rev-1/final) §2.5 for background.
+
+### For contributors
+
+See `CLAUDE.md` — **Memory Protection Invariants** section — for the complete set of invariants, rationale, and known limitations. Security-critical files:
+
+| File | What it protects |
+|------|-----------------|
+| `unix-oidc-agent/src/crypto/protected_key.rs` | DPoP key lifecycle (zeroize, mlock, Box-only) |
+| `unix-oidc-agent/src/storage/secure_delete.rs` | Three-pass overwrite, CoW/SSD detection |
+| `unix-oidc-agent/src/security.rs` | Core dump disabling (`prctl`/`ptrace`) |
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and security design principles.
