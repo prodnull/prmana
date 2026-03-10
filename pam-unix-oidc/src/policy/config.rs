@@ -261,6 +261,155 @@ fn pattern_matches(pattern: &str, text: &str) -> bool {
 mod tests {
     use super::*;
 
+    // ── New-type tests (RED phase) ──────────────────────────────────────────
+
+    #[test]
+    fn test_enforcement_mode_defaults() {
+        // EnforcementMode::default() must be Warn (v1.0 behavior for JTI)
+        assert_eq!(EnforcementMode::default(), EnforcementMode::Warn);
+    }
+
+    #[test]
+    fn test_security_modes_defaults() {
+        let modes = SecurityModes::default();
+        assert_eq!(modes.jti_enforcement, EnforcementMode::Warn);
+        assert_eq!(modes.dpop_required, EnforcementMode::Strict);
+        assert_eq!(modes.amr_enforcement, EnforcementMode::Disabled);
+        assert_eq!(modes.acr.enforcement, EnforcementMode::Warn);
+        assert!(modes.acr.minimum_level.is_none());
+    }
+
+    #[test]
+    fn test_cache_config_defaults() {
+        let cache = CacheConfig::default();
+        assert_eq!(cache.jti_max_entries, 100_000);
+        assert_eq!(cache.jti_cleanup_interval_secs, 300);
+    }
+
+    #[test]
+    fn test_v1_yaml_loads_with_defaults() {
+        // A v1.0 policy.yaml (no security_modes section) must load without error
+        // and produce None for security_modes (triggering v1.0-compat path).
+        let yaml = r#"
+host:
+  classification: standard
+ssh_login:
+  require_oidc: true
+"#;
+        let policy: PolicyConfig = figment::Figment::from(
+            figment::providers::Serialized::defaults(PolicyConfig::default()),
+        )
+        .merge(figment::providers::Yaml::string(yaml))
+        .extract()
+        .expect("v1.0 yaml should load");
+
+        assert!(
+            policy.security_modes.is_none(),
+            "v1.0 yaml must produce security_modes=None"
+        );
+        // effective_security_modes() must still return correct defaults
+        let modes = policy.effective_security_modes();
+        assert_eq!(modes.jti_enforcement, EnforcementMode::Warn);
+        assert_eq!(modes.dpop_required, EnforcementMode::Strict);
+    }
+
+    #[test]
+    fn test_v2_yaml_overrides_security_modes() {
+        let yaml = r#"
+security_modes:
+  jti_enforcement: strict
+  dpop_required: warn
+"#;
+        let policy: PolicyConfig = figment::Figment::from(
+            figment::providers::Serialized::defaults(PolicyConfig::default()),
+        )
+        .merge(figment::providers::Yaml::string(yaml))
+        .extract()
+        .expect("v2.0 yaml should load");
+
+        let modes = policy.effective_security_modes();
+        assert_eq!(modes.jti_enforcement, EnforcementMode::Strict);
+        assert_eq!(modes.dpop_required, EnforcementMode::Warn);
+    }
+
+    #[test]
+    fn test_invalid_enforcement_mode_rejected() {
+        let yaml = r#"
+security_modes:
+  jti_enforcement: strct
+"#;
+        let result: Result<PolicyConfig, _> = figment::Figment::from(
+            figment::providers::Serialized::defaults(PolicyConfig::default()),
+        )
+        .merge(figment::providers::Yaml::string(yaml))
+        .extract();
+
+        assert!(result.is_err(), "Invalid mode string must cause load failure");
+    }
+
+    #[test]
+    fn test_cache_section_overrides_defaults() {
+        let yaml = r#"
+cache:
+  jti_max_entries: 50000
+  jti_cleanup_interval_secs: 600
+"#;
+        let policy: PolicyConfig = figment::Figment::from(
+            figment::providers::Serialized::defaults(PolicyConfig::default()),
+        )
+        .merge(figment::providers::Yaml::string(yaml))
+        .extract()
+        .expect("cache yaml should load");
+
+        assert_eq!(policy.cache.jti_max_entries, 50_000);
+        assert_eq!(policy.cache.jti_cleanup_interval_secs, 600);
+    }
+
+    #[test]
+    fn test_env_var_override_jti_enforcement() {
+        // UNIX_OIDC_SECURITY_MODES__JTI_ENFORCEMENT=strict overrides YAML
+        let yaml = r#"
+security_modes:
+  jti_enforcement: warn
+"#;
+        // Safety: test-only env var manipulation; tests run sequentially within this module
+        std::env::set_var("UNIX_OIDC_SECURITY_MODES__JTI_ENFORCEMENT", "strict");
+        let result: Result<PolicyConfig, _> = figment::Figment::from(
+            figment::providers::Serialized::defaults(PolicyConfig::default()),
+        )
+        .merge(figment::providers::Yaml::string(yaml))
+        .merge(figment::providers::Env::prefixed("UNIX_OIDC_").split("__"))
+        .extract();
+        std::env::remove_var("UNIX_OIDC_SECURITY_MODES__JTI_ENFORCEMENT");
+
+        let policy = result.expect("env override should succeed");
+        assert_eq!(
+            policy.effective_security_modes().jti_enforcement,
+            EnforcementMode::Strict
+        );
+    }
+
+    #[test]
+    fn test_unknown_env_vars_do_not_break_load() {
+        // UNIX_OIDC_TEST_MODE is not a PolicyConfig field — figment must not error.
+        // We use `.only()` filter on the env provider to prevent unknown key mapping.
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "true");
+        let result: Result<PolicyConfig, _> = figment::Figment::from(
+            figment::providers::Serialized::defaults(PolicyConfig::default()),
+        )
+        .merge(
+            figment::providers::Env::prefixed("UNIX_OIDC_")
+                .split("__")
+                .only(&["security_modes", "cache"]),
+        )
+        .extract();
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+        assert!(result.is_ok(), "Unknown env vars must not break config load");
+    }
+
+    // ── Existing tests below ────────────────────────────────────────────────
+
     #[test]
     fn test_default_policy() {
         let policy = PolicyConfig::default();
