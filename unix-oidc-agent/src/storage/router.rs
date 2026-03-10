@@ -917,20 +917,68 @@ mod tests {
 
     #[test]
     #[ignore = "Requires interactive keychain or running D-Bus/Secret Service"]
-    fn detect_auto_returns_router_without_panicking() {
-        let result = detect_auto();
-        assert!(result.is_ok(), "detect_auto should not fail: {:?}", result);
+    fn detect_auto_selects_native_keychain() {
+        let router = detect_auto().expect("detect_auto should not fail");
+
+        // On macOS, must select Keychain Services; on Linux, Secret Service or keyutils.
+        // File fallback means the keychain probe failed — that's a test environment issue,
+        // not a pass.
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            router.kind,
+            BackendKind::MacOsKeychain,
+            "macOS detect_auto must select Keychain, got {:?}",
+            router.kind
+        );
+        #[cfg(target_os = "linux")]
+        assert!(
+            router.kind == BackendKind::SecretService
+                || router.kind == BackendKind::KeyutilsUser,
+            "Linux detect_auto must select a keyring backend, got {:?}",
+            router.kind
+        );
     }
 
     #[test]
     #[ignore = "Requires interactive keychain or running D-Bus/Secret Service"]
-    fn storage_router_detect_returns_ok_with_mock_builder() {
+    fn storage_router_detect_selects_native_keychain() {
         std::env::remove_var("UNIX_OIDC_STORAGE_BACKEND");
-        let result = StorageRouter::detect();
+        let router = StorageRouter::detect()
+            .expect("StorageRouter::detect() should succeed");
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            router.kind,
+            BackendKind::MacOsKeychain,
+            "macOS detect must select Keychain, got {:?}",
+            router.kind
+        );
+        #[cfg(target_os = "linux")]
         assert!(
-            result.is_ok(),
-            "StorageRouter::detect() should succeed: {:?}",
-            result
+            router.kind == BackendKind::SecretService
+                || router.kind == BackendKind::KeyutilsUser,
+            "Linux detect must select a keyring backend, got {:?}",
+            router.kind
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires interactive keychain or running D-Bus/Secret Service"]
+    fn probe_cleans_up_keychain_entry() {
+        // Verify probe doesn't leave stale entries in the real keychain.
+        let storage = KeyringStorage::new();
+        let result = probe_backend(&storage);
+        assert!(result.is_ok(), "keychain probe should succeed: {:?}", result);
+
+        // The probe key format is "unix-oidc-probe-{pid}-{seq}".
+        // We can't predict the exact key, but we can verify a second probe
+        // also succeeds (which would fail if cleanup left entries that block
+        // subsequent writes on some backends).
+        let result2 = probe_backend(&storage);
+        assert!(
+            result2.is_ok(),
+            "second keychain probe should succeed (cleanup worked): {:?}",
+            result2
         );
     }
 
