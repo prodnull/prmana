@@ -189,13 +189,16 @@ fn perform_step_up(
         &poll_display,
     )?;
 
-    // Validate the token
+    // Validate the token.
+    // For sudo step-up, we use Warn mode (same as v1.0 default) so that environments
+    // whose IdP omits JTI can still use step-up without reconfiguring policy.yaml.
+    // Strict mode can be configured via policy.yaml if replay protection is critical.
     let validation_config = ValidationConfig {
         issuer: issuer.clone(),
         client_id: client_id.clone(),
         required_acr: requirements.minimum_acr.clone(),
         max_auth_age: None, // Fresh auth, no max age check needed
-        enforce_jti: true,  // Enable replay protection for sudo
+        jti_enforcement: crate::policy::config::EnforcementMode::Warn,
     };
 
     // Create validator

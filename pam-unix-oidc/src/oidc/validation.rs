@@ -2,6 +2,7 @@
 
 use crate::oidc::jwks::{JwksError, JwksProvider};
 use crate::oidc::token::TokenClaims;
+use crate::policy::config::EnforcementMode;
 use crate::security::jti_cache::{global_jti_cache, JtiCheckResult};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use std::sync::Arc;
@@ -58,10 +59,15 @@ pub struct ValidationConfig {
     pub client_id: String,
     pub required_acr: Option<String>,
     pub max_auth_age: Option<i64>,
-    /// Whether to enforce JTI uniqueness (replay protection).
-    /// When true, tokens with previously-seen JTI values are rejected.
-    /// Default: true (enabled for security)
-    pub enforce_jti: bool,
+    /// JTI replay-prevention enforcement mode (Issue #10).
+    ///
+    /// - `Strict`   — tokens without JTI are rejected.
+    /// - `Warn`     — tokens without JTI produce a warning but pass (v1.0 default behavior).
+    /// - `Disabled` — JTI check is skipped entirely (replay protection unavailable).
+    ///
+    /// Replaces the old `UNIX_OIDC_DISABLE_JTI_CHECK` environment variable.
+    /// Default: `Warn` to maintain exact v1.0 behavior.
+    pub jti_enforcement: EnforcementMode,
 }
 
 impl ValidationConfig {
@@ -69,7 +75,8 @@ impl ValidationConfig {
         let issuer = std::env::var("OIDC_ISSUER")
             .map_err(|_| ValidationError::ConfigError("OIDC_ISSUER not set".into()))?;
 
-        let client_id = std::env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "unix-oidc".into());
+        let client_id = std::env::var("OIDC_CLIENT_ID")
+            .unwrap_or_else(|_| "unix-oidc".into());
 
         let required_acr = std::env::var("OIDC_REQUIRED_ACR").ok();
 
@@ -77,17 +84,16 @@ impl ValidationConfig {
             .ok()
             .and_then(|s| s.parse().ok());
 
-        // JTI enforcement is enabled by default; set UNIX_OIDC_DISABLE_JTI_CHECK=true to disable
-        let enforce_jti = std::env::var("UNIX_OIDC_DISABLE_JTI_CHECK")
-            .map(|v| v.to_lowercase() != "true")
-            .unwrap_or(true);
+        // JTI enforcement defaults to Warn (v1.0 behavior: warn on missing JTI, allow).
+        // Callers in auth.rs override this from PolicyConfig.effective_security_modes().
+        let jti_enforcement = EnforcementMode::Warn;
 
         Ok(Self {
             issuer,
             client_id,
             required_acr,
             max_auth_age,
-            enforce_jti,
+            jti_enforcement,
         })
     }
 }
@@ -173,8 +179,12 @@ impl TokenValidator {
             return Err(ValidationError::Expired);
         }
 
-        // Check JTI for replay protection
-        if self.config.enforce_jti {
+        // Check JTI for replay protection (Issue #10 — configurable enforcement).
+        //
+        // Disabled mode skips the cache lookup entirely to avoid unnecessary state.
+        // Strict and Warn modes both record seen JTIs; they differ only in how
+        // a *missing* JTI (no jti claim at all) is handled.
+        if self.config.jti_enforcement != EnforcementMode::Disabled {
             // Calculate TTL for JTI cache based on token expiration
             let ttl_seconds = (claims.exp - now + CLOCK_SKEW_TOLERANCE).max(0) as u64;
 
@@ -186,22 +196,43 @@ impl TokenValidator {
 
             match jti_result {
                 JtiCheckResult::Valid => {
-                    // First use of this JTI - allow
+                    // First use of this JTI — allow.
                 }
                 JtiCheckResult::Replay => {
-                    // This token was already used - reject
+                    // Token was already used — always reject regardless of mode.
+                    // Replay detection is a hard-fail (CLAUDE.md §Security Check Decision Matrix).
                     return Err(ValidationError::TokenReplay {
-                        jti: claims.jti.clone().unwrap_or_else(|| "unknown".to_string()),
+                        jti: claims
+                            .jti
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
                     });
                 }
                 JtiCheckResult::Missing => {
-                    // Token has no JTI - log warning but allow for now
-                    // TODO(#10): Implement configurable JTI enforcement modes
-                    // (strict/warn/disabled) for enterprise flexibility
-                    tracing::warn!(
-                        username = %claims.preferred_username,
-                        "Token missing JTI claim - replay protection not available"
-                    );
+                    // Token has no JTI — behavior depends on enforcement mode.
+                    match self.config.jti_enforcement {
+                        EnforcementMode::Strict => {
+                            tracing::warn!(
+                                check = "jti",
+                                mode = "strict",
+                                username = %claims.preferred_username,
+                                "JTI missing — rejecting token (strict mode)"
+                            );
+                            return Err(ValidationError::MissingJti);
+                        }
+                        EnforcementMode::Warn => {
+                            tracing::warn!(
+                                check = "jti",
+                                mode = "warn",
+                                username = %claims.preferred_username,
+                                "Token missing JTI claim — allowing with warning (some IdPs omit JTI)"
+                            );
+                        }
+                        EnforcementMode::Disabled => {
+                            // Unreachable: Disabled is handled by the outer if-guard above.
+                            // This arm exists to make the match exhaustive.
+                        }
+                    }
                 }
             }
         }
@@ -283,9 +314,11 @@ impl TokenValidator {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use crate::policy::config::EnforcementMode;
 
     // Helper to create a test validator that skips signature verification.
     // Only available when compiled with --features test-mode.
@@ -293,6 +326,19 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validator(config: ValidationConfig) -> TokenValidator {
         TokenValidator::new_insecure_for_testing(config)
+    }
+
+    /// Base config for tests — issuer/client_id only, JTI disabled so the JTI
+    /// cache state does not bleed between tests.
+    #[cfg(feature = "test-mode")]
+    fn base_config() -> ValidationConfig {
+        ValidationConfig {
+            issuer: "http://localhost:8080/realms/test".into(),
+            client_id: "unix-oidc".into(),
+            required_acr: None,
+            max_auth_age: None,
+            jti_enforcement: EnforcementMode::Disabled,
+        }
     }
 
     #[test]
@@ -304,6 +350,8 @@ mod tests {
 
         assert_eq!(config.issuer, "http://localhost:8080/realms/test");
         assert_eq!(config.client_id, "unix-oidc");
+        // Default JTI enforcement is Warn (v1.0 behavior)
+        assert_eq!(config.jti_enforcement, EnforcementMode::Warn);
 
         // Cleanup
         std::env::remove_var("OIDC_ISSUER");
@@ -314,11 +362,8 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validate_expired_token() {
         let config = ValidationConfig {
-            issuer: "http://localhost:8080/realms/test".into(),
-            client_id: "unix-oidc".into(),
-            required_acr: None,
-            max_auth_age: None,
-            enforce_jti: false, // Disable for test
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);
@@ -335,10 +380,8 @@ mod tests {
     fn test_validate_wrong_issuer() {
         let config = ValidationConfig {
             issuer: "http://localhost:8080/realms/correct".into(),
-            client_id: "unix-oidc".into(),
-            required_acr: None,
-            max_auth_age: None,
-            enforce_jti: false,
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);
@@ -352,11 +395,9 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validate_wrong_audience() {
         let config = ValidationConfig {
-            issuer: "http://localhost:8080/realms/test".into(),
             client_id: "wrong-client".into(),
-            required_acr: None,
-            max_auth_age: None,
-            enforce_jti: false,
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);
@@ -370,11 +411,9 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validate_insufficient_acr() {
         let config = ValidationConfig {
-            issuer: "http://localhost:8080/realms/test".into(),
-            client_id: "unix-oidc".into(),
             required_acr: Some("urn:example:acr:high".into()),
-            max_auth_age: None,
-            enforce_jti: false,
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);
@@ -391,11 +430,9 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validate_valid_token() {
         let config = ValidationConfig {
-            issuer: "http://localhost:8080/realms/test".into(),
-            client_id: "unix-oidc".into(),
             required_acr: Some("urn:example:acr:mfa".into()),
-            max_auth_age: None,
-            enforce_jti: false,
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);
@@ -406,6 +443,103 @@ mod tests {
         let claims = result.unwrap();
         assert_eq!(claims.preferred_username, "testuser");
     }
+
+    // ── JTI enforcement mode tests ───────────────────────────────────────────
+
+    /// Strict mode rejects a token with no JTI claim (MissingJti error).
+    #[test]
+    #[cfg(feature = "test-mode")]
+    fn test_jti_strict_rejects_missing() {
+        let config = ValidationConfig {
+            jti_enforcement: EnforcementMode::Strict,
+            ..base_config()
+        };
+
+        let validator = test_validator(config);
+        let token = create_token_without_jti();
+        let result = validator.validate(&token);
+
+        assert!(
+            matches!(result, Err(ValidationError::MissingJti)),
+            "Strict mode must reject tokens without JTI, got: {:?}",
+            result
+        );
+    }
+
+    /// Warn mode allows a token with no JTI claim (authentication succeeds).
+    #[test]
+    #[cfg(feature = "test-mode")]
+    fn test_jti_warn_allows_missing() {
+        let config = ValidationConfig {
+            jti_enforcement: EnforcementMode::Warn,
+            ..base_config()
+        };
+
+        let validator = test_validator(config);
+        let token = create_token_without_jti();
+        let result = validator.validate(&token);
+
+        assert!(
+            result.is_ok(),
+            "Warn mode must allow tokens without JTI (with warning), got: {:?}",
+            result
+        );
+    }
+
+    /// Disabled mode skips the JTI check entirely (authentication succeeds, no cache writes).
+    #[test]
+    #[cfg(feature = "test-mode")]
+    fn test_jti_disabled_skips_check() {
+        let config = ValidationConfig {
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
+        };
+
+        let validator = test_validator(config);
+        let token = create_token_without_jti();
+        let result = validator.validate(&token);
+
+        assert!(
+            result.is_ok(),
+            "Disabled mode must skip JTI check entirely, got: {:?}",
+            result
+        );
+    }
+
+    /// v1.0 default: Warn mode on missing JTI allows authentication.
+    /// Replay (duplicate JTI) is always hard-rejected regardless of mode.
+    #[test]
+    #[cfg(feature = "test-mode")]
+    fn test_v1_default_behavior() {
+        // v1.0 default: Warn allows missing JTI
+        let config = ValidationConfig {
+            jti_enforcement: EnforcementMode::Warn,
+            ..base_config()
+        };
+
+        let validator = test_validator(config);
+        let token_no_jti = create_token_without_jti();
+
+        // Missing JTI → must pass (v1.0 behavior)
+        let result = validator.validate(&token_no_jti);
+        assert!(
+            result.is_ok(),
+            "v1.0 default (Warn) must allow tokens without JTI"
+        );
+
+        // Replay of a *present* JTI → always rejected
+        let token_with_jti = create_valid_test_token();
+        let first = validator.validate(&token_with_jti);
+        assert!(first.is_ok(), "First use of JTI must succeed");
+
+        let second = validator.validate(&token_with_jti);
+        assert!(
+            matches!(second, Err(ValidationError::TokenReplay { .. })),
+            "Replay of same JTI must be rejected even in Warn mode"
+        );
+    }
+
+    // ── Token construction helpers ───────────────────────────────────────────
 
     #[allow(dead_code)]
     fn create_expired_test_token() -> String {
@@ -424,6 +558,19 @@ mod tests {
         let header = r#"{"alg":"RS256","typ":"JWT"}"#;
         // exp is far in the future (2030)
         let payload = r#"{"sub":"testuser","preferred_username":"testuser","iss":"http://localhost:8080/realms/test","aud":"unix-oidc","exp":1893456000,"iat":1705400000,"acr":"urn:example:acr:mfa","auth_time":1705400000,"jti":"test-token-id"}"#;
+
+        let header_b64 = URL_SAFE_NO_PAD.encode(header);
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
+
+        format!("{}.{}.fake-signature", header_b64, payload_b64)
+    }
+
+    /// Token without a JTI claim — used to test enforcement mode behavior.
+    #[allow(dead_code)]
+    fn create_token_without_jti() -> String {
+        let header = r#"{"alg":"RS256","typ":"JWT"}"#;
+        // No "jti" field in payload
+        let payload = r#"{"sub":"testuser","preferred_username":"testuser","iss":"http://localhost:8080/realms/test","aud":"unix-oidc","exp":1893456000,"iat":1705400000,"acr":"urn:example:acr:mfa","auth_time":1705400000}"#;
 
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
@@ -459,11 +606,9 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validate_missing_auth_time_with_max_auth_age() {
         let config = ValidationConfig {
-            issuer: "http://localhost:8080/realms/test".into(),
-            client_id: "unix-oidc".into(),
-            required_acr: None,
             max_auth_age: Some(3600), // 1 hour
-            enforce_jti: false,
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);
@@ -477,11 +622,9 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validate_auth_time_too_old() {
         let config = ValidationConfig {
-            issuer: "http://localhost:8080/realms/test".into(),
-            client_id: "unix-oidc".into(),
-            required_acr: None,
             max_auth_age: Some(3600), // 1 hour
-            enforce_jti: false,
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);
@@ -498,11 +641,9 @@ mod tests {
     #[cfg(feature = "test-mode")]
     fn test_validate_valid_token_with_max_auth_age() {
         let config = ValidationConfig {
-            issuer: "http://localhost:8080/realms/test".into(),
-            client_id: "unix-oidc".into(),
-            required_acr: None,
-            max_auth_age: Some(86400 * 365 * 100), // 100 years - token's auth_time will always be within this
-            enforce_jti: false,
+            max_auth_age: Some(86400 * 365 * 100), // 100 years
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
         };
 
         let validator = test_validator(config);

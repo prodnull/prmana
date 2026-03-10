@@ -4,6 +4,7 @@ use crate::oidc::{
     validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPValidationError, TokenValidator,
     ValidationConfig, ValidationError,
 };
+use crate::policy::config::PolicyConfig;
 use crate::security::session::generate_ssh_session_id;
 use crate::sssd::{get_user_info, user_exists, UserError};
 use thiserror::Error;
@@ -67,14 +68,21 @@ pub struct AuthResult {
 /// 3. Resolves the username to a local user via NSS (which queries SSSD)
 /// 4. Returns the authentication result with user info and session ID
 ///
-/// Authenticate a user with an OIDC token.
-///
 /// # Test Mode
 /// When compiled with `--features test-mode` AND `UNIX_OIDC_TEST_MODE` env var is set,
 /// signature verification is skipped. Production builds MUST NOT include this feature.
 pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
     // Load configuration from environment
-    let config = ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
+    let mut config =
+        ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
+
+    // Thread JTI enforcement mode from policy config (Issue #10).
+    // PolicyConfig::from_env() returns Ok(Default) in test mode, and Err when the
+    // policy file is absent (e.g. in unit tests). We use .ok() so missing-file is
+    // non-fatal; the default Warn mode (already set in from_env()) is used instead.
+    if let Some(policy) = PolicyConfig::from_env().ok() {
+        config.jti_enforcement = policy.effective_security_modes().jti_enforcement;
+    }
 
     // Create validator
     #[cfg(feature = "test-mode")]
@@ -196,7 +204,15 @@ pub fn authenticate_with_dpop(
     dpop_config: &DPoPAuthConfig,
 ) -> Result<AuthResult, AuthError> {
     // Load configuration from environment
-    let config = ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
+    let mut config =
+        ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
+
+    // Thread JTI enforcement mode from policy config (Issue #10).
+    // TODO(Phase 7): Also thread dpop_required enforcement mode once DPoP nonce
+    // issuance lands; for now dpop binding is always hard-enforced for bound tokens.
+    if let Some(policy) = PolicyConfig::from_env().ok() {
+        config.jti_enforcement = policy.effective_security_modes().jti_enforcement;
+    }
 
     // Create validator
     #[cfg(feature = "test-mode")]
@@ -316,6 +332,7 @@ pub fn authenticate_with_config(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
