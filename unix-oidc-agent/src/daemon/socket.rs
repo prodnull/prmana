@@ -722,4 +722,70 @@ mod tests {
         assert!(state.token_expires.is_none());
         assert!(state.username.is_none());
     }
+
+    // --- TDD RED: Secret<String> wrapping and redaction ---
+
+    /// Security: AgentState Debug output must NEVER expose raw token values.
+    /// access_token must be wrapped in Secret<String>, which redacts via "[REDACTED]".
+    #[test]
+    fn test_agent_state_debug_redacts_access_token() {
+        use secrecy::Secret;
+        let state = AgentState {
+            signer: None,
+            access_token: Some(Secret::new("super-secret-access-token".to_string())),
+            token_expires: Some(9999999999),
+            username: Some("alice".to_string()),
+            metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
+        };
+        let debug_output = format!("{:?}", state);
+        assert!(
+            !debug_output.contains("super-secret-access-token"),
+            "Debug output must not contain raw token value, got: {}",
+            debug_output
+        );
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output must contain [REDACTED] for Secret fields, got: {}",
+            debug_output
+        );
+    }
+
+    /// Security: expose_secret() is the only path to the raw token value.
+    #[test]
+    fn test_access_token_expose_secret_roundtrip() {
+        use secrecy::{ExposeSecret, Secret};
+        let raw = "eyJhbGciOiJFUzI1NiJ9.test.sig";
+        let state = AgentState {
+            signer: None,
+            access_token: Some(Secret::new(raw.to_string())),
+            token_expires: None,
+            username: None,
+            metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
+        };
+        let exposed = state.access_token.as_ref().unwrap().expose_secret();
+        assert_eq!(exposed, raw);
+    }
+
+    /// Process hardening: disable_core_dumps() must not panic on any platform.
+    #[test]
+    fn test_disable_core_dumps_no_panic() {
+        use crate::security::disable_core_dumps;
+        // Must complete without panicking, regardless of success/failure.
+        // Best-effort: failures are logged as WARN.
+        disable_core_dumps();
+    }
+
+    /// mlock status field: AgentState must carry mlock_status for status reporting.
+    #[test]
+    fn test_agent_state_carries_mlock_status() {
+        use crate::crypto::protected_key::MlockStatus;
+        let mut state = AgentState::new();
+        state.mlock_status = Some("mlock active".to_string());
+        assert_eq!(state.mlock_status.as_deref(), Some("mlock active"));
+
+        state.mlock_status = Some("mlock unavailable (EPERM)".to_string());
+        assert!(state.mlock_status.as_ref().unwrap().contains("unavailable"));
+    }
 }
