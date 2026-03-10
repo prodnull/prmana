@@ -411,11 +411,13 @@ async fn perform_token_refresh(
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_bytes)
         .map_err(|e| format!("Failed to parse token metadata: {}", e))?;
 
-    // Get refresh token
-    let refresh_token = metadata["refresh_token"]
-        .as_str()
-        .ok_or("No refresh token found. Please login again.")?
-        .to_string();
+    // Security (MEM-03): wrap refresh_token in SecretString at extraction — must not appear in logs.
+    let refresh_token = SecretString::from(
+        metadata["refresh_token"]
+            .as_str()
+            .ok_or("No refresh token found. Please login again.")?
+            .to_string(),
+    );
 
     // Get OIDC config
     let token_endpoint = metadata["token_endpoint"]
@@ -428,25 +430,33 @@ async fn perform_token_refresh(
         .ok_or("No client_id found. Please login again.")?
         .to_string();
 
-    let client_secret = metadata["client_secret"].as_str().map(String::from);
+    // Security (MEM-03): wrap client_secret in SecretString at extraction — must not appear in logs.
+    let client_secret: Option<SecretString> =
+        metadata["client_secret"].as_str().map(|s| SecretString::from(s.to_string()));
 
     info!("Performing token refresh...");
 
-    // Perform refresh in blocking task (reqwest::blocking)
+    // Perform refresh in blocking task (reqwest::blocking).
+    // SecretString is Clone (String: CloneableSecret in secrecy 0.10) — safe to clone for closure capture.
+    let refresh_token_clone = refresh_token.clone();
     let result = tokio::task::spawn_blocking(move || {
         let http_client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
+        let refresh_token_str: &str = refresh_token_clone.expose_secret();
         let mut params = vec![
             ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.as_str()),
+            // Security (MEM-03): expose_secret() at HTTP param boundary only.
+            ("refresh_token", refresh_token_str),
             ("client_id", client_id.as_str()),
         ];
 
         if let Some(ref secret) = client_secret {
-            params.push(("client_secret", secret.as_str()));
+            // Security (MEM-03): expose_secret() at HTTP param boundary only.
+            let secret_str: &str = secret.expose_secret();
+            params.push(("client_secret", secret_str));
         }
 
         let response = http_client

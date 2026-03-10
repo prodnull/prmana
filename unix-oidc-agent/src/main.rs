@@ -304,7 +304,10 @@ async fn run_login(
         .or_else(|| std::env::var("OIDC_CLIENT_ID").ok())
         .unwrap_or_else(|| "unix-oidc".to_string());
 
-    let client_secret = client_secret.or_else(|| std::env::var("OIDC_CLIENT_SECRET").ok());
+    // Security (MEM-03): wrap client_secret in SecretString immediately — must not appear in logs.
+    let client_secret: Option<SecretString> = client_secret
+        .map(SecretString::from)
+        .or_else(|| std::env::var("OIDC_CLIENT_SECRET").ok().map(SecretString::from));
 
     info!("Starting device flow authentication with {}", issuer);
 
@@ -321,6 +324,7 @@ async fn run_login(
     // Use spawn_blocking for the sync device flow client
     let issuer_clone = issuer.clone();
     let client_id_clone = client_id.clone();
+    // SecretString is Clone (String: CloneableSecret in secrecy 0.10) — safe to clone for closure capture.
     let secret_clone = client_secret.clone();
 
     // Store issuer for refresh operations
@@ -363,7 +367,9 @@ async fn run_login(
         let mut params = vec![("client_id", client_id_clone.as_str()), ("scope", "openid")];
 
         if let Some(ref secret) = secret_clone {
-            params.push(("client_secret", secret.as_str()));
+            // Security (MEM-03): expose_secret() at HTTP param boundary only.
+            let secret_str: &str = secret.expose_secret();
+            params.push(("client_secret", secret_str));
         }
 
         let device_response: serde_json::Value = http_client
@@ -450,7 +456,9 @@ async fn run_login(
             ];
 
             if let Some(ref secret) = secret_clone {
-                token_params.push(("client_secret", secret.as_str()));
+                // Security (MEM-03): expose_secret() at HTTP param boundary only.
+                let secret_str: &str = secret.expose_secret();
+                token_params.push(("client_secret", secret_str));
             }
 
             let response = http_client
@@ -527,14 +535,15 @@ async fn run_login(
     // Storage write: expose_secret() is the audit boundary for persistence.
     storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
 
-    // Store token metadata (expiry, refresh token, and OIDC config for refresh)
+    // Store token metadata (expiry, refresh token, and OIDC config for refresh).
+    // Storage write: expose_secret() is the audit boundary — raw value written to disk only here.
     let metadata = serde_json::json!({
         "expires_at": token_expires,
         "refresh_token": token_result["refresh_token"].as_str(),
         "issuer": issuer_for_storage,
         "token_endpoint": token_endpoint,
         "client_id": client_id_for_storage,
-        "client_secret": client_secret_for_storage,
+        "client_secret": client_secret_for_storage.as_ref().map(|s| { let v: &str = s.expose_secret(); v }),
     });
     storage.store(KEY_TOKEN_METADATA, metadata.to_string().as_bytes())?;
 
@@ -593,10 +602,13 @@ async fn run_refresh() -> anyhow::Result<()> {
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to parse token metadata: {}", e))?;
 
-    // Get refresh token
-    let refresh_token = metadata["refresh_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No refresh token found. Please login again."))?;
+    // Security (MEM-03): wrap refresh_token in SecretString at extraction — must not appear in logs.
+    let refresh_token = SecretString::from(
+        metadata["refresh_token"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("No refresh token found. Please login again."))?
+            .to_string(),
+    );
 
     // Get OIDC config
     let token_endpoint = metadata["token_endpoint"]
@@ -609,12 +621,15 @@ async fn run_refresh() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("No client_id found. Please login again."))?
         .to_string();
 
-    let client_secret = metadata["client_secret"].as_str().map(String::from);
+    // Security (MEM-03): wrap client_secret in SecretString at extraction — must not appear in logs.
+    let client_secret: Option<SecretString> =
+        metadata["client_secret"].as_str().map(|s| SecretString::from(s.to_string()));
 
     println!("Refreshing access token...");
 
-    // Perform refresh in blocking task
-    let refresh_token_clone = refresh_token.to_string();
+    // Perform refresh in blocking task.
+    // SecretString is Clone (String: CloneableSecret in secrecy 0.10) — safe to clone for closure capture.
+    let refresh_token_clone = refresh_token.clone();
     let token_result = tokio::task::spawn_blocking(move || {
         use std::time::Duration;
 
@@ -623,14 +638,18 @@ async fn run_refresh() -> anyhow::Result<()> {
             .build()
             .expect("Failed to create HTTP client");
 
+        let refresh_token_str: &str = refresh_token_clone.expose_secret();
         let mut params = vec![
             ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token_clone.as_str()),
+            // Security (MEM-03): expose_secret() at HTTP param boundary only.
+            ("refresh_token", refresh_token_str),
             ("client_id", client_id.as_str()),
         ];
 
         if let Some(ref secret) = client_secret {
-            params.push(("client_secret", secret.as_str()));
+            // Security (MEM-03): expose_secret() at HTTP param boundary only.
+            let secret_str: &str = secret.expose_secret();
+            params.push(("client_secret", secret_str));
         }
 
         let response = http_client
