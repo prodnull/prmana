@@ -27,11 +27,14 @@
 //! Failed probes log a WARN with actionable text:
 //! "credentials from previous backend are inaccessible; run `unix-oidc-agent login` to re-authenticate"
 
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::KeyringStorage;
-use super::{FileStorage, SecureStorage, StorageError};
+use super::{
+    FileStorage, SecureStorage, StorageError, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE,
+    KEY_REFRESH_TOKEN, KEY_TOKEN_METADATA,
+};
 
 /// Prefix for probe sentinel keys. A random suffix is appended per invocation
 /// so that parallel probes (e.g., in tests) don't clobber each other.
@@ -135,6 +138,141 @@ impl StorageRouter {
     /// Return the active backend kind.
     pub fn kind(&self) -> &BackendKind {
         &self.kind
+    }
+
+    /// Migrate credentials from the default [`FileStorage`] location to this backend.
+    ///
+    /// This is the public entry point called at daemon startup and login. It creates
+    /// a `FileStorage` instance pointing at the default data directory and delegates
+    /// to [`StorageRouter::maybe_migrate_from`].
+    ///
+    /// Returns the number of keys migrated (0 when no migration was needed).
+    pub fn maybe_migrate(&mut self) -> Result<usize, StorageError> {
+        let file_storage = match FileStorage::new() {
+            Ok(s) => s,
+            Err(_) => {
+                // If we can't even construct FileStorage, there's nothing to migrate.
+                self.migration_status = MigrationStatus::NotApplicable;
+                return Ok(0);
+            }
+        };
+        self.maybe_migrate_from(&file_storage)
+    }
+
+    /// Migrate credentials from `src` (file storage) to this backend.
+    ///
+    /// # Migration semantics
+    ///
+    /// 1. If this router is backed by `File`, return `NotApplicable` immediately —
+    ///    file-to-file migration is a no-op.
+    /// 2. Collect whichever of the 4 credential keys exist in `src`.
+    /// 3. If none exist, return `NotApplicable`.
+    /// 4. For each key: write to `self` then read back and compare. On any mismatch
+    ///    or error, call `rollback_migration()` to undo all previously written keys
+    ///    and return `Err`.
+    /// 5. After all keys are verified in the new backend, secure-delete each from `src`.
+    ///    Deletion failures are logged at WARN and do not abort the migration.
+    /// 6. Update `self.migration_status` to `Migrated(n)` and log at INFO.
+    ///
+    /// Returns the number of keys migrated.
+    pub fn maybe_migrate_from(
+        &mut self,
+        src: &FileStorage,
+    ) -> Result<usize, StorageError> {
+        // No file-to-file migration.
+        if self.kind == BackendKind::File {
+            self.migration_status = MigrationStatus::NotApplicable;
+            return Ok(0);
+        }
+
+        // Collect keys that exist in the file source.
+        let all_keys = [
+            KEY_DPOP_PRIVATE,
+            KEY_ACCESS_TOKEN,
+            KEY_REFRESH_TOKEN,
+            KEY_TOKEN_METADATA,
+        ];
+
+        let present_keys: Vec<&str> = all_keys.iter().copied().filter(|k| src.exists(k)).collect();
+
+        if present_keys.is_empty() {
+            self.migration_status = MigrationStatus::NotApplicable;
+            return Ok(0);
+        }
+
+        // Migrate each key: write to destination, read back, verify.
+        let mut migrated: Vec<&str> = Vec::with_capacity(present_keys.len());
+
+        for &key in &present_keys {
+            let value = src.retrieve(key).map_err(|e| {
+                StorageError::Migration(format!(
+                    "Failed to read key '{}' from source: {}",
+                    key, e
+                ))
+            })?;
+
+            // Write to destination.
+            if let Err(e) = self.backend.store(key, &value) {
+                warn!(key, error = %e, "Migration write failed; rolling back");
+                self.rollback_migration(&migrated);
+                return Err(StorageError::Migration(format!(
+                    "Failed to write key '{}' to destination: {}",
+                    key, e
+                )));
+            }
+
+            // Read back and verify (guards against silent write failures).
+            match self.backend.retrieve(key) {
+                Ok(readback) if readback == value => {
+                    migrated.push(key);
+                }
+                Ok(_) => {
+                    warn!(key, "Migration read-back mismatch; rolling back");
+                    // Delete the just-written key before rolling back the rest.
+                    let _ = self.backend.delete(key);
+                    self.rollback_migration(&migrated);
+                    return Err(StorageError::Migration(format!(
+                        "Read-back verification failed for key '{}'",
+                        key
+                    )));
+                }
+                Err(e) => {
+                    warn!(key, error = %e, "Migration read-back failed; rolling back");
+                    let _ = self.backend.delete(key);
+                    self.rollback_migration(&migrated);
+                    return Err(StorageError::Migration(format!(
+                        "Read-back failed for key '{}': {}",
+                        key, e
+                    )));
+                }
+            }
+        }
+
+        // All keys migrated and verified. Secure-delete originals.
+        // Deletion failures are best-effort (per research Pitfall 6): log WARN, continue.
+        for &key in &migrated {
+            if let Err(e) = src.delete(key) {
+                warn!(key, error = %e, "Could not secure-delete source key after migration (best-effort)");
+            }
+        }
+
+        let count = migrated.len();
+        self.migration_status = MigrationStatus::Migrated(count);
+        info!(count, "Migrated credentials from file storage to keyring backend");
+
+        Ok(count)
+    }
+
+    /// Delete all keys in `migrated` from `self.backend`.
+    ///
+    /// Called during rollback. Individual deletion failures are logged at WARN
+    /// but do not abort the rollback — remaining keys are still attempted.
+    fn rollback_migration(&self, migrated: &[&str]) {
+        for &key in migrated {
+            if let Err(e) = self.backend.delete(key) {
+                warn!(key, error = %e, "Rollback deletion failed (best-effort — continuing)");
+            }
+        }
     }
 }
 
@@ -414,6 +552,206 @@ mod tests {
     /// Must be called before any Entry::new() calls in the test.
     fn use_mock_keyring() {
         keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    }
+
+    /// Create a file-backed StorageRouter pointing at a custom directory.
+    /// Used in tests that need two separate file stores (source + destination)
+    /// without triggering interactive keychain prompts on macOS.
+    fn detect_forced_with_dir(
+        _name: &str,
+        base_dir: std::path::PathBuf,
+    ) -> Result<StorageRouter, StorageError> {
+        let storage = FileStorage::with_base_dir(base_dir);
+        Ok(StorageRouter {
+            backend: Box::new(storage),
+            // Use a non-File kind so migration actually runs (skipping kind==File guard).
+            kind: BackendKind::SecretService,
+            migration_status: MigrationStatus::NotApplicable,
+        })
+    }
+
+    // -------------------------------------------------------------------------
+    // maybe_migrate() — TDD RED tests added first (Task 1)
+    // -------------------------------------------------------------------------
+
+    /// Migration with all 4 keys present: returns Migrated(4) and keys reach destination.
+    #[test]
+    fn migration_moves_all_4_keys_from_file_to_keyring() {
+        use crate::storage::{KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN, KEY_TOKEN_METADATA};
+
+        let src_tmp = tempfile::TempDir::new().expect("tempdir");
+        let src = FileStorage::with_base_dir(src_tmp.path().to_path_buf());
+
+        // Store all 4 keys in file storage.
+        src.store(KEY_DPOP_PRIVATE, b"dpop-key-bytes").unwrap();
+        src.store(KEY_ACCESS_TOKEN, b"access-token").unwrap();
+        src.store(KEY_REFRESH_TOKEN, b"refresh-token").unwrap();
+        src.store(KEY_TOKEN_METADATA, b"metadata-json").unwrap();
+
+        // Use a file-backed destination (a second tempdir) to avoid keyring prompt in CI.
+        let dst_tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut router = detect_forced_with_dir("file-dst", dst_tmp.path().to_path_buf())
+            .expect("router should be created");
+
+        let result = router.maybe_migrate_from(&src);
+        assert!(result.is_ok(), "migration should succeed: {:?}", result);
+        assert_eq!(result.unwrap(), 4, "should report 4 keys migrated");
+        assert!(
+            matches!(router.migration_status, MigrationStatus::Migrated(4)),
+            "migration_status should be Migrated(4)"
+        );
+
+        // All 4 keys should now exist in the destination.
+        assert!(router.exists(KEY_DPOP_PRIVATE), "dpop key should be in dst");
+        assert!(router.exists(KEY_ACCESS_TOKEN), "access token should be in dst");
+        assert!(router.exists(KEY_REFRESH_TOKEN), "refresh token should be in dst");
+        assert!(router.exists(KEY_TOKEN_METADATA), "metadata should be in dst");
+    }
+
+    /// Migration returns NotApplicable when no file credentials exist.
+    #[test]
+    fn migration_returns_not_applicable_when_no_file_credentials() {
+        let src_tmp = tempfile::TempDir::new().expect("tempdir");
+        let src = FileStorage::with_base_dir(src_tmp.path().to_path_buf());
+        // No keys stored.
+
+        let dst_tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut router = detect_forced_with_dir("file-dst", dst_tmp.path().to_path_buf())
+            .expect("router should be created");
+
+        let result = router.maybe_migrate_from(&src);
+        assert!(result.is_ok(), "should return Ok(0): {:?}", result);
+        assert_eq!(result.unwrap(), 0, "should report 0 keys migrated");
+        assert!(
+            matches!(router.migration_status, MigrationStatus::NotApplicable),
+            "migration_status should be NotApplicable"
+        );
+    }
+
+    /// Migration rollback: if write of key 3 fails, keys 1+2 are removed from destination.
+    #[test]
+    fn migration_rollback_when_destination_write_fails() {
+        use crate::storage::{KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE};
+
+        let src_tmp = tempfile::TempDir::new().expect("tempdir");
+        let src = FileStorage::with_base_dir(src_tmp.path().to_path_buf());
+
+        // Only store 2 out of 4 keys; use a poisoned backend that fails on the 3rd write.
+        // We simulate this by storing only 2 keys (so migration processes exactly 2) then
+        // verifying no partial state remains after a store failure.
+        // A simpler approach: wrap the destination in a failing backend after 2 stores.
+        src.store(KEY_DPOP_PRIVATE, b"dpop-key").unwrap();
+        src.store(KEY_ACCESS_TOKEN, b"access-token").unwrap();
+
+        // Poisoned router: succeeds on first store, fails on second retrieve (verify step).
+        // We use a pair of FileStorage tempdirs where the source has keys but we
+        // inject a read-verify failure using a custom wrapper.
+        struct FailOnSecondStore {
+            inner: FileStorage,
+            call_count: std::sync::atomic::AtomicUsize,
+        }
+        impl SecureStorage for FailOnSecondStore {
+            fn store(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
+                use std::sync::atomic::Ordering;
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if n >= 1 {
+                    return Err(StorageError::Backend("simulated write failure on key 2+".to_string()));
+                }
+                self.inner.store(key, value)
+            }
+            fn retrieve(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+                self.inner.retrieve(key)
+            }
+            fn delete(&self, key: &str) -> Result<(), StorageError> {
+                self.inner.delete(key)
+            }
+            fn exists(&self, key: &str) -> bool {
+                self.inner.exists(key)
+            }
+        }
+
+        let dst_tmp = tempfile::TempDir::new().expect("tempdir");
+        let failing_backend = FailOnSecondStore {
+            inner: FileStorage::with_base_dir(dst_tmp.path().to_path_buf()),
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        };
+
+        let mut router = StorageRouter {
+            backend: Box::new(failing_backend),
+            kind: BackendKind::SecretService,  // non-File so migration runs
+            migration_status: MigrationStatus::NotApplicable,
+        };
+
+        let result = router.maybe_migrate_from(&src);
+        // Migration must fail.
+        assert!(result.is_err(), "migration should fail when write fails: {:?}", result);
+
+        // After rollback, the first key that WAS written must be deleted from dst.
+        // The dst_tmp directory should have 0 remaining files for migrated keys.
+        let remaining_files: Vec<_> = std::fs::read_dir(dst_tmp.path())
+            .expect("read_dir")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            remaining_files.is_empty(),
+            "rollback should delete all partially-migrated keys: {:?}",
+            remaining_files.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Migration: file credentials are deleted after successful migration.
+    #[test]
+    fn migration_secure_deletes_file_credentials_after_success() {
+        use crate::storage::{KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE};
+
+        let src_tmp = tempfile::TempDir::new().expect("tempdir");
+        let src = FileStorage::with_base_dir(src_tmp.path().to_path_buf());
+
+        src.store(KEY_DPOP_PRIVATE, b"dpop-key").unwrap();
+        src.store(KEY_ACCESS_TOKEN, b"access-token").unwrap();
+
+        let dst_tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut router = detect_forced_with_dir("file-dst", dst_tmp.path().to_path_buf())
+            .expect("router should be created");
+
+        router.maybe_migrate_from(&src).expect("migration should succeed");
+
+        // Source files must be deleted.
+        assert!(!src.exists(KEY_DPOP_PRIVATE), "dpop key must be deleted from source");
+        assert!(!src.exists(KEY_ACCESS_TOKEN), "access token must be deleted from source");
+    }
+
+    /// Migration is skipped when router backend is File (no file-to-file migration).
+    #[test]
+    fn migration_skipped_when_router_is_file_backend() {
+        use crate::storage::KEY_DPOP_PRIVATE;
+
+        let src_tmp = tempfile::TempDir::new().expect("tempdir");
+        let src = FileStorage::with_base_dir(src_tmp.path().to_path_buf());
+        src.store(KEY_DPOP_PRIVATE, b"dpop-key").unwrap();
+
+        let file_router = detect_forced("file").expect("file backend should succeed");
+        let mut router = file_router;
+
+        let result = router.maybe_migrate_from(&src);
+        assert!(result.is_ok(), "should return Ok: {:?}", result);
+        assert_eq!(result.unwrap(), 0, "should report 0 (skipped)");
+        assert!(
+            matches!(router.migration_status, MigrationStatus::NotApplicable),
+            "migration_status should be NotApplicable for file-to-file"
+        );
+    }
+
+    /// maybe_migrate() (public API): uses FileStorage::new() internally; returns NotApplicable
+    /// when no file creds exist (avoids interactive keychain on macOS by forcing file backend).
+    #[test]
+    #[ignore = "Requires FileStorage::new() to succeed (ProjectDirs available)"]
+    fn maybe_migrate_no_op_when_no_file_creds() {
+        let mut router = detect_forced("file").expect("file backend should succeed");
+        // No credentials exist in the default file store for this test environment.
+        let result = router.maybe_migrate();
+        assert!(result.is_ok(), "maybe_migrate should return Ok: {:?}", result);
+        assert_eq!(result.unwrap(), 0);
     }
 
     // -------------------------------------------------------------------------
