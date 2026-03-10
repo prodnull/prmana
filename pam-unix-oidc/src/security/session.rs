@@ -24,59 +24,59 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// - Timestamp for ordering and debugging
 /// - 64 bits of CSPRNG randomness for unpredictability
 ///
+/// Returns an error if the OS CSPRNG is unavailable. Callers in PAM paths
+/// must propagate this error rather than panic — a PAM panic can lock users
+/// out of their system.
+///
 /// # Example
 ///
 /// ```
 /// use pam_unix_oidc::security::generate_secure_session_id;
 ///
-/// let session_id = generate_secure_session_id("unix-oidc");
+/// let session_id = generate_secure_session_id("unix-oidc").unwrap();
 /// assert!(session_id.starts_with("unix-oidc-"));
 /// // Example: unix-oidc-18d4f2a3b4c-a7f3e2d1c0b9a8f7
 /// ```
-pub fn generate_secure_session_id(prefix: &str) -> String {
+pub fn generate_secure_session_id(prefix: &str) -> Result<String, getrandom::Error> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
 
-    let random_bytes = generate_random_bytes();
+    let random_bytes = generate_random_bytes()?;
 
-    format!("{}-{:x}-{}", prefix, timestamp, hex_encode(&random_bytes))
+    Ok(format!(
+        "{}-{:x}-{}",
+        prefix,
+        timestamp,
+        hex_encode(&random_bytes)
+    ))
 }
 
 /// Generate a secure session ID for SSH authentication.
-pub fn generate_ssh_session_id() -> String {
+pub fn generate_ssh_session_id() -> Result<String, getrandom::Error> {
     generate_secure_session_id("unix-oidc")
 }
 
 /// Generate a secure session ID for sudo step-up.
-pub fn generate_sudo_session_id() -> String {
+pub fn generate_sudo_session_id() -> Result<String, getrandom::Error> {
     generate_secure_session_id("sudo")
 }
 
 /// Generate 8 bytes (64 bits) of cryptographic randomness.
 ///
 /// Uses getrandom for cross-platform CSPRNG access.
-///
-/// # Panics
-///
-/// Panics if secure random number generation fails. This is intentional:
-/// session IDs are used for security audit correlation, and predictable
-/// session IDs could compromise audit integrity. On modern systems,
-/// getrandom should never fail, so a failure indicates a severely
-/// misconfigured or compromised system where authentication should not proceed.
-fn generate_random_bytes() -> [u8; 8] {
+/// Returns an error if the OS CSPRNG is unavailable rather than panicking,
+/// so that PAM paths can propagate the error instead of crashing sshd.
+fn generate_random_bytes() -> Result<[u8; 8], getrandom::Error> {
     let mut bytes = [0u8; 8];
 
     // Use getrandom crate for secure random bytes
     // Falls back to /dev/urandom on Linux, CryptGenRandom on Windows
     // getrandom v0.3 uses fill(), v0.2 uses getrandom()
-    getrandom::fill(&mut bytes).expect(
-        "secure random number generation failed - \
-         system may be misconfigured or compromised",
-    );
+    getrandom::fill(&mut bytes)?;
 
-    bytes
+    Ok(bytes)
 }
 
 /// Hex encode bytes to string.
@@ -95,8 +95,9 @@ pub fn is_valid_session_id(session_id: &str) -> bool {
         return false;
     }
 
-    // Last part should be the random hex (16 chars for 8 bytes)
-    let random_part = parts.last().unwrap();
+    // Last part should be the random hex (16 chars for 8 bytes).
+    // The guard above guarantees parts.len() >= 3, so last() is always Some.
+    let random_part = parts.last().unwrap_or(&"");
     if random_part.len() != 16 {
         return false;
     }
@@ -112,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_session_id_format() {
-        let id = generate_secure_session_id("test");
+        let id = generate_secure_session_id("test").unwrap();
         assert!(id.starts_with("test-"));
 
         let parts: Vec<&str> = id.split('-').collect();
@@ -125,15 +126,15 @@ mod tests {
 
         // Generate 1000 session IDs
         for _ in 0..1000 {
-            let id = generate_secure_session_id("test");
+            let id = generate_secure_session_id("test").unwrap();
             assert!(ids.insert(id), "Duplicate session ID generated");
         }
     }
 
     #[test]
     fn test_session_id_has_random_component() {
-        let id1 = generate_secure_session_id("test");
-        let id2 = generate_secure_session_id("test");
+        let id1 = generate_secure_session_id("test").unwrap();
+        let id2 = generate_secure_session_id("test").unwrap();
 
         // Even if generated in same nanosecond, random part should differ
         let parts1: Vec<&str> = id1.split('-').collect();
@@ -148,19 +149,19 @@ mod tests {
 
     #[test]
     fn test_ssh_session_id() {
-        let id = generate_ssh_session_id();
+        let id = generate_ssh_session_id().unwrap();
         assert!(id.starts_with("unix-oidc-"));
     }
 
     #[test]
     fn test_sudo_session_id() {
-        let id = generate_sudo_session_id();
+        let id = generate_sudo_session_id().unwrap();
         assert!(id.starts_with("sudo-"));
     }
 
     #[test]
     fn test_is_valid_session_id() {
-        let valid_id = generate_secure_session_id("test");
+        let valid_id = generate_secure_session_id("test").unwrap();
         assert!(is_valid_session_id(&valid_id));
 
         assert!(!is_valid_session_id("invalid"));
@@ -174,7 +175,7 @@ mod tests {
         let mut all_bytes: Vec<[u8; 8]> = Vec::new();
 
         for _ in 0..100 {
-            let bytes = generate_random_bytes();
+            let bytes = generate_random_bytes().unwrap();
             // Check for duplicates
             assert!(
                 !all_bytes.contains(&bytes),
