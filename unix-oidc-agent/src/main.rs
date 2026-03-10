@@ -171,19 +171,33 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     // Run migration at daemon startup: the primary trigger for file→keyring migration.
     // Attempt migration before loading state so that load_agent_state reads from the
     // correct (post-migration) backend.
-    if let Ok(mut migration_router) = StorageRouter::detect() {
-        match migration_router.maybe_migrate() {
-            Ok(0) => {}
-            Ok(n) => info!(n, "Migrated credentials to keyring backend at daemon startup"),
-            Err(e) => {
-                warn!(error = %e, "Credential migration failed at startup (continuing)");
+    // Retain the router to capture backend kind and migration status for status reporting.
+    let (storage_backend_str, migration_status_str) = match StorageRouter::detect() {
+        Ok(mut router) => {
+            match router.maybe_migrate() {
+                Ok(0) => {}
+                Ok(n) => info!(n, "Migrated credentials to keyring backend at daemon startup"),
+                Err(e) => {
+                    warn!(error = %e, "Credential migration failed at startup (continuing)");
+                }
             }
+            (
+                router.kind.display_name().to_string(),
+                router.migration_status.display_name().to_string(),
+            )
         }
-    }
+        Err(e) => {
+            warn!(error = %e, "StorageRouter::detect() failed at startup");
+            ("unknown".to_string(), "n/a".to_string())
+        }
+    };
+    info!("Storage: {}", storage_backend_str);
 
     // Try to load existing credentials from storage
     let mut state = load_agent_state().await?;
     state.mlock_status = Some(mlock_status_str);
+    state.storage_backend = Some(storage_backend_str);
+    state.migration_status = Some(migration_status_str);
     let state = Arc::new(RwLock::new(state));
 
     let server = AgentServer::new(socket_path.clone(), state);
@@ -208,6 +222,8 @@ async fn run_status() -> anyhow::Result<()> {
             thumbprint,
             token_expires,
             mlock_status,
+            storage_backend,
+            migration_status,
         })) => {
             if logged_in {
                 println!("Status: Logged in");
@@ -238,6 +254,12 @@ async fn run_status() -> anyhow::Result<()> {
             if let Some(mem) = mlock_status {
                 println!("  Memory protection: {}", mem);
             }
+            if let Some(backend) = storage_backend {
+                println!("  Storage: {}", backend);
+            }
+            if let Some(migration) = migration_status {
+                println!("  Migration: {}", migration);
+            }
             Ok(())
         }
         Ok(AgentResponse::Error { message, code }) => {
@@ -253,6 +275,8 @@ async fn run_status() -> anyhow::Result<()> {
 
             // Check if we have stored credentials
             if let Ok(storage) = StorageRouter::detect() {
+                println!("  Storage: {}", storage.kind.display_name());
+                println!("  Migration: {}", storage.migration_status.display_name());
                 if storage.exists(KEY_DPOP_PRIVATE) {
                     println!("  DPoP keypair: stored");
                 }
@@ -825,6 +849,8 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         username,
         metrics: std::sync::Arc::new(unix_oidc_agent::metrics::MetricsCollector::new()),
         mlock_status: None,
+        storage_backend: None,
+        migration_status: None,
     })
 }
 

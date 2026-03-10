@@ -39,6 +39,12 @@ pub struct AgentState {
     /// Human-readable mlock status reported by `unix-oidc-agent status`.
     /// Set at daemon startup after calling `mlock_probe()`.
     pub mlock_status: Option<String>,
+    /// Human-readable storage backend name, e.g. "keyring (Secret Service)".
+    /// Set at daemon startup from `StorageRouter.kind.display_name()`.
+    pub storage_backend: Option<String>,
+    /// Human-readable migration status, e.g. "migrated", "n/a".
+    /// Set at daemon startup from `StorageRouter.migration_status.display_name()`.
+    pub migration_status: Option<String>,
 }
 
 /// Manual Debug impl: signer is not Debug (trait object), access_token shows [REDACTED].
@@ -50,6 +56,8 @@ impl std::fmt::Debug for AgentState {
             .field("token_expires", &self.token_expires)
             .field("username", &self.username)
             .field("mlock_status", &self.mlock_status)
+            .field("storage_backend", &self.storage_backend)
+            .field("migration_status", &self.migration_status)
             .finish()
     }
 }
@@ -63,6 +71,8 @@ impl AgentState {
             username: None,
             metrics: Arc::new(MetricsCollector::new()),
             mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
         }
     }
 
@@ -258,6 +268,8 @@ async fn handle_request(
                     state_read.signer.as_ref().map(|s| s.thumbprint()),
                     state_read.token_expires,
                     state_read.mlock_status.clone(),
+                    state_read.storage_backend.clone(),
+                    state_read.migration_status.clone(),
                 ),
                 false,
             )
@@ -592,6 +604,8 @@ mod tests {
             username: Some("testuser".to_string()),
             metrics: Arc::new(MetricsCollector::new()),
             mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
         }));
 
         // Start server in background
@@ -634,6 +648,8 @@ mod tests {
             username: Some("testuser".to_string()),
             metrics: Arc::new(MetricsCollector::new()),
             mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
         }));
 
         let server = AgentServer::new(socket_path.clone(), state);
@@ -788,6 +804,8 @@ mod tests {
             username: Some("alice".to_string()),
             metrics: Arc::new(MetricsCollector::new()),
             mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
         };
         let debug_output = format!("{:?}", state);
         assert!(
@@ -814,6 +832,8 @@ mod tests {
             username: None,
             metrics: Arc::new(MetricsCollector::new()),
             mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
         };
         let exposed = state.access_token.as_ref().unwrap().expose_secret();
         assert_eq!(exposed, raw);
