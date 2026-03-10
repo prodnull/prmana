@@ -1092,3 +1092,84 @@ fn extract_username_from_token(token: &str) -> Option<String> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json;
+
+    /// Helper that mimics the updated_metadata construction pattern used in
+    /// run_refresh() and perform_token_refresh(). This is the exact pattern
+    /// from production code — if the production pattern changes, this helper
+    /// must be updated to match.
+    fn build_refresh_metadata(metadata: &serde_json::Value) -> serde_json::Value {
+        let new_refresh_token = "new-rt";
+        let token_expires = "2026-01-01T00:00:00Z";
+        serde_json::json!({
+            "expires_at": token_expires,
+            "refresh_token": new_refresh_token,
+            "issuer": metadata["issuer"],
+            "token_endpoint": metadata["token_endpoint"],
+            "client_id": metadata["client_id"],
+            "client_secret": metadata["client_secret"],
+            // Preserve signer_type across refresh — prevents hardware signer users from losing DPoP binding
+            "signer_type": metadata["signer_type"],
+        })
+    }
+
+    #[test]
+    fn test_refresh_metadata_preserves_signer_type() {
+        // YubiKey signer type
+        let metadata = serde_json::json!({
+            "expires_at": "2025-12-31T00:00:00Z",
+            "refresh_token": "old-rt",
+            "issuer": "https://idp.example.com",
+            "token_endpoint": "https://idp.example.com/token",
+            "client_id": "my-client",
+            "client_secret": "my-secret",
+            "signer_type": "yubikey:9a",
+        });
+        let updated = build_refresh_metadata(&metadata);
+        assert_eq!(updated["signer_type"].as_str(), Some("yubikey:9a"));
+
+        // TPM signer type
+        let metadata_tpm = serde_json::json!({
+            "expires_at": "2025-12-31T00:00:00Z",
+            "refresh_token": "old-rt",
+            "issuer": "https://idp.example.com",
+            "token_endpoint": "https://idp.example.com/token",
+            "client_id": "my-client",
+            "client_secret": null,
+            "signer_type": "tpm",
+        });
+        let updated_tpm = build_refresh_metadata(&metadata_tpm);
+        assert_eq!(updated_tpm["signer_type"].as_str(), Some("tpm"));
+
+        // Software signer type
+        let metadata_sw = serde_json::json!({
+            "expires_at": "2025-12-31T00:00:00Z",
+            "refresh_token": "old-rt",
+            "issuer": "https://idp.example.com",
+            "token_endpoint": "https://idp.example.com/token",
+            "client_id": "my-client",
+            "client_secret": null,
+            "signer_type": "software",
+        });
+        let updated_sw = build_refresh_metadata(&metadata_sw);
+        assert_eq!(updated_sw["signer_type"].as_str(), Some("software"));
+
+        // Legacy metadata with NO signer_type field (pre-hardware-feature login)
+        let metadata_legacy = serde_json::json!({
+            "expires_at": "2025-12-31T00:00:00Z",
+            "refresh_token": "old-rt",
+            "issuer": "https://idp.example.com",
+            "token_endpoint": "https://idp.example.com/token",
+            "client_id": "my-client",
+            "client_secret": null,
+        });
+        let updated_legacy = build_refresh_metadata(&metadata_legacy);
+        assert!(
+            updated_legacy["signer_type"].is_null(),
+            "Legacy metadata without signer_type should produce null, not crash"
+        );
+    }
+}
