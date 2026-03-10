@@ -73,8 +73,9 @@ impl Drop for MlockGuard {
 pub fn mlock_probe() -> MlockStatus {
     #[cfg(unix)]
     {
-        // Allocate a test page using a Vec so memory is definitely heap-resident.
-        let mut buf = vec![0u8; 64];
+        // Allocate a test page on the stack; 64 bytes is well under the page
+        // minimum that mlock operates on.
+        let mut buf = [0u8; 64];
         let ret = unsafe {
             libc::mlock(buf.as_ptr() as *const libc::c_void, buf.len())
         };
