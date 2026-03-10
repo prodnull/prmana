@@ -18,7 +18,7 @@ use unix_oidc_agent::daemon::{
 };
 use unix_oidc_agent::security::disable_core_dumps;
 use unix_oidc_agent::storage::{
-    FileStorage, SecureStorage, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
+    SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
 
 /// Claims from an OIDC access token for username extraction
@@ -168,6 +168,19 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     };
     info!("Memory protection: {}", mlock_status_str);
 
+    // Run migration at daemon startup: the primary trigger for file→keyring migration.
+    // Attempt migration before loading state so that load_agent_state reads from the
+    // correct (post-migration) backend.
+    if let Ok(mut migration_router) = StorageRouter::detect() {
+        match migration_router.maybe_migrate() {
+            Ok(0) => {}
+            Ok(n) => info!(n, "Migrated credentials to keyring backend at daemon startup"),
+            Err(e) => {
+                warn!(error = %e, "Credential migration failed at startup (continuing)");
+            }
+        }
+    }
+
     // Try to load existing credentials from storage
     let mut state = load_agent_state().await?;
     state.mlock_status = Some(mlock_status_str);
@@ -239,7 +252,7 @@ async fn run_status() -> anyhow::Result<()> {
             println!("  Start the agent with: unix-oidc-agent serve");
 
             // Check if we have stored credentials
-            if let Ok(storage) = FileStorage::new() {
+            if let Ok(storage) = StorageRouter::detect() {
                 if storage.exists(KEY_DPOP_PRIVATE) {
                     println!("  DPoP keypair: stored");
                 }
@@ -305,14 +318,22 @@ async fn run_login(
         .unwrap_or_else(|| "unix-oidc".to_string());
 
     // Security (MEM-03): wrap client_secret in SecretString immediately — must not appear in logs.
-    let client_secret: Option<SecretString> = client_secret
-        .map(SecretString::from)
-        .or_else(|| std::env::var("OIDC_CLIENT_SECRET").ok().map(SecretString::from));
+    let client_secret: Option<SecretString> = client_secret.map(SecretString::from).or_else(|| {
+        std::env::var("OIDC_CLIENT_SECRET")
+            .ok()
+            .map(SecretString::from)
+    });
 
     info!("Starting device flow authentication with {}", issuer);
 
-    // Initialize or load DPoP signer
-    let storage = FileStorage::new()?;
+    // Initialize or load DPoP signer via the best available backend.
+    // Run migration here: login is the primary user-facing trigger after upgrade.
+    let mut storage = StorageRouter::detect()?;
+    match storage.maybe_migrate() {
+        Ok(0) => {}
+        Ok(n) => info!(n, "Migrated credentials to keyring backend"),
+        Err(e) => warn!(error = %e, "Credential migration failed (continuing with current backend)"),
+    }
     let signer = load_or_create_signer(&storage)?;
 
     println!("DPoP thumbprint: {}", signer.thumbprint());
@@ -557,7 +578,7 @@ async fn run_login(
 
 /// Logout - clear tokens but keep keypair
 async fn run_logout() -> anyhow::Result<()> {
-    let storage = FileStorage::new()?;
+    let storage = StorageRouter::detect()?;
 
     let mut cleared = false;
 
@@ -592,7 +613,7 @@ async fn run_logout() -> anyhow::Result<()> {
 
 /// Refresh the access token using the stored refresh token
 async fn run_refresh() -> anyhow::Result<()> {
-    let storage = FileStorage::new()?;
+    let storage = StorageRouter::detect()?;
 
     // Load token metadata
     let metadata_bytes = storage
@@ -622,8 +643,9 @@ async fn run_refresh() -> anyhow::Result<()> {
         .to_string();
 
     // Security (MEM-03): wrap client_secret in SecretString at extraction — must not appear in logs.
-    let client_secret: Option<SecretString> =
-        metadata["client_secret"].as_str().map(|s| SecretString::from(s.to_string()));
+    let client_secret: Option<SecretString> = metadata["client_secret"]
+        .as_str()
+        .map(|s| SecretString::from(s.to_string()));
 
     println!("Refreshing access token...");
 
@@ -727,7 +749,7 @@ async fn run_reset(force: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let storage = FileStorage::new()?;
+    let storage = StorageRouter::detect()?;
     let mut cleared = Vec::new();
 
     // Delete all stored credentials
@@ -759,7 +781,7 @@ async fn run_reset(force: bool) -> anyhow::Result<()> {
 
 /// Load agent state from storage
 async fn load_agent_state() -> anyhow::Result<AgentState> {
-    let storage = match FileStorage::new() {
+    let storage = match StorageRouter::detect() {
         Ok(s) => s,
         Err(_) => {
             info!("No storage available, starting with empty state");
@@ -807,7 +829,7 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
 }
 
 /// Load existing signer or create a new one
-fn load_or_create_signer(storage: &FileStorage) -> anyhow::Result<SoftwareSigner> {
+fn load_or_create_signer(storage: &dyn SecureStorage) -> anyhow::Result<SoftwareSigner> {
     if let Ok(key_bytes) = storage.retrieve(KEY_DPOP_PRIVATE) {
         info!("Loading existing DPoP keypair");
         SoftwareSigner::import_key(&key_bytes)

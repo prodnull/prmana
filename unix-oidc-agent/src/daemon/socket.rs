@@ -1,9 +1,9 @@
 //! Unix socket server and client
 
+use secrecy::{ExposeSecret, SecretString};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use secrecy::{ExposeSecret, SecretString};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::crypto::DPoPSigner;
 use crate::daemon::protocol::{AgentRequest, AgentResponse, MetricsFormat};
 use crate::metrics::MetricsCollector;
-use crate::storage::{FileStorage, SecureStorage, KEY_ACCESS_TOKEN, KEY_TOKEN_METADATA};
+use crate::storage::{SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_TOKEN_METADATA};
 
 #[cfg(test)]
 use crate::daemon::protocol::AgentResponseData;
@@ -401,7 +401,7 @@ async fn perform_token_refresh(
     _state: &Arc<RwLock<AgentState>>,
 ) -> Result<(SecretString, i64, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
     // Load storage
-    let storage = FileStorage::new().map_err(|e| format!("Storage error: {}", e))?;
+    let storage = StorageRouter::detect().map_err(|e| format!("Storage error: {}", e))?;
 
     // Load token metadata
     let metadata_bytes = storage
@@ -431,8 +431,9 @@ async fn perform_token_refresh(
         .to_string();
 
     // Security (MEM-03): wrap client_secret in SecretString at extraction — must not appear in logs.
-    let client_secret: Option<SecretString> =
-        metadata["client_secret"].as_str().map(|s| SecretString::from(s.to_string()));
+    let client_secret: Option<SecretString> = metadata["client_secret"]
+        .as_str()
+        .map(|s| SecretString::from(s.to_string()));
 
     info!("Performing token refresh...");
 
