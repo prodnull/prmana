@@ -30,8 +30,10 @@ pub mod sudo;
 pub mod ui;
 
 use audit::AuditEvent;
-use auth::{authenticate_with_token, AuthError};
+use auth::{authenticate_with_dpop, authenticate_with_token, AuthError, DPoPAuthConfig};
+use policy::config::{EnforcementMode, PolicyConfig};
 use pamsm::{Pam, PamError, PamFlags, PamLibExt, PamMsgStyle, PamServiceModule};
+use security::nonce_cache::{generate_dpop_nonce, global_nonce_cache};
 use security::rate_limit::global_rate_limiter;
 
 struct PamUnixOidc;
@@ -82,6 +84,67 @@ impl PamServiceModule for PamUnixOidc {
             return PamError::AUTH_ERR;
         }
 
+        // Determine DPoP enforcement mode from policy.
+        // PolicyConfig::from_env() is non-fatal: missing policy file or test mode both
+        // fall through to the default (Strict for dpop_required).
+        let dpop_mode = PolicyConfig::from_env()
+            .map(|p| p.effective_security_modes().dpop_required)
+            .unwrap_or(EnforcementMode::Strict);
+
+        // DPoP nonce challenge/response: two-round PAM conversation.
+        //
+        // Round 1 — Nonce delivery (PROMPT_ECHO_ON):
+        //   Server generates a nonce, issues it to the cache, and delivers it to the
+        //   client as "DPOP_NONCE:<value>". The SSH agent reads the prefix, extracts
+        //   the nonce, and binds it into the next DPoP proof. The client responds with
+        //   an empty string or acknowledgement — we ignore the response.
+        //
+        // Round 2 — Proof collection (PROMPT_ECHO_OFF):
+        //   Server prompts for the DPoP proof. The agent sends the nonce-bound proof.
+        //
+        // This pattern implements RFC 9449 §8 server-issued nonce binding within the
+        // PAM keyboard-interactive conversation framework.
+        let dpop_proof: Option<String> = if dpop_mode != EnforcementMode::Disabled {
+            match issue_and_deliver_nonce(&pamh) {
+                Ok(nonce) => {
+                    // Round 2: collect the DPoP proof.
+                    // PROMPT_ECHO_OFF because the proof is a signed JWT — treat as secret.
+                    match pamh.conv(Some("DPOP_PROOF: "), PamMsgStyle::PROMPT_ECHO_OFF) {
+                        Ok(Some(p)) => {
+                            let proof_str = p.to_string_lossy().to_string();
+                            if proof_str.is_empty() {
+                                // Client did not provide a proof; nonce was issued but won't
+                                // be consumed. The cache TTL will evict it automatically.
+                                tracing::warn!(
+                                    nonce_prefix = &nonce[..nonce.len().min(8)],
+                                    "DPoP proof conversation returned empty response"
+                                );
+                                None
+                            } else {
+                                Some(proof_str)
+                            }
+                        }
+                        Ok(None) | Err(_) => {
+                            tracing::warn!(
+                                nonce_prefix = &nonce[..nonce.len().min(8)],
+                                "DPoP proof collection via PAM conversation failed"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Nonce delivery failed (CSPRNG or conversation error).
+                    // Fall back to token-only path; strictness handled below.
+                    tracing::warn!("DPoP nonce issuance failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            // DPoP mode is Disabled — skip nonce issuance entirely.
+            None
+        };
+
         // Get the authentication token
         let token = match get_auth_token(&pamh, test_mode) {
             Some(t) => t,
@@ -92,8 +155,34 @@ impl PamServiceModule for PamUnixOidc {
             }
         };
 
-        // Authenticate with the token
-        match authenticate_with_token(&token) {
+        // Choose authentication path based on DPoP mode and proof availability.
+        //
+        // - DPoP proof available: always use authenticate_with_dpop() regardless of mode.
+        //   (If the client sent a proof, validate it — this catches misconfigured clients
+        //   sending invalid proofs even in Warn/Disabled mode.)
+        //
+        // - DPoP proof unavailable + Strict: return AUTH_ERR (client must send proof).
+        //
+        // - DPoP proof unavailable + Warn/Disabled: fall back to token-only auth.
+        //   authenticate_with_dpop() with dpop_proof=None also handles DPoP-bound tokens
+        //   (cnf.jkt present) correctly via its internal DPoPRequired check.
+        let auth_result = if dpop_proof.is_some() || dpop_mode == EnforcementMode::Strict {
+            // DPoP path (strict or proof provided).
+            let dpop_config = DPoPAuthConfig {
+                target_host: gethostname::gethostname().to_string_lossy().to_string(),
+                max_proof_age: 60,
+                require_nonce: true,    // cache-backed nonce enforcement
+                expected_nonce: None,   // None = cache path (auth.rs consumes from cache)
+                require_dpop_for_bound_tokens: true,
+            };
+            authenticate_with_dpop(&token, dpop_proof.as_deref(), &dpop_config)
+        } else {
+            // Warn or Disabled with no proof — token-only fallback.
+            authenticate_with_token(&token)
+        };
+
+        // Handle authentication result
+        match auth_result {
             Ok(result) => {
                 // Verify that the token's preferred_username matches the PAM user
                 if result.username != pam_user {
@@ -193,6 +282,51 @@ impl PamServiceModule for PamUnixOidc {
     fn chauthtok(_pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
         PamError::SERVICE_ERR
     }
+}
+
+/// Generate a DPoP nonce, issue it to the global cache, and deliver it to the
+/// client via PAM keyboard-interactive conversation (PROMPT_ECHO_ON, round 1).
+///
+/// Returns the issued nonce string on success so the caller can reference it
+/// for logging (the nonce itself is already in the cache; auth.rs will consume it).
+///
+/// # Errors
+///
+/// Returns a descriptive `String` on CSPRNG failure or PAM conversation error.
+/// The caller is responsible for deciding whether to treat this as fatal based on
+/// the current `dpop_required` enforcement mode.
+fn issue_and_deliver_nonce(pamh: &Pam) -> Result<String, String> {
+    // Generate 256-bit CSPRNG nonce (43-char base64url per RFC 9449 §8).
+    let nonce = generate_dpop_nonce().map_err(|e| format!("CSPRNG unavailable: {e}"))?;
+
+    // Register nonce in the global cache so auth.rs can consume it on the return trip.
+    global_nonce_cache()
+        .issue(&nonce)
+        .map_err(|e| format!("Nonce issue failed: {e}"))?;
+
+    // Round 1: deliver nonce via PAM PROMPT_ECHO_ON.
+    //
+    // The SSH agent on the client side reads the prompt, recognises the "DPOP_NONCE:"
+    // prefix, extracts the nonce value, and binds it into the next DPoP proof.
+    // The client response (an empty ack or the nonce itself) is ignored by the server.
+    // PROMPT_ECHO_ON is used because this is not a secret — the nonce is a public
+    // challenge value (RFC 9449 §8 explicitly allows nonces to be sent in the clear).
+    let nonce_prompt = format!("DPOP_NONCE:{nonce}");
+    match pamh.conv(Some(&nonce_prompt), PamMsgStyle::PROMPT_ECHO_ON) {
+        Ok(_) => {
+            tracing::debug!(
+                nonce_prefix = &nonce[..nonce.len().min(8)],
+                "DPoP nonce delivered via PAM conversation"
+            );
+        }
+        Err(e) => {
+            // Conversation failure: the nonce is now orphaned in the cache; it will be
+            // evicted automatically when its TTL expires (60 s by default).
+            return Err(format!("PAM conversation round 1 failed: {e:?}"));
+        }
+    }
+
+    Ok(nonce)
 }
 
 /// Check if PAM environment token reading is explicitly enabled.
@@ -468,5 +602,94 @@ mod tests {
 
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
         std::env::remove_var("UNIX_OIDC_ACCEPT_PAM_ENV");
+    }
+
+    // =========================================================================
+    // DPoP nonce issuance — unit tests for the new lib.rs infrastructure.
+    //
+    // issue_and_deliver_nonce() requires a live Pam handle (PAM conversation),
+    // so we test its sub-components directly: generate_dpop_nonce() + the global
+    // cache issue/consume cycle, and the DPoP mode determination logic.
+    // =========================================================================
+
+    use crate::security::nonce_cache::{generate_dpop_nonce, global_nonce_cache};
+
+    #[test]
+    fn test_dpop_nonce_issuance_and_consumption_roundtrip() {
+        // Verify that a nonce generated and issued by lib.rs's issue path
+        // can be consumed exactly once by auth.rs's consume path.
+        let nonce = generate_dpop_nonce().unwrap();
+        let cache = global_nonce_cache();
+
+        cache.issue(&nonce).unwrap();
+        assert!(
+            cache.consume(&nonce).is_ok(),
+            "nonce issued by lib.rs must be consumable by auth.rs"
+        );
+        // Second consume must fail (single-use invariant)
+        assert!(
+            cache.consume(&nonce).is_err(),
+            "nonce must not be consumable a second time"
+        );
+    }
+
+    #[test]
+    fn test_nonce_format_matches_dpop_nonce_prefix() {
+        // "DPOP_NONCE:<nonce>" must parse correctly: split at ':' gives exactly 2 parts.
+        let nonce = generate_dpop_nonce().unwrap();
+        let prompt = format!("DPOP_NONCE:{nonce}");
+        let parts: Vec<&str> = prompt.splitn(2, ':').collect();
+        assert_eq!(parts.len(), 2, "DPOP_NONCE prompt must split into exactly 2 parts");
+        assert_eq!(parts[0], "DPOP_NONCE");
+        assert_eq!(parts[1], nonce.as_str());
+    }
+
+    #[test]
+    fn test_dpop_mode_default_is_strict_without_policy_file() {
+        let _guard = ENV_MUTEX.lock();
+        // With no policy file and no env var, PolicyConfig::from_env() returns Err
+        // (default policy path /etc/unix-oidc/policy.yaml absent).
+        // Our authenticate() code maps this to EnforcementMode::Strict (safe default).
+        std::env::remove_var("UNIX_OIDC_POLICY_FILE");
+        std::env::remove_var("UNIX_OIDC_POLICY_YAML");
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+        let dpop_mode = PolicyConfig::from_env()
+            .map(|p| p.effective_security_modes().dpop_required)
+            .unwrap_or(EnforcementMode::Strict);
+
+        assert_eq!(
+            dpop_mode,
+            EnforcementMode::Strict,
+            "Default DPoP mode must be Strict when policy file is absent"
+        );
+    }
+
+    #[test]
+    fn test_dpop_mode_from_inline_yaml_disabled() {
+        let _guard = ENV_MUTEX.lock();
+        let yaml = "security_modes:\n  dpop_required: disabled\n";
+        std::env::set_var("UNIX_OIDC_POLICY_YAML", yaml);
+
+        let dpop_mode = PolicyConfig::from_env()
+            .map(|p| p.effective_security_modes().dpop_required)
+            .unwrap_or(EnforcementMode::Strict);
+
+        std::env::remove_var("UNIX_OIDC_POLICY_YAML");
+        assert_eq!(dpop_mode, EnforcementMode::Disabled);
+    }
+
+    #[test]
+    fn test_dpop_mode_from_inline_yaml_warn() {
+        let _guard = ENV_MUTEX.lock();
+        let yaml = "security_modes:\n  dpop_required: warn\n";
+        std::env::set_var("UNIX_OIDC_POLICY_YAML", yaml);
+
+        let dpop_mode = PolicyConfig::from_env()
+            .map(|p| p.effective_security_modes().dpop_required)
+            .unwrap_or(EnforcementMode::Strict);
+
+        std::env::remove_var("UNIX_OIDC_POLICY_YAML");
+        assert_eq!(dpop_mode, EnforcementMode::Warn);
     }
 }
