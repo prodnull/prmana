@@ -537,6 +537,8 @@ async fn perform_token_refresh(
         "token_endpoint": metadata["token_endpoint"],
         "client_id": metadata["client_id"],
         "client_secret": metadata["client_secret"],
+        // Preserve signer_type across refresh — prevents hardware signer users from losing DPoP binding
+        "signer_type": metadata["signer_type"],
     });
     storage
         .store(KEY_TOKEN_METADATA, updated_metadata.to_string().as_bytes())
