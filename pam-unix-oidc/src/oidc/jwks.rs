@@ -7,8 +7,8 @@
 //! - Key lookup by kid (key ID)
 
 use jsonwebtoken::jwk::{Jwk, JwkSet};
+use parking_lot::RwLock;
 use serde::Deserialize;
-use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -101,14 +101,14 @@ impl JwksProvider {
     pub fn get_default_key(&self) -> Result<Jwk, JwksError> {
         // Ensure cache is populated
         {
-            let cache = self.cache.read().unwrap();
+            let cache = self.cache.read();
             if cache.is_none() || self.is_cache_expired(&cache) {
                 drop(cache);
                 self.refresh_jwks()?;
             }
         }
 
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read();
         if let Some(ref cached) = *cache {
             cached.jwks.keys.first().cloned().ok_or(JwksError::NoKeys)
         } else {
@@ -120,14 +120,14 @@ impl JwksProvider {
     pub fn get_all_keys(&self) -> Result<Vec<Jwk>, JwksError> {
         // Ensure cache is populated
         {
-            let cache = self.cache.read().unwrap();
+            let cache = self.cache.read();
             if cache.is_none() || self.is_cache_expired(&cache) {
                 drop(cache);
                 self.refresh_jwks()?;
             }
         }
 
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read();
         if let Some(ref cached) = *cache {
             Ok(cached.jwks.keys.clone())
         } else {
@@ -152,7 +152,7 @@ impl JwksProvider {
         let jwks = self.fetch_jwks(&discovery.jwks_uri)?;
 
         // Update cache
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write();
         *cache = Some(CachedJwks {
             jwks,
             fetched_at: Instant::now(),
@@ -163,7 +163,7 @@ impl JwksProvider {
     }
 
     fn get_key_from_cache(&self, kid: &str) -> Option<Jwk> {
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read();
 
         if let Some(ref cached) = *cache {
             if !self.is_cache_expired(&cache) {

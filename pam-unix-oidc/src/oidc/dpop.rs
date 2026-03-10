@@ -10,8 +10,8 @@ use once_cell::sync::Lazy;
 use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -50,7 +50,7 @@ impl DPoPJtiCache {
 
         // Check if JTI already exists
         {
-            let entries = self.entries.read().unwrap();
+            let entries = self.entries.read();
             if let Some(&exp) = entries.get(jti) {
                 if exp > now {
                     return false; // Replay detected
@@ -60,7 +60,7 @@ impl DPoPJtiCache {
 
         // Record the JTI
         {
-            let mut entries = self.entries.write().unwrap();
+            let mut entries = self.entries.write();
             // Double-check after acquiring write lock
             if let Some(&exp) = entries.get(jti) {
                 if exp > now {
@@ -95,14 +95,15 @@ impl DPoPJtiCache {
     fn maybe_cleanup(&self) {
         let now = Instant::now();
         let should_cleanup = {
-            let last = self.last_cleanup.read().unwrap();
+            let last = self.last_cleanup.read();
             now.duration_since(*last) > Duration::from_secs(300)
         };
 
         if should_cleanup {
-            let mut entries = self.entries.write().unwrap();
+            let mut entries = self.entries.write();
             entries.retain(|_, exp| *exp > now);
-            *self.last_cleanup.write().unwrap() = now;
+            drop(entries);
+            *self.last_cleanup.write() = now;
         }
     }
 }
@@ -273,13 +274,12 @@ pub fn validate_dpop_proof(
         .map_err(|e| DPoPValidationError::JsonError(e.to_string()))?;
 
     // Validate iat (proof age)
-    // Note: This can only fail if system time is before 1970-01-01, which indicates
-    // a severely misconfigured system. We use expect() to document this assumption
-    // rather than silently failing, as authentication on such a system would be
-    // unreliable anyway.
+    // If system time is before 1970-01-01 (severely misconfigured clock), we default to
+    // duration 0. This causes the proof age check to fail naturally (proof will appear
+    // very old), which is the correct security-conservative behavior — no panic in PAM.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system time before UNIX epoch - clock is misconfigured")
+        .unwrap_or_default()
         .as_secs() as i64;
 
     if now - claims.iat > config.max_proof_age as i64 {

@@ -15,15 +15,15 @@
 //! - Single-server only (use Redis for distributed deployments)
 //! - Memory grows with number of active tokens (bounded by cleanup)
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 /// Default cleanup interval (5 minutes)
 const DEFAULT_CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Maximum entries before forced cleanup
-const MAX_ENTRIES_BEFORE_CLEANUP: usize = 10000;
+const MAX_ENTRIES_BEFORE_CLEANUP: usize = 100_000;
 
 /// Result of checking a JTI
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,7 +123,7 @@ impl JtiCache {
 
         // Try to read first (common case: JTI not seen)
         {
-            let entries = self.entries.read().unwrap();
+            let entries = self.entries.read();
             if let Some(entry) = entries.get(jti) {
                 // Entry exists - check if it's still valid
                 if entry.expires_at > now {
@@ -136,7 +136,7 @@ impl JtiCache {
 
         // Need to write - acquire write lock
         {
-            let mut entries = self.entries.write().unwrap();
+            let mut entries = self.entries.write();
 
             // Double-check after acquiring write lock
             if let Some(entry) = entries.get(jti) {
@@ -169,7 +169,7 @@ impl JtiCache {
         };
 
         let now = Instant::now();
-        let entries = self.entries.read().unwrap();
+        let entries = self.entries.read();
 
         if let Some(entry) = entries.get(jti) {
             entry.expires_at > now
@@ -181,17 +181,18 @@ impl JtiCache {
     /// Get the number of active (non-expired) entries.
     pub fn active_count(&self) -> usize {
         let now = Instant::now();
-        let entries = self.entries.read().unwrap();
+        let entries = self.entries.read();
         entries.values().filter(|e| e.expires_at > now).count()
     }
 
     /// Force cleanup of expired entries.
     pub fn cleanup(&self) {
         let now = Instant::now();
-        let mut entries = self.entries.write().unwrap();
+        let mut entries = self.entries.write();
         entries.retain(|_, entry| entry.expires_at > now);
+        drop(entries);
 
-        let mut last_cleanup = self.last_cleanup.write().unwrap();
+        let mut last_cleanup = self.last_cleanup.write();
         *last_cleanup = now;
     }
 
@@ -199,8 +200,8 @@ impl JtiCache {
     fn maybe_cleanup(&self) {
         let now = Instant::now();
         let should_cleanup = {
-            let last = self.last_cleanup.read().unwrap();
-            let entries = self.entries.read().unwrap();
+            let last = self.last_cleanup.read();
+            let entries = self.entries.read();
             now.duration_since(*last) > self.cleanup_interval
                 || entries.len() > MAX_ENTRIES_BEFORE_CLEANUP
         };
@@ -213,7 +214,7 @@ impl JtiCache {
     /// Clear all entries (for testing).
     #[cfg(test)]
     pub fn clear(&self) {
-        let mut entries = self.entries.write().unwrap();
+        let mut entries = self.entries.write();
         entries.clear();
     }
 }

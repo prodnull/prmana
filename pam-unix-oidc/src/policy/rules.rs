@@ -1,6 +1,6 @@
 //! Policy rules for determining authentication actions.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::config::{HostClassification, PolicyConfig};
 
@@ -16,7 +16,7 @@ pub enum AuthAction {
 }
 
 /// Methods for step-up authentication.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepUpMethod {
     /// OAuth 2.0 Device Authorization Grant

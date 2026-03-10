@@ -19,8 +19,8 @@
 //! - `UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS`: Max attempts per window (default: 5)
 //! - `UNIX_OIDC_RATE_LIMIT_LOCKOUT`: Initial lockout in seconds (default: 60)
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -162,7 +162,7 @@ impl RateLimiter {
 
         // Check user rate limit
         {
-            let users = self.users.read().unwrap();
+            let users = self.users.read();
             if let Some(entry) = users.get(username) {
                 if let Some(lockout_until) = entry.lockout_until {
                     if now < lockout_until {
@@ -178,7 +178,7 @@ impl RateLimiter {
 
         // Check IP rate limit
         if let Some(ip) = source_ip {
-            let ips = self.ips.read().unwrap();
+            let ips = self.ips.read();
             if let Some(entry) = ips.get(ip) {
                 if let Some(lockout_until) = entry.lockout_until {
                     if now < lockout_until {
@@ -204,7 +204,7 @@ impl RateLimiter {
 
         // Record user failure
         {
-            let mut users = self.users.write().unwrap();
+            let mut users = self.users.write();
             let entry = users
                 .entry(username.to_string())
                 .or_insert_with(RateLimitEntry::new);
@@ -225,7 +225,7 @@ impl RateLimiter {
 
         // Record IP failure
         if let Some(ip) = source_ip {
-            let mut ips = self.ips.write().unwrap();
+            let mut ips = self.ips.write();
             let entry = ips
                 .entry(ip.to_string())
                 .or_insert_with(RateLimitEntry::new);
@@ -247,7 +247,7 @@ impl RateLimiter {
     pub fn record_success(&self, username: &str, source_ip: Option<&str>) {
         // Reset user consecutive failures
         {
-            let mut users = self.users.write().unwrap();
+            let mut users = self.users.write();
             if let Some(entry) = users.get_mut(username) {
                 entry.consecutive_failures = 0;
                 entry.lockout_until = None;
@@ -256,7 +256,7 @@ impl RateLimiter {
 
         // Reset IP consecutive failures
         if let Some(ip) = source_ip {
-            let mut ips = self.ips.write().unwrap();
+            let mut ips = self.ips.write();
             if let Some(entry) = ips.get_mut(ip) {
                 entry.consecutive_failures = 0;
                 entry.lockout_until = None;
@@ -287,7 +287,7 @@ impl RateLimiter {
         let now = Instant::now();
         let window_start = now - self.config.window;
 
-        let users = self.users.read().unwrap();
+        let users = self.users.read();
         users
             .get(username)
             .map(|e| e.attempts.iter().filter(|t| **t > window_start).count() as u32)
@@ -297,7 +297,7 @@ impl RateLimiter {
     /// Check if a user is currently locked out.
     pub fn is_user_locked_out(&self, username: &str) -> bool {
         let now = Instant::now();
-        let users = self.users.read().unwrap();
+        let users = self.users.read();
 
         users
             .get(username)
@@ -313,7 +313,7 @@ impl RateLimiter {
 
         // Cleanup users
         {
-            let mut users = self.users.write().unwrap();
+            let mut users = self.users.write();
             users.retain(|_, entry| {
                 entry.attempts.retain(|t| *t > window_start);
                 !entry.attempts.is_empty() || entry.lockout_until.map(|u| now < u).unwrap_or(false)
@@ -322,7 +322,7 @@ impl RateLimiter {
 
         // Cleanup IPs
         {
-            let mut ips = self.ips.write().unwrap();
+            let mut ips = self.ips.write();
             ips.retain(|_, entry| {
                 entry.attempts.retain(|t| *t > window_start);
                 !entry.attempts.is_empty() || entry.lockout_until.map(|u| now < u).unwrap_or(false)
