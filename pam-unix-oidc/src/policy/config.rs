@@ -86,10 +86,7 @@ impl<'de> serde::de::Deserialize<'de> for EnforcementMode {
                     "strict" => Ok(EnforcementMode::Strict),
                     "warn" => Ok(EnforcementMode::Warn),
                     "disabled" => Ok(EnforcementMode::Disabled),
-                    other => Err(E::unknown_variant(
-                        other,
-                        &["strict", "warn", "disabled"],
-                    )),
+                    other => Err(E::unknown_variant(other, &["strict", "warn", "disabled"])),
                 }
             }
         }
@@ -457,16 +454,15 @@ impl PolicyConfig {
 
         // Check for inline YAML config
         if let Ok(yaml) = std::env::var("UNIX_OIDC_POLICY_YAML") {
-            let config: PolicyConfig =
-                Figment::from(Serialized::defaults(PolicyConfig::default()))
-                    .merge(Yaml::string(&yaml))
-                    .merge(
-                        Env::prefixed("UNIX_OIDC_")
-                            .split("__")
-                            .only(&["security_modes", "cache"]),
-                    )
-                    .extract()
-                    .map_err(|e| PolicyError::ParseError(e.to_string()))?;
+            let config: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+                .merge(Yaml::string(&yaml))
+                .merge(
+                    Env::prefixed("UNIX_OIDC_")
+                        .split("__")
+                        .only(&["security_modes", "cache"]),
+                )
+                .extract()
+                .map_err(|e| PolicyError::ParseError(e.to_string()))?;
             return Ok(config);
         }
 
@@ -636,7 +632,10 @@ security_modes:
                 .merge(Yaml::string(yaml))
                 .extract();
 
-        assert!(result.is_err(), "Invalid mode string must cause load failure");
+        assert!(
+            result.is_err(),
+            "Invalid mode string must cause load failure"
+        );
     }
 
     #[test]
@@ -693,7 +692,10 @@ security_modes:
                 .extract();
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
 
-        assert!(result.is_ok(), "Unknown env vars must not break config load");
+        assert!(
+            result.is_ok(),
+            "Unknown env vars must not break config load"
+        );
     }
 
     // ── Existing tests (backward compat) ────────────────────────────────────

@@ -6,7 +6,9 @@
 pub mod config;
 pub mod rules;
 
-pub use config::{AcrConfig, CacheConfig, EnforcementMode, PolicyConfig, PolicyError, SecurityModes};
+pub use config::{
+    AcrConfig, CacheConfig, EnforcementMode, PolicyConfig, PolicyError, SecurityModes,
+};
 pub use rules::{
     AuthAction, PolicyRules, SshLoginRequirements, StepUpMethod, SudoStepUpRequirements,
 };
