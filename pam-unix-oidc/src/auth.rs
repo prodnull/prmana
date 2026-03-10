@@ -103,7 +103,8 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
     let user_info = get_user_info(username)?;
 
     // Generate cryptographically secure session ID
-    let session_id = generate_ssh_session_id();
+    let session_id = generate_ssh_session_id()
+        .map_err(|e| AuthError::Config(format!("Session ID generation failed: {e}")))?;
 
     Ok(AuthResult {
         username: user_info.username,
@@ -265,7 +266,8 @@ pub fn authenticate_with_dpop(
     let user_info = get_user_info(username)?;
 
     // Generate cryptographically secure session ID
-    let session_id = generate_ssh_session_id();
+    let session_id = generate_ssh_session_id()
+        .map_err(|e| AuthError::Config(format!("Session ID generation failed: {e}")))?;
 
     Ok(AuthResult {
         username: user_info.username,
@@ -298,7 +300,8 @@ pub fn authenticate_with_config(
     let user_info = get_user_info(username)?;
 
     // Generate cryptographically secure session ID
-    let session_id = generate_ssh_session_id();
+    let session_id = generate_ssh_session_id()
+        .map_err(|e| AuthError::Config(format!("Session ID generation failed: {e}")))?;
 
     Ok(AuthResult {
         username: user_info.username,
@@ -318,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_secure_session_id_format() {
-        let id = generate_ssh_session_id();
+        let id = generate_ssh_session_id().unwrap();
         assert!(id.starts_with("unix-oidc-"));
         // New format: unix-oidc-{timestamp_hex}-{16_char_random_hex}
         let parts: Vec<&str> = id.split('-').collect();
@@ -329,8 +332,8 @@ mod tests {
 
     #[test]
     fn test_secure_session_id_uniqueness() {
-        let id1 = generate_ssh_session_id();
-        let id2 = generate_ssh_session_id();
+        let id1 = generate_ssh_session_id().unwrap();
+        let id2 = generate_ssh_session_id().unwrap();
         // With 64 bits of CSPRNG randomness, collisions are practically impossible
         assert_ne!(id1, id2);
     }

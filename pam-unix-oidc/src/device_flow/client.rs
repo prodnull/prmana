@@ -18,42 +18,55 @@ pub struct DeviceFlowClient {
 impl DeviceFlowClient {
     /// Create a new device flow client.
     ///
+    /// Returns an error if the HTTP client cannot be constructed (e.g., invalid TLS
+    /// configuration). Propagating errors here prevents a panic in the PAM module.
+    ///
     /// # Arguments
     /// * `issuer_url` - The OIDC issuer URL (will append standard endpoints)
     /// * `client_id` - The OAuth client ID
     /// * `client_secret` - Optional client secret for confidential clients
-    pub fn new(issuer_url: &str, client_id: &str, client_secret: Option<&str>) -> Self {
+    pub fn new(
+        issuer_url: &str,
+        client_id: &str,
+        client_secret: Option<&str>,
+    ) -> Result<Self, DeviceFlowError> {
         let base = issuer_url.trim_end_matches('/');
 
-        Self {
+        Ok(Self {
             http_client: Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
-                .expect("Failed to create HTTP client"),
+                .map_err(|e| {
+                    DeviceFlowError::NetworkError(format!("Failed to create HTTP client: {e}"))
+                })?,
             device_authorization_endpoint: format!("{}/protocol/openid-connect/auth/device", base),
             token_endpoint: format!("{}/protocol/openid-connect/token", base),
             client_id: client_id.to_string(),
             client_secret: client_secret.map(String::from),
-        }
+        })
     }
 
     /// Create a client with explicit endpoints (for non-standard IdPs).
+    ///
+    /// Returns an error if the HTTP client cannot be constructed.
     pub fn with_endpoints(
         device_authorization_endpoint: &str,
         token_endpoint: &str,
         client_id: &str,
         client_secret: Option<&str>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, DeviceFlowError> {
+        Ok(Self {
             http_client: Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
-                .expect("Failed to create HTTP client"),
+                .map_err(|e| {
+                    DeviceFlowError::NetworkError(format!("Failed to create HTTP client: {e}"))
+                })?,
             device_authorization_endpoint: device_authorization_endpoint.to_string(),
             token_endpoint: token_endpoint.to_string(),
             client_id: client_id.to_string(),
             client_secret: client_secret.map(String::from),
-        }
+        })
     }
 
     /// Start the device authorization flow.
@@ -189,7 +202,8 @@ mod tests {
             "https://keycloak.example.com/realms/test",
             "unix-oidc",
             Some("secret"),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             client.device_authorization_endpoint,
@@ -207,7 +221,8 @@ mod tests {
             "https://keycloak.example.com/realms/test/",
             "unix-oidc",
             None,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             client.device_authorization_endpoint,
@@ -222,7 +237,8 @@ mod tests {
             "https://auth.example.com/token",
             "my-client",
             None,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             client.device_authorization_endpoint,

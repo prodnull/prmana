@@ -166,8 +166,8 @@ fn perform_step_up(
     let client_id = std::env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "unix-oidc".to_string());
     let client_secret = std::env::var("OIDC_CLIENT_SECRET").ok();
 
-    // Create device flow client
-    let client = DeviceFlowClient::new(&issuer, &client_id, client_secret.as_deref());
+    // Create device flow client (returns Result — propagate rather than panic)
+    let client = DeviceFlowClient::new(&issuer, &client_id, client_secret.as_deref())?;
 
     // Start device authorization
     let acr_values = requirements.minimum_acr.as_deref();
