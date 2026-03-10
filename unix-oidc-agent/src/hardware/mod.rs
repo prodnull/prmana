@@ -3,6 +3,8 @@
 //! This module provides shared infrastructure used by all hardware signer backends:
 //! - `PinCache`: thread-safe PIN cache with configurable timeout
 //! - `SignerConfig`: YAML-deserialized configuration for hardware signer selection
+//! - `build_signer`: factory that constructs the correct `DPoPSigner` from a spec string
+//! - `provision_signer`: generates a new key on the hardware device and returns an initialized signer
 //!
 //! Individual backends are gated behind cargo features:
 //! - `--features yubikey` enables `crypto::yubikey_signer` (PKCS#11 via cryptoki)
@@ -12,7 +14,11 @@ pub mod pin_cache;
 
 pub use pin_cache::PinCache;
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+
+use crate::crypto::DPoPSigner;
 
 /// Top-level signer configuration, loaded from
 /// `~/.config/unix-oidc/signer.yaml` or `/etc/unix-oidc/signer.yaml`.
@@ -113,6 +119,129 @@ impl SignerConfig {
 
         SignerConfig::default()
     }
+}
+
+/// Open an existing hardware signer by spec string.
+///
+/// `signer_spec` formats:
+/// - `"yubikey:<slot>"` (e.g., `"yubikey:9a"`) — opens the YubiKey PIV slot.
+///   Requires `--features yubikey` at build time.
+/// - `"tpm"` — loads the persistent TPM key from the configured handle.
+///   Requires `--features tpm` and Linux.
+/// - `"software"` or `""` — returns an error; use `load_or_create_signer` instead.
+///
+/// Returns `Err` if the device is not connected, the feature is not compiled in,
+/// or the key cannot be loaded.
+pub fn build_signer(
+    signer_spec: &str,
+    #[allow(unused_variables)]
+    config: &SignerConfig,
+) -> anyhow::Result<Arc<dyn DPoPSigner>> {
+    if signer_spec == "software" || signer_spec.is_empty() {
+        anyhow::bail!("Software signer should be handled by caller (load_or_create_signer)");
+    }
+
+    #[cfg(feature = "yubikey")]
+    if let Some(slot) = signer_spec.strip_prefix("yubikey:") {
+        return Ok(Arc::new(crate::crypto::YubiKeySigner::open(slot, config)?));
+    }
+
+    #[cfg(not(feature = "yubikey"))]
+    if signer_spec.starts_with("yubikey:") {
+        anyhow::bail!(
+            "YubiKey support not compiled in. Rebuild with `cargo build --features yubikey`."
+        );
+    }
+
+    #[cfg(all(feature = "tpm", target_os = "linux"))]
+    if signer_spec == "tpm" {
+        return Ok(Arc::new(crate::crypto::TpmSigner::load(config)?));
+    }
+
+    #[cfg(all(feature = "tpm", not(target_os = "linux")))]
+    if signer_spec == "tpm" {
+        anyhow::bail!("TPM support is only available on Linux.");
+    }
+
+    #[cfg(not(feature = "tpm"))]
+    if signer_spec == "tpm" {
+        anyhow::bail!(
+            "TPM support not compiled in. Rebuild with `cargo build --features tpm`."
+        );
+    }
+
+    anyhow::bail!(
+        "Unknown signer: '{}'. Valid options: software, yubikey:<slot> (e.g. yubikey:9a), tpm",
+        signer_spec
+    )
+}
+
+/// Provision a new key on a hardware device and return the signer spec string
+/// alongside an initialized `DPoPSigner`.
+///
+/// `signer_spec` formats:
+/// - `"yubikey:<slot>"` — generates a P-256 key via `C_GenerateKeyPair` (CKM_EC_KEY_PAIR_GEN),
+///   or adopts an existing compatible P-256 key in the slot. Returns `("yubikey:<slot>", signer)`.
+/// - `"tpm"` — calls `TpmSigner::provision()` to create a non-exportable persistent P-256
+///   key, then `TpmSigner::load()` for a ready signer. Returns `("tpm", signer)`.
+/// - `"software"` — returns an error with a helpful message (software keys auto-generate at login).
+///
+/// On success: `(signer_type_string, initialized_signer)` where `signer_type_string`
+/// should be persisted in token metadata as `"signer_type"`.
+pub fn provision_signer(
+    signer_spec: &str,
+    #[allow(unused_variables)]
+    config: &SignerConfig,
+) -> anyhow::Result<(String, Arc<dyn DPoPSigner>)> {
+    if signer_spec == "software" || signer_spec.is_empty() {
+        anyhow::bail!(
+            "Software signer auto-generates at login. No provisioning needed.\n\
+             Run `unix-oidc-agent login` to authenticate with a software key."
+        );
+    }
+
+    #[cfg(feature = "yubikey")]
+    if let Some(slot) = signer_spec.strip_prefix("yubikey:") {
+        if slot.is_empty() {
+            anyhow::bail!(
+                "YubiKey slot must be specified: --signer yubikey:9a (PIV Authentication slot recommended)"
+            );
+        }
+        let signer = crate::crypto::YubiKeySigner::provision(slot, config)?;
+        return Ok((signer_spec.to_string(), Arc::new(signer)));
+    }
+
+    #[cfg(not(feature = "yubikey"))]
+    if signer_spec.starts_with("yubikey:") {
+        anyhow::bail!(
+            "YubiKey support not compiled in. Rebuild with `cargo build --features yubikey`."
+        );
+    }
+
+    #[cfg(all(feature = "tpm", target_os = "linux"))]
+    if signer_spec == "tpm" {
+        // probe_p256() is called inside provision() — early exit if TPM lacks NistP256.
+        let _metadata = crate::crypto::TpmSigner::provision(config)?;
+        let signer = crate::crypto::TpmSigner::load(config)?;
+        return Ok(("tpm".to_string(), Arc::new(signer)));
+    }
+
+    #[cfg(all(feature = "tpm", not(target_os = "linux")))]
+    if signer_spec == "tpm" {
+        anyhow::bail!("TPM support is only available on Linux.");
+    }
+
+    #[cfg(not(feature = "tpm"))]
+    if signer_spec == "tpm" {
+        anyhow::bail!(
+            "TPM support not compiled in. Rebuild with `cargo build --features tpm`."
+        );
+    }
+
+    anyhow::bail!(
+        "Unknown signer: '{}'. Valid options: yubikey:<slot> (e.g. yubikey:9a), tpm",
+        signer_spec
+    )
 }
 
 #[cfg(test)]

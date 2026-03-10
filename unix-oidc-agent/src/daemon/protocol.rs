@@ -82,6 +82,10 @@ pub enum AgentResponseData {
         /// Set at daemon startup; None if the daemon has not been queried yet.
         #[serde(skip_serializing_if = "Option::is_none")]
         migration_status: Option<String>,
+        /// Active signer backend, e.g. "software", "yubikey:9a", "tpm".
+        /// Set at daemon startup from stored token metadata.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signer_type: Option<String>,
     },
     Metrics {
         /// Metrics data (JSON format)
@@ -107,6 +111,7 @@ impl AgentResponse {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn status(
         logged_in: bool,
         username: Option<String>,
@@ -115,6 +120,7 @@ impl AgentResponse {
         mlock_status: Option<String>,
         storage_backend: Option<String>,
         migration_status: Option<String>,
+        signer_type: Option<String>,
     ) -> Self {
         Self::Success(AgentResponseData::Status {
             logged_in,
@@ -124,6 +130,7 @@ impl AgentResponse {
             mlock_status,
             storage_backend,
             migration_status,
+            signer_type,
         })
     }
 
@@ -215,6 +222,7 @@ mod tests {
             Some("mlock active".to_string()),
             Some("keyring (Secret Service)".to_string()),
             Some("migrated".to_string()),
+            Some("software".to_string()),
         );
 
         let json = serde_json::to_string(&resp).unwrap();
@@ -223,24 +231,18 @@ mod tests {
         assert!(json.contains(r#""mlock_status":"mlock active""#));
         assert!(json.contains(r#""storage_backend":"keyring (Secret Service)""#));
         assert!(json.contains(r#""migration_status":"migrated""#));
+        assert!(json.contains(r#""signer_type":"software""#));
     }
 
     /// TDD: storage_backend field is omitted from JSON when None (skip_serializing_if).
     #[test]
     fn test_status_response_omits_storage_fields_when_none() {
-        let resp = AgentResponse::status(
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let resp = AgentResponse::status(false, None, None, None, None, None, None, None);
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("storage_backend"), "storage_backend must be absent when None");
         assert!(!json.contains("migration_status"), "migration_status must be absent when None");
+        assert!(!json.contains("signer_type"), "signer_type must be absent when None");
     }
 
     /// TDD: full JSON round-trip with all fields populated.
@@ -254,6 +256,7 @@ mod tests {
             Some("mlock active".to_string()),
             Some("keyring (keyutils @u)".to_string()),
             Some("n/a".to_string()),
+            Some("yubikey:9a".to_string()),
         );
 
         let json = serde_json::to_string(&resp).unwrap();
@@ -264,6 +267,7 @@ mod tests {
             username,
             storage_backend,
             migration_status,
+            signer_type,
             ..
         }) = parsed
         {
@@ -271,8 +275,26 @@ mod tests {
             assert_eq!(username.as_deref(), Some("bob"));
             assert_eq!(storage_backend.as_deref(), Some("keyring (keyutils @u)"));
             assert_eq!(migration_status.as_deref(), Some("n/a"));
+            assert_eq!(signer_type.as_deref(), Some("yubikey:9a"));
         } else {
             panic!("Expected Status response");
         }
+    }
+
+    /// TDD: signer_type field reported for hardware signers.
+    #[test]
+    fn test_status_response_hardware_signer_type() {
+        let resp = AgentResponse::status(
+            true,
+            Some("alice".to_string()),
+            Some("thumb123".to_string()),
+            Some(1234567890),
+            None,
+            None,
+            None,
+            Some("yubikey:9a".to_string()),
+        );
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""signer_type":"yubikey:9a""#));
     }
 }

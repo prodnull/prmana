@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use unix_oidc_agent::crypto::protected_key::mlock_probe;
 use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
+use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
 use unix_oidc_agent::daemon::{
     AgentClient, AgentResponse, AgentResponseData, AgentServer, AgentState,
 };
@@ -60,6 +61,22 @@ enum Commands {
         /// OAuth client secret (optional)
         #[arg(long)]
         client_secret: Option<String>,
+
+        /// Signer backend: software (default), yubikey:<slot> (e.g. yubikey:9a), tpm.
+        /// Hardware signers must be provisioned first with `unix-oidc-agent provision --signer <spec>`.
+        #[arg(long, default_value = "software")]
+        signer: String,
+    },
+
+    /// Provision a hardware key for DPoP signing.
+    ///
+    /// Generates a P-256 key on the specified hardware device.
+    /// After provisioning, use `login --signer <spec>` to authenticate.
+    Provision {
+        /// Hardware signer to provision: yubikey:<slot> (e.g. yubikey:9a) or tpm.
+        /// Use "yubikey:9a" for the recommended PIV Authentication slot.
+        #[arg(long)]
+        signer: String,
     },
 
     /// Show current authentication status
@@ -122,7 +139,10 @@ async fn main() -> anyhow::Result<()> {
             issuer,
             client_id,
             client_secret,
-        } => run_login(issuer, client_id, client_secret).await,
+            signer,
+        } => run_login(issuer, client_id, client_secret, signer).await,
+
+        Commands::Provision { signer } => run_provision(signer).await,
 
         Commands::Status => run_status().await,
 
@@ -193,11 +213,16 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     };
     info!("Storage: {}", storage_backend_str);
 
-    // Try to load existing credentials from storage
+    // Try to load existing credentials from storage.
+    // load_agent_state() reads signer_type from metadata and populates state.signer_type.
     let mut state = load_agent_state().await?;
     state.mlock_status = Some(mlock_status_str);
     state.storage_backend = Some(storage_backend_str);
     state.migration_status = Some(migration_status_str);
+    // signer_type is already set by load_agent_state(); log it for observability.
+    if let Some(ref st) = state.signer_type {
+        info!(signer_type = %st, "Active signer backend");
+    }
     let state = Arc::new(RwLock::new(state));
 
     let server = AgentServer::new(socket_path.clone(), state);
@@ -224,6 +249,7 @@ async fn run_status() -> anyhow::Result<()> {
             mlock_status,
             storage_backend,
             migration_status,
+            signer_type,
         })) => {
             if logged_in {
                 println!("Status: Logged in");
@@ -250,6 +276,9 @@ async fn run_status() -> anyhow::Result<()> {
                 if let Some(t) = thumbprint {
                     println!("  DPoP thumbprint: {} (keypair exists)", t);
                 }
+            }
+            if let Some(signer) = signer_type {
+                println!("  Signer: {}", format_signer_type(&signer));
             }
             if let Some(mem) = mlock_status {
                 println!("  Memory protection: {}", mem);
@@ -330,6 +359,7 @@ async fn run_login(
     issuer: Option<String>,
     client_id: Option<String>,
     client_secret: Option<String>,
+    signer_spec: String,
 ) -> anyhow::Result<()> {
     let issuer = issuer
         .or_else(|| std::env::var("OIDC_ISSUER").ok())
@@ -358,7 +388,24 @@ async fn run_login(
         Ok(n) => info!(n, "Migrated credentials to keyring backend"),
         Err(e) => warn!(error = %e, "Credential migration failed (continuing with current backend)"),
     }
-    let signer = load_or_create_signer(&storage)?;
+
+    // Select signer backend based on --signer flag.
+    // "software" (default) uses the existing software key path.
+    // Hardware specs (yubikey:<slot>, tpm) use build_signer() to open the pre-provisioned device key.
+    let (signer_type, signer_arc): (String, Arc<dyn DPoPSigner>) =
+        if signer_spec == "software" || signer_spec.is_empty() {
+            let sw = load_or_create_signer(&storage)?;
+            let arc: Arc<dyn DPoPSigner> = Arc::new(sw);
+            ("software".to_string(), arc)
+        } else {
+            let hw_config = SignerConfig::load();
+            let arc = build_signer(&signer_spec, &hw_config)?;
+            (signer_spec.clone(), arc)
+        };
+
+    // Backward-compat alias for the rest of the function (DPoP proof generation not needed here,
+    // but thumbprint display is).
+    let signer = signer_arc.as_ref();
 
     println!("DPoP thumbprint: {}", signer.thumbprint());
     println!();
@@ -376,6 +423,8 @@ async fn run_login(
     let issuer_for_storage = issuer.clone();
     let client_id_for_storage = client_id.clone();
     let client_secret_for_storage = client_secret.clone();
+    // signer_type is a String — clone to use in metadata write after spawn_blocking.
+    let signer_type_for_storage = signer_type.clone();
 
     let token_result = tokio::task::spawn_blocking(move || {
         use std::time::Duration;
@@ -580,7 +629,15 @@ async fn run_login(
     // Storage write: expose_secret() is the audit boundary for persistence.
     storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
 
-    // Store token metadata (expiry, refresh token, and OIDC config for refresh).
+    // For software signers: persist the DPoP private key (it's held in process memory).
+    // For hardware signers (YubiKey, TPM): the key never leaves the device — do NOT store it.
+    if signer_type_for_storage == "software" {
+        // load_or_create_signer already stored the key; nothing to do here.
+        // This branch exists for clarity: hardware signers must NOT write KEY_DPOP_PRIVATE.
+    }
+
+    // Store token metadata (expiry, refresh token, OIDC config for refresh, and signer_type).
+    // signer_type is read back at daemon startup to reconstruct the correct signer.
     // Storage write: expose_secret() is the audit boundary — raw value written to disk only here.
     let metadata = serde_json::json!({
         "expires_at": token_expires,
@@ -589,13 +646,66 @@ async fn run_login(
         "token_endpoint": token_endpoint,
         "client_id": client_id_for_storage,
         "client_secret": client_secret_for_storage.as_ref().map(|s| { let v: &str = s.expose_secret(); v }),
+        // Persisted signer type: restored by load_agent_state() on daemon restart.
+        // "software" means key is in KEY_DPOP_PRIVATE; hardware specs mean key is on device.
+        "signer_type": signer_type_for_storage,
     });
     storage.store(KEY_TOKEN_METADATA, metadata.to_string().as_bytes())?;
 
     println!("Token stored successfully");
     println!("Token expires in: {}s", expires_in);
+    if signer_type_for_storage != "software" {
+        println!("Signer: {} (hardware key on device)", format_signer_type(&signer_type_for_storage));
+    }
     println!();
     println!("Start the agent daemon with: unix-oidc-agent serve");
+
+    Ok(())
+}
+
+/// Format a signer type spec for user-friendly display.
+///
+/// - `"software"` → `"software"`
+/// - `"yubikey:9a"` → `"yubikey (slot 9a)"`
+/// - `"tpm"` → `"tpm"`
+fn format_signer_type(spec: &str) -> String {
+    if let Some(slot) = spec.strip_prefix("yubikey:") {
+        format!("yubikey (slot {})", slot)
+    } else {
+        spec.to_string()
+    }
+}
+
+/// Provision a hardware key for DPoP signing.
+async fn run_provision(signer_spec: String) -> anyhow::Result<()> {
+    if signer_spec == "software" || signer_spec.is_empty() {
+        println!("Software signer auto-generates at login. No provisioning needed.");
+        println!("Run `unix-oidc-agent login` to authenticate with a software key.");
+        return Ok(());
+    }
+
+    // Validate yubikey slot spec up front.
+    if signer_spec.starts_with("yubikey:") {
+        let slot = signer_spec.strip_prefix("yubikey:").unwrap_or("");
+        if slot.is_empty() {
+            anyhow::bail!(
+                "YubiKey slot must be specified: --signer yubikey:9a (PIV Authentication slot recommended)"
+            );
+        }
+    }
+
+    println!("Provisioning key on {}...", format_signer_type(&signer_spec));
+
+    let config = SignerConfig::load();
+    let (signer_type, signer) = provision_signer(&signer_spec, &config)?;
+
+    println!("Key provisioned successfully on {}.", format_signer_type(&signer_type));
+    println!("DPoP thumbprint: {}", signer.thumbprint());
+    println!();
+    println!(
+        "Run `unix-oidc-agent login --signer {}` to authenticate.",
+        signer_type
+    );
 
     Ok(())
 }
@@ -803,7 +913,13 @@ async fn run_reset(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Load agent state from storage
+/// Load agent state from storage, restoring the correct signer backend from metadata.
+///
+/// For software signers: loads or creates the DPoP key from `KEY_DPOP_PRIVATE`.
+/// For hardware signers (yubikey:*, tpm): calls `build_signer()` to re-open the device key.
+///
+/// Per CONTEXT.md design decision: if a hardware signer is specified in metadata but the
+/// device is unavailable, signer is set to None (ERROR logged, no silent fallback to software).
 async fn load_agent_state() -> anyhow::Result<AgentState> {
     let storage = match StorageRouter::detect() {
         Ok(s) => s,
@@ -813,24 +929,62 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         }
     };
 
-    let signer = match load_or_create_signer(&storage) {
-        Ok(s) => Some(Arc::new(s) as Arc<dyn unix_oidc_agent::crypto::DPoPSigner>),
-        Err(e) => {
-            info!("Could not load signer: {}", e);
-            None
-        }
-    };
+    // Read token metadata to determine signer type (stored by run_login).
+    let metadata: Option<serde_json::Value> = storage
+        .retrieve(KEY_TOKEN_METADATA)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let signer_type_from_metadata = metadata
+        .as_ref()
+        .and_then(|v| v["signer_type"].as_str())
+        .map(|s| s.to_string());
+
+    let (signer, signer_type): (Option<Arc<dyn unix_oidc_agent::crypto::DPoPSigner>>, Option<String>) =
+        match signer_type_from_metadata.as_deref() {
+            None | Some("software") => {
+                // No signer_type in metadata (pre-hardware-feature login) or explicit "software".
+                let result = match load_or_create_signer(&storage) {
+                    Ok(s) => Some(Arc::new(s) as Arc<dyn unix_oidc_agent::crypto::DPoPSigner>),
+                    Err(e) => {
+                        info!("Could not load software signer: {}", e);
+                        None
+                    }
+                };
+                (result, Some("software".to_string()))
+            }
+            Some(hw_spec) => {
+                // Hardware signer: attempt to re-open from device.
+                // No silent fallback — per CONTEXT.md: if hardware unavailable, daemon
+                // starts without signing capability and user must re-login.
+                let hw_config = SignerConfig::load();
+                match build_signer(hw_spec, &hw_config) {
+                    Ok(arc) => {
+                        info!(signer = %hw_spec, "Hardware signer loaded successfully");
+                        (Some(arc), Some(hw_spec.to_string()))
+                    }
+                    Err(e) => {
+                        error!(
+                            signer = %hw_spec,
+                            error = %e,
+                            "Hardware signer unavailable — re-login required: \
+                             `unix-oidc-agent login --signer {}`",
+                            hw_spec
+                        );
+                        (None, Some(hw_spec.to_string()))
+                    }
+                }
+            }
+        };
 
     let access_token_raw = storage
         .retrieve(KEY_ACCESS_TOKEN)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok());
 
-    let token_expires = storage
-        .retrieve(KEY_TOKEN_METADATA)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    let token_expires = metadata
+        .as_ref()
         .and_then(|v| v["expires_at"].as_i64());
 
     // Extract username from token claims (before wrapping in SecretString)
@@ -851,6 +1005,7 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         mlock_status: None,
         storage_backend: None,
         migration_status: None,
+        signer_type,
     })
 }
 

@@ -45,6 +45,9 @@ pub struct AgentState {
     /// Human-readable migration status, e.g. "migrated", "n/a".
     /// Set at daemon startup from `StorageRouter.migration_status.display_name()`.
     pub migration_status: Option<String>,
+    /// Active signer backend spec, e.g. "software", "yubikey:9a", "tpm".
+    /// Loaded from token metadata `signer_type` field at daemon startup.
+    pub signer_type: Option<String>,
 }
 
 /// Manual Debug impl: signer is not Debug (trait object), access_token shows [REDACTED].
@@ -58,6 +61,7 @@ impl std::fmt::Debug for AgentState {
             .field("mlock_status", &self.mlock_status)
             .field("storage_backend", &self.storage_backend)
             .field("migration_status", &self.migration_status)
+            .field("signer_type", &self.signer_type)
             .finish()
     }
 }
@@ -73,6 +77,7 @@ impl AgentState {
             mlock_status: None,
             storage_backend: None,
             migration_status: None,
+            signer_type: None,
         }
     }
 
@@ -270,6 +275,7 @@ async fn handle_request(
                     state_read.mlock_status.clone(),
                     state_read.storage_backend.clone(),
                     state_read.migration_status.clone(),
+                    state_read.signer_type.clone(),
                 ),
                 false,
             )
@@ -606,6 +612,7 @@ mod tests {
             mlock_status: None,
             storage_backend: None,
             migration_status: None,
+            signer_type: None,
         }));
 
         // Start server in background
@@ -650,6 +657,7 @@ mod tests {
             mlock_status: None,
             storage_backend: None,
             migration_status: None,
+            signer_type: None,
         }));
 
         let server = AgentServer::new(socket_path.clone(), state);
@@ -806,6 +814,7 @@ mod tests {
             mlock_status: None,
             storage_backend: None,
             migration_status: None,
+            signer_type: None,
         };
         let debug_output = format!("{:?}", state);
         assert!(
@@ -834,6 +843,7 @@ mod tests {
             mlock_status: None,
             storage_backend: None,
             migration_status: None,
+            signer_type: None,
         };
         let exposed = state.access_token.as_ref().unwrap().expose_secret();
         assert_eq!(exposed, raw);
