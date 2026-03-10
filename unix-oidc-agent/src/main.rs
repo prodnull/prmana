@@ -7,13 +7,16 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use unix_oidc_agent::crypto::{DPoPSigner, SoftwareSigner};
+use unix_oidc_agent::crypto::protected_key::mlock_probe;
+use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
 use unix_oidc_agent::daemon::{
     AgentClient, AgentResponse, AgentResponseData, AgentServer, AgentState,
 };
+use unix_oidc_agent::security::disable_core_dumps;
 use unix_oidc_agent::storage::{
     FileStorage, SecureStorage, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
@@ -150,8 +153,24 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
 
     info!("Starting agent daemon on {:?}", socket_path);
 
+    // Process hardening: disable core dumps before loading any key material.
+    // Best-effort — failures are logged as WARN, daemon continues.
+    disable_core_dumps();
+
+    // Probe mlock availability before loading keys.
+    // The result is stored in AgentState for status reporting.
+    let mlock_result = mlock_probe();
+    let mlock_status_str = match &mlock_result {
+        MlockStatus::Active => "mlock active: key pages memory-locked".to_string(),
+        MlockStatus::Unavailable(reason) => {
+            format!("mlock unavailable: {}", reason)
+        }
+    };
+    info!("Memory protection: {}", mlock_status_str);
+
     // Try to load existing credentials from storage
-    let state = load_agent_state().await?;
+    let mut state = load_agent_state().await?;
+    state.mlock_status = Some(mlock_status_str);
     let state = Arc::new(RwLock::new(state));
 
     let server = AgentServer::new(socket_path.clone(), state);
@@ -175,6 +194,7 @@ async fn run_status() -> anyhow::Result<()> {
             username,
             thumbprint,
             token_expires,
+            mlock_status,
         })) => {
             if logged_in {
                 println!("Status: Logged in");
@@ -201,6 +221,9 @@ async fn run_status() -> anyhow::Result<()> {
                 if let Some(t) = thumbprint {
                     println!("  DPoP thumbprint: {} (keypair exists)", t);
                 }
+            }
+            if let Some(mem) = mlock_status {
+                println!("  Memory protection: {}", mem);
             }
             Ok(())
         }
@@ -485,10 +508,14 @@ async fn run_login(
     println!();
     println!("Authentication successful!");
 
-    // Extract token information
-    let access_token = token_result["access_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No access_token in response"))?;
+    // Extract token information.
+    // Wrap in SecretString immediately — must not appear in logs (MEM-03).
+    let access_token = SecretString::from(
+        token_result["access_token"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("No access_token in response"))?
+            .to_string(),
+    );
 
     let expires_in = token_result["expires_in"].as_u64().unwrap_or(3600);
     let token_expires = std::time::SystemTime::now()
@@ -497,8 +524,8 @@ async fn run_login(
         .as_secs() as i64
         + expires_in as i64;
 
-    // Store the token
-    storage.store(KEY_ACCESS_TOKEN, access_token.as_bytes())?;
+    // Storage write: expose_secret() is the audit boundary for persistence.
+    storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
 
     // Store token metadata (expiry, refresh token, and OIDC config for refresh)
     let metadata = serde_json::json!({
@@ -630,10 +657,14 @@ async fn run_refresh() -> anyhow::Result<()> {
     })
     .await??;
 
-    // Extract new token information
-    let access_token = token_result["access_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No access_token in refresh response"))?;
+    // Extract new token information.
+    // Wrap in SecretString immediately — must not appear in logs (MEM-03).
+    let access_token = SecretString::from(
+        token_result["access_token"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("No access_token in refresh response"))?
+            .to_string(),
+    );
 
     let expires_in = token_result["expires_in"].as_u64().unwrap_or(3600);
     let token_expires = std::time::SystemTime::now()
@@ -647,8 +678,8 @@ async fn run_refresh() -> anyhow::Result<()> {
         .as_str()
         .unwrap_or(metadata["refresh_token"].as_str().unwrap_or(""));
 
-    // Store the new token
-    storage.store(KEY_ACCESS_TOKEN, access_token.as_bytes())?;
+    // Storage write: expose_secret() is the audit boundary for persistence.
+    storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
 
     // Update token metadata
     let updated_metadata = serde_json::json!({
@@ -725,7 +756,7 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         }
     };
 
-    let access_token = storage
+    let access_token_raw = storage
         .retrieve(KEY_ACCESS_TOKEN)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok());
@@ -737,10 +768,14 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v["expires_at"].as_i64());
 
-    // Extract username from token claims
-    let username = access_token
+    // Extract username from token claims (before wrapping in SecretString)
+    let username = access_token_raw
         .as_ref()
         .and_then(|token| extract_username_from_token(token));
+
+    // Security (MEM-03): wrap access token in SecretString so it is never
+    // accidentally emitted via Debug/Display/tracing.
+    let access_token = access_token_raw.map(SecretString::from);
 
     Ok(AgentState {
         signer,
@@ -748,6 +783,7 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         token_expires,
         username,
         metrics: std::sync::Arc::new(unix_oidc_agent::metrics::MetricsCollector::new()),
+        mlock_status: None,
     })
 }
 

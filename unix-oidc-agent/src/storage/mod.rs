@@ -7,6 +7,7 @@
 
 pub mod file_store;
 pub mod keyring_store;
+pub mod secure_delete;
 
 use thiserror::Error;
 

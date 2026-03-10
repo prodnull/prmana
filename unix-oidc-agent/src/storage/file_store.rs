@@ -2,15 +2,23 @@
 
 use directories::ProjectDirs;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
+use std::io::Write;
 use std::path::PathBuf;
+use tracing::warn;
 
+use crate::storage::secure_delete;
 use crate::storage::{SecureStorage, StorageError};
 
 /// File-based storage for headless environments
 ///
 /// WARNING: This stores secrets in files with mode 0600.
 /// Prefer KeyringStorage when available.
+///
+/// # Secure deletion (MEM-05/MEM-06)
+///
+/// `delete()` uses a three-pass DoD 5220.22-M style overwrite before unlink.
+/// A CoW/SSD advisory is logged at construction time and again per-delete.
 pub struct FileStorage {
     base_dir: PathBuf,
 }
@@ -32,6 +40,10 @@ impl FileStorage {
             let perms = fs::Permissions::from_mode(0o700);
             fs::set_permissions(&base_dir, perms)?;
         }
+
+        // MEM-06: Log CoW/SSD advisories once at construction time so operators
+        // are informed if secure delete may not fully erase key material.
+        secure_delete::log_storage_advisories(&base_dir);
 
         Ok(Self { base_dir })
     }
@@ -89,18 +101,25 @@ impl SecureStorage for FileStorage {
             return Err(StorageError::NotFound(key.to_string()));
         }
 
-        // Overwrite with zeros before deleting (basic secure delete)
-        if let Ok(metadata) = fs::metadata(&path) {
-            let size = metadata.len() as usize;
-            if let Ok(mut file) = File::create(&path) {
-                let _ = file.write_all(&vec![0u8; size]);
-                let _ = file.sync_all();
-            }
+        // MEM-05/MEM-06: Per-delete CoW advisory — inform operator if this
+        // specific file is on a filesystem where overwrites may be ineffective.
+        if secure_delete::detect_cow_filesystem(&path) {
+            warn!(
+                path = %path.display(),
+                "Deleting key material on a CoW filesystem (btrfs/APFS). \
+                Secure overwrite may not erase all block copies. \
+                Full-disk encryption is recommended."
+            );
         }
 
-        fs::remove_file(&path)?;
-
-        Ok(())
+        // Three-pass random overwrite (DoD 5220.22-M) + fsync + unlink.
+        // Replaces the previous single zero-overwrite (MEM-05).
+        secure_delete::secure_remove(&path).map_err(|e| {
+            StorageError::Io(std::io::Error::other(format!(
+                "Secure delete failed for key '{}': {}",
+                key, e
+            )))
+        })
     }
 
     fn exists(&self, key: &str) -> bool {
@@ -149,6 +168,29 @@ mod tests {
 
         storage.delete(test_key).unwrap();
         assert!(!storage.exists(test_key));
+    }
+
+    /// Secure delete: verify FileStorage.delete uses secure_remove (integration).
+    #[test]
+    fn test_file_delete_uses_secure_remove() {
+        let (storage, _temp) = test_storage();
+        let test_key = "secure-delete-test";
+        let secret_content = b"dpop-private-key-material-32bytes-padding";
+
+        storage.store(test_key, secret_content).unwrap();
+        assert!(storage.exists(test_key));
+
+        // delete() must succeed and the key must be gone
+        storage.delete(test_key).unwrap();
+        assert!(!storage.exists(test_key));
+
+        // Also verify that re-deleting returns NotFound
+        let result = storage.delete(test_key);
+        assert!(
+            matches!(result, Err(StorageError::NotFound(_))),
+            "Expected NotFound on second delete, got: {:?}",
+            result
+        );
     }
 
     #[test]

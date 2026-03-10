@@ -6,4 +6,5 @@ pub mod config;
 pub mod crypto;
 pub mod daemon;
 pub mod metrics;
+pub mod security;
 pub mod storage;

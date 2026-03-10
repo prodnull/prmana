@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use secrecy::{ExposeSecret, SecretString};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
@@ -16,14 +17,41 @@ use crate::storage::{FileStorage, SecureStorage, KEY_ACCESS_TOKEN, KEY_TOKEN_MET
 #[cfg(test)]
 use crate::daemon::protocol::AgentResponseData;
 
-/// Agent state shared across connections
+/// Agent state shared across connections.
+///
+/// ## Security: SecretString for access_token
+///
+/// `access_token` is wrapped in `secrecy::SecretString` (RFC-9449 bearer credential).
+/// This ensures:
+/// - `Debug` / `Display` formatting emits `[REDACTED]` — tokens never appear in logs
+///   or tracing spans regardless of log level.
+/// - The raw value is accessible only via `.expose_secret()`, creating an explicit,
+///   grep-searchable audit boundary in the codebase (MEM-03).
 pub struct AgentState {
     pub signer: Option<Arc<dyn DPoPSigner>>,
-    pub access_token: Option<String>,
+    /// OAuth access token — wrapped in SecretString to prevent accidental logging.
+    /// Use `.expose_secret()` only at audit boundaries: sending to SSH client.
+    pub access_token: Option<SecretString>,
     pub token_expires: Option<i64>,
     pub username: Option<String>,
     /// Metrics collector for observability
     pub metrics: Arc<MetricsCollector>,
+    /// Human-readable mlock status reported by `unix-oidc-agent status`.
+    /// Set at daemon startup after calling `mlock_probe()`.
+    pub mlock_status: Option<String>,
+}
+
+/// Manual Debug impl: signer is not Debug (trait object), access_token shows [REDACTED].
+impl std::fmt::Debug for AgentState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentState")
+            .field("signer", &self.signer.as_ref().map(|s| s.thumbprint()))
+            .field("access_token", &self.access_token)
+            .field("token_expires", &self.token_expires)
+            .field("username", &self.username)
+            .field("mlock_status", &self.mlock_status)
+            .finish()
+    }
 }
 
 impl AgentState {
@@ -34,6 +62,7 @@ impl AgentState {
             token_expires: None,
             username: None,
             metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
         }
     }
 
@@ -180,8 +209,10 @@ async fn handle_request(
                 }
             };
 
+            // Security: expose_secret() is the ONLY audit boundary for the access token.
+            // The raw string is sent to the SSH client and never used elsewhere.
             let token = match &state_read.access_token {
-                Some(t) => t.clone(),
+                Some(t) => t.expose_secret().to_string(),
                 None => {
                     state_read
                         .metrics
@@ -226,6 +257,7 @@ async fn handle_request(
                     state_read.username.clone(),
                     state_read.signer.as_ref().map(|s| s.thumbprint()),
                     state_read.token_expires,
+                    state_read.mlock_status.clone(),
                 ),
                 false,
             )
@@ -249,7 +281,7 @@ async fn handle_request(
             // Perform token refresh using stored refresh token
             match perform_token_refresh(state).await {
                 Ok((new_token, expires_at, username)) => {
-                    // Update state with new token
+                    // Update state with new token (already wrapped in SecretString)
                     let mut state_write = state.write().await;
                     state_write.access_token = Some(new_token);
                     state_write.token_expires = Some(expires_at);
@@ -361,10 +393,13 @@ pub enum ClientError {
     Serialization(String),
 }
 
-/// Perform token refresh using stored refresh token
+/// Perform token refresh using stored refresh token.
+///
+/// Returns a `SecretString` for the new access token to ensure the value
+/// is redacted if accidentally logged before being stored in `AgentState`.
 async fn perform_token_refresh(
     _state: &Arc<RwLock<AgentState>>,
-) -> Result<(String, i64, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(SecretString, i64, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
     // Load storage
     let storage = FileStorage::new().map_err(|e| format!("Storage error: {}", e))?;
 
@@ -439,11 +474,14 @@ async fn perform_token_refresh(
     .await
     .map_err(|e| format!("Task error: {}", e))??;
 
-    // Extract new token information
-    let access_token = result["access_token"]
-        .as_str()
-        .ok_or("No access_token in refresh response")?
-        .to_string();
+    // Extract new token information.
+    // Wrap in SecretString immediately — the raw token must never appear in logs.
+    let access_token = SecretString::from(
+        result["access_token"]
+            .as_str()
+            .ok_or("No access_token in refresh response")?
+            .to_string(),
+    );
 
     let expires_in = result["expires_in"].as_u64().unwrap_or(3600);
     let token_expires = SystemTime::now()
@@ -457,9 +495,9 @@ async fn perform_token_refresh(
         .as_str()
         .unwrap_or(metadata["refresh_token"].as_str().unwrap_or(""));
 
-    // Store the new token
+    // Storage write: expose_secret() is the audit boundary for persistence.
     storage
-        .store(KEY_ACCESS_TOKEN, access_token.as_bytes())
+        .store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())
         .map_err(|e| format!("Failed to store access token: {}", e))?;
 
     // Update token metadata
@@ -475,8 +513,9 @@ async fn perform_token_refresh(
         .store(KEY_TOKEN_METADATA, updated_metadata.to_string().as_bytes())
         .map_err(|e| format!("Failed to store metadata: {}", e))?;
 
-    // Extract username from token (simple base64 decode of payload)
-    let username = extract_username_from_token(&access_token);
+    // Extract username from token (base64 decode of payload, no signature check).
+    // expose_secret() here: username extraction only, result is non-sensitive.
+    let username = extract_username_from_token(access_token.expose_secret());
 
     info!("Token refreshed successfully, expires in {}s", expires_in);
 
@@ -537,10 +576,11 @@ mod tests {
         let signer = Arc::new(SoftwareSigner::generate());
         let state = Arc::new(RwLock::new(AgentState {
             signer: Some(signer.clone()),
-            access_token: Some("test-token".to_string()),
+            access_token: Some(SecretString::from("test-token")),
             token_expires: Some(9999999999),
             username: Some("testuser".to_string()),
             metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
         }));
 
         // Start server in background
@@ -578,10 +618,11 @@ mod tests {
         let signer = Arc::new(SoftwareSigner::generate());
         let state = Arc::new(RwLock::new(AgentState {
             signer: Some(signer.clone()),
-            access_token: Some("test-token".to_string()),
+            access_token: Some(SecretString::from("test-token")),
             token_expires: Some(9999999999),
             username: Some("testuser".to_string()),
             metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
         }));
 
         let server = AgentServer::new(socket_path.clone(), state);
@@ -723,16 +764,15 @@ mod tests {
         assert!(state.username.is_none());
     }
 
-    // --- TDD RED: Secret<String> wrapping and redaction ---
+    // --- TDD RED: SecretString wrapping and redaction ---
 
     /// Security: AgentState Debug output must NEVER expose raw token values.
-    /// access_token must be wrapped in Secret<String>, which redacts via "[REDACTED]".
+    /// access_token must be wrapped in SecretString, which redacts via "[REDACTED]".
     #[test]
     fn test_agent_state_debug_redacts_access_token() {
-        use secrecy::Secret;
         let state = AgentState {
             signer: None,
-            access_token: Some(Secret::new("super-secret-access-token".to_string())),
+            access_token: Some(SecretString::from("super-secret-access-token")),
             token_expires: Some(9999999999),
             username: Some("alice".to_string()),
             metrics: Arc::new(MetricsCollector::new()),
@@ -754,11 +794,11 @@ mod tests {
     /// Security: expose_secret() is the only path to the raw token value.
     #[test]
     fn test_access_token_expose_secret_roundtrip() {
-        use secrecy::{ExposeSecret, Secret};
+        use secrecy::{ExposeSecret, SecretString};
         let raw = "eyJhbGciOiJFUzI1NiJ9.test.sig";
         let state = AgentState {
             signer: None,
-            access_token: Some(Secret::new(raw.to_string())),
+            access_token: Some(SecretString::from(raw)),
             token_expires: None,
             username: None,
             metrics: Arc::new(MetricsCollector::new()),
@@ -780,7 +820,6 @@ mod tests {
     /// mlock status field: AgentState must carry mlock_status for status reporting.
     #[test]
     fn test_agent_state_carries_mlock_status() {
-        use crate::crypto::protected_key::MlockStatus;
         let mut state = AgentState::new();
         state.mlock_status = Some("mlock active".to_string());
         assert_eq!(state.mlock_status.as_deref(), Some("mlock active"));

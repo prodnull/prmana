@@ -70,6 +70,10 @@ pub enum AgentResponseData {
         username: Option<String>,
         thumbprint: Option<String>,
         token_expires: Option<i64>,
+        /// Human-readable memory protection status (mlock availability).
+        /// Set at daemon startup; None if the daemon has not been queried yet.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mlock_status: Option<String>,
     },
     Metrics {
         /// Metrics data (JSON format)
@@ -100,12 +104,14 @@ impl AgentResponse {
         username: Option<String>,
         thumbprint: Option<String>,
         token_expires: Option<i64>,
+        mlock_status: Option<String>,
     ) -> Self {
         Self::Success(AgentResponseData::Status {
             logged_in,
             username,
             thumbprint,
             token_expires,
+            mlock_status,
         })
     }
 
@@ -194,10 +200,12 @@ mod tests {
             Some("alice".to_string()),
             Some("thumb123".to_string()),
             Some(1234567890),
+            Some("mlock active".to_string()),
         );
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""logged_in":true"#));
         assert!(json.contains(r#""username":"alice""#));
+        assert!(json.contains(r#""mlock_status":"mlock active""#));
     }
 }
