@@ -48,18 +48,9 @@ pub fn disable_core_dumps() {
         // Security: ptrace(PT_DENY_ATTACH, 0, NULL, 0) prevents debugger attachment
         // and marks the process so the kernel won't produce a core dump.
         // Reference: man ptrace(2) on macOS / XNU source
-        let ret = unsafe {
-            libc::ptrace(
-                libc::PT_DENY_ATTACH,
-                0,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
+        let ret = unsafe { libc::ptrace(libc::PT_DENY_ATTACH, 0, std::ptr::null_mut(), 0) };
         if ret == 0 {
-            tracing::info!(
-                "Process hardening: core dumps disabled via ptrace(PT_DENY_ATTACH)"
-            );
+            tracing::info!("Process hardening: core dumps disabled via ptrace(PT_DENY_ATTACH)");
         } else {
             let errno = unsafe { *libc::__error() };
             tracing::warn!(

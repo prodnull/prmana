@@ -76,9 +76,7 @@ pub fn mlock_probe() -> MlockStatus {
         // Allocate a test page on the stack; 64 bytes is well under the page
         // minimum that mlock operates on.
         let mut buf = [0u8; 64];
-        let ret = unsafe {
-            libc::mlock(buf.as_ptr() as *const libc::c_void, buf.len())
-        };
+        let ret = unsafe { libc::mlock(buf.as_ptr() as *const libc::c_void, buf.len()) };
         if ret == 0 {
             // Immediately unlock the probe buffer.
             unsafe {
@@ -198,9 +196,14 @@ impl ProtectedSigningKey {
 
         let guard = unsafe { try_mlock(struct_bytes) };
         if guard.is_some() {
-            tracing::debug!("DPoP signing key mlock'd successfully ({} bytes)", std::mem::size_of::<Self>());
+            tracing::debug!(
+                "DPoP signing key mlock'd successfully ({} bytes)",
+                std::mem::size_of::<Self>()
+            );
         } else {
-            tracing::debug!("DPoP signing key mlock skipped (unavailable or EPERM; key may be swappable)");
+            tracing::debug!(
+                "DPoP signing key mlock skipped (unavailable or EPERM; key may be swappable)"
+            );
         }
         boxed._mlock_guard = guard;
 
@@ -281,9 +284,15 @@ mod tests {
         let key = ProtectedSigningKey::generate();
         let thumb = key.thumbprint();
         // SHA-256 base64url = 43 chars (32 bytes, no padding)
-        assert_eq!(thumb.len(), 43, "thumbprint must be 43 chars (SHA-256 base64url)");
+        assert_eq!(
+            thumb.len(),
+            43,
+            "thumbprint must be 43 chars (SHA-256 base64url)"
+        );
         assert!(
-            thumb.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            thumb
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
             "thumbprint must be valid base64url"
         );
     }
@@ -383,9 +392,8 @@ mod tests {
         // The allocator may have reclaimed or re-used this memory; we only
         // assert that the bytes differ from the original, which is true whether
         // they were zeroed by ZeroizeOnDrop or overwritten by the allocator.
-        let bytes_after_drop: Vec<u8> = unsafe {
-            std::slice::from_raw_parts(key_field_ptr, key_len).to_vec()
-        };
+        let bytes_after_drop: Vec<u8> =
+            unsafe { std::slice::from_raw_parts(key_field_ptr, key_len).to_vec() };
 
         // Only assert when the original was clearly non-zero.
         if original_bytes.iter().any(|&b| b != 0) {

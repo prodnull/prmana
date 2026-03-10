@@ -27,7 +27,7 @@ use std::path::Path;
 
 use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use thiserror::Error;
-use tracing::{warn};
+use tracing::warn;
 
 /// Errors from secure file removal
 #[derive(Debug, Error)]
@@ -53,9 +53,7 @@ const OVERWRITE_BUF: usize = 4096;
 /// Returns `Err(NotFound)` if the path does not exist.
 pub fn secure_remove(path: &Path) -> Result<(), SecureDeleteError> {
     if !path.exists() {
-        return Err(SecureDeleteError::NotFound(
-            path.display().to_string(),
-        ));
+        return Err(SecureDeleteError::NotFound(path.display().to_string()));
     }
 
     let metadata = std::fs::metadata(path)?;
