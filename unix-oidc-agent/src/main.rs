@@ -12,6 +12,8 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{fmt, EnvFilter};
 use unix_oidc_agent::crypto::protected_key::mlock_probe;
 use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
 use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
@@ -24,6 +26,116 @@ use unix_oidc_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
 use unix_oidc_agent::config::AgentConfig;
+
+/// Initialise the tracing subscriber with JSON auto-detection.
+///
+/// # JSON auto-detection
+///
+/// JSON output is selected when **either** of the following conditions is true:
+///
+/// - `UNIX_OIDC_LOG_FORMAT=json` — explicit operator opt-in (useful for
+///   non-systemd log aggregation pipelines, e.g. Loki, Splunk HEC, CloudWatch).
+/// - `JOURNAL_STREAM` is set — systemd sets this variable in the process
+///   environment when the unit's `StandardOutput` / `StandardError` is wired
+///   to the journal.  JSON output integrates cleanly with `journald`'s
+///   structured field storage and downstream log shippers.
+///
+/// When neither variable is set, a human-readable, colour-capable format is
+/// used for interactive terminal sessions.
+///
+/// # journald layer (Linux only)
+///
+/// On Linux, when `JOURNAL_STREAM` is set, an additional `tracing-journald`
+/// layer is composed alongside the JSON formatter.  This layer writes
+/// structured log records directly to the sd-journal socket (`/run/systemd/journal/socket`),
+/// mapping tracing levels to `syslog(3)` PRIORITY codes (RFC 5424) so that
+/// journal filters (`journalctl -p err`) work correctly.
+///
+/// The journald layer is added **best-effort** — if the socket is unavailable
+/// (container without a mounted journal, or macOS build artefact running on
+/// Linux) the layer is silently omitted and the JSON formatter alone is used.
+///
+/// # RUST_LOG
+///
+/// The subscriber respects `RUST_LOG` for per-module level control.
+/// The default directive is `unix_oidc_agent=info` so the daemon is quiet by
+/// default and operators can opt into `debug` or `trace` without rebuilding.
+///
+/// # Panics / initialisation failure
+///
+/// Uses `try_init()` rather than `init()` so that test harnesses can call this
+/// function multiple times without panicking on the second registration attempt.
+/// Errors from `try_init()` are silently discarded — the worst case is that
+/// logging is unavailable, which the caller can detect via other means.
+fn init_tracing() {
+    // Build the log-level filter. RUST_LOG takes priority; fall back to INFO
+    // for the agent crate and WARN for everything else.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("unix_oidc_agent=info,warn"));
+
+    // Determine whether JSON output is requested.
+    let use_json = std::env::var("UNIX_OIDC_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false)
+        || std::env::var("JOURNAL_STREAM").is_ok();
+
+    if use_json {
+        // JSON layer — suitable for log aggregators and journald.
+        let json_layer = fmt::layer().json();
+
+        // Conditionally compose tracing-journald (Linux only).
+        // On non-Linux builds the cfg gate produces a registry with only the
+        // JSON layer, which is the correct fallback.
+        #[cfg(target_os = "linux")]
+        {
+            // tracing_journald::layer() returns Err when the journal socket is
+            // absent (e.g., inside a container without /run/systemd/journal/socket).
+            // We add it best-effort; if unavailable, fall through to JSON-only.
+            let registry = tracing_subscriber::registry()
+                .with(filter)
+                .with(json_layer);
+
+            if std::env::var("JOURNAL_STREAM").is_ok() {
+                if let Ok(journald) = tracing_journald::layer() {
+                    let _ = registry.with(journald).try_init();
+                    return;
+                }
+            }
+            let _ = registry.try_init();
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = tracing_subscriber::registry()
+                .with(filter)
+                .with(json_layer)
+                .try_init();
+        }
+    } else {
+        // Human-readable format for interactive terminal sessions.
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt::layer())
+            .try_init();
+    }
+}
+
+#[cfg(test)]
+mod tracing_init_tests {
+    use super::*;
+
+    /// Verify that init_tracing() can be called without panicking.
+    ///
+    /// Uses try_init() internally so multiple calls (across test invocations
+    /// in the same process) do not panic on "global subscriber already set".
+    #[test]
+    fn test_init_tracing_no_panic() {
+        // Call twice to verify try_init() prevents double-registration panics.
+        init_tracing();
+        init_tracing();
+        // If we reach here, no panic occurred.
+    }
+}
 
 /// Claims from an OIDC access token for username extraction
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,13 +255,11 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("unix_oidc_agent=info".parse().unwrap()),
-        )
-        .init();
+    // Initialize structured logging with JSON auto-detection.
+    // JSON mode is activated by UNIX_OIDC_LOG_FORMAT=json or when running
+    // under systemd (JOURNAL_STREAM env var set by the systemd unit).
+    // See init_tracing() for full documentation.
+    init_tracing();
 
     let cli = Cli::parse();
 

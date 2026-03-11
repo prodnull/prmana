@@ -52,7 +52,7 @@ anyhow.workspace = true
 
 # Logging
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
@@ -96,6 +96,13 @@ optional = true
 [dependencies.pam-unix-oidc]
 path = "../pam-unix-oidc"
 
+# OPS-13: structured journal logging via sd-journal socket (Linux only).
+# tracing-journald writes directly to the systemd journal socket; it is not
+# available on macOS so it is gated to Linux targets.
+[target.'cfg(target_os = "linux")'.dependencies.tracing-journald]
+version = "0.3"
+
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
+tracing-test = "0.2"
