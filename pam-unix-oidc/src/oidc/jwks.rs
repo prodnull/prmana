@@ -42,11 +42,35 @@ pub enum JwksError {
     InvalidIssuer(String),
 }
 
-/// OIDC Discovery document (partial)
+/// OIDC Discovery document.
+///
+/// Contains the minimal fields required by OIDC Core 1.0 plus optional CIBA
+/// (OpenID Connect CIBA Core 1.0 §4) and Device Authorization Grant
+/// (RFC 8628 §3.1) endpoint fields.
+///
+/// All fields beyond `jwks_uri` and `issuer` are optional so that discovery
+/// documents from IdPs that do not support CIBA or device flow continue to
+/// parse successfully (backward compatibility invariant).
 #[derive(Debug, Deserialize)]
-struct OidcDiscovery {
-    jwks_uri: String,
-    issuer: String,
+pub struct OidcDiscovery {
+    /// URL of the JSON Web Key Set document (OIDC Core 1.0 §3).
+    pub jwks_uri: String,
+    /// Issuer URL (OIDC Core 1.0 §3).
+    pub issuer: String,
+    /// Token endpoint (RFC 6749 §3.2).
+    pub token_endpoint: String,
+    /// Device authorization endpoint (RFC 8628 §3.1). Absent if device flow unsupported.
+    #[serde(default)]
+    pub device_authorization_endpoint: Option<String>,
+    /// Backchannel authentication endpoint (CIBA Core 1.0 §4). Absent if CIBA unsupported.
+    #[serde(default)]
+    pub backchannel_authentication_endpoint: Option<String>,
+    /// Delivery modes supported for CIBA poll (CIBA Core 1.0 §4). Absent when only poll is used.
+    #[serde(default)]
+    pub backchannel_token_delivery_modes_supported: Option<Vec<String>>,
+    /// Token revocation endpoint (RFC 7009 §2).
+    #[serde(default)]
+    pub revocation_endpoint: Option<String>,
 }
 
 /// Cached JWKS with TTL
