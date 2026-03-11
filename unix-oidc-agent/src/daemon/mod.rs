@@ -5,6 +5,7 @@
 //! - Unix socket server for the daemon
 //! - Client for connecting to the daemon
 
+pub mod peer_cred;
 pub mod protocol;
 pub mod socket;
 
