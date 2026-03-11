@@ -122,6 +122,22 @@ enum Commands {
         #[arg(long)]
         nonce: Option<String>,
     },
+
+    /// Install the agent as a launchd service (macOS) or print systemd instructions (Linux).
+    ///
+    /// On macOS, writes a plist to ~/Library/LaunchAgents/ and runs `launchctl load`.
+    /// The agent will start automatically at login and be kept alive by launchd.
+    Install {
+        /// Path to the unix-oidc-agent binary.
+        /// Defaults to the currently-running executable (std::env::current_exe()).
+        #[arg(long)]
+        binary_path: Option<String>,
+    },
+
+    /// Uninstall the launchd service (macOS) or print systemd instructions (Linux).
+    ///
+    /// On macOS, runs `launchctl unload` and removes the plist from ~/Library/LaunchAgents/.
+    Uninstall,
 }
 
 #[tokio::main]
@@ -164,6 +180,10 @@ async fn main() -> anyhow::Result<()> {
             method,
             nonce,
         } => run_get_proof(target, method, nonce).await,
+
+        Commands::Install { binary_path } => run_install(binary_path).await,
+
+        Commands::Uninstall => run_uninstall().await,
     }
 }
 
@@ -1231,6 +1251,197 @@ fn extract_username_from_token(token: &str) -> Option<String> {
     }
 }
 
+// ── launchd plist template (compiled in at build time) ───────────────────────
+//
+// The template is embedded so that `unix-oidc-agent install` works without
+// requiring the contrib/ directory to be present on the target machine.
+const LAUNCHD_PLIST_TEMPLATE: &str =
+    include_str!("../../contrib/launchd/com.unix-oidc.agent.plist.template");
+
+/// Label used in the plist and in launchctl commands.
+const LAUNCHD_LABEL: &str = "com.unix-oidc.agent";
+
+/// Install the agent as a launchd service (macOS) or print instructions (Linux).
+///
+/// On macOS:
+///   1. Resolves the binary path (--binary-path or current_exe()).
+///   2. Determines the per-user socket path via $TMPDIR.
+///   3. Substitutes {{BINARY_PATH}}, {{SOCKET_PATH}}, {{HOME}} in the template.
+///   4. Writes the plist to ~/Library/LaunchAgents/com.unix-oidc.agent.plist.
+///   5. Runs `launchctl load <plist>` to activate the service.
+///
+/// On Linux: prints a message directing the user to the contrib/systemd/ units.
+async fn run_install(binary_path: Option<String>) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // Resolve binary path: explicit flag > current executable.
+        let bin = match binary_path {
+            Some(p) => p,
+            None => std::env::current_exe()
+                .map_err(|e| anyhow::anyhow!("Cannot determine current executable: {}", e))?
+                .to_string_lossy()
+                .into_owned(),
+        };
+
+        // macOS sets $TMPDIR to a per-user temp directory (e.g. /var/folders/…/T/).
+        // Use it so that multiple users on the same host each get their own socket.
+        let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        let socket_path = format!("{}/unix-oidc-agent.sock", tmpdir.trim_end_matches('/'));
+
+        // Home directory for log paths and plist destination.
+        let home = std::env::var("HOME")
+            .map_err(|_| anyhow::anyhow!("$HOME is not set — cannot determine LaunchAgents path"))?;
+
+        // Substitute all template placeholders.
+        let plist_content = LAUNCHD_PLIST_TEMPLATE
+            .replace("{{BINARY_PATH}}", &bin)
+            .replace("{{SOCKET_PATH}}", &socket_path)
+            .replace("{{HOME}}", &home);
+
+        // Ensure ~/Library/LaunchAgents/ and ~/Library/Logs/ exist.
+        let launch_agents_dir = format!("{}/Library/LaunchAgents", home);
+        let logs_dir = format!("{}/Library/Logs", home);
+        std::fs::create_dir_all(&launch_agents_dir).map_err(|e| {
+            anyhow::anyhow!("Cannot create {}: {}", launch_agents_dir, e)
+        })?;
+        std::fs::create_dir_all(&logs_dir).map_err(|e| {
+            anyhow::anyhow!("Cannot create {}: {}", logs_dir, e)
+        })?;
+
+        // Write the plist file.
+        let plist_path = format!("{}/{}.plist", launch_agents_dir, LAUNCHD_LABEL);
+        std::fs::write(&plist_path, &plist_content).map_err(|e| {
+            anyhow::anyhow!("Cannot write plist to {}: {}", plist_path, e)
+        })?;
+        info!(plist_path = %plist_path, "Plist written");
+
+        // Load via launchctl — this activates the service immediately.
+        //
+        // `launchctl load` may emit a deprecation warning on macOS >= 13 recommending
+        // `launchctl bootstrap domain-target plist`; both work for per-user LaunchAgents.
+        // We use `load` for maximum backward compatibility (macOS 11+).
+        let status = std::process::Command::new("launchctl")
+            .args(["load", &plist_path])
+            .status()
+            .map_err(|e| anyhow::anyhow!("Failed to run launchctl load: {}", e))?;
+
+        if !status.success() {
+            // launchctl exits non-zero if the service is already loaded.  Check whether
+            // the service is actually running before treating this as a fatal error.
+            let running = std::process::Command::new("launchctl")
+                .args(["list", LAUNCHD_LABEL])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if running {
+                println!("Agent already loaded (launchctl load returned non-zero, but service is running).");
+            } else {
+                anyhow::bail!(
+                    "launchctl load failed with exit code {:?}; plist written to {}",
+                    status.code(),
+                    plist_path
+                );
+            }
+        }
+
+        println!("unix-oidc-agent installed and loaded.");
+        println!();
+        println!("  Plist:   {}", plist_path);
+        println!("  Socket:  {}", socket_path);
+        println!("  Binary:  {}", bin);
+        println!("  Logs:    {}/Library/Logs/unix-oidc-agent.log", home);
+        println!();
+        println!("The agent will start automatically at login.");
+        println!("Run `unix-oidc-agent login` to authenticate.");
+
+        Ok(())
+    }
+
+    // Non-macOS platforms: print instructions for the systemd units.
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Accept the flag for forward compat but do not use it on Linux.
+        let _ = binary_path;
+
+        println!("Automatic installation is only supported on macOS (launchd).");
+        println!();
+        println!("On Linux, install the systemd user units from contrib/systemd/:");
+        println!();
+        println!("  cp contrib/systemd/unix-oidc-agent.service ~/.config/systemd/user/");
+        println!("  cp contrib/systemd/unix-oidc-agent.socket   ~/.config/systemd/user/");
+        println!("  systemctl --user daemon-reload");
+        println!("  systemctl --user enable --now unix-oidc-agent.socket");
+
+        Ok(())
+    }
+}
+
+/// Uninstall the launchd service (macOS) or print instructions (Linux).
+///
+/// On macOS:
+///   1. Runs `launchctl unload ~/Library/LaunchAgents/com.unix-oidc.agent.plist`.
+///   2. Removes the plist file.
+///
+/// On Linux: prints the equivalent systemd disable command.
+async fn run_uninstall() -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|_| anyhow::anyhow!("$HOME is not set"))?;
+        let plist_path = format!(
+            "{}/Library/LaunchAgents/{}.plist",
+            home, LAUNCHD_LABEL
+        );
+
+        if !std::path::Path::new(&plist_path).exists() {
+            println!("Plist not found at {} — agent may not be installed.", plist_path);
+            return Ok(());
+        }
+
+        // Unload first; ignore errors (service might already be stopped).
+        let status = std::process::Command::new("launchctl")
+            .args(["unload", &plist_path])
+            .status()
+            .map_err(|e| anyhow::anyhow!("Failed to run launchctl unload: {}", e))?;
+
+        if !status.success() {
+            warn!(
+                "launchctl unload returned non-zero exit code {:?}; proceeding with plist removal",
+                status.code()
+            );
+        }
+
+        // Remove plist file.
+        std::fs::remove_file(&plist_path).map_err(|e| {
+            anyhow::anyhow!("Cannot remove {}: {}", plist_path, e)
+        })?;
+        info!(plist_path = %plist_path, "Plist removed");
+
+        println!("unix-oidc-agent uninstalled.");
+        println!();
+        println!("  Removed: {}", plist_path);
+        println!();
+        println!("Run `unix-oidc-agent install` to reinstall.");
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        println!("Automatic uninstallation is only supported on macOS (launchd).");
+        println!();
+        println!("On Linux, disable the systemd user units:");
+        println!();
+        println!("  systemctl --user disable --now unix-oidc-agent.socket");
+        println!("  systemctl --user disable --now unix-oidc-agent.service");
+        println!("  rm ~/.config/systemd/user/unix-oidc-agent.{{service,socket}}");
+        println!("  systemctl --user daemon-reload");
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json;
@@ -1308,6 +1519,51 @@ mod tests {
         assert!(
             updated_legacy["signer_type"].is_null(),
             "Legacy metadata without signer_type should produce null, not crash"
+        );
+    }
+
+    // ── launchd install ──────────────────────────────────────────────────────────
+    /// Verify template substitution produces valid XML with no remaining placeholders.
+    #[test]
+    fn test_install_template_substitution_no_placeholders() {
+        let template = include_str!("../../contrib/launchd/com.unix-oidc.agent.plist.template");
+        let substituted = template
+            .replace("{{BINARY_PATH}}", "/usr/local/bin/unix-oidc-agent")
+            .replace("{{SOCKET_PATH}}", "/tmp/unix-oidc-agent.sock")
+            .replace("{{HOME}}", "/Users/testuser");
+
+        // No remaining placeholders after substitution.
+        assert!(
+            !substituted.contains("{{"),
+            "Substituted plist still contains '{{' — unresolved placeholder"
+        );
+        assert!(
+            !substituted.contains("}}"),
+            "Substituted plist still contains '}}' — unresolved placeholder"
+        );
+
+        // Must look like XML.
+        assert!(
+            substituted.starts_with("<?xml"),
+            "Substituted plist does not start with XML declaration"
+        );
+
+        // Key structural elements must be present.
+        assert!(substituted.contains("com.unix-oidc.agent"), "Label missing");
+        assert!(substituted.contains("KeepAlive"), "KeepAlive missing");
+        assert!(substituted.contains("RunAtLoad"), "RunAtLoad missing");
+        assert!(substituted.contains("Sockets"), "Sockets dict missing");
+        assert!(
+            substituted.contains("/usr/local/bin/unix-oidc-agent"),
+            "Binary path not substituted"
+        );
+        assert!(
+            substituted.contains("/tmp/unix-oidc-agent.sock"),
+            "Socket path not substituted"
+        );
+        assert!(
+            substituted.contains("/Users/testuser"),
+            "HOME not substituted"
         );
     }
 }
