@@ -81,8 +81,12 @@ fn test_daemon_lifecycle() {
 
     // Start the daemon binary. CARGO_BIN_EXE_unix-oidc-agent is set by cargo
     // for integration tests that reference a [[bin]] target.
+    // Force file-only storage backend to avoid macOS Keychain prompts
+    // (StorageRouter::detect() probes Keychain by default, triggering a system
+    // password dialog that blocks headless test runs).
     let child = Command::new(env!("CARGO_BIN_EXE_unix-oidc-agent"))
         .args(["serve", "--socket", socket_str])
+        .env("UNIX_OIDC_STORAGE_BACKEND", "file")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
