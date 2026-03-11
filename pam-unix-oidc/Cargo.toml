@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib: shared library (.so) loaded by PAM.
+# rlib: standard Rust library linkable by other workspace crates (e.g. unix-oidc-agent
+#        imports CIBA types and OidcDiscovery for step-up flow).
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []

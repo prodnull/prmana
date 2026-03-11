@@ -10,8 +10,8 @@
 pub mod client;
 pub mod types;
 
-pub use client::CibaClient;
+pub use client::{build_binding_message, CibaClient};
 pub use types::{
-    satisfies_acr, validate_acr, BackchannelAuthResponse, CibaError, CibaTokenResponse, ACR_PHR,
-    ACR_PHRH, CIBA_GRANT_TYPE,
+    parse_ciba_error, satisfies_acr, validate_acr, BackchannelAuthResponse, CibaError,
+    CibaTokenResponse, ACR_PHR, ACR_PHRH, CIBA_GRANT_TYPE,
 };

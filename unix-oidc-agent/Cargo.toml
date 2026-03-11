@@ -82,6 +82,11 @@ optional = true
 version = "7.6"
 optional = true
 
+# CIBA step-up: import CIBA types (CibaClient, OidcDiscovery, ACR constants, error types)
+# from the PAM crate. Requires pam-unix-oidc to expose rlib crate type.
+[dependencies.pam-unix-oidc]
+path = "../pam-unix-oidc"
+
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"

@@ -1029,6 +1029,23 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
     // accidentally emitted via Debug/Display/tracing.
     let access_token = access_token_raw.map(SecretString::from);
 
+    // Extract OIDC config from token metadata for CIBA step-up use.
+    // Security (MEM-03): client_secret wrapped in SecretString at extraction point.
+    let oidc_issuer = metadata
+        .as_ref()
+        .and_then(|v| v["issuer"].as_str())
+        .map(|s| s.to_string());
+
+    let oidc_client_id = metadata
+        .as_ref()
+        .and_then(|v| v["client_id"].as_str())
+        .map(|s| s.to_string());
+
+    let oidc_client_secret: Option<SecretString> = metadata
+        .as_ref()
+        .and_then(|v| v["client_secret"].as_str())
+        .map(|s| SecretString::from(s.to_string()));
+
     Ok(AgentState {
         signer,
         access_token,
@@ -1041,6 +1058,10 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         signer_type,
         refresh_task: None,
         refresh_failed: false,
+        oidc_issuer,
+        oidc_client_id,
+        oidc_client_secret,
+        pending_step_ups: std::collections::HashMap::new(),
     })
 }
 

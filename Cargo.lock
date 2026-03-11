@@ -2643,6 +2643,7 @@ dependencies = [
  "keyring",
  "libc",
  "p256",
+ "pam-unix-oidc",
  "reqwest",
  "rpassword",
  "secrecy 0.10.3",
