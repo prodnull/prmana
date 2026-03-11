@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1115" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <style>
+      .bg { fill: #0f1724; }
+      .title { fill: #e8edf3; font-size: 22px; font-weight: 700; }
+      .subtitle { fill: #7eb8da; font-size: 13px; }
+      .actor-box { fill: #1a2332; stroke: #3b6a9b; stroke-width: 2; rx: 8; }
+      .actor-label { fill: #e8edf3; font-size: 14px; font-weight: 600; text-anchor: middle; }
+      .lifeline { stroke: #2d4a6f; stroke-width: 1.5; stroke-dasharray: 6 4; }
+      .msg-line { stroke: #4a90c4; stroke-width: 1.5; marker-end: url(#arrowhead); }
+      .msg-line-return { stroke: #4a90c4; stroke-width: 1.5; stroke-dasharray: 5 3; marker-end: url(#arrowhead); }
+      .msg-line-secure { stroke: #27ae60; stroke-width: 2; marker-end: url(#arrowhead-green); }
+      .msg-line-fail { stroke: #c0392b; stroke-width: 1.5; marker-end: url(#arrowhead-red); }
+      .msg-label { fill: #b0c4de; font-size: 12px; }
+      .msg-label-secure { fill: #2ecc71; font-size: 12px; font-weight: 600; }
+      .msg-label-detail { fill: #8a9bb5; font-size: 10px; font-style: italic; }
+      .activation { fill: #1e3148; stroke: #3b6a9b; stroke-width: 1; }
+      .activation-critical { fill: #2a1a1a; stroke: #c0392b; stroke-width: 1.5; }
+      .note-box { fill: #1a2a1a; stroke: #2d6f2d; stroke-width: 1; rx: 6; }
+      .note-text { fill: #7eda7e; font-size: 11px; }
+      .step-num { fill: #4a90c4; font-size: 13px; font-weight: 700; }
+      .divider { stroke: #2d4a6f; stroke-width: 1; stroke-dasharray: 2 4; }
+      .divider-label { fill: #5a7a9b; font-size: 12px; font-weight: 600; text-anchor: middle; }
+      .legend-box { fill: #141e2e; stroke: #2d4a6f; stroke-width: 1; rx: 6; }
+      .legend-text { fill: #8a9bb5; font-size: 11px; }
+      .legend-title { fill: #b0c4de; font-size: 12px; font-weight: 600; }
+    </style>
+    <marker id="arrowhead" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#4a90c4"/>
+    </marker>
+    <marker id="arrowhead-green" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#27ae60"/>
+    </marker>
+    <marker id="arrowhead-red" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#c0392b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="1115"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="35">OIDC + DPoP Authentication Flow</text>
+  <text class="subtitle" x="40" y="55">SSH login with token binding via RFC 9449 DPoP proofs</text>
+
+  <!-- Actors -->
+  <rect class="actor-box" x="70" y="70" width="120" height="35"/>
+  <text class="actor-label" x="130" y="93">SSH Client</text>
+
+  <rect class="actor-box" x="280" y="70" width="140" height="35"/>
+  <text class="actor-label" x="350" y="93">oidc-ssh-agent</text>
+
+  <rect class="actor-box" x="530" y="70" width="130" height="35"/>
+  <text class="actor-label" x="595" y="93">Identity Provider</text>
+
+  <rect class="actor-box" x="760" y="70" width="100" height="35"/>
+  <text class="actor-label" x="810" y="93">sshd</text>
+
+  <rect class="actor-box" x="950" y="70" width="140" height="35"/>
+  <text class="actor-label" x="1020" y="93">pam_unix_oidc</text>
+
+  <!-- Lifelines -->
+  <line class="lifeline" x1="130" y1="105" x2="130" y2="1080"/>
+  <line class="lifeline" x1="350" y1="105" x2="350" y2="1080"/>
+  <line class="lifeline" x1="595" y1="105" x2="595" y2="1080"/>
+  <line class="lifeline" x1="810" y1="105" x2="810" y2="1080"/>
+  <line class="lifeline" x1="1020" y1="105" x2="1020" y2="1080"/>
+
+  <!-- Phase 1: Initial Login (Token Acquisition) -->
+  <line class="divider" x1="20" y1="125" x2="1180" y2="125"/>
+  <rect fill="#0f1724" x="490" y="118" width="220" height="18"/>
+  <text class="divider-label" x="600" y="132">Phase 1: Token Acquisition</text>
+
+  <!-- Step 1: SSH connects -->
+  <text class="step-num" x="25" y="160">1</text>
+  <line class="msg-line" x1="130" y1="155" x2="800" y2="155"/>
+  <text class="msg-label" x="350" y="150">ssh user@server (keyboard-interactive)</text>
+
+  <!-- Step 2: sshd triggers PAM -->
+  <text class="step-num" x="25" y="190">2</text>
+  <line class="msg-line" x1="810" y1="185" x2="1010" y2="185"/>
+  <text class="msg-label" x="860" y="180">pam_sm_authenticate()</text>
+
+  <!-- Step 3: PAM prompts for token -->
+  <text class="step-num" x="25" y="220">3</text>
+  <line class="msg-line-return" x1="1010" y1="215" x2="140" y2="215"/>
+  <text class="msg-label" x="450" y="210">PAM conversation: "OIDC Token:"</text>
+
+  <!-- Step 4: Client asks agent -->
+  <text class="step-num" x="25" y="250">4</text>
+  <line class="msg-line" x1="130" y1="245" x2="340" y2="245"/>
+  <text class="msg-label" x="175" y="240">IPC: GetProof {target, method}</text>
+
+  <!-- Agent activation -->
+  <rect class="activation" x="344" y="250" width="12" height="220"/>
+
+  <!-- Step 5: Agent checks cache / initiates login -->
+  <text class="step-num" x="25" y="280">5</text>
+  <rect class="note-box" x="370" y="260" width="150" height="45"/>
+  <text class="note-text" x="380" y="277">Check token cache</text>
+  <text class="note-text" x="380" y="292">If expired: initiate login</text>
+
+  <!-- Step 6: Device Authorization -->
+  <text class="step-num" x="25" y="325">6</text>
+  <line class="msg-line-secure" x1="356" y1="320" x2="585" y2="320"/>
+  <text class="msg-label-secure" x="400" y="315">POST /auth/device (TLS)</text>
+  <text class="msg-label-detail" x="400" y="338">client_id, scope=openid, acr_values</text>
+
+  <!-- Step 7: Return device code -->
+  <text class="step-num" x="25" y="365">7</text>
+  <line class="msg-line-return" x1="585" y1="360" x2="356" y2="360"/>
+  <text class="msg-label" x="400" y="355">device_code, user_code, verification_uri</text>
+
+  <!-- Step 8: Display to user -->
+  <text class="step-num" x="25" y="395">8</text>
+  <line class="msg-line-return" x1="344" y1="390" x2="140" y2="390"/>
+  <text class="msg-label" x="175" y="385">Display: "Visit https://... code: XXXX-YYYY"</text>
+
+  <!-- Step 9: User authenticates in browser -->
+  <rect class="note-box" x="400" y="405" width="250" height="30"/>
+  <text class="note-text" x="410" y="425">User authenticates in browser / phone</text>
+
+  <!-- Step 10: Poll for token -->
+  <text class="step-num" x="25" y="455">10</text>
+  <line class="msg-line-secure" x1="356" y1="450" x2="585" y2="450"/>
+  <text class="msg-label-secure" x="400" y="445">POST /token (device_code grant)</text>
+  <line class="msg-line-return" x1="585" y1="470" x2="356" y2="470"/>
+  <text class="msg-label" x="400" y="465">access_token, id_token, refresh_token</text>
+
+  <!-- Phase 2: DPoP Proof Generation -->
+  <line class="divider" x1="20" y1="500" x2="1180" y2="500"/>
+  <rect fill="#0f1724" x="470" y="493" width="260" height="18"/>
+  <text class="divider-label" x="600" y="507">Phase 2: DPoP Proof Generation</text>
+
+  <!-- Step 11: Generate ephemeral key -->
+  <text class="step-num" x="25" y="540">11</text>
+  <rect class="activation-critical" x="344" y="520" width="12" height="80"/>
+  <rect class="note-box" x="370" y="520" width="200" height="75"/>
+  <text class="note-text" x="380" y="537">Generate P-256 key pair (OsRng)</text>
+  <text class="note-text" x="380" y="552">Box::new (heap allocation)</text>
+  <text class="note-text" x="380" y="567">mlock(2) key pages</text>
+  <text class="note-text" x="380" y="582">Compute JWK thumbprint (RFC 7638)</text>
+
+  <!-- Step 12: Create DPoP proof -->
+  <text class="step-num" x="25" y="625">12</text>
+  <rect class="activation-critical" x="344" y="610" width="12" height="60"/>
+  <rect class="note-box" x="370" y="610" width="215" height="55"/>
+  <text class="note-text" x="380" y="627">Build DPoP proof JWT (dpop+jwt)</text>
+  <text class="note-text" x="380" y="642">Claims: jti, htm=SSH, htu=target, iat</text>
+  <text class="note-text" x="380" y="657">Sign with ES256 (P-256 ECDSA)</text>
+
+  <!-- Phase 3: Token Transmission -->
+  <line class="divider" x1="20" y1="690" x2="1180" y2="690"/>
+  <rect fill="#0f1724" x="470" y="683" width="260" height="18"/>
+  <text class="divider-label" x="600" y="697">Phase 3: Token Transmission + Validation</text>
+
+  <!-- Step 13: Return proof to client -->
+  <text class="step-num" x="25" y="725">13</text>
+  <line class="msg-line-return" x1="344" y1="720" x2="140" y2="720"/>
+  <text class="msg-label" x="175" y="715">IPC: {token, dpop_proof, expires_in}</text>
+
+  <!-- Step 14: Send to server -->
+  <text class="step-num" x="25" y="755">14</text>
+  <line class="msg-line-secure" x1="130" y1="750" x2="800" y2="750"/>
+  <text class="msg-label-secure" x="350" y="745">SSH keyboard-interactive: token + DPoP proof</text>
+
+  <!-- Step 15: sshd forwards to PAM -->
+  <text class="step-num" x="25" y="785">15</text>
+  <line class="msg-line" x1="810" y1="780" x2="1010" y2="780"/>
+  <text class="msg-label" x="860" y="775">PAM: validate credentials</text>
+
+  <!-- PAM validation activation -->
+  <rect class="activation-critical" x="1014" y="790" width="12" height="200"/>
+
+  <!-- Step 16: Validate token -->
+  <text class="step-num" x="25" y="815">16</text>
+  <rect class="note-box" x="820" y="795" width="185" height="100"/>
+  <text class="note-text" x="830" y="812">1. Verify JWT signature (JWKS)</text>
+  <text class="note-text" x="830" y="827">2. Validate issuer</text>
+  <text class="note-text" x="830" y="842">3. Validate audience</text>
+  <text class="note-text" x="830" y="857">4. Check expiration (+60s skew)</text>
+  <text class="note-text" x="830" y="872">5. JTI replay check</text>
+  <text class="note-text" x="830" y="887">6. ACR/AMR validation</text>
+
+  <!-- Step 17: Validate DPoP -->
+  <text class="step-num" x="25" y="920">17</text>
+  <rect class="note-box" x="820" y="905" width="185" height="85"/>
+  <text class="note-text" x="830" y="922">DPoP Proof Validation:</text>
+  <text class="note-text" x="830" y="937">1. Verify ES256 signature</text>
+  <text class="note-text" x="830" y="952">2. Check htm/htu binding</text>
+  <text class="note-text" x="830" y="967">3. Verify iat freshness</text>
+  <text class="note-text" x="830" y="982">4. JTI replay (100k cache)</text>
+
+  <!-- Step 18: Verify binding -->
+  <text class="step-num" x="25" y="1010">18</text>
+  <rect class="note-box" x="820" y="995" width="185" height="30"/>
+  <text class="note-text" x="830" y="1015">cnf.jkt == JWK thumbprint (ct_eq)</text>
+
+  <!-- Step 19: Return result -->
+  <text class="step-num" x="25" y="1055">19</text>
+  <line class="msg-line-return" x1="1014" y1="1055" x2="820" y2="1055"/>
+  <text class="msg-label" x="860" y="1050">PAM_SUCCESS / PAM_AUTH_ERR</text>
+
+  <line class="msg-line-return" x1="800" y1="1070" x2="140" y2="1070"/>
+  <text class="msg-label" x="350" y="1065">Session established / rejected</text>
+
+  <!-- Legend -->
+  <rect class="legend-box" x="30" y="1085" width="1140" height="25"/>
+  <text class="legend-text" x="50" y="1102">Solid arrows: requests  |  Dashed arrows: responses  |  Green: TLS-protected  |  Red borders: security-critical operations  |  All crypto: ES256 (P-256 ECDSA)</text>
+</svg>

@@ -1,0 +1,261 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <style>
+      .bg { fill: #0f1724; }
+      .title { fill: #e8edf3; font-size: 22px; font-weight: 700; }
+      .subtitle { fill: #7eb8da; font-size: 13px; }
+      .daemon-border { fill: #141e2e; stroke: #3b6a9b; stroke-width: 2; rx: 12; }
+      .module { fill: #1e3148; stroke: #3b6a9b; stroke-width: 1.5; rx: 8; }
+      .module-critical { fill: #2a1a1a; stroke: #c0392b; stroke-width: 1.5; rx: 8; }
+      .module-storage { fill: #1a2a20; stroke: #27ae60; stroke-width: 1.5; rx: 8; }
+      .module-label { fill: #e8edf3; font-size: 14px; font-weight: 600; }
+      .module-sub { fill: #8a9bb5; font-size: 11px; }
+      .module-detail { fill: #6a8aaa; font-size: 10px; }
+      .arrow { stroke: #4a90c4; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+      .arrow-data { stroke: #e67e22; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead-orange); }
+      .arrow-label { fill: #b0c4de; font-size: 10px; }
+      .state-box { fill: #1a2332; stroke: #5a7a9b; stroke-width: 1; rx: 6; }
+      .state-label { fill: #e8edf3; font-size: 12px; font-weight: 600; }
+      .state-field { fill: #8a9bb5; font-size: 10px; }
+      .state-secret { fill: #c0392b; font-size: 10px; font-style: italic; }
+      .external { fill: #1a2332; stroke: #5a7a9b; stroke-width: 1; rx: 8; stroke-dasharray: 4 2; }
+      .external-label { fill: #7eb8da; font-size: 12px; }
+      .section-line { stroke: #2d4a6f; stroke-width: 1; stroke-dasharray: 3 3; }
+      .section-label { fill: #5a7a9b; font-size: 11px; font-weight: 600; }
+      .legend-box { fill: #141e2e; stroke: #2d4a6f; stroke-width: 1; rx: 6; }
+      .legend-text { fill: #8a9bb5; font-size: 11px; }
+      .legend-title { fill: #b0c4de; font-size: 12px; font-weight: 600; }
+    </style>
+    <marker id="arrowhead" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#4a90c4"/>
+    </marker>
+    <marker id="arrowhead-orange" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#e67e22"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="800"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="35">Agent Daemon Internal Architecture</text>
+  <text class="subtitle" x="40" y="55">unix-oidc-agent: Tokio async runtime with Unix socket IPC, key management, and CIBA step-up</text>
+
+  <!-- Daemon border -->
+  <rect class="daemon-border" x="30" y="70" width="860" height="700"/>
+  <text class="section-label" x="50" y="90">unix-oidc-agent daemon (Tokio async runtime)</text>
+
+  <!-- Unix Socket Listener -->
+  <rect class="module" x="50" y="100" width="200" height="80"/>
+  <text class="module-label" x="70" y="125">Unix Socket Listener</text>
+  <text class="module-sub" x="70" y="142">UnixListener (tokio::net)</text>
+  <text class="module-sub" x="70" y="157">Path: $XDG_RUNTIME_DIR/</text>
+  <text class="module-sub" x="70" y="172">unix-oidc-agent.sock (0600)</text>
+
+  <!-- IPC Protocol Dispatch -->
+  <rect class="module" x="50" y="200" width="200" height="175"/>
+  <text class="module-label" x="70" y="225">IPC Protocol Dispatch</text>
+  <text class="module-sub" x="70" y="242">JSON over newline-delimited stream</text>
+  <line class="section-line" x1="55" y1="250" x2="245" y2="250"/>
+  <text class="module-detail" x="70" y="265">GetProof {target, method, nonce}</text>
+  <text class="module-detail" x="70" y="280">Status / Metrics / Refresh</text>
+  <text class="module-detail" x="70" y="295">Shutdown</text>
+  <text class="module-detail" x="70" y="310">SessionClosed {session_id}</text>
+  <text class="module-detail" x="70" y="325">StepUp {user, cmd, host, method}</text>
+  <text class="module-detail" x="70" y="340">StepUpResult {correlation_id}</text>
+  <text class="module-detail" x="70" y="355" style="fill: #f39c12;">tag = "action", untagged response</text>
+  <text class="module-detail" x="70" y="370" style="fill: #f39c12;">serde discriminant ordering matters</text>
+
+  <!-- Arrow: Listener to Dispatch -->
+  <path class="arrow" d="M 150,180 L 150,198"/>
+  <text class="arrow-label" x="155" y="194">accept</text>
+
+  <!-- AgentState -->
+  <rect class="state-box" x="280" y="100" width="220" height="275"/>
+  <text class="state-label" x="300" y="120">AgentState (Arc&lt;RwLock&gt;)</text>
+  <line class="section-line" x1="285" y1="128" x2="495" y2="128"/>
+  <text class="state-field" x="300" y="145">signer: Option&lt;Arc&lt;dyn DPoPSigner&gt;&gt;</text>
+  <text class="state-secret" x="300" y="160">access_token: Option&lt;SecretString&gt;</text>
+  <text class="state-field" x="300" y="175">token_expires: Option&lt;i64&gt;</text>
+  <text class="state-field" x="300" y="190">username: Option&lt;String&gt;</text>
+  <text class="state-field" x="300" y="205">mlock_status: Option&lt;String&gt;</text>
+  <text class="state-field" x="300" y="220">storage_backend: Option&lt;String&gt;</text>
+  <text class="state-field" x="300" y="235">signer_type: Option&lt;String&gt;</text>
+  <text class="state-field" x="300" y="250">refresh_task: Option&lt;AbortHandle&gt;</text>
+  <text class="state-field" x="300" y="265">refresh_failed: bool</text>
+  <text class="state-field" x="300" y="280">oidc_issuer: Option&lt;String&gt;</text>
+  <text class="state-field" x="300" y="295">oidc_client_id: Option&lt;String&gt;</text>
+  <text class="state-secret" x="300" y="310">oidc_client_secret: Option&lt;SecretString&gt;</text>
+  <text class="state-field" x="300" y="325">pending_step_ups: HashMap&lt;...&gt;</text>
+  <line class="section-line" x1="285" y1="333" x2="495" y2="333"/>
+  <text class="module-detail" x="300" y="348">Debug: [REDACTED] for secrets</text>
+  <text class="module-detail" x="300" y="363">expose_secret() audit boundaries</text>
+
+  <!-- Arrow: Dispatch to State -->
+  <path class="arrow" d="M 250,250 L 278,250"/>
+
+  <!-- DPoP Proof Generator -->
+  <rect class="module-critical" x="530" y="100" width="200" height="110"/>
+  <text class="module-label" x="550" y="125" style="fill: #f5c6c6;">DPoP Proof Generator</text>
+  <text class="module-sub" x="550" y="142" style="fill: #e8a0a0;">Sign with ProtectedSigningKey</text>
+  <line class="section-line" x1="535" y1="150" x2="725" y2="150"/>
+  <text class="module-detail" x="550" y="165">Build dpop+jwt header (ES256)</text>
+  <text class="module-detail" x="550" y="180">Claims: jti(uuid), htm, htu, iat</text>
+  <text class="module-detail" x="550" y="195">Sign with P-256 SigningKey</text>
+
+  <!-- Key Management -->
+  <rect class="module-critical" x="530" y="230" width="200" height="145"/>
+  <text class="module-label" x="550" y="255" style="fill: #f5c6c6;">ProtectedSigningKey</text>
+  <text class="module-sub" x="550" y="272" style="fill: #e8a0a0;">Memory-protected key wrapper</text>
+  <line class="section-line" x1="535" y1="280" x2="725" y2="280"/>
+  <text class="module-detail" x="550" y="295">Box-only constructors (no stack)</text>
+  <text class="module-detail" x="550" y="310">mlock(2) on heap allocation</text>
+  <text class="module-detail" x="550" y="325">ZeroizeOnDrop (p256 crate)</text>
+  <text class="module-detail" x="550" y="340">export_key() -> Zeroizing&lt;Vec&lt;u8&gt;&gt;</text>
+  <text class="module-detail" x="550" y="355">JWK thumbprint (RFC 7638)</text>
+  <text class="module-detail" x="550" y="370">MlockGuard RAII (munlock on drop)</text>
+
+  <!-- Arrow: State to Key -->
+  <path class="arrow" d="M 500,200 L 528,260"/>
+  <text class="arrow-label" x="505" y="220">signer</text>
+
+  <!-- Arrow: DPoP to Key -->
+  <path class="arrow" d="M 630,210 L 630,228"/>
+  <text class="arrow-label" x="640" y="222">sign</text>
+
+  <!-- CIBA Step-Up Handler -->
+  <rect class="module" x="50" y="400" width="200" height="145"/>
+  <text class="module-label" x="70" y="425">CIBA Step-Up Handler</text>
+  <text class="module-sub" x="70" y="442">handle_step_up()</text>
+  <line class="section-line" x1="55" y1="450" x2="245" y2="450"/>
+  <text class="module-detail" x="70" y="465">Concurrent-user guard</text>
+  <text class="module-detail" x="70" y="480">OIDC discovery fetch</text>
+  <text class="module-detail" x="70" y="495">CibaClient::new(discovery)</text>
+  <text class="module-detail" x="70" y="510">POST /bc-authorize</text>
+  <text class="module-detail" x="70" y="525">tokio::spawn(poll_ciba(...))</text>
+  <text class="module-detail" x="70" y="540" style="fill: #f39c12;">PendingStepUp in HashMap</text>
+
+  <!-- Poll CIBA -->
+  <rect class="module" x="280" y="400" width="220" height="125"/>
+  <text class="module-label" x="300" y="425">poll_ciba() (async task)</text>
+  <text class="module-sub" x="300" y="442">Async Tokio task per step-up</text>
+  <line class="section-line" x1="285" y1="450" x2="495" y2="450"/>
+  <text class="module-detail" x="300" y="465">Loop: POST /token (CIBA grant)</text>
+  <text class="module-detail" x="300" y="480">Handle: pending, slow_down, denied</text>
+  <text class="module-detail" x="300" y="495">ACR validation (HARD-FAIL)</text>
+  <text class="module-detail" x="300" y="510">tokio::time::timeout(overall)</text>
+  <text class="module-detail" x="300" y="525" style="fill: #f39c12;">Returns StepUpOutcome</text>
+
+  <!-- Arrow: Handler to Poll -->
+  <path class="arrow" d="M 250,465 L 278,465"/>
+  <text class="arrow-label" x="255" y="458">spawn</text>
+
+  <!-- Session Cleanup -->
+  <rect class="module" x="50" y="570" width="200" height="90"/>
+  <text class="module-label" x="70" y="595">Session Cleanup</text>
+  <text class="module-sub" x="70" y="612">handle_session_closed()</text>
+  <line class="section-line" x1="55" y1="620" x2="245" y2="620"/>
+  <text class="module-detail" x="70" y="635">ACK immediately (non-blocking)</text>
+  <text class="module-detail" x="70" y="650">tokio::spawn: RFC 7009 revocation</text>
+
+  <!-- Auto-Refresh -->
+  <rect class="module" x="280" y="545" width="220" height="90"/>
+  <text class="module-label" x="300" y="570">Auto-Refresh Task</text>
+  <text class="module-sub" x="300" y="587">Background token refresh</text>
+  <line class="section-line" x1="285" y1="595" x2="495" y2="595"/>
+  <text class="module-detail" x="300" y="610">AbortHandle for cancellation</text>
+  <text class="module-detail" x="300" y="625">refresh_failed flag on exhaustion</text>
+
+  <!-- Metrics -->
+  <rect class="module" x="280" y="655" width="220" height="60"/>
+  <text class="module-label" x="300" y="680">MetricsCollector</text>
+  <text class="module-sub" x="300" y="697">JSON or Prometheus text format</text>
+
+  <!-- Storage Backend (right side) -->
+  <rect class="module-storage" x="530" y="400" width="200" height="140"/>
+  <text class="module-label" x="550" y="425" style="fill: #c8e8c8;">StorageRouter</text>
+  <text class="module-sub" x="550" y="442" style="fill: #7eda7e;">Probe-based backend selection</text>
+  <line class="section-line" x1="535" y1="450" x2="725" y2="450"/>
+  <text class="module-detail" x="550" y="465">write -> read -> delete probe</text>
+  <text class="module-detail" x="550" y="480">Migration with atomic rollback</text>
+  <text class="module-detail" x="550" y="495">SecureStorage trait delegation</text>
+  <text class="module-detail" x="550" y="510" style="fill: #f39c12;">Linux: SecretService > keyutils > file</text>
+  <text class="module-detail" x="550" y="525" style="fill: #f39c12;">macOS: Keychain > file</text>
+
+  <!-- Security Module -->
+  <rect class="module-critical" x="530" y="560" width="200" height="90"/>
+  <text class="module-label" x="550" y="585" style="fill: #f5c6c6;">Security Hardening</text>
+  <line class="section-line" x1="535" y1="595" x2="725" y2="595"/>
+  <text class="module-detail" x="550" y="610">disable_core_dumps()</text>
+  <text class="module-detail" x="550" y="625">prctl(PR_SET_DUMPABLE, 0) [Linux]</text>
+  <text class="module-detail" x="550" y="640">ptrace(PT_DENY_ATTACH) [macOS]</text>
+
+  <!-- Secure Delete -->
+  <rect class="module-critical" x="530" y="670" width="200" height="75"/>
+  <text class="module-label" x="550" y="695" style="fill: #f5c6c6;">Secure Delete</text>
+  <text class="module-sub" x="550" y="712" style="fill: #e8a0a0;">DoD 5220.22-M 3-pass</text>
+  <line class="section-line" x1="535" y1="720" x2="725" y2="720"/>
+  <text class="module-detail" x="550" y="735">random + complement + random + unlink</text>
+
+  <!-- External: Clients -->
+  <rect class="external" x="920" y="100" width="250" height="140"/>
+  <text class="external-label" x="940" y="125">IPC Clients</text>
+  <line class="section-line" x1="925" y1="133" x2="1165" y2="133"/>
+  <text class="module-detail" x="940" y="150">SSH Client (GetProof)</text>
+  <text class="module-detail" x="940" y="165">PAM Module (StepUp, StepUpResult)</text>
+  <text class="module-detail" x="940" y="180">CLI: unix-oidc-agent status|login|logout</text>
+  <text class="module-detail" x="940" y="195">PAM close_session (SessionClosed)</text>
+  <text class="module-detail" x="940" y="210">Monitoring: Metrics (JSON/Prometheus)</text>
+  <text class="module-detail" x="940" y="225">All: 2s socket timeout per request</text>
+
+  <!-- Arrow: Client to Listener -->
+  <path class="arrow" d="M 918,120 L 890,88 L 260,88 L 252,100"/>
+  <text class="arrow-label" x="540" y="82">Unix socket connection</text>
+
+  <!-- External: IdP -->
+  <rect class="external" x="920" y="270" width="250" height="100"/>
+  <text class="external-label" x="940" y="295">Identity Provider (HTTPS)</text>
+  <line class="section-line" x1="925" y1="303" x2="1165" y2="303"/>
+  <text class="module-detail" x="940" y="320">OIDC discovery endpoint</text>
+  <text class="module-detail" x="940" y="335">CIBA backchannel endpoint</text>
+  <text class="module-detail" x="940" y="350">Token endpoint (CIBA poll)</text>
+  <text class="module-detail" x="940" y="365">Revocation endpoint (RFC 7009)</text>
+
+  <!-- Arrow: CIBA to IdP -->
+  <path class="arrow-data" d="M 150,545 L 150,755 L 895,755 L 895,340 L 918,340"/>
+  <text class="arrow-label" x="400" y="750" style="fill: #e67e22;">CIBA auth + poll (TLS)</text>
+
+  <!-- External: OS Keyring -->
+  <rect class="external" x="920" y="400" width="250" height="100"/>
+  <text class="external-label" x="940" y="425">OS Keyring / Filesystem</text>
+  <line class="section-line" x1="925" y1="433" x2="1165" y2="433"/>
+  <text class="module-detail" x="940" y="450">Secret Service D-Bus (Linux)</text>
+  <text class="module-detail" x="940" y="465">keyutils @u kernel keyring (Linux)</text>
+  <text class="module-detail" x="940" y="480">macOS Keychain Services</text>
+  <text class="module-detail" x="940" y="495">~/.local/share/unix-oidc/ (fallback)</text>
+
+  <!-- Arrow: Storage to Keyring -->
+  <path class="arrow-data" d="M 730,480 L 918,460"/>
+  <text class="arrow-label" x="790" y="478" style="fill: #e67e22;">store/retrieve</text>
+
+  <!-- Legend -->
+  <rect class="legend-box" x="920" y="530" width="250" height="230"/>
+  <text class="legend-title" x="940" y="555">Legend</text>
+
+  <rect x="940" y="565" width="40" height="15" fill="#1e3148" stroke="#3b6a9b" stroke-width="1.5" rx="4"/>
+  <text class="legend-text" x="990" y="577">Standard module</text>
+
+  <rect x="940" y="590" width="40" height="15" fill="#2a1a1a" stroke="#c0392b" stroke-width="1.5" rx="4"/>
+  <text class="legend-text" x="990" y="602">Security-critical module</text>
+
+  <rect x="940" y="615" width="40" height="15" fill="#1a2a20" stroke="#27ae60" stroke-width="1.5" rx="4"/>
+  <text class="legend-text" x="990" y="627">Storage module</text>
+
+  <rect x="940" y="640" width="40" height="15" fill="#1a2332" stroke="#5a7a9b" stroke-width="1" rx="4" stroke-dasharray="4 2"/>
+  <text class="legend-text" x="990" y="652">External system</text>
+
+  <text class="legend-text" x="940" y="680" style="fill: #c0392b;">Red italic = SecretString / sensitive</text>
+  <text class="legend-text" x="940" y="695" style="fill: #f39c12;">Orange = configuration / flow notes</text>
+  <text class="legend-text" x="940" y="715">All IPC: JSON over Unix socket</text>
+  <text class="legend-text" x="940" y="730">All external HTTPS: reqwest + TLS</text>
+  <text class="legend-text" x="940" y="745">State: Arc&lt;RwLock&lt;AgentState&gt;&gt;</text>
+</svg>

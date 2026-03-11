@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 850" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <style>
+      .bg { fill: #0f1724; }
+      .title { fill: #e8edf3; font-size: 22px; font-weight: 700; }
+      .subtitle { fill: #7eb8da; font-size: 13px; }
+      .mem-zone { fill: #141e2e; stroke: #3b6a9b; stroke-width: 2; rx: 12; }
+      .disk-zone { fill: #141e2e; stroke: #f39c12; stroke-width: 2; rx: 12; }
+      .zone-label { fill: #7eb8da; font-size: 14px; font-weight: 600; }
+      .zone-label-disk { fill: #f39c12; font-size: 14px; font-weight: 600; }
+      .protection { fill: #2a1a1a; stroke: #c0392b; stroke-width: 2; rx: 8; }
+      .protection-label { fill: #f5c6c6; font-size: 13px; font-weight: 700; }
+      .protection-sub { fill: #e8a0a0; font-size: 11px; }
+      .protection-detail { fill: #c08080; font-size: 10px; }
+      .component { fill: #1e3148; stroke: #3b6a9b; stroke-width: 1.5; rx: 8; }
+      .component-label { fill: #e8edf3; font-size: 13px; font-weight: 600; }
+      .component-sub { fill: #8a9bb5; font-size: 11px; }
+      .component-detail { fill: #6a8aaa; font-size: 10px; }
+      .limitation { fill: #2a2a1a; stroke: #f39c12; stroke-width: 1; rx: 6; }
+      .limitation-label { fill: #f1c40f; font-size: 10px; }
+      .code-ref { fill: #1a2a1a; stroke: #2d6f2d; stroke-width: 1; rx: 4; }
+      .code-text { fill: #7eda7e; font-size: 10px; font-family: 'Menlo', 'Consolas', monospace; }
+      .arrow { stroke: #4a90c4; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+      .arrow-protect { stroke: #c0392b; stroke-width: 2; fill: none; marker-end: url(#arrowhead-red); }
+      .arrow-label { fill: #b0c4de; font-size: 10px; }
+      .mem-id { fill: #4a90c4; font-size: 11px; font-weight: 700; }
+      .lifecycle { fill: #1a2332; stroke: #5a7a9b; stroke-width: 1; rx: 6; }
+      .lifecycle-label { fill: #b0c4de; font-size: 11px; font-weight: 600; text-anchor: middle; }
+      .lifecycle-step { fill: #8a9bb5; font-size: 10px; text-anchor: middle; }
+      .legend-box { fill: #141e2e; stroke: #2d4a6f; stroke-width: 1; rx: 6; }
+      .legend-text { fill: #8a9bb5; font-size: 11px; }
+      .legend-title { fill: #b0c4de; font-size: 12px; font-weight: 600; }
+      .section-line { stroke: #2d4a6f; stroke-width: 1; stroke-dasharray: 3 3; }
+    </style>
+    <marker id="arrowhead" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#4a90c4"/>
+    </marker>
+    <marker id="arrowhead-red" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#c0392b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="850"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="35">Memory and Key Protection Model</text>
+  <text class="subtitle" x="40" y="55">Defense-in-depth for DPoP signing keys and OAuth tokens in the agent daemon</text>
+
+  <!-- ====== IN-MEMORY ZONE ====== -->
+  <rect class="mem-zone" x="30" y="75" width="730" height="490"/>
+  <text class="zone-label" x="50" y="98">In-Memory Protection</text>
+
+  <!-- MEM-02: ZeroizeOnDrop -->
+  <rect class="protection" x="50" y="110" width="340" height="115"/>
+  <text class="mem-id" x="60" y="128">MEM-02</text>
+  <text class="protection-label" x="120" y="128">ZeroizeOnDrop</text>
+  <text class="protection-sub" x="60" y="148">p256::ecdsa::SigningKey zeroed on drop</text>
+  <text class="protection-detail" x="60" y="165">ecdsa-0.16 implements ZeroizeOnDrop unconditionally</text>
+  <text class="protection-detail" x="60" y="180">Volatile write to zero before deallocation</text>
+  <text class="protection-detail" x="60" y="195">No zeroize feature flag needed on p256 = "0.13"</text>
+  <rect class="code-ref" x="60" y="200" width="320" height="18"/>
+  <text class="code-text" x="68" y="213">unix-oidc-agent/src/crypto/protected_key.rs</text>
+
+  <!-- MEM-04: mlock -->
+  <rect class="protection" x="50" y="240" width="340" height="115"/>
+  <text class="mem-id" x="60" y="258">MEM-04</text>
+  <text class="protection-label" x="120" y="258">mlock(2) Memory Locking</text>
+  <text class="protection-sub" x="60" y="278">Prevent OS from swapping key pages to disk</text>
+  <text class="protection-detail" x="60" y="295">mlock_probe() at startup: test 64-byte buffer</text>
+  <text class="protection-detail" x="60" y="310">mlock entire Box&lt;ProtectedSigningKey&gt; allocation</text>
+  <text class="protection-detail" x="60" y="325">MlockGuard RAII: munlock(2) on drop</text>
+  <text class="protection-detail" x="60" y="340">Best-effort: EPERM/ENOMEM logged at WARN</text>
+  <rect class="limitation" x="60" y="345" width="320" height="14"/>
+  <text class="limitation-label" x="68" y="355">Does NOT protect against root/kernel access</text>
+
+  <!-- MEM-05: Box-only -->
+  <rect class="protection" x="50" y="370" width="340" height="85"/>
+  <text class="mem-id" x="60" y="388">MEM-05</text>
+  <text class="protection-label" x="120" y="388">Box-Only Constructors</text>
+  <text class="protection-sub" x="60" y="408">No public stack constructors exist</text>
+  <text class="protection-detail" x="60" y="425">generate() -> Box&lt;Self&gt;</text>
+  <text class="protection-detail" x="60" y="440">from_bytes(&amp;[u8]) -> Result&lt;Box&lt;Self&gt;&gt;</text>
+  <text class="protection-detail" x="60" y="455" style="fill: #f1c40f;">from_key() via Zeroizing&lt;Vec&lt;u8&gt;&gt;</text>
+
+  <!-- MEM-01: Zeroizing Export -->
+  <rect class="protection" x="410" y="110" width="330" height="85"/>
+  <text class="mem-id" x="420" y="128">MEM-01</text>
+  <text class="protection-label" x="480" y="128">Zeroizing Export</text>
+  <text class="protection-sub" x="420" y="148">export_key() -> Zeroizing&lt;Vec&lt;u8&gt;&gt;</text>
+  <text class="protection-detail" x="420" y="165">Deref&lt;Target=[u8]&gt;: &amp;exported coerces to &amp;[u8]</text>
+  <text class="protection-detail" x="420" y="180">MUST NOT convert to Vec&lt;u8&gt;</text>
+  <text class="protection-detail" x="420" y="195" style="fill: #f1c40f;">Callers must keep Zeroizing wrapper intact</text>
+
+  <!-- MEM-03: SecretString -->
+  <rect class="protection" x="410" y="210" width="330" height="130"/>
+  <text class="mem-id" x="420" y="228">MEM-03</text>
+  <text class="protection-label" x="480" y="228">SecretString for Tokens</text>
+  <text class="protection-sub" x="420" y="248">access_token: Option&lt;SecretString&gt;</text>
+  <text class="protection-sub" x="420" y="263">client_secret: Option&lt;SecretString&gt;</text>
+  <text class="protection-detail" x="420" y="283">Debug/Display emits [REDACTED]</text>
+  <text class="protection-detail" x="420" y="298">Raw value only via .expose_secret()</text>
+  <text class="protection-detail" x="420" y="313">Permitted audit boundaries:</text>
+  <text class="protection-detail" x="430" y="328" style="fill: #f1c40f;">1. Sending to SSH client (GetProof handler)</text>
+  <text class="protection-detail" x="430" y="343" style="fill: #f1c40f;">2. Writing to storage (KEY_ACCESS_TOKEN)</text>
+
+  <!-- MEM-03: Core Dumps -->
+  <rect class="protection" x="410" y="355" width="330" height="100"/>
+  <text class="mem-id" x="420" y="373">MEM-03</text>
+  <text class="protection-label" x="480" y="373">Core Dump Prevention</text>
+  <text class="protection-sub" x="420" y="393">security::disable_core_dumps()</text>
+  <text class="protection-detail" x="420" y="413">Linux: prctl(PR_SET_DUMPABLE, 0)</text>
+  <text class="protection-detail" x="420" y="428">  -> Kernel refuses core dump</text>
+  <text class="protection-detail" x="420" y="443">  -> /proc/PID/mem restricted</text>
+  <text class="protection-detail" x="430" y="458" style="fill: #7eb8da;">macOS: ptrace(PT_DENY_ATTACH, 0, NULL, 0)</text>
+
+  <!-- Key Lifecycle -->
+  <rect class="component" x="50" y="470" width="740" height="80"/>
+  <text class="component-label" x="70" y="492">ProtectedSigningKey Lifecycle</text>
+  <line class="section-line" x1="55" y1="500" x2="785" y2="500"/>
+
+  <!-- Lifecycle stages as a horizontal flow -->
+  <rect class="lifecycle" x="60" y="508" width="85" height="35"/>
+  <text class="lifecycle-label" x="103" y="523">generate()</text>
+  <text class="lifecycle-step" x="103" y="538">OsRng P-256</text>
+
+  <path class="arrow" d="M 145,525 L 168,525"/>
+
+  <rect class="lifecycle" x="170" y="508" width="80" height="35"/>
+  <text class="lifecycle-label" x="210" y="523">Box::new</text>
+  <text class="lifecycle-step" x="210" y="538">heap alloc</text>
+
+  <path class="arrow-protect" d="M 250,525 L 273,525"/>
+
+  <rect class="lifecycle" x="275" y="508" width="70" height="35"/>
+  <text class="lifecycle-label" x="310" y="523">mlock</text>
+  <text class="lifecycle-step" x="310" y="538">pin pages</text>
+
+  <path class="arrow" d="M 345,525 L 368,525"/>
+
+  <rect class="lifecycle" x="370" y="508" width="80" height="35"/>
+  <text class="lifecycle-label" x="410" y="523">sign()</text>
+  <text class="lifecycle-step" x="410" y="538">DPoP proofs</text>
+
+  <path class="arrow" d="M 450,525 L 473,525"/>
+
+  <rect class="lifecycle" x="475" y="508" width="80" height="35"/>
+  <text class="lifecycle-label" x="515" y="523">export()</text>
+  <text class="lifecycle-step" x="515" y="538">Zeroizing&lt;&gt;</text>
+
+  <path class="arrow-protect" d="M 555,525 L 578,525"/>
+
+  <rect class="lifecycle" x="580" y="508" width="70" height="35" style="fill: #2a1a1a; stroke: #c0392b;"/>
+  <text class="lifecycle-label" x="615" y="523" style="fill: #f5c6c6;">drop()</text>
+  <text class="lifecycle-step" x="615" y="538" style="fill: #e8a0a0;">zero + munlock</text>
+
+  <path class="arrow-protect" d="M 650,525 L 678,525"/>
+
+  <rect class="lifecycle" x="680" y="508" width="60" height="35" style="fill: #1a1a1a; stroke: #5a7a9b;"/>
+  <text class="lifecycle-label" x="710" y="523" style="fill: #5a7a9b;">dealloc</text>
+  <text class="lifecycle-step" x="710" y="538" style="fill: #5a7a9b;">freed</text>
+
+  <!-- ====== ON-DISK ZONE ====== -->
+  <rect class="disk-zone" x="790" y="75" width="380" height="490"/>
+  <text class="zone-label-disk" x="810" y="98">On-Disk Protection</text>
+
+  <!-- MEM-05: DoD Secure Delete -->
+  <rect class="protection" x="810" y="110" width="340" height="160"/>
+  <text class="mem-id" x="820" y="128">MEM-05</text>
+  <text class="protection-label" x="880" y="128">DoD 5220.22-M Secure Delete</text>
+  <text class="protection-sub" x="820" y="148">Three-pass overwrite before unlink</text>
+  <line class="section-line" x1="815" y1="155" x2="1145" y2="155"/>
+  <text class="protection-detail" x="820" y="170">Pass 1: Random bytes + sync_all()</text>
+  <text class="protection-detail" x="820" y="185">Pass 2: XOR 0xFF complement + sync_all()</text>
+  <text class="protection-detail" x="820" y="200">Pass 3: New random bytes + sync_all()</text>
+  <text class="protection-detail" x="820" y="215">Then: unlink (remove file)</text>
+  <text class="protection-detail" x="820" y="235" style="fill: #f1c40f;">Overwrite failures: best-effort WARN, still unlink</text>
+  <rect class="code-ref" x="820" y="245" width="320" height="18"/>
+  <text class="code-text" x="828" y="258">unix-oidc-agent/src/storage/secure_delete.rs</text>
+
+  <!-- MEM-06: CoW Advisory -->
+  <rect class="limitation" x="810" y="285" width="340" height="100"/>
+  <text class="mem-id" x="820" y="303">MEM-06</text>
+  <text class="protection-label" x="880" y="303" style="fill: #f1c40f;">CoW Filesystem Advisory</text>
+  <text class="protection-detail" x="820" y="323">detect_cow_filesystem() via statfs(2)</text>
+  <text class="protection-detail" x="820" y="338">Linux: BTRFS_SUPER_MAGIC</text>
+  <text class="protection-detail" x="820" y="353">macOS: f_fstypename == "apfs"</text>
+  <text class="protection-detail" x="820" y="368">WARN at FileStorage::new() and before delete()</text>
+  <text class="limitation-label" x="820" y="383">3-pass may not modify original blocks on CoW</text>
+
+  <!-- MEM-06: SSD Advisory -->
+  <rect class="limitation" x="810" y="400" width="340" height="75"/>
+  <text class="mem-id" x="820" y="418">MEM-06</text>
+  <text class="protection-label" x="880" y="418" style="fill: #f1c40f;">SSD / Flash Advisory</text>
+  <text class="protection-detail" x="820" y="438">detect_rotational_device()</text>
+  <text class="protection-detail" x="820" y="453">Linux: /sys/block/{dev}/queue/rotational == 0</text>
+  <text class="protection-detail" x="820" y="468">WARN at startup for non-rotational devices</text>
+
+  <!-- Mitigation -->
+  <rect class="component" x="810" y="490" width="340" height="60"/>
+  <text class="component-label" x="830" y="513" style="fill: #2ecc71;">Required Mitigation</text>
+  <text class="component-sub" x="830" y="530" style="fill: #7eda7e;">Full-disk encryption (NIST SP 800-88 Rev 1, 2.5)</text>
+  <text class="component-sub" x="830" y="545" style="fill: #7eda7e;">Prefer keyring backend over file storage</text>
+
+  <!-- ====== THREAT MODEL ====== -->
+  <rect class="mem-zone" x="30" y="580" width="1140" height="130"/>
+  <text class="zone-label" x="50" y="603">Threat Coverage and Limitations</text>
+
+  <!-- Protected against -->
+  <rect class="component" x="50" y="615" width="350" height="85"/>
+  <text class="component-label" x="70" y="635" style="fill: #2ecc71;">Protected Against</text>
+  <line class="section-line" x1="55" y1="643" x2="395" y2="643"/>
+  <text class="component-detail" x="70" y="658">Swap-based key recovery (mlock prevents paging)</text>
+  <text class="component-detail" x="70" y="673">Post-free memory reads (ZeroizeOnDrop zeroing)</text>
+  <text class="component-detail" x="70" y="688">Accidental log exposure (SecretString [REDACTED])</text>
+  <text class="component-detail" x="70" y="703">Core dump forensics (prctl/ptrace prevention)</text>
+
+  <!-- Partially protected -->
+  <rect class="limitation" x="420" y="615" width="350" height="85"/>
+  <text class="protection-label" x="440" y="635" style="fill: #f39c12;">Best-Effort (Environment-Dependent)</text>
+  <line class="section-line" x1="425" y1="643" x2="765" y2="643"/>
+  <text class="limitation-label" x="440" y="658">mlock failures non-fatal (EPERM, ENOMEM)</text>
+  <text class="limitation-label" x="440" y="673">Compiler may not fully respect volatile zeroing</text>
+  <text class="limitation-label" x="440" y="688">CoW/SSD: on-disk overwrite may miss original blocks</text>
+  <text class="limitation-label" x="440" y="703">Requires FDE for comprehensive at-rest protection</text>
+
+  <!-- NOT protected -->
+  <rect class="protection" x="790" y="615" width="360" height="85"/>
+  <text class="protection-label" x="810" y="635">Not Protected Against</text>
+  <line class="section-line" x1="795" y1="643" x2="1145" y2="643"/>
+  <text class="protection-detail" x="810" y="658">Root/kernel-level live memory access</text>
+  <text class="protection-detail" x="810" y="673">Hardware-level memory forensics (cold boot)</text>
+  <text class="protection-detail" x="810" y="688">Compromised allocator or runtime</text>
+  <text class="protection-detail" x="810" y="703">Side-channel attacks (timing, power analysis)</text>
+
+  <!-- Legend -->
+  <rect class="legend-box" x="30" y="720" width="1140" height="120"/>
+  <text class="legend-title" x="50" y="745">Memory Protection Identifiers (from CLAUDE.md security invariants)</text>
+
+  <text class="mem-id" x="50" y="770">MEM-01</text>
+  <text class="legend-text" x="100" y="770">Zeroizing&lt;Vec&lt;u8&gt;&gt; export wrapper -- callers MUST NOT unwrap</text>
+
+  <text class="mem-id" x="50" y="790">MEM-02</text>
+  <text class="legend-text" x="100" y="790">ZeroizeOnDrop on SigningKey -- volatile zero before deallocation</text>
+
+  <text class="mem-id" x="50" y="810">MEM-03</text>
+  <text class="legend-text" x="100" y="810">SecretString for tokens + core dump prevention -- Debug emits [REDACTED]</text>
+
+  <text class="mem-id" x="600" y="770">MEM-04</text>
+  <text class="legend-text" x="650" y="770">mlock(2) memory locking -- prevent swap exposure (best-effort)</text>
+
+  <text class="mem-id" x="600" y="790">MEM-05</text>
+  <text class="legend-text" x="650" y="790">Box-only constructors + DoD 5220.22-M secure delete</text>
+
+  <text class="mem-id" x="600" y="810">MEM-06</text>
+  <text class="legend-text" x="650" y="810">CoW/SSD filesystem advisories -- NIST SP 800-88 Rev 1</text>
+
+  <text class="legend-text" x="50" y="833">Source files: protected_key.rs, secure_delete.rs  |  All protections are defense-in-depth; FDE is the primary at-rest defense</text>
+</svg>
