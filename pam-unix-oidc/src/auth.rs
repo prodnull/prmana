@@ -99,14 +99,18 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
     }
 
     // Construct username mapper from policy identity config.
-    // Collision safety warnings are logged at mapper construction time (config-load audit).
-    let mapper = policy_opt.as_ref().map(|policy| {
-        let warnings = crate::identity::collision::validate_collision_safety(&policy.identity);
-        for w in &warnings {
-            tracing::warn!(collision_warning = %w, "Username mapping collision safety warning");
-        }
-        UsernameMapper::from_config(&policy.identity)
-    });
+    // Security (IDN-03): check_collision_safety() is a hard-fail gatekeeper — same class as
+    // signature verification.  A non-injective pipeline is a configuration error that must
+    // prevent authentication entirely, not a warning that allows it.
+    let mapper = policy_opt
+        .as_ref()
+        .map(|policy| -> Result<UsernameMapper, AuthError> {
+            crate::identity::collision::check_collision_safety(&policy.identity)
+                .map_err(|e| AuthError::Config(e.to_string()))?;
+            UsernameMapper::from_config(&policy.identity)
+                .map_err(|e| AuthError::IdentityMapping(e.to_string()))
+        })
+        .transpose()?;
 
     // Create validator
     #[cfg(feature = "test-mode")]
@@ -126,9 +130,9 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
     let claims = validator.validate(token)?;
 
     // Map username via configured claim + transform pipeline.
-    // If policy is absent or mapper construction failed, fall back to preferred_username.
+    // After .transpose()?, mapper is Option<UsernameMapper> — None when policy is absent.
     let (username_str, mapped_from) = match mapper {
-        Some(Ok(ref m)) => {
+        Some(ref m) => {
             let raw = claims.preferred_username.clone();
             let mapped = m
                 .map(&claims)
@@ -136,9 +140,6 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
             // Only record mapped_from when the mapping actually changed the value.
             let from = if mapped != raw { Some(raw) } else { None };
             (mapped, from)
-        }
-        Some(Err(e)) => {
-            return Err(AuthError::IdentityMapping(e.to_string()));
         }
         None => (claims.preferred_username.clone(), None),
     };
@@ -285,13 +286,16 @@ pub fn authenticate_with_dpop(
     }
 
     // Construct username mapper from policy identity config.
-    let mapper = policy_opt.as_ref().map(|policy| {
-        let warnings = crate::identity::collision::validate_collision_safety(&policy.identity);
-        for w in &warnings {
-            tracing::warn!(collision_warning = %w, "Username mapping collision safety warning");
-        }
-        UsernameMapper::from_config(&policy.identity)
-    });
+    // Security (IDN-03): check_collision_safety() hard-fails on non-injective pipelines.
+    let mapper = policy_opt
+        .as_ref()
+        .map(|policy| -> Result<UsernameMapper, AuthError> {
+            crate::identity::collision::check_collision_safety(&policy.identity)
+                .map_err(|e| AuthError::Config(e.to_string()))?;
+            UsernameMapper::from_config(&policy.identity)
+                .map_err(|e| AuthError::IdentityMapping(e.to_string()))
+        })
+        .transpose()?;
 
     // Create validator
     #[cfg(feature = "test-mode")]
@@ -409,17 +413,15 @@ pub fn authenticate_with_dpop(
     };
 
     // Map username via configured claim + transform pipeline.
+    // After .transpose()?, mapper is Option<UsernameMapper> — None when policy is absent.
     let (username_str, mapped_from) = match mapper {
-        Some(Ok(ref m)) => {
+        Some(ref m) => {
             let raw = claims.preferred_username.clone();
             let mapped = m
                 .map(&claims)
                 .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
             let from = if mapped != raw { Some(raw) } else { None };
             (mapped, from)
-        }
-        Some(Err(e)) => {
-            return Err(AuthError::IdentityMapping(e.to_string()));
         }
         None => (claims.preferred_username.clone(), None),
     };
@@ -775,6 +777,143 @@ mod tests {
         let cache = DPoPNonceCache::new(100, 60);
         let result = apply_cache_nonce_enforcement(None, &cache, EnforcementMode::Disabled);
         assert!(result.is_ok(), "disabled mode must allow missing nonce");
+    }
+
+    // ── Collision safety hard-fail tests ──────────────────────────────────────
+    //
+    // These tests mirror the collision-check logic in authenticate_with_token and
+    // authenticate_with_dpop without requiring SSSD or a real ValidationConfig.
+    // The production code uses:
+    //
+    //   policy_opt.as_ref()
+    //       .map(|policy| {
+    //           check_collision_safety(&policy.identity)
+    //               .map_err(|e| AuthError::Config(e.to_string()))?;
+    //           UsernameMapper::from_config(&policy.identity)
+    //       })
+    //       .transpose()?;
+    //
+    // We replicate that pattern here so any regression in the hard-fail path is
+    // caught at unit-test time without depending on external services.
+
+    use crate::identity::collision::check_collision_safety;
+    use crate::identity::mapper::UsernameMapper;
+    use crate::policy::config::{IdentityConfig, TransformConfig};
+
+    fn build_identity(transforms: Vec<TransformConfig>) -> IdentityConfig {
+        IdentityConfig {
+            username_claim: "email".to_string(),
+            transforms,
+        }
+    }
+
+    /// Replicate the production mapper-construction block so we can test it in isolation.
+    fn construct_mapper_like_auth(
+        identity: &IdentityConfig,
+    ) -> Result<Option<UsernameMapper>, AuthError> {
+        let policy_opt: Option<&IdentityConfig> = Some(identity);
+        policy_opt
+            .map(|id| -> Result<UsernameMapper, AuthError> {
+                check_collision_safety(id).map_err(|e| AuthError::Config(e.to_string()))?;
+                UsernameMapper::from_config(id)
+                    .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))
+            })
+            .transpose()
+    }
+
+    #[test]
+    fn collision_check_strip_domain_propagates_auth_config_error() {
+        let identity = build_identity(vec![TransformConfig::Simple("strip_domain".to_string())]);
+        let result = construct_mapper_like_auth(&identity);
+        assert!(
+            result.is_err(),
+            "strip_domain pipeline must produce Err from mapper construction"
+        );
+        match result.unwrap_err() {
+            AuthError::Config(msg) => {
+                assert!(
+                    msg.contains("strip_domain"),
+                    "Config error must name strip_domain, got: {msg}"
+                );
+                assert!(
+                    msg.contains("Non-injective"),
+                    "Config error must contain 'Non-injective', got: {msg}"
+                );
+            }
+            other => panic!("Expected AuthError::Config, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collision_check_regex_propagates_auth_config_error() {
+        let identity = build_identity(vec![TransformConfig::Object {
+            r#type: "regex".to_string(),
+            pattern: r"^(?P<username>[a-z]+)@corp\.com$".to_string(),
+        }]);
+        let result = construct_mapper_like_auth(&identity);
+        assert!(
+            result.is_err(),
+            "regex pipeline must produce Err from mapper construction"
+        );
+        match result.unwrap_err() {
+            AuthError::Config(msg) => {
+                assert!(
+                    msg.contains("regex"),
+                    "Config error must name regex, got: {msg}"
+                );
+            }
+            other => panic!("Expected AuthError::Config, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collision_check_lowercase_does_not_trigger_hard_fail() {
+        let identity = build_identity(vec![TransformConfig::Simple("lowercase".to_string())]);
+        let result = construct_mapper_like_auth(&identity);
+        assert!(
+            result.is_ok(),
+            "lowercase pipeline must not hard-fail, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn collision_check_no_policy_skips_check() {
+        // When policy_opt is None (no policy file), transpose of Option::None is Ok(None).
+        // The collision check is never called.
+        let policy_opt: Option<&IdentityConfig> = None;
+        let result: Result<Option<UsernameMapper>, AuthError> = policy_opt
+            .map(|id| -> Result<UsernameMapper, AuthError> {
+                check_collision_safety(id).map_err(|e| AuthError::Config(e.to_string()))?;
+                UsernameMapper::from_config(id)
+                    .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))
+            })
+            .transpose();
+
+        assert!(
+            result.is_ok(),
+            "absent policy must not trigger collision check"
+        );
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn collision_check_both_transforms_config_error_lists_both() {
+        let identity = build_identity(vec![
+            TransformConfig::Simple("strip_domain".to_string()),
+            TransformConfig::Object {
+                r#type: "regex".to_string(),
+                pattern: r"^(?P<username>[a-z]+)$".to_string(),
+            },
+        ]);
+        let result = construct_mapper_like_auth(&identity);
+        match result.unwrap_err() {
+            AuthError::Config(msg) => {
+                assert!(msg.contains("strip_domain"), "must name strip_domain");
+                assert!(msg.contains("regex"), "must name regex");
+            }
+            other => panic!("Expected AuthError::Config, got: {other:?}"),
+        }
     }
 
     #[test]
