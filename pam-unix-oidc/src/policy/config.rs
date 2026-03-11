@@ -282,6 +282,7 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
 ///   endpoint: "https://idp.example.com/protocol/openid-connect/token/introspect"
 ///   enforcement: warn
 ///   cache_ttl_secs: 30
+///   client_secret: "s3cr3t"  # optional; used for Basic Auth per RFC 7662 §2.1
 /// ```
 #[derive(Debug, Clone, Serialize)]
 #[serde(default)]
@@ -299,6 +300,14 @@ pub struct IntrospectionConfig {
     /// How long (in seconds) to cache a positive introspection result.
     /// Default: 60 seconds.
     pub cache_ttl_secs: u64,
+    /// OAuth client secret for HTTP Basic Auth to the introspection endpoint.
+    ///
+    /// RFC 7662 §2.1 requires the introspection endpoint to authenticate the caller.
+    /// Many IdPs accept client_id-only (public client) or require client_id+client_secret
+    /// (confidential client). When absent, only client_id is sent in Basic Auth.
+    ///
+    /// Security: treat as a secret credential. Do not log this value.
+    pub client_secret: Option<String>,
 }
 
 impl Default for IntrospectionConfig {
@@ -308,6 +317,7 @@ impl Default for IntrospectionConfig {
             endpoint: None,
             enforcement: EnforcementMode::Warn,
             cache_ttl_secs: 60,
+            client_secret: None,
         }
     }
 }
@@ -321,6 +331,7 @@ impl<'de> serde::de::Deserialize<'de> for IntrospectionConfig {
             endpoint: Option<String>,
             enforcement: EnforcementMode,
             cache_ttl_secs: u64,
+            client_secret: Option<String>,
         }
         impl Default for Raw {
             fn default() -> Self {
@@ -330,6 +341,7 @@ impl<'de> serde::de::Deserialize<'de> for IntrospectionConfig {
                     endpoint: c.endpoint,
                     enforcement: c.enforcement,
                     cache_ttl_secs: c.cache_ttl_secs,
+                    client_secret: c.client_secret,
                 }
             }
         }
@@ -339,6 +351,7 @@ impl<'de> serde::de::Deserialize<'de> for IntrospectionConfig {
             endpoint: r.endpoint,
             enforcement: r.enforcement,
             cache_ttl_secs: r.cache_ttl_secs,
+            client_secret: r.client_secret,
         })
     }
 }
