@@ -86,24 +86,49 @@ pub struct JwksProvider {
     issuer: String,
     cache: RwLock<Option<CachedJwks>>,
     cache_ttl: Duration,
+    /// HTTP request timeout for JWKS and discovery fetches.
+    /// Replaces the module-level `HTTP_TIMEOUT_SECS` constant; configurable
+    /// via `AgentConfig.timeouts.jwks_http_timeout_secs`.
+    http_timeout: Duration,
 }
 
 impl JwksProvider {
-    /// Create a new JWKS provider for the given issuer
+    /// Create a new JWKS provider for the given issuer using built-in defaults.
     pub fn new(issuer: &str) -> Self {
         Self {
             issuer: issuer.trim_end_matches('/').to_string(),
             cache: RwLock::new(None),
             cache_ttl: Duration::from_secs(DEFAULT_CACHE_TTL_SECS),
+            http_timeout: Duration::from_secs(HTTP_TIMEOUT_SECS),
         }
     }
 
-    /// Create with custom cache TTL
+    /// Create with custom cache TTL (HTTP timeout uses built-in default).
     pub fn with_cache_ttl(issuer: &str, ttl_secs: u64) -> Self {
         Self {
             issuer: issuer.trim_end_matches('/').to_string(),
             cache: RwLock::new(None),
             cache_ttl: Duration::from_secs(ttl_secs),
+            http_timeout: Duration::from_secs(HTTP_TIMEOUT_SECS),
+        }
+    }
+
+    /// Create with both custom cache TTL and HTTP timeout.
+    ///
+    /// Use this constructor when wiring from `AgentConfig.timeouts`:
+    /// ```ignore
+    /// JwksProvider::with_timeouts(
+    ///     &config.issuer,
+    ///     config.timeouts.jwks_cache_ttl_secs,
+    ///     config.timeouts.jwks_http_timeout_secs,
+    /// )
+    /// ```
+    pub fn with_timeouts(issuer: &str, ttl_secs: u64, http_timeout_secs: u64) -> Self {
+        Self {
+            issuer: issuer.trim_end_matches('/').to_string(),
+            cache: RwLock::new(None),
+            cache_ttl: Duration::from_secs(ttl_secs),
+            http_timeout: Duration::from_secs(http_timeout_secs),
         }
     }
 
@@ -214,7 +239,7 @@ impl JwksProvider {
         let discovery_url = format!("{}/.well-known/openid-configuration", self.issuer);
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .timeout(self.http_timeout)
             .build()
             .map_err(|e| JwksError::DiscoveryFetchError(e.to_string()))?;
 
@@ -238,7 +263,7 @@ impl JwksProvider {
 
     fn fetch_jwks(&self, jwks_uri: &str) -> Result<JwkSet, JwksError> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .timeout(self.http_timeout)
             .build()
             .map_err(|e| JwksError::JwksFetchError(e.to_string()))?;
 
@@ -281,5 +306,20 @@ mod tests {
     fn test_cache_ttl_configuration() {
         let provider = JwksProvider::with_cache_ttl("https://example.com", 600);
         assert_eq!(provider.cache_ttl, Duration::from_secs(600));
+        // HTTP timeout defaults to HTTP_TIMEOUT_SECS when using with_cache_ttl
+        assert_eq!(provider.http_timeout, Duration::from_secs(HTTP_TIMEOUT_SECS));
+    }
+
+    #[test]
+    fn test_with_timeouts_constructor() {
+        let provider = JwksProvider::with_timeouts("https://example.com", 600, 20);
+        assert_eq!(provider.cache_ttl, Duration::from_secs(600));
+        assert_eq!(provider.http_timeout, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn test_new_uses_default_http_timeout() {
+        let provider = JwksProvider::new("https://example.com");
+        assert_eq!(provider.http_timeout, Duration::from_secs(HTTP_TIMEOUT_SECS));
     }
 }

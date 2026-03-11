@@ -468,6 +468,7 @@ fn perform_device_flow_step_up(
         required_acr: requirements.minimum_acr.clone(),
         max_auth_age: None, // Fresh auth, no max age check needed
         jti_enforcement: crate::policy::config::EnforcementMode::Warn,
+        clock_skew_tolerance_secs: 60,
     };
 
     // Create validator

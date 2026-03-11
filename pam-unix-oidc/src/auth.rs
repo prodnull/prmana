@@ -207,8 +207,12 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
 pub struct DPoPAuthConfig {
     /// Target hostname for DPoP validation (e.g., "server.example.com")
     pub target_host: String,
-    /// Maximum proof age in seconds (default: 60)
+    /// Maximum proof age in seconds (default: 60).
+    /// Maps to `AgentConfig.timeouts.clock_skew_staleness_secs`.
     pub max_proof_age: u64,
+    /// Clock skew tolerance for proofs issued in the future (seconds, default: 5).
+    /// Maps to `AgentConfig.timeouts.clock_skew_future_secs`.
+    pub clock_skew_future_secs: u64,
     /// Whether nonce is required
     pub require_nonce: bool,
     /// Expected nonce value (if require_nonce is true)
@@ -222,6 +226,7 @@ impl Default for DPoPAuthConfig {
         Self {
             target_host: String::new(),
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             require_dpop_for_bound_tokens: true,
@@ -250,6 +255,7 @@ impl DPoPAuthConfig {
         Ok(Self {
             target_host,
             max_proof_age,
+            clock_skew_future_secs: 5,
             require_nonce,
             expected_nonce: None,
             require_dpop_for_bound_tokens,
@@ -327,6 +333,7 @@ pub fn authenticate_with_dpop(
     let validate_and_enforce_nonce = |proof: &str| -> Result<DPoPProofResult, AuthError> {
         let dpop_validation_config = DPoPConfig {
             max_proof_age: dpop_config.max_proof_age,
+            clock_skew_future_secs: dpop_config.clock_skew_future_secs,
             // Pass require_nonce/expected_nonce to dpop.rs only for the
             // direct single-value path (expected_nonce set by caller).
             // Cache-backed enforcement is handled here in auth.rs.
@@ -937,6 +944,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             expected_method: "SSH".to_string(),

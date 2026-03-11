@@ -21,6 +21,7 @@ use unix_oidc_agent::security::disable_core_dumps;
 use unix_oidc_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
+use unix_oidc_agent::config::AgentConfig;
 
 /// Claims from an OIDC access token for username extraction
 #[derive(Debug, Serialize, Deserialize)]
@@ -401,6 +402,12 @@ async fn run_login(
 
     info!("Starting device flow authentication with {}", issuer);
 
+    // Load agent config for timeout and skew parameters.
+    // Failure is non-fatal — use defaults so the login flow still works.
+    let device_flow_timeout_secs = AgentConfig::load()
+        .map(|c| c.timeouts.device_flow_http_timeout_secs)
+        .unwrap_or(30);
+
     // Initialize or load DPoP signer via the best available backend.
     // Run migration here: login is the primary user-facing trigger after upgrade.
     let mut storage = StorageRouter::detect()?;
@@ -456,8 +463,9 @@ async fn run_login(
             issuer_clone.trim_end_matches('/')
         );
 
+        // device_flow_timeout_secs is loaded from AgentConfig above (default 30s).
         let http_client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(device_flow_timeout_secs))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -814,14 +822,21 @@ async fn run_refresh() -> anyhow::Result<()> {
 
     println!("Refreshing access token...");
 
+    // Load agent config for timeout parameters.
+    // Failure is non-fatal — use defaults so the refresh flow still works.
+    let device_flow_timeout_secs = AgentConfig::load()
+        .map(|c| c.timeouts.device_flow_http_timeout_secs)
+        .unwrap_or(30);
+
     // Perform refresh in blocking task.
     // SecretString is Clone (String: CloneableSecret in secrecy 0.10) — safe to clone for closure capture.
     let refresh_token_clone = refresh_token.clone();
     let token_result = tokio::task::spawn_blocking(move || {
         use std::time::Duration;
 
+        // device_flow_timeout_secs is loaded from AgentConfig above (default 30s).
         let http_client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(device_flow_timeout_secs))
             .build()
             .expect("Failed to create HTTP client");
 

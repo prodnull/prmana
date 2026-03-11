@@ -204,6 +204,7 @@ impl PamServiceModule for PamUnixOidc {
             let dpop_config = DPoPAuthConfig {
                 target_host: gethostname::gethostname().to_string_lossy().to_string(),
                 max_proof_age: 60,
+                clock_skew_future_secs: 5,
                 require_nonce: true,  // cache-backed nonce enforcement
                 expected_nonce: None, // None = cache path (auth.rs consumes from cache)
                 require_dpop_for_bound_tokens: true,

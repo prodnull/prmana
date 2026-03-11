@@ -198,7 +198,7 @@ impl AgentConfig {
     /// Prefer `load_from_path()` which uses figment for layered loading.
     pub fn from_file(path: &std::path::Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
-        let mut config: Self = serde_yaml::from_str(&content)?;
+        let config: Self = serde_yaml::from_str(&content)?;
         config.timeouts.validate()?;
         Ok(config)
     }

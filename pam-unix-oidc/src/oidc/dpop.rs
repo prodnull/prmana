@@ -140,8 +140,16 @@ pub struct EcJwk {
 /// DPoP validation configuration
 #[derive(Debug, Clone)]
 pub struct DPoPConfig {
-    /// Maximum age of proof in seconds (default: 60)
+    /// Maximum age of proof in seconds (default: 60).
+    /// Maps to `AgentConfig.timeouts.clock_skew_staleness_secs`.
     pub max_proof_age: u64,
+    /// Clock skew tolerance for proofs issued in the future (seconds, default: 5).
+    ///
+    /// A proof with `iat > now + clock_skew_future_secs` is rejected. This prevents
+    /// accepting proofs from a client whose clock is significantly ahead of the server.
+    ///
+    /// Maps to `AgentConfig.timeouts.clock_skew_future_secs`.
+    pub clock_skew_future_secs: u64,
     /// Whether nonce is required
     pub require_nonce: bool,
     /// Expected nonce value (if require_nonce is true)
@@ -156,6 +164,7 @@ impl Default for DPoPConfig {
     fn default() -> Self {
         Self {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             expected_method: "SSH".to_string(),
@@ -304,8 +313,10 @@ pub fn validate_dpop_proof(
         });
     }
 
-    // Don't accept proofs from the future (with small clock skew allowance)
-    if claims.iat > now + 5 {
+    // Don't accept proofs from the future (with small clock skew allowance).
+    // Security: clock_skew_future_secs is operator-configurable (default 5s).
+    // Accepting proofs too far in the future weakens replay protection.
+    if claims.iat > now + config.clock_skew_future_secs as i64 {
         return Err(DPoPValidationError::ProofExpired {
             iat: claims.iat,
             now,
@@ -483,6 +494,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             expected_method: "SSH".to_string(),
@@ -501,6 +513,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: true,
             expected_nonce: Some("abc123".to_string()),
             expected_method: "SSH".to_string(),
@@ -520,6 +533,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false, // let the result carry nonce without validating it here
             expected_nonce: None,
             expected_method: "SSH".to_string(),
@@ -544,6 +558,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             expected_method: "SSH".to_string(),
@@ -563,6 +578,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             expected_method: "SSH".to_string(),
@@ -582,6 +598,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: true,
             expected_nonce: Some("correct".to_string()),
             expected_method: "SSH".to_string(),
@@ -598,6 +615,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             expected_method: "SSH".to_string(),
@@ -661,6 +679,7 @@ mod tests {
 
         let config = DPoPConfig {
             max_proof_age: 60,
+            clock_skew_future_secs: 5,
             require_nonce: false,
             expected_nonce: None,
             expected_method: "SSH".to_string(),

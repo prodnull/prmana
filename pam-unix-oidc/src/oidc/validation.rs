@@ -68,6 +68,14 @@ pub struct ValidationConfig {
     /// Replaces the old `UNIX_OIDC_DISABLE_JTI_CHECK` environment variable.
     /// Default: `Warn` to maintain exact v1.0 behavior.
     pub jti_enforcement: EnforcementMode,
+    /// Clock skew tolerance for token expiration validation (seconds, default: 60).
+    ///
+    /// A token is accepted up to `clock_skew_tolerance_secs` seconds after its `exp`
+    /// claim. This accommodates clock drift between the server and the IdP.
+    ///
+    /// Maps to `AgentConfig.timeouts.clock_skew_staleness_secs`.
+    /// Default: 60 (matches the previous CLOCK_SKEW_TOLERANCE constant).
+    pub clock_skew_tolerance_secs: i64,
 }
 
 impl ValidationConfig {
@@ -93,11 +101,16 @@ impl ValidationConfig {
             required_acr,
             max_auth_age,
             jti_enforcement,
+            // Default matches the previous CLOCK_SKEW_TOLERANCE constant (60s).
+            // Callers wiring AgentConfig should pass clock_skew_staleness_secs.
+            clock_skew_tolerance_secs: 60,
         })
     }
 }
 
-/// Clock skew tolerance in seconds for time-based validations
+/// Fallback clock skew constant retained for the module-level default.
+/// All active code paths use `self.config.clock_skew_tolerance_secs` instead.
+#[allow(dead_code)]
 const CLOCK_SKEW_TOLERANCE: i64 = 60;
 
 pub struct TokenValidator {
@@ -172,9 +185,10 @@ impl TokenValidator {
             return Err(ValidationError::InvalidAudience);
         }
 
-        // Validate expiration with clock skew tolerance
+        // Validate expiration with clock skew tolerance.
+        // clock_skew_tolerance_secs is operator-configurable (default 60s).
         let now = chrono::Utc::now().timestamp();
-        if claims.exp + CLOCK_SKEW_TOLERANCE < now {
+        if claims.exp + self.config.clock_skew_tolerance_secs < now {
             return Err(ValidationError::Expired);
         }
 
@@ -185,7 +199,8 @@ impl TokenValidator {
         // a *missing* JTI (no jti claim at all) is handled.
         if self.config.jti_enforcement != EnforcementMode::Disabled {
             // Calculate TTL for JTI cache based on token expiration
-            let ttl_seconds = (claims.exp - now + CLOCK_SKEW_TOLERANCE).max(0) as u64;
+            let ttl_seconds = (claims.exp - now + self.config.clock_skew_tolerance_secs).max(0)
+                as u64;
 
             let jti_result = global_jti_cache().check_and_record(
                 claims.jti.as_deref(),
@@ -252,7 +267,7 @@ impl TokenValidator {
                 Some(auth_time) => {
                     let age = now - auth_time;
                     // Apply clock skew tolerance to max_age check
-                    if age > max_age + CLOCK_SKEW_TOLERANCE {
+                    if age > max_age + self.config.clock_skew_tolerance_secs {
                         return Err(ValidationError::AuthTimeTooOld {
                             max_age,
                             actual_age: age,

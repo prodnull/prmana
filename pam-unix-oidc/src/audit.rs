@@ -468,6 +468,12 @@ fn log_to_syslog(message: &str) {
 mod tests {
     use super::*;
 
+    // Serial mutex for hostname tests that mutate UNIX_OIDC_HOSTNAME env var.
+    // Env vars are process-wide; parallel test threads would race without this.
+    // Pattern consistent with Phase 6 / unix-oidc-agent config tests.
+    use parking_lot::Mutex;
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
     #[test]
     fn test_ssh_login_success_serialization() {
         let event = AuditEvent::ssh_login_success(
@@ -718,6 +724,7 @@ mod tests {
 
     #[test]
     fn test_get_hostname_returns_non_empty() {
+        let _guard = ENV_MUTEX.lock();
         // Without UNIX_OIDC_HOSTNAME set (or with it cleared), gethostname(2) must
         // return a non-empty string on any properly configured system.
         std::env::remove_var("UNIX_OIDC_HOSTNAME");
@@ -727,6 +734,7 @@ mod tests {
 
     #[test]
     fn test_get_hostname_env_override() {
+        let _guard = ENV_MUTEX.lock();
         std::env::set_var("UNIX_OIDC_HOSTNAME", "my-custom-host.example.com");
         let h = get_hostname();
         assert_eq!(h, "my-custom-host.example.com");
@@ -735,6 +743,7 @@ mod tests {
 
     #[test]
     fn test_get_hostname_syscall_without_override() {
+        let _guard = ENV_MUTEX.lock();
         std::env::remove_var("UNIX_OIDC_HOSTNAME");
         // gethostname::gethostname() returns the same value
         let syscall_result = gethostname::gethostname()
