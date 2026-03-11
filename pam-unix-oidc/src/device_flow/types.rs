@@ -37,6 +37,10 @@ pub enum DeviceFlowError {
     /// Timeout waiting for user authentication.
     #[error("Timeout waiting for user authentication")]
     Timeout,
+
+    /// Configuration error (e.g., IdP does not advertise a required endpoint).
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
 }
 
 /// Response from the device authorization endpoint.

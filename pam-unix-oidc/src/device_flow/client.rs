@@ -4,9 +4,12 @@ use std::time::{Duration, Instant};
 
 use reqwest::blocking::Client;
 
+use crate::oidc::OidcDiscovery;
+
 use super::types::{DeviceAuthResponse, DeviceFlowError, TokenErrorResponse, TokenResponse};
 
 /// Client for OAuth 2.0 Device Authorization Grant.
+#[derive(Debug)]
 pub struct DeviceFlowClient {
     http_client: Client,
     device_authorization_endpoint: String,
@@ -16,13 +19,52 @@ pub struct DeviceFlowClient {
 }
 
 impl DeviceFlowClient {
-    /// Create a new device flow client.
+    /// Create a device flow client from OIDC discovery metadata.
+    ///
+    /// This is the IdP-agnostic constructor (STP-06). It reads
+    /// `device_authorization_endpoint` and `token_endpoint` directly from the
+    /// OIDC discovery document rather than constructing Keycloak-specific paths.
+    ///
+    /// Returns `DeviceFlowError::ConfigError` when the IdP does not advertise
+    /// a `device_authorization_endpoint` in its discovery document — per RFC 8628 §3.1
+    /// this field is required for Device Authorization Grant support.
+    ///
+    /// Prefer this constructor for all non-Keycloak deployments.
+    pub fn from_discovery(
+        discovery: &OidcDiscovery,
+        client_id: &str,
+        client_secret: Option<&str>,
+    ) -> Result<Self, DeviceFlowError> {
+        let device_endpoint = discovery
+            .device_authorization_endpoint
+            .as_deref()
+            .ok_or_else(|| {
+                DeviceFlowError::ConfigError(
+                    "IdP does not advertise device_authorization_endpoint in OIDC discovery \
+                     (RFC 8628 §3.1); device flow is not supported by this IdP"
+                        .to_string(),
+                )
+            })?;
+
+        Self::with_endpoints(
+            device_endpoint,
+            &discovery.token_endpoint,
+            client_id,
+            client_secret,
+        )
+    }
+
+    /// Create a new device flow client using Keycloak-specific endpoint paths.
+    ///
+    /// **Deprecated for non-Keycloak deployments.** Use `from_discovery()` instead,
+    /// which reads endpoints from the OIDC discovery document and works with any
+    /// RFC 8628-compliant IdP (Auth0, Okta, Azure AD, Google, etc.).
     ///
     /// Returns an error if the HTTP client cannot be constructed (e.g., invalid TLS
     /// configuration). Propagating errors here prevents a panic in the PAM module.
     ///
     /// # Arguments
-    /// * `issuer_url` - The OIDC issuer URL (will append standard endpoints)
+    /// * `issuer_url` - The OIDC issuer URL (will append Keycloak-specific endpoint paths)
     /// * `client_id` - The OAuth client ID
     /// * `client_secret` - Optional client secret for confidential clients
     pub fn new(
@@ -245,5 +287,57 @@ mod tests {
             "https://auth.example.com/device"
         );
         assert_eq!(client.token_endpoint, "https://auth.example.com/token");
+    }
+
+    // --- TDD RED: from_discovery constructor ---
+
+    /// Helper to build a minimal OidcDiscovery for device flow tests.
+    #[cfg(test)]
+    fn make_discovery(device_endpoint: Option<&str>) -> crate::oidc::OidcDiscovery {
+        crate::oidc::OidcDiscovery {
+            jwks_uri: "https://idp.example/jwks".to_string(),
+            issuer: "https://idp.example".to_string(),
+            token_endpoint: "https://idp.example/token".to_string(),
+            device_authorization_endpoint: device_endpoint.map(str::to_string),
+            backchannel_authentication_endpoint: None,
+            backchannel_token_delivery_modes_supported: None,
+            revocation_endpoint: None,
+        }
+    }
+
+    /// from_discovery reads device_authorization_endpoint from OidcDiscovery.
+    #[test]
+    fn test_from_discovery_uses_discovery_endpoints() {
+        let discovery = make_discovery(Some("https://idp.example/device"));
+        let client = DeviceFlowClient::from_discovery(&discovery, "my-client", None).unwrap();
+        assert_eq!(client.device_authorization_endpoint, "https://idp.example/device");
+        assert_eq!(client.token_endpoint, "https://idp.example/token");
+        assert_eq!(client.client_id, "my-client");
+    }
+
+    /// from_discovery returns an error when device_authorization_endpoint is absent.
+    #[test]
+    fn test_from_discovery_errors_when_no_device_endpoint() {
+        let discovery = make_discovery(None);
+        let result = DeviceFlowClient::from_discovery(&discovery, "my-client", None);
+        assert!(
+            result.is_err(),
+            "Expected error when device_authorization_endpoint is absent"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, DeviceFlowError::ConfigError(_)),
+            "Expected ConfigError, got: {:?}",
+            err
+        );
+    }
+
+    /// from_discovery with client secret stores it.
+    #[test]
+    fn test_from_discovery_with_client_secret() {
+        let discovery = make_discovery(Some("https://idp.example/device"));
+        let client =
+            DeviceFlowClient::from_discovery(&discovery, "my-client", Some("s3cr3t")).unwrap();
+        assert_eq!(client.client_secret.as_deref(), Some("s3cr3t"));
     }
 }
