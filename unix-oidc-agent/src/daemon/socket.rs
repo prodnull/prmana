@@ -13,12 +13,17 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::crypto::DPoPSigner;
+use crate::daemon::peer_cred::get_peer_credentials;
 use crate::daemon::protocol::{AgentRequest, AgentResponse, MetricsFormat};
 use crate::metrics::MetricsCollector;
 use crate::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN,
     KEY_TOKEN_METADATA,
 };
+
+/// Default IPC idle timeout: 60 seconds.
+/// Matches `TimeoutsConfig::default().ipc_idle_timeout_secs`.
+const DEFAULT_IPC_IDLE_TIMEOUT_SECS: u64 = 60;
 
 #[cfg(test)]
 use crate::daemon::protocol::AgentResponseData;
@@ -30,14 +35,18 @@ use crate::daemon::protocol::AgentResponseData;
 ///    variables are set by systemd, the pre-bound file descriptor is inherited.
 ///    `listenfd` validates that `LISTEN_PID` matches the current process to prevent
 ///    fd hijacking by unrelated processes.
-/// 2. **launchd socket activation (macOS)** — placeholder; implemented in Plan 04.
+/// 2. **launchd socket activation (macOS)** — when launched by launchd with a `Sockets`
+///    dict, calls `launch_activate_socket("Listeners")` to inherit the pre-bound fd.
+///    Falls through to standalone mode when *not* launched by launchd.
 /// 3. **Standalone bind** — removes any stale socket file, binds a new socket at
 ///    `socket_path`, and sets permissions to `0600` (owner-only).
 ///
 /// Callers in the serve loop should register signal handlers *before* calling into
 /// the accept loop so that signals arriving during startup are not dropped.
 ///
-/// Source: `listenfd 1.0` — <https://docs.rs/listenfd/latest/listenfd/>
+/// Sources:
+/// - `listenfd 1.0` — <https://docs.rs/listenfd/latest/listenfd/>
+/// - macOS `launch_activate_socket(3)` man page
 pub fn acquire_listener(socket_path: &Path) -> std::io::Result<UnixListener> {
     // Step 1: systemd socket activation via LISTEN_FDS / LISTEN_PID.
     // ListenFd::from_env() validates LISTEN_PID == getpid() before taking the fd.
@@ -49,11 +58,16 @@ pub fn acquire_listener(socket_path: &Path) -> std::io::Result<UnixListener> {
         return Ok(listener);
     }
 
-    // Step 2: launchd socket activation (macOS) — implemented in Plan 04.
-    // Placeholder: fall through to standalone bind on macOS for now.
+    // Step 2: launchd socket activation (macOS only).
+    //
+    // `launch_activate_socket("Listeners")` looks up the fd array matching the key
+    // "Listeners" in the plist Sockets dict.  Returns None when not running under
+    // launchd or when the plist has no matching socket name — both are normal for
+    // standalone / foreground invocations.
     #[cfg(target_os = "macos")]
-    {
-        // TODO(13-04): implement launch_activate_socket() FFI and take socket here.
+    if let Some(listener) = launchd_socket::take("Listeners") {
+        info!("Socket acquired via launchd socket activation");
+        return Ok(listener);
     }
 
     // Step 3: Standalone bind — daemon manages its own socket lifecycle.
@@ -222,11 +236,33 @@ impl Default for AgentState {
 pub struct AgentServer {
     socket_path: PathBuf,
     state: Arc<RwLock<AgentState>>,
+    /// Per-read idle timeout for IPC connections.
+    ///
+    /// If no data arrives within this duration on an active connection, the
+    /// connection is closed.  The timeout resets after each successful request,
+    /// so long-lived clients that send periodic requests are not disconnected.
+    idle_timeout: Duration,
 }
 
 impl AgentServer {
     pub fn new(socket_path: PathBuf, state: Arc<RwLock<AgentState>>) -> Self {
-        Self { socket_path, state }
+        Self {
+            socket_path,
+            state,
+            idle_timeout: Duration::from_secs(DEFAULT_IPC_IDLE_TIMEOUT_SECS),
+        }
+    }
+
+    /// Override the per-read IPC idle timeout.
+    ///
+    /// Call this after `new()` when the timeout is read from config:
+    /// ```ignore
+    /// let server = AgentServer::new(path, state)
+    ///     .with_idle_timeout(Duration::from_secs(config.timeouts.ipc_idle_timeout_secs));
+    /// ```
+    pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = timeout;
+        self
     }
 
     /// Get the default socket path
@@ -270,14 +306,61 @@ impl AgentServer {
         let mut sigterm = signal(SignalKind::terminate())?;
         let mut sigint = signal(SignalKind::interrupt())?;
 
+        // Capture idle_timeout so it can be moved into spawned tasks.
+        let idle_timeout = self.idle_timeout;
+
         loop {
             tokio::select! {
                 result = listener.accept() => {
                     match result {
                         Ok((stream, _addr)) => {
+                            // IPC peer credential check — defense-in-depth on top of
+                            // 0600 socket file permissions.
+                            //
+                            // Rationale: A process running as a different UID must not
+                            // be able to send commands to the agent even if it somehow
+                            // obtains a file descriptor for the socket (e.g., via a
+                            // setuid binary or an inherited fd).
+                            //
+                            // Failure is always treated as a rejection (fail-closed):
+                            // if we cannot verify the peer's identity we deny access
+                            // rather than silently allowing it.
+                            //
+                            // Source: socket(7) SO_PEERCRED (Linux),
+                            //         getpeereid(3) (macOS).
+                            // See: unix-oidc-agent/src/daemon/peer_cred.rs.
+                            let daemon_uid = unsafe { libc::getuid() };
+                            match get_peer_credentials(&stream) {
+                                Ok((peer_uid, peer_pid)) => {
+                                    if peer_uid != daemon_uid {
+                                        warn!(
+                                            peer_uid,
+                                            daemon_uid,
+                                            "IPC connection rejected: UID mismatch"
+                                        );
+                                        // Drop stream — connection closed immediately.
+                                        drop(stream);
+                                        continue;
+                                    }
+                                    if let Some(pid) = peer_pid {
+                                        debug!(peer_pid = pid, "IPC connection accepted");
+                                    } else {
+                                        debug!("IPC connection accepted");
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        error = %e,
+                                        "Peer credential retrieval failed — rejecting (fail-closed)"
+                                    );
+                                    drop(stream);
+                                    continue;
+                                }
+                            }
+
                             let state = Arc::clone(&self.state);
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, state).await {
+                                if let Err(e) = handle_connection(stream, state, idle_timeout).await {
                                     error!("Connection error: {}", e);
                                 }
                             });
@@ -321,6 +404,7 @@ impl AgentServer {
 async fn handle_connection(
     stream: UnixStream,
     state: Arc<RwLock<AgentState>>,
+    idle_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Record connection metric
     {
@@ -332,7 +416,35 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
-    while reader.read_line(&mut line).await? > 0 {
+    loop {
+        // Per-read idle timeout.
+        //
+        // The timeout wraps a single `read_line` call and resets after every
+        // successful read.  This means a client that sends periodic requests is
+        // never disconnected; only connections that go silent for the full
+        // `idle_timeout` duration are closed.
+        //
+        // Source: tokio::time::timeout — https://docs.rs/tokio/latest/tokio/time/fn.timeout.html
+        let n = match tokio::time::timeout(idle_timeout, reader.read_line(&mut line)).await {
+            Ok(Ok(0)) => {
+                // EOF — client closed the connection cleanly.
+                break;
+            }
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
+                error!(error = %e, "IPC read error");
+                break;
+            }
+            Err(_elapsed) => {
+                debug!("IPC connection closed: idle timeout");
+                break;
+            }
+        };
+
+        if n == 0 {
+            break;
+        }
+
         let request: AgentRequest = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
@@ -2598,5 +2710,151 @@ mod tests {
             result.err()
         );
         assert!(socket_path.exists(), "new socket file must exist after bind");
+    }
+}
+
+// ── launchd socket activation (macOS only) ──────────────────────────────────
+//
+// `launch_activate_socket(3)` is part of the macOS launch(3) API and allows a
+// launchd-managed process to inherit pre-bound sockets from the launchd plist.
+//
+// The function signature (from the macOS SDK):
+//
+//   int launch_activate_socket(const char *name, int **fds, size_t *cnt);
+//
+// - `name`  — matches a key in the plist `Sockets` dict (e.g. "Listeners").
+// - `fds`   — output: heap-allocated array of pre-bound fds; caller must free.
+// - `cnt`   — output: number of fds in the array.
+// - return  — 0 on success; errno-compatible code on failure.
+//             ESRCH means "not running under launchd" (normal for foreground starts).
+//             ENOENT means the socket name does not exist in the plist.
+//
+// References:
+// - macOS man page: launch_activate_socket(3)
+// - Apple TN2083: Daemons and Agents
+#[cfg(target_os = "macos")]
+pub(crate) mod launchd_socket {
+    use std::os::unix::io::FromRawFd;
+
+    extern "C" {
+        /// Activate the named socket(s) from the launchd plist.
+        ///
+        /// Safety: `name` must be a NUL-terminated C string.  `fds` and `cnt` must
+        /// point to valid memory.  The returned `fds` pointer (if non-null) is
+        /// heap-allocated by the system and must be freed with `libc::free`.
+        fn launch_activate_socket(
+            name: *const libc::c_char,
+            fds: *mut *mut libc::c_int,
+            cnt: *mut libc::size_t,
+        ) -> libc::c_int;
+    }
+
+    /// Try to inherit the launchd-pre-bound socket named `name`.
+    ///
+    /// Returns `Some(listener)` when launched by launchd with a matching socket.
+    /// Returns `None` (and logs at DEBUG) when:
+    /// - Not running under launchd (ESRCH).
+    /// - The named socket is not present in the plist (ENOENT).
+    /// - Any other FFI error.
+    ///
+    /// The caller must check `Some` before entering the accept loop.  Failure to
+    /// call this function when launched by launchd will cause launchd to re-spawn
+    /// the agent because its socket was never accepted.
+    pub fn take(name: &str) -> Option<tokio::net::UnixListener> {
+        use std::ffi::CString;
+
+        let c_name = CString::new(name).ok()?;
+
+        let mut fds: *mut libc::c_int = std::ptr::null_mut();
+        let mut cnt: libc::size_t = 0;
+
+        // Safety: c_name outlives the call; fds/cnt are stack-allocated outputs.
+        let ret = unsafe { launch_activate_socket(c_name.as_ptr(), &mut fds, &mut cnt) };
+
+        if ret != 0 {
+            // ESRCH = "not launched by launchd" — expected for foreground runs.
+            let errno = ret;
+            if errno == libc::ESRCH {
+                tracing::debug!(
+                    name = name,
+                    "launch_activate_socket: not running under launchd (ESRCH)"
+                );
+            } else {
+                tracing::debug!(
+                    name = name,
+                    errno = errno,
+                    "launch_activate_socket returned non-zero; falling back to standalone"
+                );
+            }
+            return None;
+        }
+
+        if cnt == 0 || fds.is_null() {
+            // Shouldn't happen on success, but guard defensively.
+            if !fds.is_null() {
+                // Safety: fds is heap-allocated by the system; free it.
+                unsafe { libc::free(fds as *mut libc::c_void) };
+            }
+            tracing::warn!(name = name, "launch_activate_socket returned 0 fds");
+            return None;
+        }
+
+        // Take the first fd (we configure a single socket in the plist).
+        // Safety: cnt > 0 guarantees fds[0] is valid.
+        let raw_fd = unsafe { *fds };
+
+        // Free the fd array — we have copied the fd value we need.
+        // Safety: fds is heap-allocated by the system.
+        unsafe { libc::free(fds as *mut libc::c_void) };
+
+        // Wrap the raw fd in a std UnixListener.
+        // Safety: raw_fd is a valid pre-bound SOCK_STREAM socket from launchd;
+        //         launchd transfers ownership to this process on activation.
+        let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(raw_fd) };
+
+        // Set non-blocking so tokio can drive it without OS-level blocking.
+        if let Err(e) = std_listener.set_nonblocking(true) {
+            tracing::error!(
+                fd = raw_fd,
+                error = %e,
+                "Failed to set launchd socket non-blocking"
+            );
+            return None;
+        }
+
+        // Convert to a tokio-native listener.
+        match tokio::net::UnixListener::from_std(std_listener) {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                tracing::error!(
+                    fd = raw_fd,
+                    error = %e,
+                    "Failed to convert launchd fd to tokio UnixListener"
+                );
+                None
+            }
+        }
+    }
+
+    // ── compile-time smoke test ──────────────────────────────────────────────
+    //
+    // There is no way to unit-test the full FFI path without actually being
+    // launched by launchd.  This test verifies the module compiles and that
+    // `take()` returns `None` when the process is NOT running under launchd
+    // (which is always the case in `cargo test`).
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_launchd_socket_not_under_launchd_returns_none() {
+            // When run via `cargo test` (not under launchd), take() must return None
+            // because ESRCH is returned for the non-launchd case.
+            let result = take("Listeners");
+            assert!(
+                result.is_none(),
+                "Expected None when not running under launchd; got Some"
+            );
+        }
     }
 }
