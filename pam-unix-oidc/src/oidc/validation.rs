@@ -75,8 +75,7 @@ impl ValidationConfig {
         let issuer = std::env::var("OIDC_ISSUER")
             .map_err(|_| ValidationError::ConfigError("OIDC_ISSUER not set".into()))?;
 
-        let client_id = std::env::var("OIDC_CLIENT_ID")
-            .unwrap_or_else(|_| "unix-oidc".into());
+        let client_id = std::env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "unix-oidc".into());
 
         let required_acr = std::env::var("OIDC_REQUIRED_ACR").ok();
 
@@ -202,10 +201,7 @@ impl TokenValidator {
                     // Token was already used — always reject regardless of mode.
                     // Replay detection is a hard-fail (CLAUDE.md §Security Check Decision Matrix).
                     return Err(ValidationError::TokenReplay {
-                        jti: claims
-                            .jti
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_string()),
+                        jti: claims.jti.clone().unwrap_or_else(|| "unknown".to_string()),
                     });
                 }
                 JtiCheckResult::Missing => {
@@ -317,8 +313,8 @@ impl TokenValidator {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use crate::policy::config::EnforcementMode;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     // Helper to create a test validator that skips signature verification.
     // Only available when compiled with --features test-mode.

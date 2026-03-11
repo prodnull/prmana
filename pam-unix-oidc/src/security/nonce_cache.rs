@@ -249,7 +249,9 @@ mod tests {
         let nonce = generate_dpop_nonce().unwrap();
         // base64url uses A-Z a-z 0-9 - _  (no + / or padding =)
         assert!(
-            nonce.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            nonce
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "nonce must contain only base64url characters: got '{nonce}'"
         );
     }

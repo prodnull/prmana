@@ -12,8 +12,6 @@ pub mod rate_limit;
 pub mod session;
 
 pub use jti_cache::JtiCache;
-pub use nonce_cache::{
-    generate_dpop_nonce, global_nonce_cache, DPoPNonceCache, NonceConsumeError,
-};
+pub use nonce_cache::{generate_dpop_nonce, global_nonce_cache, DPoPNonceCache, NonceConsumeError};
 pub use rate_limit::{RateLimitError, RateLimiter};
 pub use session::generate_secure_session_id;

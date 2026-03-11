@@ -270,16 +270,16 @@ mod tests {
             ],
         );
         let result = check_collision_safety(&config);
-        assert!(result.is_err(), "both strip_domain and regex must hard-fail");
+        assert!(
+            result.is_err(),
+            "both strip_domain and regex must hard-fail"
+        );
         let err = result.unwrap_err();
         assert!(
             err.reason.contains("strip_domain"),
             "error must mention strip_domain"
         );
-        assert!(
-            err.reason.contains("regex"),
-            "error must mention regex"
-        );
+        assert!(err.reason.contains("regex"), "error must mention regex");
     }
 
     #[test]

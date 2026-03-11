@@ -8,9 +8,9 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use once_cell::sync::Lazy;
 use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+use parking_lot::RwLock;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
@@ -527,7 +527,10 @@ mod tests {
         };
 
         let result = validate_dpop_proof(&proof, &config).unwrap();
-        assert_eq!(result.thumbprint, expected_thumbprint, "thumbprint must match");
+        assert_eq!(
+            result.thumbprint, expected_thumbprint,
+            "thumbprint must match"
+        );
         assert_eq!(
             result.nonce.as_deref(),
             Some("my-nonce-xyz"),

@@ -133,7 +133,11 @@ impl TokenClaims {
                     .iter()
                     .filter_map(|item| item.as_str().map(String::from))
                     .collect();
-                if groups.is_empty() { None } else { Some(groups) }
+                if groups.is_empty() {
+                    None
+                } else {
+                    Some(groups)
+                }
             }
             _ => None,
         })
