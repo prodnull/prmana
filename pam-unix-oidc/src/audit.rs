@@ -424,10 +424,26 @@ fn iso_timestamp() -> String {
 }
 
 /// Get the hostname of the current machine.
+///
+/// Resolution order (first hit wins):
+///  1. `UNIX_OIDC_HOSTNAME` env var — operator override for CNAME or custom hostname
+///     scenarios (e.g. containers where the kernel hostname is a pod ID but audit logs
+///     should show a human-readable service name).
+///  2. `gethostname(2)` POSIX syscall — always reflects the actual kernel hostname
+///     regardless of environment variables.
+///
+/// The old fallback to `HOSTNAME` / `HOST` env vars is intentionally removed: those
+/// env vars are unreliable in containers and are not set by the kernel — they can be
+/// missing, stale, or deliberately spoofed.
 fn get_hostname() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("HOST"))
-        .unwrap_or_else(|_| "unknown".to_string())
+    if let Ok(override_host) = std::env::var("UNIX_OIDC_HOSTNAME") {
+        if !override_host.is_empty() {
+            return override_host;
+        }
+    }
+    gethostname::gethostname()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Append a line to a file.
@@ -696,5 +712,36 @@ mod tests {
             }
             other => panic!("Expected BreakGlassAuth, got {:?}", other),
         }
+    }
+
+    // ── get_hostname() tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_hostname_returns_non_empty() {
+        // Without UNIX_OIDC_HOSTNAME set (or with it cleared), gethostname(2) must
+        // return a non-empty string on any properly configured system.
+        std::env::remove_var("UNIX_OIDC_HOSTNAME");
+        let h = get_hostname();
+        assert!(!h.is_empty(), "hostname must be non-empty, got: {:?}", h);
+    }
+
+    #[test]
+    fn test_get_hostname_env_override() {
+        std::env::set_var("UNIX_OIDC_HOSTNAME", "my-custom-host.example.com");
+        let h = get_hostname();
+        assert_eq!(h, "my-custom-host.example.com");
+        std::env::remove_var("UNIX_OIDC_HOSTNAME");
+    }
+
+    #[test]
+    fn test_get_hostname_syscall_without_override() {
+        std::env::remove_var("UNIX_OIDC_HOSTNAME");
+        // gethostname::gethostname() returns the same value
+        let syscall_result = gethostname::gethostname()
+            .to_string_lossy()
+            .into_owned();
+        let h = get_hostname();
+        // Both should agree (no env override in play)
+        assert_eq!(h, syscall_result);
     }
 }
