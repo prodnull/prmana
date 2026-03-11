@@ -231,6 +231,105 @@ impl PamServiceModule for PamUnixOidc {
                     return PamError::AUTH_ERR;
                 }
 
+                // RFC 7662 Token Introspection — opt-in post-validation active-status check.
+                //
+                // Runs AFTER signature verification, issuer/audience checks, and DPoP validation.
+                // Purpose: detect token revocation or account disablement at the IdP within the
+                // cache TTL (default 60 s). Zero overhead when introspection.enabled = false.
+                //
+                // Enforcement follows IntrospectionConfig.enforcement (Warn / Strict):
+                //   Ok(true)  — active; proceed to SUCCESS
+                //   Ok(false) — inactive; Strict → AUTH_ERR, Warn → log and proceed
+                //   Err(_)    — endpoint error; Strict → AUTH_ERR, Warn → fail-open and proceed
+                if let Ok(policy) = PolicyConfig::from_env() {
+                    if policy.introspection.enabled {
+                        let client_id = std::env::var("OIDC_CLIENT_ID")
+                            .unwrap_or_else(|_| "unix-oidc".to_string());
+                        let introspect_result = oidc::introspection::introspect_token(
+                            &policy.introspection,
+                            &token,
+                            result.token_jti.as_deref(),
+                            result.token_exp,
+                            &client_id,
+                            Some(&result.session_id),
+                            Some(&result.username),
+                        );
+
+                        let enforcement = policy.introspection.enforcement;
+                        match introspect_result {
+                            Ok(true) => {
+                                // Token is active — proceed normally.
+                            }
+                            Ok(false) => {
+                                // Token reported as inactive (revoked or expired at IdP).
+                                AuditEvent::introspection_failed(
+                                    Some(&result.session_id),
+                                    Some(&result.username),
+                                    "Token is inactive (revoked or expired at IdP)",
+                                    match enforcement {
+                                        EnforcementMode::Strict => "strict",
+                                        EnforcementMode::Warn => "warn",
+                                        EnforcementMode::Disabled => "disabled",
+                                    },
+                                )
+                                .log();
+                                match enforcement {
+                                    EnforcementMode::Strict => {
+                                        global_rate_limiter()
+                                            .record_failure(&pam_user, source_ip);
+                                        return PamError::AUTH_ERR;
+                                    }
+                                    EnforcementMode::Warn | EnforcementMode::Disabled => {
+                                        // Fail-open: log already emitted above; proceed.
+                                        tracing::warn!(
+                                            username = %result.username,
+                                            "Introspection reports token inactive; proceeding (warn mode)"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(oidc::introspection::IntrospectionError::NotConfigured) => {
+                                // enabled=true but no endpoint URL — operator misconfiguration.
+                                let enforcement_str = match enforcement {
+                                    EnforcementMode::Strict => "strict",
+                                    EnforcementMode::Warn => "warn",
+                                    EnforcementMode::Disabled => "disabled",
+                                };
+                                tracing::warn!(
+                                    username = %result.username,
+                                    enforcement = %enforcement_str,
+                                    "Introspection enabled but no endpoint configured"
+                                );
+                                if enforcement == EnforcementMode::Strict {
+                                    AuditEvent::introspection_failed(
+                                        Some(&result.session_id),
+                                        Some(&result.username),
+                                        "Introspection endpoint not configured",
+                                        enforcement_str,
+                                    )
+                                    .log();
+                                    return PamError::SERVICE_ERR;
+                                }
+                            }
+                            Err(e) => {
+                                // Network or parse error reaching the introspection endpoint.
+                                // Audit event is already emitted inside introspect_token/do_introspect.
+                                tracing::warn!(
+                                    username = %result.username,
+                                    error = %e,
+                                    "Introspection endpoint error"
+                                );
+                                if enforcement == EnforcementMode::Strict {
+                                    global_rate_limiter()
+                                        .record_failure(&pam_user, source_ip);
+                                    return PamError::AUTH_ERR;
+                                }
+                                // Warn/Disabled: fail-open — log already emitted, proceed.
+                            }
+                        }
+                    }
+                }
+
                 // Record successful authentication for rate limiting
                 global_rate_limiter().record_success(&pam_user, source_ip);
 
