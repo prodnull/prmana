@@ -2711,6 +2711,87 @@ mod tests {
         );
         assert!(socket_path.exists(), "new socket file must exist after bind");
     }
+
+    /// Idle timeout: a connected client that sends no data for the configured
+    /// duration has its connection closed by the server.
+    ///
+    /// Uses a very short timeout (100ms) so the test runs in milliseconds.
+    /// The client connects, sends nothing, and the server should close the
+    /// connection after the timeout.
+    #[tokio::test]
+    async fn test_idle_timeout_closes_silent_connection() {
+        use tokio::io::AsyncReadExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("idle_timeout_test.sock");
+
+        let state = Arc::new(RwLock::new(AgentState {
+            signer: None,
+            access_token: None,
+            token_expires: None,
+            username: None,
+            metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
+            signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
+            oidc_issuer: None,
+            oidc_client_id: None,
+            oidc_client_secret: None,
+            pending_step_ups: HashMap::new(),
+        }));
+
+        // Short idle timeout (200ms) so the test runs quickly.
+        let server = AgentServer::new(socket_path.clone(), state)
+            .with_idle_timeout(Duration::from_millis(200));
+
+        let _server_handle = tokio::spawn(async move {
+            // serve_with_listener won't return on its own (signal-driven), so we
+            // just let the handle drop when the test exits.
+            let listener = acquire_listener(&socket_path).unwrap();
+            let _ = server.serve_with_listener(listener).await;
+        });
+
+        // Give server time to start listening.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Connect a client socket and send nothing.
+        let client_stream = tokio::net::UnixStream::connect(
+            temp_dir.path().join("idle_timeout_test.sock"),
+        )
+        .await
+        .expect("client connect failed");
+
+        let (mut reader, _writer) = client_stream.into_split();
+        let mut buf = [0u8; 64];
+
+        // The server should close the connection after 200ms idle timeout.
+        // We wait up to 1s; a read returning 0 bytes means EOF (server closed).
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reader.read(&mut buf),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(0)) => {
+                // EOF — server closed the connection. Test passes.
+            }
+            Ok(Ok(n)) => {
+                panic!("Expected EOF after idle timeout, got {} bytes", n);
+            }
+            Ok(Err(e)) => {
+                // Connection reset is also acceptable (OS closed the socket).
+                // On Linux the server dropping stream may yield a connection reset.
+                let _ = e; // accepted
+            }
+            Err(_elapsed) => {
+                panic!("Connection was not closed within 1s; idle timeout not working");
+            }
+        }
+    }
 }
 
 // ── launchd socket activation (macOS only) ──────────────────────────────────

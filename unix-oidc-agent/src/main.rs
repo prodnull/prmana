@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
@@ -288,14 +289,16 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     // Gate 2: Config validated.
     // AgentConfig::load() runs figment layered loading + TimeoutsConfig::validate().
     // Non-fatal if config file is absent — defaults are safe for production use.
-    match AgentConfig::load() {
-        Ok(_config) => {
+    let ipc_idle_timeout_secs = match AgentConfig::load() {
+        Ok(config) => {
             info!("Configuration validated");
+            config.timeouts.ipc_idle_timeout_secs
         }
         Err(e) => {
             warn!(error = %e, "Configuration load/validation warning (using defaults)");
+            60 // default matches TimeoutsConfig::default().ipc_idle_timeout_secs
         }
-    }
+    };
 
     // Gate 3: Best-effort JWKS prefetch.
     // Fetches discovery + JWKS for the configured issuer to warm the cache.
@@ -334,7 +337,8 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     ]);
     info!("Agent ready (sd_notify READY=1 sent if systemd-managed)");
 
-    let server = AgentServer::new(socket_path, state);
+    let server = AgentServer::new(socket_path, state)
+        .with_idle_timeout(Duration::from_secs(ipc_idle_timeout_secs));
     server
         .serve_with_listener(listener)
         .await
