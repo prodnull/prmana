@@ -73,7 +73,7 @@ impl UsernameTransform {
             UsernameTransform::StripDomain => {
                 // Split on '@'; take only the first segment.
                 // "@corp.com" → first segment is "" → None (empty is invalid).
-                let local = input.splitn(2, '@').next()?;
+                let local = input.split('@').next()?;
                 if local.is_empty() {
                     None
                 } else {
@@ -81,11 +81,10 @@ impl UsernameTransform {
                 }
             }
             UsernameTransform::Lowercase => Some(input.to_lowercase()),
-            UsernameTransform::Regex(re) => {
-                re.captures(input)
-                    .and_then(|caps| caps.name("username"))
-                    .map(|m| m.as_str().to_string())
-            }
+            UsernameTransform::Regex(re) => re
+                .captures(input)
+                .and_then(|caps| caps.name("username"))
+                .map(|m| m.as_str().to_string()),
         }
     }
 }
@@ -150,9 +149,8 @@ impl UsernameMapper {
                         return Err(IdentityError::MissingCaptureGroup(pattern.clone()));
                     }
 
-                    let re = Regex::new(pattern).map_err(|e| {
-                        IdentityError::InvalidRegex(pattern.clone(), e.to_string())
-                    })?;
+                    let re = Regex::new(pattern)
+                        .map_err(|e| IdentityError::InvalidRegex(pattern.clone(), e.to_string()))?;
 
                     UsernameTransform::Regex(re)
                 }
@@ -258,9 +256,10 @@ mod tests {
 
     fn make_claims_with_email(preferred_username: &str, email: &str) -> TokenClaims {
         let mut claims = make_claims(preferred_username);
-        claims
-            .extra
-            .insert("email".to_string(), serde_json::Value::String(email.to_string()));
+        claims.extra.insert(
+            "email".to_string(),
+            serde_json::Value::String(email.to_string()),
+        );
         claims
     }
 
