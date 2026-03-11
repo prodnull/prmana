@@ -15,7 +15,7 @@ use unix_oidc_agent::crypto::protected_key::mlock_probe;
 use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
 use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
 use unix_oidc_agent::daemon::{
-    AgentClient, AgentResponse, AgentResponseData, AgentServer, AgentState,
+    spawn_refresh_task, AgentClient, AgentResponse, AgentResponseData, AgentServer, AgentState,
 };
 use unix_oidc_agent::security::disable_core_dumps;
 use unix_oidc_agent::storage::{
@@ -225,6 +225,23 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     }
     let state = Arc::new(RwLock::new(state));
 
+    // If credentials were loaded at startup (daemon restart while logged in), spawn
+    // the background auto-refresh task so long sessions don't hit natural expiry.
+    // Threshold: 80% of token lifetime (configurable in policy.yaml SessionConfig —
+    // the daemon reads a fixed default for now; full config integration is a follow-up).
+    const REFRESH_THRESHOLD_PERCENT: u8 = 80;
+    {
+        let state_read = state.read().await;
+        if state_read.is_logged_in() {
+            if let Some(token_expires) = state_read.token_expires {
+                drop(state_read); // release read lock before write in spawn_refresh_task
+                let handle = spawn_refresh_task(Arc::clone(&state), token_expires, REFRESH_THRESHOLD_PERCENT);
+                state.write().await.refresh_task = Some(handle);
+                info!("Auto-refresh task spawned for existing session");
+            }
+        }
+    }
+
     let server = AgentServer::new(socket_path.clone(), state);
 
     println!("unix-oidc-agent listening on {:?}", socket_path);
@@ -250,6 +267,7 @@ async fn run_status() -> anyhow::Result<()> {
             storage_backend,
             migration_status,
             signer_type,
+            refresh_failed,
         })) => {
             if logged_in {
                 println!("Status: Logged in");
@@ -288,6 +306,9 @@ async fn run_status() -> anyhow::Result<()> {
             }
             if let Some(migration) = migration_status {
                 println!("  Migration: {}", migration);
+            }
+            if refresh_failed == Some(true) {
+                println!("  Auto-refresh: FAILED (token will expire; re-login required)");
             }
             Ok(())
         }
@@ -457,6 +478,12 @@ async fn run_login(
             .ok_or_else(|| anyhow::anyhow!("Token endpoint not found in discovery"))?
             .to_string();
 
+        // RFC 7009: revocation endpoint is optional — some IdPs don't publish it.
+        // Extract from discovery; if absent, revocation will be skipped gracefully.
+        let revocation_endpoint: Option<String> = discovery["revocation_endpoint"]
+            .as_str()
+            .map(str::to_string);
+
         // Start device authorization
         let mut params = vec![("client_id", client_id_clone.as_str()), ("scope", "openid")];
 
@@ -566,8 +593,8 @@ async fn run_login(
                     .json()
                     .map_err(|e| anyhow::anyhow!("Failed to parse token response: {}", e))?;
 
-                // Return both the token response and the token endpoint
-                return Ok((token_response, token_endpoint));
+                // Return token response, token endpoint, and revocation endpoint (if any).
+                return Ok((token_response, token_endpoint, revocation_endpoint.clone()));
             }
 
             let error_response: serde_json::Value = response
@@ -605,7 +632,7 @@ async fn run_login(
     })
     .await??;
 
-    let (token_result, token_endpoint) = token_result;
+    let (token_result, token_endpoint, revocation_endpoint) = token_result;
 
     println!();
     println!("Authentication successful!");
@@ -649,6 +676,10 @@ async fn run_login(
         // Persisted signer type: restored by load_agent_state() on daemon restart.
         // "software" means key is in KEY_DPOP_PRIVATE; hardware specs mean key is on device.
         "signer_type": signer_type_for_storage,
+        // RFC 7009: revocation endpoint from OIDC discovery (optional).
+        // Populated only when the IdP advertises "revocation_endpoint" in discovery.
+        // cleanup_session() uses this to send best-effort revocation on session close.
+        "revocation_endpoint": revocation_endpoint,
     });
     storage.store(KEY_TOKEN_METADATA, metadata.to_string().as_bytes())?;
 
@@ -1008,6 +1039,8 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         storage_backend: None,
         migration_status: None,
         signer_type,
+        refresh_task: None,
+        refresh_failed: false,
     })
 }
 

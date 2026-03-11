@@ -35,6 +35,15 @@ pub enum AgentRequest {
     /// Shutdown the daemon
     #[serde(rename = "shutdown")]
     Shutdown,
+
+    /// Notify agent that a PAM session has been closed.
+    ///
+    /// Agent ACKs immediately with SessionAcknowledged; revocation and credential
+    /// cleanup run in the background so that PAM pam_sm_close_session returns fast.
+    ///
+    /// RFC 7009: revocation is best-effort with 5s timeout; failure never blocks.
+    #[serde(rename = "session_closed")]
+    SessionClosed { session_id: String },
 }
 
 /// Output format for metrics
@@ -86,6 +95,11 @@ pub enum AgentResponseData {
         /// Set at daemon startup from stored token metadata.
         #[serde(skip_serializing_if = "Option::is_none")]
         signer_type: Option<String>,
+        /// True when the background auto-refresh task exhausted all retries.
+        /// Operator signal: token will expire at natural lifetime; manual refresh or re-login required.
+        /// Omitted from JSON when None (backward compat — callers that don't set this field are unaffected).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        refresh_failed: Option<bool>,
     },
     Metrics {
         /// Metrics data (JSON format)
@@ -99,6 +113,13 @@ pub enum AgentResponseData {
     Refreshed {
         expires_in: u64,
     },
+    /// ACK for SessionClosed — sent immediately before background cleanup starts.
+    ///
+    /// Must appear before `Ok {}` in the untagged enum: `acknowledged: bool` serves as
+    /// a required discriminant field that `Ok {}` does not have, so serde tries
+    /// `SessionAcknowledged` first when deserializing `{"acknowledged":true}`.
+    SessionAcknowledged { acknowledged: bool },
+    /// Generic success with no data fields.
     Ok {},
 }
 
@@ -131,7 +152,41 @@ impl AgentResponse {
             storage_backend,
             migration_status,
             signer_type,
+            refresh_failed: None,
         })
+    }
+
+    /// Status response that includes the refresh_failed flag.
+    ///
+    /// Used by the daemon when it wants to surface auto-refresh failure to operators.
+    #[allow(clippy::too_many_arguments)]
+    pub fn status_with_refresh_failed(
+        logged_in: bool,
+        username: Option<String>,
+        thumbprint: Option<String>,
+        token_expires: Option<i64>,
+        mlock_status: Option<String>,
+        storage_backend: Option<String>,
+        migration_status: Option<String>,
+        signer_type: Option<String>,
+        refresh_failed: bool,
+    ) -> Self {
+        Self::Success(AgentResponseData::Status {
+            logged_in,
+            username,
+            thumbprint,
+            token_expires,
+            mlock_status,
+            storage_backend,
+            migration_status,
+            signer_type,
+            refresh_failed: Some(refresh_failed),
+        })
+    }
+
+    /// ACK for SessionClosed — sent immediately, before background cleanup starts.
+    pub fn session_acknowledged() -> Self {
+        Self::Success(AgentResponseData::SessionAcknowledged { acknowledged: true })
     }
 
     pub fn ok() -> Self {
@@ -296,5 +351,111 @@ mod tests {
         );
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""signer_type":"yubikey:9a""#));
+    }
+
+    // --- TDD RED: SessionClosed IPC protocol ---
+
+    /// SessionClosed request serializes with action=session_closed and session_id field.
+    #[test]
+    fn test_session_closed_request_serialization() {
+        let req = AgentRequest::SessionClosed {
+            session_id: "sess-abc-123".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains(r#""action":"session_closed""#),
+            "expected action=session_closed in: {}",
+            json
+        );
+        assert!(
+            json.contains(r#""session_id":"sess-abc-123""#),
+            "expected session_id in: {}",
+            json
+        );
+    }
+
+    /// SessionClosed request deserializes from JSON produced by PAM close_session.
+    #[test]
+    fn test_session_closed_request_deserialization() {
+        let json = r#"{"action":"session_closed","session_id":"sess-xyz-789"}"#;
+        let req: AgentRequest = serde_json::from_str(json).unwrap();
+        match req {
+            AgentRequest::SessionClosed { session_id } => {
+                assert_eq!(session_id, "sess-xyz-789");
+            }
+            _ => panic!("Expected SessionClosed, got {:?}", req),
+        }
+    }
+
+    /// SessionAcknowledged response serializes correctly with acknowledged=true discriminant.
+    #[test]
+    fn test_session_acknowledged_response_serialization() {
+        let resp = AgentResponse::session_acknowledged();
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            json.contains(r#""status":"success""#),
+            "expected success status in: {}",
+            json
+        );
+        assert!(
+            json.contains(r#""acknowledged":true"#),
+            "expected acknowledged=true discriminant in: {}",
+            json
+        );
+        // Round-trip: must deserialize back to SessionAcknowledged, not Ok
+        let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(
+                parsed,
+                AgentResponse::Success(AgentResponseData::SessionAcknowledged {
+                    acknowledged: true
+                })
+            ),
+            "expected SessionAcknowledged, got: {:?}",
+            parsed
+        );
+    }
+
+    /// Status response includes refresh_failed field when true.
+    #[test]
+    fn test_status_response_refresh_failed_present_when_true() {
+        let resp = AgentResponse::status_with_refresh_failed(
+            true,
+            Some("alice".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+        );
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            json.contains(r#""refresh_failed":true"#),
+            "expected refresh_failed in: {}",
+            json
+        );
+    }
+
+    /// Status response omits refresh_failed field when None (backward compat).
+    #[test]
+    fn test_status_response_refresh_failed_absent_when_none() {
+        let resp = AgentResponse::status(
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !json.contains("refresh_failed"),
+            "refresh_failed must be absent when None, got: {}",
+            json
+        );
     }
 }

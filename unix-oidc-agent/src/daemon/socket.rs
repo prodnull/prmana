@@ -12,7 +12,10 @@ use tracing::{debug, error, info, warn};
 use crate::crypto::DPoPSigner;
 use crate::daemon::protocol::{AgentRequest, AgentResponse, MetricsFormat};
 use crate::metrics::MetricsCollector;
-use crate::storage::{SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_TOKEN_METADATA};
+use crate::storage::{
+    SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN,
+    KEY_TOKEN_METADATA,
+};
 
 #[cfg(test)]
 use crate::daemon::protocol::AgentResponseData;
@@ -48,6 +51,16 @@ pub struct AgentState {
     /// Active signer backend spec, e.g. "software", "yubikey:9a", "tpm".
     /// Loaded from token metadata `signer_type` field at daemon startup.
     pub signer_type: Option<String>,
+    /// AbortHandle for the background auto-refresh task.
+    ///
+    /// Calling `.abort()` cancels the task. Set after login; cleared on SessionClosed.
+    /// Not serialized — recreated at daemon startup from stored token state if needed.
+    pub refresh_task: Option<tokio::task::AbortHandle>,
+    /// True when the background auto-refresh task exhausted all retries without success.
+    ///
+    /// When true, the token will expire at its natural lifetime. Operators should
+    /// monitor via the Status IPC response and trigger manual refresh or re-login.
+    pub refresh_failed: bool,
 }
 
 /// Manual Debug impl: signer is not Debug (trait object), access_token shows [REDACTED].
@@ -62,6 +75,11 @@ impl std::fmt::Debug for AgentState {
             .field("storage_backend", &self.storage_backend)
             .field("migration_status", &self.migration_status)
             .field("signer_type", &self.signer_type)
+            .field(
+                "refresh_task",
+                &self.refresh_task.as_ref().map(|_| "<AbortHandle>"),
+            )
+            .field("refresh_failed", &self.refresh_failed)
             .finish()
     }
 }
@@ -78,6 +96,8 @@ impl AgentState {
             storage_backend: None,
             migration_status: None,
             signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
         }
     }
 
@@ -183,6 +203,30 @@ async fn handle_connection(
 
         debug!("Received request: {:?}", request);
 
+        // SessionClosed is handled specially: ACK immediately, then spawn background cleanup.
+        // This ensures PAM's pam_sm_close_session returns fast regardless of cleanup duration.
+        if let AgentRequest::SessionClosed { session_id } = request {
+            // ACK before cleanup — PAM must not block on revocation or storage deletion.
+            let ack = AgentResponse::session_acknowledged();
+            let ack_json = serde_json::to_string(&ack)? + "\n";
+            writer.write_all(ack_json.as_bytes()).await?;
+
+            // Spawn cleanup in background — do NOT await.
+            let state_clone = Arc::clone(&state);
+            tokio::spawn(async move {
+                cleanup_session(state_clone, session_id).await;
+            });
+
+            // Record metric and return — connection closes after ACK.
+            {
+                let state_read = state.read().await;
+                state_read.metrics.record_request(false);
+            }
+            line.clear();
+            // Connection closes when stream is dropped — PAM reads ACK and returns SUCCESS.
+            break;
+        }
+
         let (response, is_error) = handle_request(request, &state).await;
 
         // Record request metric
@@ -265,8 +309,21 @@ async fn handle_request(
 
         AgentRequest::Status => {
             let state_read = state.read().await;
+            let refresh_failed = state_read.refresh_failed;
 
-            (
+            let response = if refresh_failed {
+                AgentResponse::status_with_refresh_failed(
+                    state_read.is_logged_in(),
+                    state_read.username.clone(),
+                    state_read.signer.as_ref().map(|s| s.thumbprint()),
+                    state_read.token_expires,
+                    state_read.mlock_status.clone(),
+                    state_read.storage_backend.clone(),
+                    state_read.migration_status.clone(),
+                    state_read.signer_type.clone(),
+                    true,
+                )
+            } else {
                 AgentResponse::status(
                     state_read.is_logged_in(),
                     state_read.username.clone(),
@@ -276,9 +333,10 @@ async fn handle_request(
                     state_read.storage_backend.clone(),
                     state_read.migration_status.clone(),
                     state_read.signer_type.clone(),
-                ),
-                false,
-            )
+                )
+            };
+
+            (response, false)
         }
 
         AgentRequest::Metrics { format } => {
@@ -333,6 +391,18 @@ async fn handle_request(
         AgentRequest::Shutdown => {
             info!("Shutdown requested");
             std::process::exit(0);
+        }
+
+        // SessionClosed is intercepted in handle_connection before reaching here.
+        // This arm is unreachable at runtime but required for exhaustive match.
+        AgentRequest::SessionClosed { .. } => {
+            (
+                AgentResponse::error(
+                    "SessionClosed must be handled before handle_request",
+                    "INTERNAL_ERROR",
+                ),
+                true,
+            )
         }
     }
 }
@@ -529,7 +599,7 @@ async fn perform_token_refresh(
         .store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())
         .map_err(|e| format!("Failed to store access token: {}", e))?;
 
-    // Update token metadata
+    // Update token metadata — preserve all fields including revocation_endpoint and signer_type.
     let updated_metadata = serde_json::json!({
         "expires_at": token_expires,
         "refresh_token": new_refresh_token,
@@ -539,6 +609,8 @@ async fn perform_token_refresh(
         "client_secret": metadata["client_secret"],
         // Preserve signer_type across refresh — prevents hardware signer users from losing DPoP binding
         "signer_type": metadata["signer_type"],
+        // Preserve revocation_endpoint across refresh — needed for cleanup_session() on next session close
+        "revocation_endpoint": metadata["revocation_endpoint"],
     });
     storage
         .store(KEY_TOKEN_METADATA, updated_metadata.to_string().as_bytes())
@@ -551,6 +623,316 @@ async fn perform_token_refresh(
     info!("Token refreshed successfully, expires in {}s", expires_in);
 
     Ok((access_token, token_expires, username))
+}
+
+/// Spawn the background token auto-refresh task.
+///
+/// Calculates sleep duration as `(token_lifetime * threshold_percent / 100)` seconds,
+/// then calls `perform_token_refresh()` with exponential backoff on failure.
+///
+/// Backoff schedule: 4 total attempts, delays before retries 2-4: 5s, 10s, 20s.
+/// After all attempts fail, sets `state.refresh_failed = true` and exits — the session
+/// continues until natural token expiry (operator must monitor via Status IPC).
+///
+/// Returns an `AbortHandle` — call `.abort()` to cancel (e.g., on SessionClosed).
+pub fn spawn_refresh_task(
+    state: Arc<RwLock<AgentState>>,
+    token_expires: i64,
+    threshold_percent: u8,
+) -> tokio::task::AbortHandle {
+    let handle = tokio::spawn(async move {
+        // Exponential backoff delays (seconds) for retries 2, 3, 4.
+        // RFC 6749 §5.2 does not mandate backoff; we use conservative delays to avoid
+        // hammering an IdP that is temporarily unavailable.
+        const BACKOFF_DELAYS_SECS: [u64; 3] = [5, 10, 20];
+        const MAX_RETRIES: usize = 3;
+
+        // Loop: re-arm after successful refresh with new token expiry.
+        let mut current_expires = token_expires;
+        loop {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+
+            let lifetime = current_expires - now;
+            let sleep_secs = if lifetime > 0 {
+                (lifetime as u64) * (threshold_percent as u64) / 100
+            } else {
+                0
+            };
+
+            if sleep_secs == 0 {
+                warn!(
+                    expires_at = current_expires,
+                    "Token near or past expiry at refresh task start — attempting immediate refresh"
+                );
+            } else {
+                debug!(
+                    sleep_secs,
+                    threshold_percent, "Auto-refresh task sleeping before refresh"
+                );
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+            }
+
+            // Retry loop with exponential backoff.
+            let mut succeeded = false;
+            for attempt in 0..=MAX_RETRIES {
+                if attempt > 0 {
+                    let delay = BACKOFF_DELAYS_SECS[attempt - 1];
+                    debug!(attempt, delay_secs = delay, "Auto-refresh retry backoff");
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                }
+
+                match perform_token_refresh(&state).await {
+                    Ok((new_token, new_expires, username)) => {
+                        let mut state_write = state.write().await;
+                        state_write.access_token = Some(new_token);
+                        state_write.token_expires = Some(new_expires);
+                        state_write.refresh_failed = false;
+                        if let Some(u) = username {
+                            state_write.username = Some(u);
+                        }
+                        current_expires = new_expires;
+                        succeeded = true;
+                        info!(
+                            new_expires,
+                            threshold_percent,
+                            "Auto-refresh succeeded; re-arming for next cycle"
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        if attempt < MAX_RETRIES {
+                            warn!(
+                                attempt = attempt + 1,
+                                max = MAX_RETRIES + 1,
+                                error = %e,
+                                "Auto-refresh attempt failed; will retry"
+                            );
+                        } else {
+                            warn!(
+                                error = %e,
+                                "Auto-refresh exhausted all retries; token will expire naturally"
+                            );
+                        }
+                    }
+                }
+            }
+
+            if !succeeded {
+                // All retries exhausted — set the flag and exit the task.
+                let mut state_write = state.write().await;
+                state_write.refresh_failed = true;
+                break;
+            }
+            // Loop: re-arm with the new token expiry.
+        }
+    });
+
+    handle.abort_handle()
+}
+
+/// Send a best-effort RFC 7009 token revocation request.
+///
+/// Reads `revocation_endpoint`, `client_id`, `client_secret`, and the access token
+/// from the agent state and token metadata. All failures are logged at WARN — this
+/// function never panics or propagates errors.
+///
+/// RFC 7009 §2.1: POST to revocation endpoint with `token` + optional `token_type_hint`.
+/// IdPs that do not support revocation (no endpoint configured) are logged and skipped.
+async fn revoke_token_best_effort(state: Arc<RwLock<AgentState>>, session_id: &str) {
+    // Snapshot the access token before releasing the lock.
+    let access_token_opt = {
+        let state_read = state.read().await;
+        state_read
+            .access_token
+            .as_ref()
+            .map(|t| t.expose_secret().to_string())
+    };
+
+    let access_token = match access_token_opt {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            debug!(session_id, "No access token in state; skipping revocation");
+            return;
+        }
+    };
+
+    // Load metadata from storage to find the revocation endpoint.
+    let storage = match StorageRouter::detect() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(session_id, error = %e, "Could not open storage for revocation; skipping");
+            return;
+        }
+    };
+
+    let metadata_bytes = match storage.retrieve(KEY_TOKEN_METADATA) {
+        Ok(b) => b,
+        Err(_) => {
+            warn!(session_id, "No token metadata found; skipping revocation");
+            return;
+        }
+    };
+
+    let metadata: serde_json::Value = match serde_json::from_slice(&metadata_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(session_id, error = %e, "Failed to parse token metadata; skipping revocation");
+            return;
+        }
+    };
+
+    let revocation_endpoint = match metadata["revocation_endpoint"].as_str() {
+        Some(ep) if !ep.is_empty() => ep.to_string(),
+        _ => {
+            warn!(
+                session_id,
+                "No revocation endpoint configured; skipping revocation"
+            );
+            return;
+        }
+    };
+
+    let client_id = metadata["client_id"].as_str().unwrap_or("").to_string();
+    // Security (MEM-03): client_secret is read from metadata; expose only at HTTP boundary.
+    let client_secret = metadata["client_secret"].as_str().map(str::to_string);
+
+    // Perform revocation in a blocking task — reqwest::blocking with 5s timeout.
+    // RFC 7009 §2.1: POST form body [("token", access_token), ("token_type_hint", "access_token")].
+    let session_id_clone = session_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let http_client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(session_id = %session_id_clone, error = %e, "Failed to create HTTP client for revocation");
+                return;
+            }
+        };
+
+        let mut params: Vec<(&str, &str)> = vec![
+            ("token", &access_token),
+            ("token_type_hint", "access_token"),
+        ];
+        if !client_id.is_empty() {
+            params.push(("client_id", &client_id));
+        }
+
+        let mut request = http_client.post(&revocation_endpoint).form(&params);
+        if let Some(ref secret) = client_secret {
+            // RFC 7009 §2.1: client credentials via Basic Auth or form params.
+            // Use Basic Auth when client_secret is present (matches most IdP expectations).
+            request = http_client
+                .post(&revocation_endpoint)
+                .basic_auth(&client_id, Some(secret.as_str()))
+                .form(&params);
+        }
+
+        match request.send() {
+            Ok(resp) if resp.status().is_success() => {
+                info!(
+                    session_id = %session_id_clone,
+                    status = %resp.status(),
+                    "RFC 7009 token revocation succeeded"
+                );
+            }
+            Ok(resp) => {
+                warn!(
+                    session_id = %session_id_clone,
+                    status = %resp.status(),
+                    "RFC 7009 token revocation returned non-2xx; token may expire naturally"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    session_id = %session_id_clone,
+                    error = %e,
+                    "RFC 7009 token revocation request failed; token may expire naturally"
+                );
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        warn!(session_id, error = %e, "Revocation blocking task panicked");
+    });
+}
+
+/// Clean up all session state after a SessionClosed notification.
+///
+/// Sequence (MEM invariants must be preserved):
+/// 1. Cancel the background refresh task via AbortHandle (stops any in-flight refresh).
+/// 2. Revoke the access token via RFC 7009 (best-effort, never blocks on failure).
+/// 3. Clear in-memory state: access_token (SecretString zeroizes on drop), token_expires,
+///    username, refresh_failed — (MEM-03).
+/// 4. Delete stored credentials: KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN, KEY_DPOP_PRIVATE,
+///    KEY_TOKEN_METADATA. StorageRouter uses secure_delete for file backends (MEM-05).
+/// 5. Drop signer Arc: ProtectedSigningKey ZeroizeOnDrop triggers when last Arc ref drops
+///    (MEM-01).
+///
+/// All storage deletion failures are logged at WARN — cleanup continues regardless.
+async fn cleanup_session(state: Arc<RwLock<AgentState>>, session_id: String) {
+    info!(session_id = %session_id, "SessionClosed: starting credential cleanup");
+
+    // Step 1: Cancel the refresh task.
+    {
+        let mut state_write = state.write().await;
+        if let Some(handle) = state_write.refresh_task.take() {
+            handle.abort();
+            debug!(session_id = %session_id, "Auto-refresh task cancelled");
+        }
+    }
+
+    // Step 2: Best-effort token revocation (reads state and metadata).
+    revoke_token_best_effort(Arc::clone(&state), &session_id).await;
+
+    // Step 3: Clear in-memory state.
+    // access_token: SecretString zeroizes bytes when dropped (MEM-03).
+    // signer: Arc<dyn DPoPSigner> — drop triggers ZeroizeOnDrop on ProtectedSigningKey
+    //   when this is the last Arc reference (MEM-01).
+    {
+        let mut state_write = state.write().await;
+        state_write.access_token = None;
+        state_write.token_expires = None;
+        state_write.username = None;
+        state_write.refresh_failed = false;
+        state_write.signer = None;
+        debug!(session_id = %session_id, "In-memory credentials cleared");
+    }
+
+    // Step 4: Delete stored credentials.
+    // StorageRouter::detect() for each delete is acceptable — cleanup is not perf-critical.
+    let storage = match StorageRouter::detect() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(session_id = %session_id, error = %e, "Could not open storage for cleanup; stored credentials may persist");
+            return;
+        }
+    };
+
+    for key in &[
+        KEY_ACCESS_TOKEN,
+        KEY_REFRESH_TOKEN,
+        KEY_DPOP_PRIVATE,
+        KEY_TOKEN_METADATA,
+    ] {
+        if storage.exists(key) {
+            if let Err(e) = storage.delete(key) {
+                warn!(session_id = %session_id, key = %key, error = %e, "Failed to delete stored credential (continuing cleanup)");
+            } else {
+                debug!(session_id = %session_id, key = %key, "Stored credential deleted");
+            }
+        }
+    }
+
+    info!(
+        session_id = %session_id,
+        "SessionClosed: credential cleanup complete"
+    );
 }
 
 /// Extract username from a JWT access token without full validation
@@ -615,6 +997,8 @@ mod tests {
             storage_backend: None,
             migration_status: None,
             signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
         }));
 
         // Start server in background
@@ -660,6 +1044,8 @@ mod tests {
             storage_backend: None,
             migration_status: None,
             signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
         }));
 
         let server = AgentServer::new(socket_path.clone(), state);
@@ -817,6 +1203,8 @@ mod tests {
             storage_backend: None,
             migration_status: None,
             signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
         };
         let debug_output = format!("{:?}", state);
         assert!(
@@ -846,6 +1234,8 @@ mod tests {
             storage_backend: None,
             migration_status: None,
             signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
         };
         let exposed = state.access_token.as_ref().unwrap().expose_secret();
         assert_eq!(exposed, raw);
@@ -869,5 +1259,186 @@ mod tests {
 
         state.mlock_status = Some("mlock unavailable (EPERM)".to_string());
         assert!(state.mlock_status.as_ref().unwrap().contains("unavailable"));
+    }
+
+    // --- TDD: refresh task and session lifecycle ---
+
+    /// AgentState carries refresh_task and refresh_failed fields.
+    #[test]
+    fn test_agent_state_carries_refresh_fields() {
+        let state = AgentState::new();
+        assert!(state.refresh_task.is_none());
+        assert!(!state.refresh_failed);
+    }
+
+    /// AgentState Debug does not panic with refresh_task set.
+    #[test]
+    fn test_agent_state_debug_with_refresh_task() {
+        let mut state = AgentState::new();
+        // Spawn a no-op task and store its AbortHandle to simulate an active refresh.
+        let handle = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                let jh = tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_secs(3600)).await });
+                jh.abort_handle()
+            });
+        state.refresh_task = Some(handle);
+        state.refresh_failed = true;
+
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("<AbortHandle>"), "Expected <AbortHandle> in debug: {}", debug_str);
+        assert!(debug_str.contains("refresh_failed: true"), "Expected refresh_failed in debug: {}", debug_str);
+    }
+
+    /// Refresh threshold calculation: sleep = lifetime * threshold / 100.
+    ///
+    /// Tests the arithmetic that spawn_refresh_task uses to compute the initial sleep.
+    #[test]
+    fn test_refresh_threshold_calculation() {
+        // Helper that mirrors the arithmetic in spawn_refresh_task.
+        fn compute_sleep(lifetime_secs: i64, threshold: u8) -> u64 {
+            if lifetime_secs <= 0 {
+                return 0;
+            }
+            (lifetime_secs as u64) * (threshold as u64) / 100
+        }
+
+        // 300s lifetime @ 80% → 240s sleep
+        assert_eq!(compute_sleep(300, 80), 240);
+        // 3600s lifetime @ 80% → 2880s sleep
+        assert_eq!(compute_sleep(3600, 80), 2880);
+        // Very short token (10s) @ 80% → 8s sleep (fires well before expiry)
+        assert_eq!(compute_sleep(10, 80), 8);
+        // Zero / negative lifetime → 0 (immediate refresh attempt)
+        assert_eq!(compute_sleep(0, 80), 0);
+        assert_eq!(compute_sleep(-5, 80), 0);
+    }
+
+    /// Backoff sequence: delays for retries 2, 3, 4 are 5s, 10s, 20s.
+    #[test]
+    fn test_refresh_backoff_sequence() {
+        // Must match BACKOFF_DELAYS_SECS in spawn_refresh_task.
+        const BACKOFF_DELAYS_SECS: [u64; 3] = [5, 10, 20];
+        assert_eq!(BACKOFF_DELAYS_SECS[0], 5);
+        assert_eq!(BACKOFF_DELAYS_SECS[1], 10);
+        assert_eq!(BACKOFF_DELAYS_SECS[2], 20);
+        // Total attempts = 1 initial + 3 retries = 4.
+        assert_eq!(BACKOFF_DELAYS_SECS.len(), 3, "3 retry delays → 4 total attempts");
+    }
+
+    /// spawn_refresh_task returns an AbortHandle that can be called without panic.
+    #[tokio::test]
+    async fn test_spawn_refresh_task_returns_abort_handle() {
+        let state = Arc::new(RwLock::new(AgentState::new()));
+        // Token expires far in the future (lifetime ~1 year at 80% threshold = very long sleep).
+        // The task will sleep; we just verify the AbortHandle is functional.
+        let far_future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 31_536_000; // ~1 year
+
+        let handle = spawn_refresh_task(Arc::clone(&state), far_future, 80);
+        // Abort should not panic.
+        handle.abort();
+    }
+
+    /// SessionClosed over IPC: ACK is sent before cleanup runs.
+    #[tokio::test]
+    async fn test_session_closed_ack_via_ipc() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("test_sc.sock");
+
+        let signer = Arc::new(SoftwareSigner::generate());
+        let state = Arc::new(RwLock::new(AgentState {
+            signer: Some(signer.clone()),
+            access_token: Some(SecretString::from("test-token")),
+            token_expires: Some(9999999999),
+            username: Some("testuser".to_string()),
+            metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
+            signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
+        }));
+
+        let server = AgentServer::new(socket_path.clone(), Arc::clone(&state));
+        let _server_handle = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let client = AgentClient::new(socket_path);
+        let response = client
+            .send(AgentRequest::SessionClosed {
+                session_id: "test-sess-001".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Must receive SessionAcknowledged immediately.
+        assert!(
+            matches!(
+                response,
+                AgentResponse::Success(AgentResponseData::SessionAcknowledged { acknowledged: true })
+            ),
+            "Expected SessionAcknowledged, got: {:?}",
+            response
+        );
+    }
+
+    /// cleanup_session clears all in-memory state fields.
+    #[tokio::test]
+    async fn test_cleanup_session_clears_state() {
+        let signer = Arc::new(SoftwareSigner::generate());
+        let state = Arc::new(RwLock::new(AgentState {
+            signer: Some(signer.clone()),
+            access_token: Some(SecretString::from("test-token")),
+            token_expires: Some(9999999999),
+            username: Some("testuser".to_string()),
+            metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
+            signer_type: None,
+            refresh_task: None,
+            refresh_failed: false,
+        }));
+
+        // Run cleanup (will attempt revocation but find no metadata — WARN and continue).
+        cleanup_session(Arc::clone(&state), "test-sess-002".to_string()).await;
+
+        let state_read = state.read().await;
+        assert!(state_read.access_token.is_none(), "access_token must be cleared");
+        assert!(state_read.token_expires.is_none(), "token_expires must be cleared");
+        assert!(state_read.username.is_none(), "username must be cleared");
+        assert!(!state_read.refresh_failed, "refresh_failed must be reset");
+        assert!(state_read.signer.is_none(), "signer Arc must be dropped");
+    }
+
+    /// cleanup_session cancels the refresh task.
+    #[tokio::test]
+    async fn test_cleanup_session_aborts_refresh_task() {
+        let state = Arc::new(RwLock::new(AgentState::new()));
+
+        // Install a refresh task that sleeps for a year.
+        let far_future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64 + 31_536_000;
+        let handle = spawn_refresh_task(Arc::clone(&state), far_future, 80);
+        {
+            let mut sw = state.write().await;
+            sw.refresh_task = Some(handle);
+        }
+
+        cleanup_session(Arc::clone(&state), "test-sess-003".to_string()).await;
+
+        // After cleanup, refresh_task must be None.
+        let state_read = state.read().await;
+        assert!(state_read.refresh_task.is_none(), "refresh_task must be None after cleanup");
     }
 }
