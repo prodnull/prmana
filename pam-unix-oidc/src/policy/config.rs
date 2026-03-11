@@ -266,6 +266,117 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
     }
 }
 
+// ── Introspection configuration ───────────────────────────────────────────────
+
+/// Token introspection configuration (RFC 7662).
+///
+/// When `enabled` is true, the PAM module can verify token validity via the
+/// introspection endpoint in addition to (or instead of) local JWT validation.
+/// Defaults to disabled — Phase 09 Plan 02 adds the actual introspection client.
+///
+/// Deserialised from the `introspection:` section of `policy.yaml`.
+///
+/// ```yaml
+/// introspection:
+///   enabled: true
+///   endpoint: "https://idp.example.com/protocol/openid-connect/token/introspect"
+///   enforcement: warn
+///   cache_ttl_secs: 30
+/// ```
+#[derive(Debug, Clone, Serialize)]
+#[serde(default)]
+pub struct IntrospectionConfig {
+    /// Enable RFC 7662 token introspection. Default: `false`.
+    pub enabled: bool,
+    /// Introspection endpoint URL. Required when `enabled = true`.
+    pub endpoint: Option<String>,
+    /// What to do when introspection returns `active: false` or errors.
+    /// - `strict`: deny authentication
+    /// - `warn`: log and allow
+    /// - `disabled`: skip introspection result (no-op)
+    ///   Default: `warn` (Phase 02 will harden to `strict` for new deployments).
+    pub enforcement: EnforcementMode,
+    /// How long (in seconds) to cache a positive introspection result.
+    /// Default: 60 seconds.
+    pub cache_ttl_secs: u64,
+}
+
+impl Default for IntrospectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: None,
+            enforcement: EnforcementMode::Warn,
+            cache_ttl_secs: 60,
+        }
+    }
+}
+
+impl<'de> serde::de::Deserialize<'de> for IntrospectionConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(default)]
+        struct Raw {
+            enabled: bool,
+            endpoint: Option<String>,
+            enforcement: EnforcementMode,
+            cache_ttl_secs: u64,
+        }
+        impl Default for Raw {
+            fn default() -> Self {
+                let c = IntrospectionConfig::default();
+                Self {
+                    enabled: c.enabled,
+                    endpoint: c.endpoint,
+                    enforcement: c.enforcement,
+                    cache_ttl_secs: c.cache_ttl_secs,
+                }
+            }
+        }
+        let r = Raw::deserialize(d)?;
+        Ok(IntrospectionConfig {
+            enabled: r.enabled,
+            endpoint: r.endpoint,
+            enforcement: r.enforcement,
+            cache_ttl_secs: r.cache_ttl_secs,
+        })
+    }
+}
+
+// ── Session configuration ─────────────────────────────────────────────────────
+
+/// Session lifecycle configuration.
+///
+/// Controls where session records are written and token-refresh thresholds.
+/// Deserialised from the `session:` section of `policy.yaml`.
+///
+/// ```yaml
+/// session:
+///   session_dir: "/run/unix-oidc/sessions"
+///   token_refresh_threshold_percent: 80
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionConfig {
+    /// Filesystem directory where session records are stored.
+    /// Should be a tmpfs mount so records are automatically cleared on reboot.
+    /// Default: `/run/unix-oidc/sessions`.
+    pub session_dir: String,
+    /// Percentage of token lifetime at which the agent should attempt token refresh.
+    /// E.g. 80 means "refresh when 80% of the token's lifetime has elapsed".
+    /// Default: 80 (%).
+    pub token_refresh_threshold_percent: u8,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            session_dir: "/run/unix-oidc/sessions".to_string(),
+            token_refresh_threshold_percent: 80,
+        }
+    }
+}
+
 // ── Cache configuration ───────────────────────────────────────────────────────
 
 /// Operational tuning for caches (JTI replay cache, DPoP nonce cache, etc.).
@@ -490,6 +601,12 @@ pub struct PolicyConfig {
     /// Username mapping and transform pipeline configuration.
     #[serde(default)]
     pub identity: IdentityConfig,
+    /// RFC 7662 token introspection configuration (Phase 09+).
+    #[serde(default)]
+    pub introspection: IntrospectionConfig,
+    /// Session lifecycle configuration (Phase 09+).
+    #[serde(default)]
+    pub session: SessionConfig,
 }
 
 impl PolicyConfig {
@@ -516,11 +633,13 @@ impl PolicyConfig {
 
         let config: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
             .merge(Yaml::file(path))
-            .merge(
-                Env::prefixed("UNIX_OIDC_")
-                    .split("__")
-                    .only(&["security_modes", "cache", "identity"]),
-            )
+            .merge(Env::prefixed("UNIX_OIDC_").split("__").only(&[
+                "security_modes",
+                "cache",
+                "identity",
+                "introspection",
+                "session",
+            ]))
             .extract()
             .map_err(|e| PolicyError::ParseError(e.to_string()))?;
 
@@ -552,11 +671,13 @@ impl PolicyConfig {
         if let Ok(yaml) = std::env::var("UNIX_OIDC_POLICY_YAML") {
             let config: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
                 .merge(Yaml::string(&yaml))
-                .merge(
-                    Env::prefixed("UNIX_OIDC_")
-                        .split("__")
-                        .only(&["security_modes", "cache", "identity"]),
-                )
+                .merge(Env::prefixed("UNIX_OIDC_").split("__").only(&[
+                    "security_modes",
+                    "cache",
+                    "identity",
+                    "introspection",
+                    "session",
+                ]))
                 .extract()
                 .map_err(|e| PolicyError::ParseError(e.to_string()))?;
             return Ok(config);
@@ -800,11 +921,11 @@ security_modes:
         std::env::set_var("UNIX_OIDC_TEST_MODE", "true");
         let result: Result<PolicyConfig, _> =
             Figment::from(Serialized::defaults(PolicyConfig::default()))
-                .merge(
-                    Env::prefixed("UNIX_OIDC_")
-                        .split("__")
-                        .only(&["security_modes", "cache", "identity"]),
-                )
+                .merge(Env::prefixed("UNIX_OIDC_").split("__").only(&[
+                    "security_modes",
+                    "cache",
+                    "identity",
+                ]))
                 .extract();
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
 
@@ -951,8 +1072,12 @@ identity:
         assert_eq!(policy.identity.username_claim, "email");
         assert_eq!(policy.identity.transforms.len(), 2);
         // First transform is Simple("strip_domain")
-        assert!(matches!(&policy.identity.transforms[0], TransformConfig::Simple(s) if s == "strip_domain"));
-        assert!(matches!(&policy.identity.transforms[1], TransformConfig::Simple(s) if s == "lowercase"));
+        assert!(
+            matches!(&policy.identity.transforms[0], TransformConfig::Simple(s) if s == "strip_domain")
+        );
+        assert!(
+            matches!(&policy.identity.transforms[1], TransformConfig::Simple(s) if s == "lowercase")
+        );
     }
 
     #[test]
@@ -1012,7 +1137,10 @@ ssh_login:
             .extract()
             .expect("ssh login_groups yaml should load");
 
-        assert_eq!(policy.ssh_login.login_groups, vec!["unix-users", "developers"]);
+        assert_eq!(
+            policy.ssh_login.login_groups,
+            vec!["unix-users", "developers"]
+        );
     }
 
     #[test]
@@ -1060,7 +1188,10 @@ break_glass:
             .expect("break_glass accounts yaml should load");
 
         assert!(policy.break_glass.enabled);
-        assert_eq!(policy.break_glass.accounts, vec!["breakglass1", "breakglass2"]);
+        assert_eq!(
+            policy.break_glass.accounts,
+            vec!["breakglass1", "breakglass2"]
+        );
     }
 
     #[test]
@@ -1077,8 +1208,128 @@ break_glass:
             .extract()
             .expect("v1.0 break_glass with local_account must load");
 
-        assert_eq!(policy.break_glass.local_account, Some("emergency".to_string()));
+        assert_eq!(
+            policy.break_glass.local_account,
+            Some("emergency".to_string())
+        );
         assert!(policy.break_glass.accounts.is_empty()); // accounts defaults to empty
+    }
+
+    // ── Phase 9: IntrospectionConfig and SessionConfig tests ─────────────────
+
+    #[test]
+    fn test_introspection_config_defaults() {
+        let config = IntrospectionConfig::default();
+        assert!(!config.enabled, "introspection must be disabled by default");
+        assert!(config.endpoint.is_none(), "endpoint must be None by default");
+        assert_eq!(config.enforcement, EnforcementMode::Warn);
+        assert_eq!(config.cache_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_session_config_defaults() {
+        let config = SessionConfig::default();
+        assert_eq!(config.session_dir, "/run/unix-oidc/sessions");
+        assert_eq!(config.token_refresh_threshold_percent, 80);
+    }
+
+    #[test]
+    fn test_v1_yaml_loads_with_introspection_session_defaults() {
+        // A v1.0 policy without introspection/session sections must load correctly
+        // and produce the correct defaults.
+        let yaml = r#"
+host:
+  classification: standard
+ssh_login:
+  require_oidc: true
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("v1.0 yaml must load with introspection/session defaults");
+
+        assert!(!policy.introspection.enabled);
+        assert!(policy.introspection.endpoint.is_none());
+        assert_eq!(policy.introspection.enforcement, EnforcementMode::Warn);
+        assert_eq!(policy.introspection.cache_ttl_secs, 60);
+        assert_eq!(policy.session.session_dir, "/run/unix-oidc/sessions");
+        assert_eq!(policy.session.token_refresh_threshold_percent, 80);
+    }
+
+    #[test]
+    fn test_introspection_yaml_override() {
+        let yaml = r#"
+introspection:
+  enabled: true
+  endpoint: "https://idp.example.com/token/introspect"
+  enforcement: strict
+  cache_ttl_secs: 30
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("introspection yaml should load");
+
+        assert!(policy.introspection.enabled);
+        assert_eq!(
+            policy.introspection.endpoint,
+            Some("https://idp.example.com/token/introspect".to_string())
+        );
+        assert_eq!(policy.introspection.enforcement, EnforcementMode::Strict);
+        assert_eq!(policy.introspection.cache_ttl_secs, 30);
+    }
+
+    #[test]
+    fn test_session_yaml_override() {
+        let yaml = r#"
+session:
+  session_dir: "/tmp/test-sessions"
+  token_refresh_threshold_percent: 70
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("session yaml should load");
+
+        assert_eq!(policy.session.session_dir, "/tmp/test-sessions");
+        assert_eq!(policy.session.token_refresh_threshold_percent, 70);
+    }
+
+    #[test]
+    fn test_introspection_enabled_only_override() {
+        // Only set enabled=true; other fields should keep defaults.
+        let yaml = r#"
+introspection:
+  enabled: true
+  cache_ttl_secs: 30
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("partial introspection yaml should load");
+
+        assert!(policy.introspection.enabled);
+        assert_eq!(policy.introspection.cache_ttl_secs, 30);
+        // Other fields keep defaults
+        assert!(policy.introspection.endpoint.is_none());
+        assert_eq!(policy.introspection.enforcement, EnforcementMode::Warn);
+    }
+
+    #[test]
+    fn test_introspection_invalid_enforcement_rejected() {
+        let yaml = r#"
+introspection:
+  enforcement: invalid_mode
+"#;
+        let result: Result<PolicyConfig, _> =
+            Figment::from(Serialized::defaults(PolicyConfig::default()))
+                .merge(Yaml::string(yaml))
+                .extract();
+
+        assert!(
+            result.is_err(),
+            "Invalid introspection enforcement mode must cause parse error"
+        );
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub mod identity;
 pub mod oidc;
 pub mod policy;
 pub mod security;
+pub mod session;
 pub mod sssd;
 pub mod sudo;
 pub mod ui;

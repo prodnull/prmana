@@ -128,6 +128,68 @@ pub enum AuditEvent {
         /// Constant "CRITICAL" — break-glass use is always a critical event.
         severity: &'static str,
     },
+
+    /// Session opened by pam_sm_open_session.
+    ///
+    /// Emitted when a session record is successfully written to the session directory.
+    /// OCSF: Account Change / Session Activity.
+    #[serde(rename = "SESSION_OPENED")]
+    SessionOpened {
+        timestamp: String,
+        session_id: String,
+        username: String,
+        client_ip: Option<String>,
+        host: String,
+        /// Token expiry as Unix timestamp. Used to cross-reference session lifetime.
+        token_exp: i64,
+    },
+
+    /// Session closed by pam_sm_close_session.
+    ///
+    /// Emitted when a session record is deleted from the session directory.
+    /// Includes the total session duration for operational analytics.
+    #[serde(rename = "SESSION_CLOSED")]
+    SessionClosed {
+        timestamp: String,
+        session_id: String,
+        username: String,
+        host: String,
+        /// Session duration in seconds (now - session_start from the record).
+        duration_secs: i64,
+    },
+
+    /// Token revocation outcome during session teardown.
+    ///
+    /// Emitted by the IPC call to the agent daemon when close_session triggers
+    /// RFC 7009 token revocation.
+    #[serde(rename = "TOKEN_REVOKED")]
+    TokenRevoked {
+        timestamp: String,
+        session_id: String,
+        username: String,
+        host: String,
+        /// Revocation outcome: `"success"`, `"failed"`, or `"skipped"`.
+        outcome: String,
+        /// Human-readable reason for the outcome (e.g. IdP error message, "agent unreachable").
+        reason: Option<String>,
+    },
+
+    /// Token introspection failure (RFC 7662).
+    ///
+    /// Emitted when introspection is enabled and the endpoint returns an error
+    /// or `active: false`. The `enforcement` field indicates whether the failure
+    /// caused authentication to be denied or just warned.
+    #[serde(rename = "INTROSPECTION_FAILED")]
+    IntrospectionFailed {
+        timestamp: String,
+        session_id: Option<String>,
+        username: Option<String>,
+        host: String,
+        /// Description of the introspection failure.
+        reason: String,
+        /// Enforcement mode active at time of failure: `"strict"`, `"warn"`, or `"disabled"`.
+        enforcement: String,
+    },
 }
 
 impl AuditEvent {
@@ -255,6 +317,72 @@ impl AuditEvent {
         }
     }
 
+    /// Create a session opened event (pam_sm_open_session).
+    pub fn session_opened(
+        session_id: &str,
+        username: &str,
+        client_ip: Option<&str>,
+        token_exp: i64,
+    ) -> Self {
+        Self::SessionOpened {
+            timestamp: iso_timestamp(),
+            session_id: session_id.to_string(),
+            username: username.to_string(),
+            client_ip: client_ip.map(String::from),
+            host: get_hostname(),
+            token_exp,
+        }
+    }
+
+    /// Create a session closed event (pam_sm_close_session).
+    pub fn session_closed(session_id: &str, username: &str, duration_secs: i64) -> Self {
+        Self::SessionClosed {
+            timestamp: iso_timestamp(),
+            session_id: session_id.to_string(),
+            username: username.to_string(),
+            host: get_hostname(),
+            duration_secs,
+        }
+    }
+
+    /// Create a token revocation outcome event.
+    ///
+    /// `outcome` must be one of `"success"`, `"failed"`, or `"skipped"`.
+    pub fn token_revoked(
+        session_id: &str,
+        username: &str,
+        outcome: &str,
+        reason: Option<&str>,
+    ) -> Self {
+        Self::TokenRevoked {
+            timestamp: iso_timestamp(),
+            session_id: session_id.to_string(),
+            username: username.to_string(),
+            host: get_hostname(),
+            outcome: outcome.to_string(),
+            reason: reason.map(String::from),
+        }
+    }
+
+    /// Create a token introspection failure event.
+    ///
+    /// `enforcement` should match the current `EnforcementMode` as a lowercase string.
+    pub fn introspection_failed(
+        session_id: Option<&str>,
+        username: Option<&str>,
+        reason: &str,
+        enforcement: &str,
+    ) -> Self {
+        Self::IntrospectionFailed {
+            timestamp: iso_timestamp(),
+            session_id: session_id.map(String::from),
+            username: username.map(String::from),
+            host: get_hostname(),
+            reason: reason.to_string(),
+            enforcement: enforcement.to_string(),
+        }
+    }
+
     /// Log this event to the configured audit destinations.
     pub fn log(&self) {
         if let Ok(json) = serde_json::to_string(self) {
@@ -282,6 +410,10 @@ impl AuditEvent {
             Self::StepUpSuccess { .. } => "STEP_UP_SUCCESS",
             Self::StepUpFailed { .. } => "STEP_UP_FAILED",
             Self::BreakGlassAuth { .. } => "BREAK_GLASS_AUTH",
+            Self::SessionOpened { .. } => "SESSION_OPENED",
+            Self::SessionClosed { .. } => "SESSION_CLOSED",
+            Self::TokenRevoked { .. } => "TOKEN_REVOKED",
+            Self::IntrospectionFailed { .. } => "INTROSPECTION_FAILED",
         }
     }
 }
@@ -442,6 +574,106 @@ mod tests {
     fn test_break_glass_auth_event_type() {
         let event = AuditEvent::break_glass_auth("emergency", None);
         assert_eq!(event.event_type(), "BREAK_GLASS_AUTH");
+    }
+
+    // ── Phase 9: Session / introspection audit event tests ───────────────────
+
+    #[test]
+    fn test_session_opened_serialization() {
+        let event = AuditEvent::session_opened("sid-123", "alice", Some("10.0.0.1"), 9_999_999);
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("SESSION_OPENED"), "json: {json}");
+        assert!(json.contains("sid-123"), "json: {json}");
+        assert!(json.contains("alice"), "json: {json}");
+        assert!(json.contains("10.0.0.1"), "json: {json}");
+        assert!(json.contains("9999999"), "json: {json}");
+        assert!(json.contains("timestamp"), "json: {json}");
+    }
+
+    #[test]
+    fn test_session_opened_no_client_ip() {
+        let event = AuditEvent::session_opened("sid-456", "bob", None, 1000);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("SESSION_OPENED"), "json: {json}");
+        assert!(json.contains("bob"), "json: {json}");
+        // client_ip should be null or absent
+        assert!(json.contains("null") || !json.contains("client_ip\":\""));
+    }
+
+    #[test]
+    fn test_session_closed_serialization() {
+        let event = AuditEvent::session_closed("sid-789", "charlie", 3600);
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("SESSION_CLOSED"), "json: {json}");
+        assert!(json.contains("sid-789"), "json: {json}");
+        assert!(json.contains("charlie"), "json: {json}");
+        assert!(json.contains("3600"), "json: {json}");
+        assert!(json.contains("timestamp"), "json: {json}");
+    }
+
+    #[test]
+    fn test_token_revoked_success_serialization() {
+        let event = AuditEvent::token_revoked("sid-abc", "diana", "success", None);
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("TOKEN_REVOKED"), "json: {json}");
+        assert!(json.contains("sid-abc"), "json: {json}");
+        assert!(json.contains("diana"), "json: {json}");
+        assert!(json.contains("success"), "json: {json}");
+    }
+
+    #[test]
+    fn test_token_revoked_failed_with_reason() {
+        let event = AuditEvent::token_revoked("sid-def", "eve", "failed", Some("IdP unreachable"));
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("TOKEN_REVOKED"), "json: {json}");
+        assert!(json.contains("failed"), "json: {json}");
+        assert!(json.contains("IdP unreachable"), "json: {json}");
+    }
+
+    #[test]
+    fn test_introspection_failed_serialization() {
+        let event = AuditEvent::introspection_failed(
+            Some("sid-xyz"),
+            Some("frank"),
+            "token not active",
+            "warn",
+        );
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("INTROSPECTION_FAILED"), "json: {json}");
+        assert!(json.contains("sid-xyz"), "json: {json}");
+        assert!(json.contains("frank"), "json: {json}");
+        assert!(json.contains("token not active"), "json: {json}");
+        assert!(json.contains("\"enforcement\""), "json: {json}");
+        assert!(json.contains("warn"), "json: {json}");
+    }
+
+    #[test]
+    fn test_introspection_failed_no_session_no_user() {
+        let event = AuditEvent::introspection_failed(None, None, "connection refused", "strict");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("INTROSPECTION_FAILED"), "json: {json}");
+        assert!(json.contains("connection refused"), "json: {json}");
+        assert!(json.contains("strict"), "json: {json}");
+    }
+
+    #[test]
+    fn test_new_event_types_in_event_type_method() {
+        let opened = AuditEvent::session_opened("s", "u", None, 0);
+        assert_eq!(opened.event_type(), "SESSION_OPENED");
+
+        let closed = AuditEvent::session_closed("s", "u", 0);
+        assert_eq!(closed.event_type(), "SESSION_CLOSED");
+
+        let revoked = AuditEvent::token_revoked("s", "u", "skipped", None);
+        assert_eq!(revoked.event_type(), "TOKEN_REVOKED");
+
+        let failed = AuditEvent::introspection_failed(None, None, "err", "warn");
+        assert_eq!(failed.event_type(), "INTROSPECTION_FAILED");
     }
 
     #[test]
