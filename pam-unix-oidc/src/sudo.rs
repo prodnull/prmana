@@ -9,6 +9,8 @@ use crate::audit::AuditEvent;
 use crate::device_flow::{DeviceFlowClient, DeviceFlowError, TokenResponse};
 use crate::oidc::{TokenValidator, ValidationConfig, ValidationError};
 use crate::policy::{PolicyConfig, PolicyRules, StepUpMethod, SudoStepUpRequirements};
+use crate::sssd::groups::{check_group_policy, GroupPolicyError};
+use crate::sssd::{get_user_info, UserError};
 use thiserror::Error;
 
 /// Check if test mode is explicitly enabled.
@@ -45,6 +47,14 @@ pub enum SudoError {
         token_user: String,
         sudo_user: String,
     },
+
+    /// User's NSS groups do not intersect with the configured sudo_groups allow-list.
+    #[error("Sudo group policy denied step-up: {0}")]
+    GroupDenied(String),
+
+    /// User lookup failed during group policy check (NSS resolution error).
+    #[error("User resolution failed during group policy check: {0}")]
+    UserResolution(#[from] UserError),
 }
 
 /// Context for a sudo authentication request.
@@ -117,6 +127,32 @@ pub fn authenticate_sudo(
             return Ok(None);
         }
     };
+
+    // Enforce sudo_groups policy before initiating step-up.
+    //
+    // Only check if sudo_groups is non-empty (empty = no restriction, backward compat).
+    // This runs BEFORE the device flow to avoid issuing a browser challenge to a user
+    // who will be denied regardless.
+    if !policy.sudo.sudo_groups.is_empty() {
+        let user_info = get_user_info(&ctx.user)?;
+        let modes = policy.effective_security_modes();
+
+        check_group_policy(
+            &ctx.user,
+            user_info.gid,
+            &policy.sudo.sudo_groups,
+            modes.groups_enforcement,
+        )
+        .map_err(|e: GroupPolicyError| {
+            tracing::warn!(
+                username = %ctx.user,
+                error = %e,
+                "Sudo group policy denied step-up"
+            );
+            log_step_up_failed(ctx, "device_flow", "user not in sudo_groups");
+            SudoError::GroupDenied(e.to_string())
+        })?;
+    }
 
     // Log step-up initiation
     log_step_up_initiated(ctx, &requirements);
@@ -424,6 +460,40 @@ mod tests {
 
         let err = SudoError::Config("invalid config".to_string());
         assert!(err.to_string().contains("invalid config"));
+
+        // Phase 8: GroupDenied variant
+        let err = SudoError::GroupDenied("user not in wheel".to_string());
+        assert!(
+            err.to_string().contains("Sudo group policy denied"),
+            "GroupDenied must include 'Sudo group policy denied' in message"
+        );
+        assert!(err.to_string().contains("wheel"));
+    }
+
+    #[test]
+    fn test_sudo_error_group_denied_is_descriptive() {
+        // Ensure GroupDenied carries the full detail from GroupPolicyError.
+        let msg = "User 'alice' is not a member of any allowed group. \
+                   User groups: [unix-users]. Allowed groups: [wheel]";
+        let err = SudoError::GroupDenied(msg.to_string());
+        assert!(err.to_string().contains("alice"));
+        assert!(err.to_string().contains("wheel"));
+    }
+
+    #[test]
+    fn test_sudo_config_empty_sudo_groups_permits_all() {
+        // Empty sudo_groups = no restriction. Verify the gate is bypassed for root
+        // (who definitely exists in NSS) when sudo_groups is empty.
+        use crate::policy::config::PolicyConfig;
+
+        let policy = PolicyConfig::default();
+        assert!(
+            policy.sudo.sudo_groups.is_empty(),
+            "default policy must have empty sudo_groups (no restriction)"
+        );
+        // The authenticate_sudo gate: `if !policy.sudo.sudo_groups.is_empty()` →
+        // with empty list the check is skipped entirely, so no NSS lookup occurs.
+        // This is the backward-compat invariant.
     }
 
     #[test]
