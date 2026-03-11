@@ -22,6 +22,7 @@ pub mod approval;
 pub mod audit;
 pub mod auth;
 pub mod device_flow;
+pub mod identity;
 pub mod oidc;
 pub mod policy;
 pub mod security;
