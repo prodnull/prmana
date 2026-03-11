@@ -16,6 +16,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::instrument;
 use uuid::Uuid;
 
 /// DPoP proof claims per RFC 9449
@@ -53,6 +54,13 @@ pub struct EcPublicKeyJwk {
 ///
 /// Returns `DPoPError::ClockError` if the system clock is before the Unix epoch.
 /// Returns `DPoPError::Json` if serialisation fails.
+///
+/// # Tracing
+///
+/// The span captures `method` and `target` for correlation.  `access_token`
+/// and `nonce` are skipped — they contain bearer credentials and server nonces
+/// that must never appear in logs.
+#[instrument(skip(public_key_jwk, nonce), fields(method, target))]
 pub fn build_dpop_message(
     public_key_jwk: &serde_json::Value,
     method: &str,
@@ -93,6 +101,13 @@ pub fn build_dpop_message(
 /// # Errors
 ///
 /// Returns `DPoPError::InvalidSignatureLength` if `sig_rs_bytes.len() != 64`.
+///
+/// # Tracing
+///
+/// All parameters are skipped — `message` contains JWT claims (including the
+/// embedded JWK and `htu`/`htm` claims) and `sig_rs_bytes` is raw key material.
+/// The span records only entry/exit timing for latency observability.
+#[instrument(skip_all)]
 pub fn assemble_dpop_proof(message: &str, sig_rs_bytes: &[u8]) -> Result<String, DPoPError> {
     if sig_rs_bytes.len() != 64 {
         return Err(DPoPError::InvalidSignatureLength(sig_rs_bytes.len()));
@@ -110,6 +125,14 @@ pub fn assemble_dpop_proof(message: &str, sig_rs_bytes: &[u8]) -> Result<String,
 /// - Header with typ=dpop+jwt, alg=ES256, and embedded JWK
 /// - Claims with jti, htm, htu, iat, and optional nonce
 /// - ES256 signature
+///
+/// # Tracing
+///
+/// `signing_key` is skipped — it contains the DPoP private key material and
+/// must never appear in logs or spans.  `nonce` is skipped as a server-issued
+/// bearer secret.  `method` and `target` are captured for correlation with the
+/// IPC request span.
+#[instrument(skip(signing_key, nonce), fields(method, target))]
 pub fn generate_dpop_proof(
     signing_key: &SigningKey,
     method: &str,

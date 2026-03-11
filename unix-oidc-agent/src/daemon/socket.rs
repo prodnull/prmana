@@ -10,7 +10,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
+use uuid::Uuid;
 
 use crate::crypto::DPoPSigner;
 use crate::daemon::peer_cred::get_peer_credentials;
@@ -330,7 +331,10 @@ impl AgentServer {
                             //         getpeereid(3) (macOS).
                             // See: unix-oidc-agent/src/daemon/peer_cred.rs.
                             let daemon_uid = unsafe { libc::getuid() };
-                            match get_peer_credentials(&stream) {
+                            // `peer_pid` is captured here and forwarded to
+                            // `handle_connection` so the ipc_request span can
+                            // record it immediately — no second syscall needed.
+                            let accepted_peer_pid = match get_peer_credentials(&stream) {
                                 Ok((peer_uid, peer_pid)) => {
                                     if peer_uid != daemon_uid {
                                         warn!(
@@ -347,6 +351,7 @@ impl AgentServer {
                                     } else {
                                         debug!("IPC connection accepted");
                                     }
+                                    peer_pid
                                 }
                                 Err(e) => {
                                     warn!(
@@ -356,11 +361,11 @@ impl AgentServer {
                                     drop(stream);
                                     continue;
                                 }
-                            }
+                            };
 
                             let state = Arc::clone(&self.state);
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, state, idle_timeout).await {
+                                if let Err(e) = handle_connection(stream, state, idle_timeout, accepted_peer_pid).await {
                                     error!("Connection error: {}", e);
                                 }
                             });
@@ -401,11 +406,41 @@ impl AgentServer {
     }
 }
 
+/// Handle a single IPC connection from a peer process.
+///
+/// Each invocation creates a unique tracing span with a random `request_id`
+/// UUID, enabling log correlation across all lines emitted during a single
+/// IPC request lifecycle.  The `command` field is populated after the request
+/// JSON is parsed; `peer_pid` is recorded when the caller's PID is available.
+///
+/// # Tracing span fields
+///
+/// | Field        | When set          | Value                                      |
+/// |--------------|-------------------|--------------------------------------------|
+/// | `request_id` | immediately       | UUID v4 string                             |
+/// | `command`    | after JSON parse  | variant name (e.g. "GetProof", "Status")   |
+/// | `peer_pid`   | when available    | calling process PID (Linux/macOS)          |
+#[instrument(
+    name = "ipc_request",
+    skip(stream, state, idle_timeout),
+    fields(
+        request_id = %Uuid::new_v4(),
+        command = tracing::field::Empty,
+        peer_pid = tracing::field::Empty,
+    )
+)]
 async fn handle_connection(
     stream: UnixStream,
     state: Arc<RwLock<AgentState>>,
     idle_timeout: Duration,
+    passed_peer_pid: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Record peer_pid in the span immediately so all log lines within this
+    // request share the PID field for operator correlation.
+    if let Some(pid) = passed_peer_pid {
+        tracing::Span::current().record("peer_pid", pid);
+    }
+
     // Record connection metric
     {
         let state_read = state.read().await;
@@ -461,6 +496,11 @@ async fn handle_connection(
                 continue;
             }
         };
+
+        // Record the command variant name in the span so all downstream log
+        // lines (including those in handle_request and DPoP proof generation)
+        // carry the command name for grep-based trace reconstruction.
+        tracing::Span::current().record("command", request.command_name());
 
         debug!("Received request: {:?}", request);
 
@@ -518,6 +558,18 @@ async fn handle_request(
         } => {
             let start = Instant::now();
             let state_read = state.read().await;
+
+            // OPS-13: structured audit log for every DPoP proof request.
+            // Emitted at INFO so operators can monitor authentication activity
+            // without enabling debug output.  Sensitive fields (access token,
+            // nonce) are intentionally excluded — the tracing span already
+            // carries request_id and peer_pid for correlation.
+            info!(
+                username = %state_read.username.as_deref().unwrap_or("unknown"),
+                target = %target,
+                signer_type = %state_read.signer_type.as_deref().unwrap_or("unknown"),
+                "DPoP proof requested"
+            );
 
             let signer = match &state_read.signer {
                 Some(s) => s,
@@ -2791,6 +2843,76 @@ mod tests {
                 panic!("Connection was not closed within 1s; idle timeout not working");
             }
         }
+    }
+
+    /// OPS-13: Verify that a GetProof request emits an INFO log line containing
+    /// "DPoP proof requested" with username, target, and signer_type fields.
+    ///
+    /// Uses `tracing-test` to capture log output within the test scope.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_get_proof_emits_info_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("tracing_test.sock");
+
+        let signer = Arc::new(SoftwareSigner::generate());
+        let state = Arc::new(RwLock::new(AgentState {
+            signer: Some(signer.clone()),
+            access_token: Some(SecretString::from("trace-test-token")),
+            token_expires: Some(9999999999),
+            username: Some("alice".to_string()),
+            metrics: Arc::new(MetricsCollector::new()),
+            mlock_status: None,
+            storage_backend: None,
+            migration_status: None,
+            signer_type: Some("software".to_string()),
+            refresh_task: None,
+            refresh_failed: false,
+            oidc_issuer: None,
+            oidc_client_id: None,
+            oidc_client_secret: None,
+            pending_step_ups: HashMap::new(),
+        }));
+
+        let server = AgentServer::new(socket_path.clone(), Arc::clone(&state));
+        let _server_handle = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let client = AgentClient::new(socket_path);
+        let response = client
+            .get_proof("prod.example.com", "SSH", None)
+            .await
+            .unwrap();
+
+        // Verify we got a successful proof response.
+        assert!(
+            matches!(response, AgentResponse::Success(AgentResponseData::Proof { .. })),
+            "Expected Proof response; got: {:?}",
+            response
+        );
+
+        // Verify the INFO log was emitted with the expected message and fields.
+        // tracing-test captures all spans/events within the test; logs_contain()
+        // checks the formatted output for the substring.
+        assert!(
+            logs_contain("DPoP proof requested"),
+            "Expected INFO log 'DPoP proof requested' was not emitted"
+        );
+        assert!(
+            logs_contain("alice"),
+            "Expected username field 'alice' in log"
+        );
+        assert!(
+            logs_contain("prod.example.com"),
+            "Expected target field 'prod.example.com' in log"
+        );
+        assert!(
+            logs_contain("software"),
+            "Expected signer_type field 'software' in log"
+        );
     }
 }
 

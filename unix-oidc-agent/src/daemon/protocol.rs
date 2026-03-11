@@ -69,6 +69,26 @@ pub enum AgentRequest {
     },
 }
 
+impl AgentRequest {
+    /// Return a short, stable name for the request variant.
+    ///
+    /// Used to populate the `command` field in the `ipc_request` tracing span
+    /// after the request JSON has been parsed.  The names match the IPC wire
+    /// format (`action` field) so they can be correlated with client logs.
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            AgentRequest::GetProof { .. } => "GetProof",
+            AgentRequest::Status => "Status",
+            AgentRequest::Metrics { .. } => "Metrics",
+            AgentRequest::Refresh => "Refresh",
+            AgentRequest::Shutdown => "Shutdown",
+            AgentRequest::SessionClosed { .. } => "SessionClosed",
+            AgentRequest::StepUp { .. } => "StepUp",
+            AgentRequest::StepUpResult { .. } => "StepUpResult",
+        }
+    }
+}
+
 /// Output format for metrics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
