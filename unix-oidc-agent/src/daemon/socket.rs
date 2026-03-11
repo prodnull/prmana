@@ -404,6 +404,24 @@ async fn handle_request(
                 true,
             )
         }
+
+        // StepUp and StepUpResult are handled in handle_connection (future plan).
+        // These arms exist for exhaustive match; the full CIBA poll loop is implemented
+        // in Phase 10 Plan 03.
+        AgentRequest::StepUp { .. } => (
+            AgentResponse::error(
+                "CIBA step-up not yet implemented in this daemon version",
+                "NOT_IMPLEMENTED",
+            ),
+            true,
+        ),
+        AgentRequest::StepUpResult { .. } => (
+            AgentResponse::error(
+                "CIBA step-up not yet implemented in this daemon version",
+                "NOT_IMPLEMENTED",
+            ),
+            true,
+        ),
     }
 }
 
