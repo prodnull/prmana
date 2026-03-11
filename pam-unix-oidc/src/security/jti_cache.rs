@@ -58,10 +58,10 @@ struct JtiEntry {
 /// let cache = JtiCache::new();
 ///
 /// // First use of a JTI - valid
-/// assert!(cache.check_and_record("jti-123", "alice", 300).is_valid());
+/// assert!(cache.check_and_record(Some("jti-123"), "alice", 300).is_valid());
 ///
 /// // Second use of same JTI - replay detected
-/// assert!(cache.check_and_record("jti-123", "alice", 300).is_replay());
+/// assert!(cache.check_and_record(Some("jti-123"), "alice", 300).is_replay());
 /// ```
 pub struct JtiCache {
     /// Map of JTI -> entry

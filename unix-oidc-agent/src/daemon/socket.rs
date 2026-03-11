@@ -2247,6 +2247,118 @@ mod tests {
         );
     }
 
+    /// poll_ciba extends interval by 5s on `slow_down` per CIBA Core 1.0 §11.
+    ///
+    /// Server responds `slow_down` on first poll, then `access_denied` on second.
+    /// The second poll must arrive after at least (initial_interval + 5s), proving
+    /// the interval was extended.
+    #[tokio::test]
+    async fn test_poll_ciba_slow_down_increases_interval() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::net::TcpListener;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+
+        tokio::spawn(async move {
+            // Accept two connections: first returns slow_down, second returns access_denied.
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+
+                    let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                    let body = if n == 0 {
+                        r#"{"error":"slow_down","error_description":"Slow down"}"#
+                    } else {
+                        r#"{"error":"access_denied","error_description":"Denied"}"#
+                    };
+                    let response = format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+            }
+        });
+
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let outcome = poll_ciba(
+            http,
+            format!("http://127.0.0.1:{}/token", port),
+            vec![],
+            std::time::Duration::from_millis(50), // initial interval: 50ms
+            std::time::Duration::from_secs(15),
+            None,
+        ).await;
+
+        let elapsed = start.elapsed();
+
+        // After slow_down, interval becomes 50ms + 5s = 5050ms.
+        // Total: first sleep(50ms) + second sleep(5050ms) ≥ 5s.
+        assert!(
+            elapsed >= std::time::Duration::from_secs(5),
+            "Expected ≥5s elapsed after slow_down, got {:?}",
+            elapsed
+        );
+        assert!(
+            matches!(outcome, StepUpOutcome::TimedOut { ref reason, .. } if reason == "denied"),
+            "Expected TimedOut(denied), got: {:?}",
+            outcome
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 2, "Expected exactly 2 poll requests");
+    }
+
+    /// extract_acr_from_id_token correctly extracts the `acr` claim from a JWT payload.
+    #[test]
+    fn test_extract_acr_from_id_token_valid_claim() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        // Build a minimal JWT: header.payload.signature
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            r#"{"sub":"user1","acr":"urn:mace:incommon:iap:silver"}"#,
+        );
+        let signature = URL_SAFE_NO_PAD.encode(b"fakesig");
+        let id_token = format!("{}.{}.{}", header, payload, signature);
+
+        let acr = extract_acr_from_id_token(&id_token);
+        assert_eq!(
+            acr.as_deref(),
+            Some("urn:mace:incommon:iap:silver"),
+            "Should extract acr claim from JWT payload"
+        );
+
+        // No acr claim → None
+        let payload_no_acr = URL_SAFE_NO_PAD.encode(r#"{"sub":"user1"}"#);
+        let id_token_no_acr = format!("{}.{}.{}", header, payload_no_acr, signature);
+        assert_eq!(
+            extract_acr_from_id_token(&id_token_no_acr),
+            None,
+            "Should return None when acr claim is absent"
+        );
+
+        // Malformed token → None
+        assert_eq!(
+            extract_acr_from_id_token("not.a.valid.jwt.too.many.parts"),
+            None,
+        );
+        assert_eq!(
+            extract_acr_from_id_token("onlyone"),
+            None,
+        );
+    }
+
     /// poll_ciba returns TimedOut("timeout") when the outer timeout expires.
     #[tokio::test]
     async fn test_poll_ciba_times_out() {
