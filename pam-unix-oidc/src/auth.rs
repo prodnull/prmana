@@ -1,12 +1,14 @@
 //! Authentication flow combining OIDC token validation and SSSD user resolution.
 
+use crate::identity::mapper::{IdentityError, UsernameMapper};
 use crate::oidc::{
-    validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPValidationError, DPoPProofResult,
+    validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPProofResult, DPoPValidationError,
     TokenValidator, ValidationConfig, ValidationError,
 };
 use crate::policy::config::{EnforcementMode, PolicyConfig};
 use crate::security::nonce_cache::{global_nonce_cache, NonceConsumeError};
 use crate::security::session::generate_ssh_session_id;
+use crate::sssd::groups::{check_group_policy, GroupPolicyError};
 use crate::sssd::{get_user_info, user_exists, UserError};
 use thiserror::Error;
 
@@ -29,6 +31,14 @@ pub enum AuthError {
 
     #[error("Token is DPoP-bound but no proof provided")]
     DPoPRequired,
+
+    /// User's NSS groups do not intersect with the configured login_groups allow-list.
+    #[error("Group policy denied login: {0}")]
+    GroupDenied(String),
+
+    /// Username mapping pipeline failed (missing claim or transform error).
+    #[error("Identity mapping failed: {0}")]
+    IdentityMapping(String),
 }
 
 /// Check if test mode is explicitly enabled.
@@ -43,7 +53,7 @@ fn is_test_mode_enabled() -> bool {
 /// Result of a successful authentication.
 #[derive(Debug)]
 pub struct AuthResult {
-    /// The resolved Unix username (from preferred_username claim)
+    /// The resolved Unix username (final mapped value used for NSS lookup)
     pub username: String,
     /// User ID from NSS/SSSD
     pub uid: u32,
@@ -59,6 +69,9 @@ pub struct AuthResult {
     pub token_auth_time: Option<i64>,
     /// DPoP thumbprint (if token was DPoP-bound and proof was provided)
     pub dpop_thumbprint: Option<String>,
+    /// The original raw claim value before transforms were applied (for audit trail).
+    /// `None` when no mapping was performed (e.g. in test paths that use preferred_username directly).
+    pub mapped_from: Option<String>,
 }
 
 /// Authenticate a user with an OIDC token.
@@ -74,16 +87,26 @@ pub struct AuthResult {
 /// signature verification is skipped. Production builds MUST NOT include this feature.
 pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
     // Load configuration from environment
-    let mut config =
-        ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
+    let mut config = ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
 
-    // Thread JTI enforcement mode from policy config (Issue #10).
+    // Thread JTI enforcement mode and identity config from policy config (Issue #10).
     // PolicyConfig::from_env() returns Ok(Default) in test mode, and Err when the
     // policy file is absent (e.g. in unit tests). We use .ok() so missing-file is
     // non-fatal; the default Warn mode (already set in from_env()) is used instead.
-    if let Ok(policy) = PolicyConfig::from_env() {
+    let policy_opt = PolicyConfig::from_env().ok();
+    if let Some(ref policy) = policy_opt {
         config.jti_enforcement = policy.effective_security_modes().jti_enforcement;
     }
+
+    // Construct username mapper from policy identity config.
+    // Collision safety warnings are logged at mapper construction time (config-load audit).
+    let mapper = policy_opt.as_ref().map(|policy| {
+        let warnings = crate::identity::collision::validate_collision_safety(&policy.identity);
+        for w in &warnings {
+            tracing::warn!(collision_warning = %w, "Username mapping collision safety warning");
+        }
+        UsernameMapper::from_config(&policy.identity)
+    });
 
     // Create validator
     #[cfg(feature = "test-mode")]
@@ -102,14 +125,58 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
 
     let claims = validator.validate(token)?;
 
-    // Map preferred_username to SSSD user
-    let username = &claims.preferred_username;
+    // Map username via configured claim + transform pipeline.
+    // If policy is absent or mapper construction failed, fall back to preferred_username.
+    let (username_str, mapped_from) = match mapper {
+        Some(Ok(ref m)) => {
+            let raw = claims.preferred_username.clone();
+            let mapped = m
+                .map(&claims)
+                .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
+            // Only record mapped_from when the mapping actually changed the value.
+            let from = if mapped != raw { Some(raw) } else { None };
+            (mapped, from)
+        }
+        Some(Err(e)) => {
+            return Err(AuthError::IdentityMapping(e.to_string()));
+        }
+        None => (claims.preferred_username.clone(), None),
+    };
 
-    if !user_exists(username) {
-        return Err(AuthError::UserNotFound(username.clone()));
+    // Log token groups for audit enrichment — NEVER used for access decisions.
+    if let Some(token_groups) = claims.groups_for_audit() {
+        tracing::info!(
+            username = %username_str,
+            token_groups = ?token_groups,
+            "Token groups (audit enrichment only — access decisions use NSS groups)"
+        );
     }
 
-    let user_info = get_user_info(username)?;
+    if !user_exists(&username_str) {
+        return Err(AuthError::UserNotFound(username_str));
+    }
+
+    let user_info = get_user_info(&username_str)?;
+
+    // Enforce login_groups policy via NSS group membership check.
+    // This runs AFTER user_exists() so we have the user's GID.
+    if let Some(ref policy) = policy_opt {
+        let modes = policy.effective_security_modes();
+        check_group_policy(
+            &user_info.username,
+            user_info.gid,
+            &policy.ssh_login.login_groups,
+            modes.groups_enforcement,
+        )
+        .map_err(|e: GroupPolicyError| {
+            tracing::warn!(
+                username = %user_info.username,
+                error = %e,
+                "Group policy denied SSH login"
+            );
+            AuthError::GroupDenied(e.to_string())
+        })?;
+    }
 
     // Generate cryptographically secure session ID
     let session_id = generate_ssh_session_id()
@@ -124,6 +191,7 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
         token_acr: claims.acr,
         token_auth_time: claims.auth_time,
         dpop_thumbprint: None,
+        mapped_from,
     })
 }
 
@@ -205,16 +273,25 @@ pub fn authenticate_with_dpop(
     dpop_config: &DPoPAuthConfig,
 ) -> Result<AuthResult, AuthError> {
     // Load configuration from environment
-    let mut config =
-        ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
+    let mut config = ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
 
     // Thread JTI and dpop_required enforcement modes from policy config (Issue #10).
     let mut dpop_nonce_enforcement = EnforcementMode::Strict; // safe default
-    if let Ok(policy) = PolicyConfig::from_env() {
+    let policy_opt = PolicyConfig::from_env().ok();
+    if let Some(ref policy) = policy_opt {
         let modes = policy.effective_security_modes();
         config.jti_enforcement = modes.jti_enforcement;
         dpop_nonce_enforcement = modes.dpop_required;
     }
+
+    // Construct username mapper from policy identity config.
+    let mapper = policy_opt.as_ref().map(|policy| {
+        let warnings = crate::identity::collision::validate_collision_safety(&policy.identity);
+        for w in &warnings {
+            tracing::warn!(collision_warning = %w, "Username mapping collision safety warning");
+        }
+        UsernameMapper::from_config(&policy.identity)
+    });
 
     // Create validator
     #[cfg(feature = "test-mode")]
@@ -237,80 +314,75 @@ pub fn authenticate_with_dpop(
     //
     // Helper closure to validate proof and enforce nonce policy.
     // Returns the proof thumbprint string for cnf.jkt binding comparison.
-    let validate_and_enforce_nonce =
-        |proof: &str| -> Result<DPoPProofResult, AuthError> {
-            let dpop_validation_config = DPoPConfig {
-                max_proof_age: dpop_config.max_proof_age,
-                // Pass require_nonce/expected_nonce to dpop.rs only for the
-                // direct single-value path (expected_nonce set by caller).
-                // Cache-backed enforcement is handled here in auth.rs.
-                require_nonce: dpop_config.require_nonce && dpop_config.expected_nonce.is_some(),
-                expected_nonce: dpop_config.expected_nonce.clone(),
-                expected_method: "SSH".to_string(),
-                expected_target: dpop_config.target_host.clone(),
-            };
-            let result = validate_dpop_proof(proof, &dpop_validation_config)?;
+    let validate_and_enforce_nonce = |proof: &str| -> Result<DPoPProofResult, AuthError> {
+        let dpop_validation_config = DPoPConfig {
+            max_proof_age: dpop_config.max_proof_age,
+            // Pass require_nonce/expected_nonce to dpop.rs only for the
+            // direct single-value path (expected_nonce set by caller).
+            // Cache-backed enforcement is handled here in auth.rs.
+            require_nonce: dpop_config.require_nonce && dpop_config.expected_nonce.is_some(),
+            expected_nonce: dpop_config.expected_nonce.clone(),
+            expected_method: "SSH".to_string(),
+            expected_target: dpop_config.target_host.clone(),
+        };
+        let result = validate_dpop_proof(proof, &dpop_validation_config)?;
 
-            // Cache-backed nonce enforcement path (require_nonce=true, expected_nonce=None).
-            // This is the primary path for server-issued nonces (RFC 9449 §8).
-            // The single-value path (expected_nonce=Some) is handled inside dpop.rs.
-            if dpop_config.require_nonce && dpop_config.expected_nonce.is_none() {
-                match &result.nonce {
-                    Some(nonce) => {
-                        // Nonce is present — consume it from cache.
-                        // Replay (nonce already consumed) is ALWAYS hard-fail regardless
-                        // of enforcement mode (CLAUDE.md security invariant).
-                        match global_nonce_cache().consume(nonce) {
-                            Ok(()) => {
-                                tracing::debug!(
-                                    nonce_prefix = &nonce[..nonce.len().min(8)],
-                                    "DPoP nonce consumed successfully"
-                                );
-                            }
-                            Err(NonceConsumeError::ConsumedOrExpired) => {
-                                tracing::warn!(
-                                    "DPoP nonce replay or expiry detected — rejecting"
-                                );
-                                return Err(AuthError::DPoPValidation(
-                                    DPoPValidationError::NonceMismatch,
-                                ));
-                            }
-                            Err(NonceConsumeError::EmptyNonce) => {
-                                // Should not happen: dpop.rs only stores non-empty nonces
-                                tracing::warn!("DPoP nonce in proof is empty — rejecting");
-                                return Err(AuthError::DPoPValidation(
-                                    DPoPValidationError::MissingNonce,
-                                ));
-                            }
+        // Cache-backed nonce enforcement path (require_nonce=true, expected_nonce=None).
+        // This is the primary path for server-issued nonces (RFC 9449 §8).
+        // The single-value path (expected_nonce=Some) is handled inside dpop.rs.
+        if dpop_config.require_nonce && dpop_config.expected_nonce.is_none() {
+            match &result.nonce {
+                Some(nonce) => {
+                    // Nonce is present — consume it from cache.
+                    // Replay (nonce already consumed) is ALWAYS hard-fail regardless
+                    // of enforcement mode (CLAUDE.md security invariant).
+                    match global_nonce_cache().consume(nonce) {
+                        Ok(()) => {
+                            tracing::debug!(
+                                nonce_prefix = &nonce[..nonce.len().min(8)],
+                                "DPoP nonce consumed successfully"
+                            );
+                        }
+                        Err(NonceConsumeError::ConsumedOrExpired) => {
+                            tracing::warn!("DPoP nonce replay or expiry detected — rejecting");
+                            return Err(AuthError::DPoPValidation(
+                                DPoPValidationError::NonceMismatch,
+                            ));
+                        }
+                        Err(NonceConsumeError::EmptyNonce) => {
+                            // Should not happen: dpop.rs only stores non-empty nonces
+                            tracing::warn!("DPoP nonce in proof is empty — rejecting");
+                            return Err(AuthError::DPoPValidation(
+                                DPoPValidationError::MissingNonce,
+                            ));
                         }
                     }
-                    None => {
-                        // Nonce is absent from proof — behavior depends on enforcement mode.
-                        match dpop_nonce_enforcement {
-                            EnforcementMode::Strict => {
-                                tracing::warn!(
-                                    "DPoP nonce required (strict) but proof has no nonce"
-                                );
-                                return Err(AuthError::DPoPValidation(
-                                    DPoPValidationError::MissingNonce,
-                                ));
-                            }
-                            EnforcementMode::Warn => {
-                                tracing::warn!(
-                                    "DPoP proof has no nonce (dpop_required=warn) — \
+                }
+                None => {
+                    // Nonce is absent from proof — behavior depends on enforcement mode.
+                    match dpop_nonce_enforcement {
+                        EnforcementMode::Strict => {
+                            tracing::warn!("DPoP nonce required (strict) but proof has no nonce");
+                            return Err(AuthError::DPoPValidation(
+                                DPoPValidationError::MissingNonce,
+                            ));
+                        }
+                        EnforcementMode::Warn => {
+                            tracing::warn!(
+                                "DPoP proof has no nonce (dpop_required=warn) — \
                                      allowing but this may indicate a misconfigured client"
-                                );
-                            }
-                            EnforcementMode::Disabled => {
-                                // Silently skip nonce check.
-                            }
+                            );
+                        }
+                        EnforcementMode::Disabled => {
+                            // Silently skip nonce check.
                         }
                     }
                 }
             }
+        }
 
-            Ok(result)
-        };
+        Ok(result)
+    };
 
     // Check for DPoP binding
     let dpop_thumbprint = if let Some(cnf) = &claims.cnf {
@@ -336,14 +408,55 @@ pub fn authenticate_with_dpop(
         None
     };
 
-    // Map preferred_username to SSSD user
-    let username = &claims.preferred_username;
+    // Map username via configured claim + transform pipeline.
+    let (username_str, mapped_from) = match mapper {
+        Some(Ok(ref m)) => {
+            let raw = claims.preferred_username.clone();
+            let mapped = m
+                .map(&claims)
+                .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
+            let from = if mapped != raw { Some(raw) } else { None };
+            (mapped, from)
+        }
+        Some(Err(e)) => {
+            return Err(AuthError::IdentityMapping(e.to_string()));
+        }
+        None => (claims.preferred_username.clone(), None),
+    };
 
-    if !user_exists(username) {
-        return Err(AuthError::UserNotFound(username.clone()));
+    // Log token groups for audit enrichment — NEVER used for access decisions.
+    if let Some(token_groups) = claims.groups_for_audit() {
+        tracing::info!(
+            username = %username_str,
+            token_groups = ?token_groups,
+            "Token groups (audit enrichment only — access decisions use NSS groups)"
+        );
     }
 
-    let user_info = get_user_info(username)?;
+    if !user_exists(&username_str) {
+        return Err(AuthError::UserNotFound(username_str));
+    }
+
+    let user_info = get_user_info(&username_str)?;
+
+    // Enforce login_groups policy via NSS group membership check.
+    if let Some(ref policy) = policy_opt {
+        let modes = policy.effective_security_modes();
+        check_group_policy(
+            &user_info.username,
+            user_info.gid,
+            &policy.ssh_login.login_groups,
+            modes.groups_enforcement,
+        )
+        .map_err(|e: GroupPolicyError| {
+            tracing::warn!(
+                username = %user_info.username,
+                error = %e,
+                "Group policy denied SSH login"
+            );
+            AuthError::GroupDenied(e.to_string())
+        })?;
+    }
 
     // Generate cryptographically secure session ID
     let session_id = generate_ssh_session_id()
@@ -358,26 +471,40 @@ pub fn authenticate_with_dpop(
         token_acr: claims.acr,
         token_auth_time: claims.auth_time,
         dpop_thumbprint,
+        mapped_from,
     })
 }
 
 /// Authenticate with explicit configuration (for testing).
+///
+/// The optional `mapper` parameter allows tests to inject a [`UsernameMapper`] instance.
+/// When `None`, `preferred_username` is used directly (backward-compatible with all 134
+/// existing tests that call this function without a mapper).
+///
+/// Group policy is intentionally NOT enforced here — this function is the test path.
+/// Production auth goes through [`authenticate_with_token`] or [`authenticate_with_dpop`].
 pub fn authenticate_with_config(
     token: &str,
     config: ValidationConfig,
+    mapper: Option<&UsernameMapper>,
 ) -> Result<AuthResult, AuthError> {
     // Validate token
     let validator = TokenValidator::new(config);
     let claims = validator.validate(token)?;
 
-    // Map preferred_username to SSSD user
-    let username = &claims.preferred_username;
+    // Apply username mapper if provided, otherwise use preferred_username directly.
+    let username_str = match mapper {
+        Some(m) => m
+            .map(&claims)
+            .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?,
+        None => claims.preferred_username.clone(),
+    };
 
-    if !user_exists(username) {
-        return Err(AuthError::UserNotFound(username.clone()));
+    if !user_exists(&username_str) {
+        return Err(AuthError::UserNotFound(username_str));
     }
 
-    let user_info = get_user_info(username)?;
+    let user_info = get_user_info(&username_str)?;
 
     // Generate cryptographically secure session ID
     let session_id = generate_ssh_session_id()
@@ -392,6 +519,7 @@ pub fn authenticate_with_config(
         token_acr: claims.acr,
         token_auth_time: claims.auth_time,
         dpop_thumbprint: None,
+        mapped_from: None, // test path — no audit trail needed
     })
 }
 
@@ -458,6 +586,51 @@ mod tests {
 
         let err = AuthError::UserNotFound("testuser".to_string());
         assert!(err.to_string().contains("testuser"));
+
+        // New variants from Phase 8
+        let err = AuthError::GroupDenied("not in unix-users".to_string());
+        assert!(err.to_string().contains("Group policy denied"));
+
+        let err = AuthError::IdentityMapping("missing claim 'email'".to_string());
+        assert!(err.to_string().contains("Identity mapping failed"));
+        assert!(err.to_string().contains("missing claim"));
+    }
+
+    #[test]
+    fn test_auth_result_mapped_from_field_exists() {
+        // Verify that AuthResult has a mapped_from field (compile-time check via construction).
+        let result = AuthResult {
+            username: "alice".to_string(),
+            uid: 1000,
+            gid: 1000,
+            session_id: "unix-oidc-abc-0123456789abcdef".to_string(),
+            token_jti: None,
+            token_acr: None,
+            token_auth_time: None,
+            dpop_thumbprint: None,
+            mapped_from: Some("alice@corp.example.com".to_string()),
+        };
+        assert_eq!(
+            result.mapped_from.as_deref(),
+            Some("alice@corp.example.com")
+        );
+    }
+
+    #[test]
+    fn test_auth_result_mapped_from_none_when_no_transform() {
+        // mapped_from should be None when username was not changed by transforms.
+        let result = AuthResult {
+            username: "alice".to_string(),
+            uid: 1000,
+            gid: 1000,
+            session_id: "unix-oidc-abc-0123456789abcdef".to_string(),
+            token_jti: None,
+            token_acr: None,
+            token_auth_time: None,
+            dpop_thumbprint: None,
+            mapped_from: None,
+        };
+        assert!(result.mapped_from.is_none());
     }
 
     // ── Nonce enforcement mode tests ──────────────────────────────────────────
@@ -470,10 +643,7 @@ mod tests {
     use crate::oidc::{validate_dpop_proof, DPoPConfig, DPoPValidationError};
     use crate::security::nonce_cache::{generate_dpop_nonce, DPoPNonceCache};
 
-    fn make_test_proof_with_nonce(
-        target: &str,
-        nonce: Option<&str>,
-    ) -> (String, String) {
+    fn make_test_proof_with_nonce(target: &str, nonce: Option<&str>) -> (String, String) {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};
@@ -524,17 +694,17 @@ mod tests {
         match nonce_from_proof {
             Some(nonce) => match cache.consume(nonce) {
                 Ok(()) => Ok(()),
-                Err(crate::security::nonce_cache::NonceConsumeError::ConsumedOrExpired) => {
-                    Err(AuthError::DPoPValidation(DPoPValidationError::NonceMismatch))
-                }
+                Err(crate::security::nonce_cache::NonceConsumeError::ConsumedOrExpired) => Err(
+                    AuthError::DPoPValidation(DPoPValidationError::NonceMismatch),
+                ),
                 Err(crate::security::nonce_cache::NonceConsumeError::EmptyNonce) => {
                     Err(AuthError::DPoPValidation(DPoPValidationError::MissingNonce))
                 }
             },
             None => match enforcement {
-                EnforcementMode::Strict => Err(AuthError::DPoPValidation(
-                    DPoPValidationError::MissingNonce,
-                )),
+                EnforcementMode::Strict => {
+                    Err(AuthError::DPoPValidation(DPoPValidationError::MissingNonce))
+                }
                 EnforcementMode::Warn => Ok(()),
                 EnforcementMode::Disabled => Ok(()),
             },
@@ -561,12 +731,18 @@ mod tests {
         apply_cache_nonce_enforcement(Some(&nonce), &cache, EnforcementMode::Disabled).unwrap();
 
         // Second consume — all modes must reject
-        for mode in [EnforcementMode::Strict, EnforcementMode::Warn, EnforcementMode::Disabled] {
+        for mode in [
+            EnforcementMode::Strict,
+            EnforcementMode::Warn,
+            EnforcementMode::Disabled,
+        ] {
             let result = apply_cache_nonce_enforcement(Some(&nonce), &cache, mode);
             assert!(
                 matches!(
                     result,
-                    Err(AuthError::DPoPValidation(DPoPValidationError::NonceMismatch))
+                    Err(AuthError::DPoPValidation(
+                        DPoPValidationError::NonceMismatch
+                    ))
                 ),
                 "replay must hard-fail in mode {:?}",
                 mode

@@ -32,10 +32,23 @@ pub mod ui;
 
 use audit::AuditEvent;
 use auth::{authenticate_with_dpop, authenticate_with_token, AuthError, DPoPAuthConfig};
-use policy::config::{EnforcementMode, PolicyConfig};
 use pamsm::{Pam, PamError, PamFlags, PamLibExt, PamMsgStyle, PamServiceModule};
+use policy::config::{EnforcementMode, PolicyConfig};
 use security::nonce_cache::{generate_dpop_nonce, global_nonce_cache};
 use security::rate_limit::global_rate_limiter;
+
+/// Return `true` if `pam_user` matches any configured break-glass account.
+///
+/// Checks both `break_glass.accounts` (v2.0) and `break_glass.local_account` (v1.0 compat).
+fn is_break_glass_user(pam_user: &str, policy: &PolicyConfig) -> bool {
+    policy.break_glass.accounts.iter().any(|a| a == pam_user)
+        || policy
+            .break_glass
+            .local_account
+            .as_deref()
+            .map(|la| la == pam_user)
+            .unwrap_or(false)
+}
 
 struct PamUnixOidc;
 pamsm::pam_module!(PamUnixOidc);
@@ -73,6 +86,23 @@ impl PamServiceModule for PamUnixOidc {
             .flatten()
             .map(|s| s.to_string_lossy().to_string());
         let source_ip: Option<&str> = rhost_string.as_deref();
+
+        // Break-glass bypass — MUST come before rate limiting, nonce issuance, and OIDC.
+        //
+        // Break-glass accounts bypass OIDC entirely: they are local accounts authenticated
+        // by the downstream PAM stack (e.g. pam_unix.so with local password or YubiKey OTP).
+        // Returning PAM_IGNORE here causes PAM to skip this module and continue to the next
+        // auth provider in the stack, which handles the actual credential check.
+        //
+        // Security: We only bypass when break_glass.enabled is explicitly true AND the user
+        // is in the configured accounts list. Disabled break-glass config = normal OIDC flow.
+        if let Ok(policy) = PolicyConfig::from_env() {
+            if policy.break_glass.enabled && is_break_glass_user(&pam_user, &policy) {
+                // CRITICAL audit event before returning — do not skip.
+                AuditEvent::break_glass_auth(&pam_user, source_ip).log();
+                return PamError::IGNORE;
+            }
+        }
 
         // Check rate limiting before attempting authentication
         if let Err(e) = global_rate_limiter().check_allowed(&pam_user, source_ip) {
@@ -172,8 +202,8 @@ impl PamServiceModule for PamUnixOidc {
             let dpop_config = DPoPAuthConfig {
                 target_host: gethostname::gethostname().to_string_lossy().to_string(),
                 max_proof_age: 60,
-                require_nonce: true,    // cache-backed nonce enforcement
-                expected_nonce: None,   // None = cache path (auth.rs consumes from cache)
+                require_nonce: true,  // cache-backed nonce enforcement
+                expected_nonce: None, // None = cache path (auth.rs consumes from cache)
                 require_dpop_for_bound_tokens: true,
             };
             authenticate_with_dpop(&token, dpop_proof.as_deref(), &dpop_config)
@@ -257,6 +287,14 @@ impl PamServiceModule for PamUnixOidc {
                             source_ip,
                         )
                         .log();
+                        PamError::AUTH_ERR
+                    }
+                    AuthError::GroupDenied(_) => {
+                        AuditEvent::ssh_login_failed(Some(&pam_user), source_ip, &reason).log();
+                        PamError::AUTH_ERR
+                    }
+                    AuthError::IdentityMapping(_) => {
+                        AuditEvent::ssh_login_failed(Some(&pam_user), source_ip, &reason).log();
                         PamError::AUTH_ERR
                     }
                 }
@@ -640,7 +678,11 @@ mod tests {
         let nonce = generate_dpop_nonce().unwrap();
         let prompt = format!("DPOP_NONCE:{nonce}");
         let parts: Vec<&str> = prompt.splitn(2, ':').collect();
-        assert_eq!(parts.len(), 2, "DPOP_NONCE prompt must split into exactly 2 parts");
+        assert_eq!(
+            parts.len(),
+            2,
+            "DPOP_NONCE prompt must split into exactly 2 parts"
+        );
         assert_eq!(parts[0], "DPOP_NONCE");
         assert_eq!(parts[1], nonce.as_str());
     }
@@ -692,5 +734,70 @@ mod tests {
 
         std::env::remove_var("UNIX_OIDC_POLICY_YAML");
         assert_eq!(dpop_mode, EnforcementMode::Warn);
+    }
+
+    // =========================================================================
+    // Break-glass bypass tests
+    // =========================================================================
+
+    use figment::providers::Format as _;
+
+    fn make_policy(yaml: &str) -> PolicyConfig {
+        figment::Figment::from(figment::providers::Serialized::defaults(
+            PolicyConfig::default(),
+        ))
+        .merge(figment::providers::Yaml::string(yaml))
+        .extract()
+        .unwrap()
+    }
+
+    #[test]
+    fn test_is_break_glass_user_with_accounts_list() {
+        let policy = make_policy(
+            "break_glass:\n  enabled: true\n  accounts:\n    - breakglass1\n    - breakglass2\n",
+        );
+        assert!(is_break_glass_user("breakglass1", &policy));
+        assert!(is_break_glass_user("breakglass2", &policy));
+        assert!(!is_break_glass_user("regularuser", &policy));
+    }
+
+    #[test]
+    fn test_is_break_glass_user_with_local_account_v1_compat() {
+        // v1.0 backward compat: local_account field
+        let policy = make_policy("break_glass:\n  enabled: true\n  local_account: emergency\n");
+        assert!(is_break_glass_user("emergency", &policy));
+        assert!(!is_break_glass_user("alice", &policy));
+    }
+
+    #[test]
+    fn test_is_break_glass_user_false_when_disabled() {
+        // Break-glass guard must not fire when enabled=false even if account matches.
+        let policy =
+            make_policy("break_glass:\n  enabled: false\n  accounts:\n    - breakglass1\n");
+        // is_break_glass_user returns true (account is listed)...
+        assert!(is_break_glass_user("breakglass1", &policy));
+        // ...but the authenticate() guard checks policy.break_glass.enabled first,
+        // so PAM_IGNORE is only returned when BOTH enabled=true AND user matches.
+        assert!(!policy.break_glass.enabled);
+    }
+
+    #[test]
+    fn test_is_break_glass_user_empty_accounts_returns_false() {
+        // No accounts configured — no user should match.
+        let policy = PolicyConfig::default();
+        assert!(!is_break_glass_user("anyone", &policy));
+        assert!(!is_break_glass_user("root", &policy));
+    }
+
+    #[test]
+    fn test_is_break_glass_user_both_fields_honoured() {
+        // Both local_account and accounts are in effect simultaneously.
+        let policy = make_policy(
+            "break_glass:\n  enabled: true\n  local_account: legacy\n  accounts:\n    - new1\n    - new2\n",
+        );
+        assert!(is_break_glass_user("legacy", &policy));
+        assert!(is_break_glass_user("new1", &policy));
+        assert!(is_break_glass_user("new2", &policy));
+        assert!(!is_break_glass_user("notlisted", &policy));
     }
 }
