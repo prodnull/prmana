@@ -48,7 +48,8 @@
         "oauth2.device.authorization.grant.enabled": "true",
         "oauth2.device.code.lifespan": "300",
         "oauth2.device.polling.interval": "5",
-        "oidc.ciba.grant.enabled": "false"
+        "oidc.ciba.grant.enabled": "false",
+        "dpop.bound.access.tokens": "true"
       },
       "protocolMappers": [
         {
