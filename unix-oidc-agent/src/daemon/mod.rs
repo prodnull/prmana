@@ -9,4 +9,4 @@ pub mod protocol;
 pub mod socket;
 
 pub use protocol::{AgentRequest, AgentResponse, AgentResponseData};
-pub use socket::{spawn_refresh_task, AgentClient, AgentServer, AgentState, ClientError};
+pub use socket::{acquire_listener, spawn_refresh_task, AgentClient, AgentServer, AgentState, ClientError};

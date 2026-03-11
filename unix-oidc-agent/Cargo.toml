@@ -60,6 +60,13 @@ dirs = "5"
 serde_yaml = "0.9"
 figment = { version = "0.10", features = ["yaml", "env"] }
 parking_lot = "0.12"
+# OPS-02: systemd socket activation — accepts pre-bound fds; validates LISTEN_PID match
+# to prevent fd hijacking.  Source: https://docs.rs/listenfd/latest/listenfd/
+listenfd = "1.0"
+# OPS-04: sd-notify readiness / stopping signals. Pure-Rust implementation with no
+# libsystemd FFI; silently no-ops when NOTIFY_SOCKET is absent (standalone mode).
+# Source: https://docs.rs/sd-notify/0.5.0/sd_notify/
+sd-notify = "0.5"
 
 [features]
 # Hardware signer backends — optional; base build has no PKCS#11 or TPM deps.

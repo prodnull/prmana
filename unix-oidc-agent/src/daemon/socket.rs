@@ -1,12 +1,14 @@
 //! Unix socket server and client
 
+use listenfd::ListenFd;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -20,6 +22,58 @@ use crate::storage::{
 
 #[cfg(test)]
 use crate::daemon::protocol::AgentResponseData;
+
+/// Acquire a `UnixListener` via the appropriate mechanism for the current environment.
+///
+/// Priority order:
+/// 1. **systemd socket activation** — when `LISTEN_FDS` and `LISTEN_PID` environment
+///    variables are set by systemd, the pre-bound file descriptor is inherited.
+///    `listenfd` validates that `LISTEN_PID` matches the current process to prevent
+///    fd hijacking by unrelated processes.
+/// 2. **launchd socket activation (macOS)** — placeholder; implemented in Plan 04.
+/// 3. **Standalone bind** — removes any stale socket file, binds a new socket at
+///    `socket_path`, and sets permissions to `0600` (owner-only).
+///
+/// Callers in the serve loop should register signal handlers *before* calling into
+/// the accept loop so that signals arriving during startup are not dropped.
+///
+/// Source: `listenfd 1.0` — <https://docs.rs/listenfd/latest/listenfd/>
+pub fn acquire_listener(socket_path: &Path) -> std::io::Result<UnixListener> {
+    // Step 1: systemd socket activation via LISTEN_FDS / LISTEN_PID.
+    // ListenFd::from_env() validates LISTEN_PID == getpid() before taking the fd.
+    let mut listenfd = ListenFd::from_env();
+    if let Ok(Some(std_listener)) = listenfd.take_unix_listener(0) {
+        std_listener.set_nonblocking(true)?;
+        let listener = UnixListener::from_std(std_listener)?;
+        info!("Socket acquired via systemd socket activation (LISTEN_FDS)");
+        return Ok(listener);
+    }
+
+    // Step 2: launchd socket activation (macOS) — implemented in Plan 04.
+    // Placeholder: fall through to standalone bind on macOS for now.
+    #[cfg(target_os = "macos")]
+    {
+        // TODO(13-04): implement launch_activate_socket() FFI and take socket here.
+    }
+
+    // Step 3: Standalone bind — daemon manages its own socket lifecycle.
+    if socket_path.exists() {
+        std::fs::remove_file(socket_path)?;
+    }
+    let listener = UnixListener::bind(socket_path)?;
+
+    // Set socket permissions to owner-only (0600).
+    // The PAM module and the agent CLI run as the same UID, so 0600 does not
+    // impede normal operation while preventing other users from connecting.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    info!(socket_path = %socket_path.display(), "Socket bound in standalone mode");
+    Ok(listener)
+}
 
 /// Agent state shared across connections.
 ///
@@ -184,40 +238,83 @@ impl AgentServer {
         runtime_dir.join("unix-oidc-agent.sock")
     }
 
-    /// Start the server and listen for connections
+    /// Start the server and listen for connections.
+    ///
+    /// Calls `acquire_listener()` to obtain a `UnixListener` via systemd socket
+    /// activation (when `LISTEN_FDS` is set) or a standalone bind (fallback).
+    ///
+    /// Handles `SIGTERM` and `SIGINT` gracefully:
+    /// 1. Stops accepting new connections.
+    /// 2. Sends `sd_notify::notify(STOPPING=1)` — systemd tracks the shutdown.
+    /// 3. Waits 5 seconds for in-flight requests to drain.
+    /// 4. Runs credential cleanup (zeroize keys, revoke tokens — best-effort).
+    ///
+    /// Signal handlers are registered **before** entering the accept loop so that
+    /// signals arriving during startup are never silently dropped.
     pub async fn serve(&self) -> Result<(), std::io::Error> {
-        // Remove existing socket if present
-        if self.socket_path.exists() {
-            std::fs::remove_file(&self.socket_path)?;
-        }
+        let listener = acquire_listener(&self.socket_path)?;
+        self.serve_with_listener(listener).await
+    }
 
-        let listener = UnixListener::bind(&self.socket_path)?;
+    /// Start the server using a caller-supplied `UnixListener`.
+    ///
+    /// Identical to `serve()` but accepts a pre-bound listener.  Useful for tests
+    /// that want to control socket creation independently.
+    pub async fn serve_with_listener(&self, listener: UnixListener) -> Result<(), std::io::Error> {
+        info!(socket_path = %self.socket_path.display(), "Agent listening on socket");
 
-        // Set socket permissions (owner only)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&self.socket_path, perms)?;
-        }
-
-        info!("Agent listening on {:?}", self.socket_path);
+        // Register signal handlers BEFORE entering the accept loop.
+        // Signals arriving between process start and this point are queued
+        // by the kernel; tokio::signal drains that queue on first recv() call.
+        // Source: https://docs.rs/tokio/latest/tokio/signal/unix/
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
 
         loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    let state = Arc::clone(&self.state);
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, state).await {
-                            error!("Connection error: {}", e);
+            tokio::select! {
+                result = listener.accept() => {
+                    match result {
+                        Ok((stream, _addr)) => {
+                            let state = Arc::clone(&self.state);
+                            tokio::spawn(async move {
+                                if let Err(e) = handle_connection(stream, state).await {
+                                    error!("Connection error: {}", e);
+                                }
+                            });
                         }
-                    });
+                        Err(e) => {
+                            error!("Accept error: {}", e);
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!("Accept error: {}", e);
+                _ = sigterm.recv() => {
+                    info!("SIGTERM received — shutting down gracefully");
+                    break;
+                }
+                _ = sigint.recv() => {
+                    info!("SIGINT received — shutting down gracefully");
+                    break;
                 }
             }
         }
+
+        // Notify systemd (or any supervisor) that shutdown is in progress.
+        // sd_notify is a no-op when NOTIFY_SOCKET is not set (standalone mode).
+        // Source: sd-notify 0.5 — https://docs.rs/sd-notify/0.5.0/sd_notify/
+        let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
+
+        // 5-second drain: allow in-flight IPC requests to complete before exit.
+        // Connections accepted before the signal arrived continue to be served by
+        // their spawned Tokio tasks during this window.
+        info!("Draining in-flight requests (5s)...");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // Credential cleanup: best-effort zeroize + revocation.
+        // Failures are logged at WARN and do not prevent clean exit.
+        run_credential_cleanup(&self.state).await;
+
+        info!("Agent shutdown complete");
+        Ok(())
     }
 }
 
@@ -441,8 +538,17 @@ async fn handle_request(
         }
 
         AgentRequest::Shutdown => {
-            info!("Shutdown requested");
-            std::process::exit(0);
+            // Raise SIGTERM to trigger the graceful shutdown path in serve_with_listener().
+            // This ensures the 5-second drain + credential cleanup runs instead of an
+            // abrupt exit. std::process::exit(0) is intentionally NOT used here.
+            info!("Shutdown IPC command received — sending SIGTERM to self");
+            // Safety: getpid() and kill() are always safe to call; SIGTERM to self
+            // is equivalent to `kill -TERM <pid>` from the shell. The process continues
+            // to run until the Tokio signal handler in the serve loop fires.
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+            (AgentResponse::ok(), false)
         }
 
         // SessionClosed is intercepted in handle_connection before reaching here.
@@ -806,6 +912,53 @@ pub fn spawn_refresh_task(
     });
 
     handle.abort_handle()
+}
+
+/// Best-effort credential cleanup at daemon shutdown.
+///
+/// Called after the 5-second drain period following SIGTERM/SIGINT.
+/// Zeroizes the in-memory DPoP signing key and access token by dropping the Arc
+/// references held in `AgentState`. Token revocation is best-effort; failure is
+/// logged at WARN and does not prevent clean daemon exit.
+///
+/// Does NOT delete stored credentials from the keyring or file backend — the user
+/// may restart the daemon and expect their session to still be valid. Use the
+/// `SessionClosed` IPC command (or the `logout` CLI) for full credential deletion.
+async fn run_credential_cleanup(state: &Arc<RwLock<AgentState>>) {
+    info!("Running shutdown credential cleanup (best-effort)");
+
+    // Abort the background refresh task if running.
+    {
+        let mut state_write = state.write().await;
+        if let Some(handle) = state_write.refresh_task.take() {
+            handle.abort();
+            debug!("Auto-refresh task cancelled at shutdown");
+        }
+    }
+
+    // Abort any pending CIBA step-up poll tasks.
+    {
+        let mut state_write = state.write().await;
+        for (correlation_id, pending) in state_write.pending_step_ups.drain() {
+            pending.handle.abort();
+            debug!(correlation_id = %correlation_id, "CIBA step-up task cancelled at shutdown");
+        }
+    }
+
+    // Best-effort token revocation at shutdown.
+    // Uses a synthetic session_id so log lines are identifiable.
+    revoke_token_best_effort(Arc::clone(state), "daemon-shutdown").await;
+
+    // Clear in-memory secrets.
+    // access_token (SecretString) and signer (Arc<ProtectedSigningKey>) zeroize on drop (MEM-01/MEM-03).
+    {
+        let mut state_write = state.write().await;
+        state_write.access_token = None;
+        state_write.signer = None;
+        debug!("In-memory credentials zeroized at shutdown");
+    }
+
+    info!("Shutdown credential cleanup complete");
 }
 
 /// Send a best-effort RFC 7009 token revocation request.
@@ -2383,5 +2536,67 @@ mod tests {
             "Expected TimedOut, got: {:?}",
             outcome
         );
+    }
+
+    /// Test that `acquire_listener` creates a socket file in standalone mode
+    /// (no `LISTEN_FDS` env var set) and that the socket file has mode 0600.
+    ///
+    /// This test runs without systemd, so `LISTEN_FDS` is absent and the
+    /// function takes the standalone bind path.
+    #[tokio::test]
+    async fn test_acquire_listener_standalone_binds_socket() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("agent.sock");
+
+        // Ensure LISTEN_FDS is unset so we exercise the standalone path.
+        // Note: LISTEN_FDS may be set in CI if the test runner uses socket activation,
+        // but in a unit test context it is absent.
+        let result = acquire_listener(&socket_path);
+        assert!(result.is_ok(), "acquire_listener failed: {:?}", result.err());
+
+        // The socket file must exist after binding.
+        assert!(
+            socket_path.exists(),
+            "socket file was not created at {:?}",
+            socket_path
+        );
+
+        // Socket must be owner-only (0600).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&socket_path).unwrap();
+            let mode = meta.mode() & 0o7777;
+            assert_eq!(
+                mode, 0o600,
+                "expected socket mode 0600, got {:o}",
+                mode
+            );
+        }
+    }
+
+    /// Test that `acquire_listener` removes a stale socket file before binding.
+    ///
+    /// A leftover socket from a previous daemon run would cause `bind()` to fail
+    /// with EADDRINUSE. The function must silently remove it first.
+    #[test]
+    fn test_acquire_listener_removes_stale_socket() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("stale.sock");
+
+        // Create a stale file at the socket path.
+        std::fs::write(&socket_path, b"stale").unwrap();
+        assert!(socket_path.exists(), "precondition: stale file must exist");
+
+        // acquire_listener should remove the stale file and succeed.
+        // We need a Tokio runtime context for UnixListener::from_std().
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async { acquire_listener(&socket_path) });
+        assert!(
+            result.is_ok(),
+            "acquire_listener failed with stale socket: {:?}",
+            result.err()
+        );
+        assert!(socket_path.exists(), "new socket file must exist after bind");
     }
 }

@@ -15,7 +15,8 @@ use unix_oidc_agent::crypto::protected_key::mlock_probe;
 use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
 use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
 use unix_oidc_agent::daemon::{
-    spawn_refresh_task, AgentClient, AgentResponse, AgentResponseData, AgentServer, AgentState,
+    acquire_listener, spawn_refresh_task, AgentClient, AgentResponse, AgentResponseData,
+    AgentServer, AgentState,
 };
 use unix_oidc_agent::security::disable_core_dumps;
 use unix_oidc_agent::storage::{
@@ -166,13 +167,25 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Run the agent daemon
+/// Run the agent daemon.
+///
+/// Startup sequence:
+/// 1. Process hardening (core dumps disabled, mlock probe)
+/// 2. Storage migration
+/// 3. Load existing credentials
+/// 4. **Gate 1:** Acquire socket via `acquire_listener()` (systemd activation or standalone bind)
+/// 5. **Gate 2:** Config validation (`AgentConfig::load()` + `timeouts.validate()`)
+/// 6. **Gate 3:** Best-effort JWKS prefetch (WARN on failure, never blocks readiness)
+/// 7. Send `sd_notify READY=1` — systemd marks the service active
+/// 8. Enter `serve_with_listener()` accept loop (SIGTERM/SIGINT handled inside)
+///
+/// Source: sd-notify 0.5 readiness pattern — https://docs.rs/sd-notify/0.5.0/sd_notify/
 async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     let socket_path = socket
         .map(PathBuf::from)
         .unwrap_or_else(AgentServer::default_socket_path);
 
-    info!("Starting agent daemon on {:?}", socket_path);
+    info!(socket_path = %socket_path.display(), "Starting unix-oidc-agent daemon");
 
     // Process hardening: disable core dumps before loading any key material.
     // Best-effort — failures are logged as WARN, daemon continues.
@@ -243,13 +256,67 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
         }
     }
 
-    let server = AgentServer::new(socket_path.clone(), state);
+    // --- sd-notify readiness gates ---
 
-    println!("unix-oidc-agent listening on {:?}", socket_path);
-    println!("Press Ctrl+C to stop");
+    // Gate 1: Acquire socket.
+    // Uses systemd socket activation when LISTEN_FDS/LISTEN_PID are set;
+    // falls back to standalone bind otherwise.
+    let listener = acquire_listener(&socket_path)
+        .map_err(|e| anyhow::anyhow!("Failed to acquire socket: {}", e))?;
+    info!(socket_path = %socket_path.display(), "Socket acquired");
 
+    // Gate 2: Config validated.
+    // AgentConfig::load() runs figment layered loading + TimeoutsConfig::validate().
+    // Non-fatal if config file is absent — defaults are safe for production use.
+    match AgentConfig::load() {
+        Ok(_config) => {
+            info!("Configuration validated");
+        }
+        Err(e) => {
+            warn!(error = %e, "Configuration load/validation warning (using defaults)");
+        }
+    }
+
+    // Gate 3: Best-effort JWKS prefetch.
+    // Fetches discovery + JWKS for the configured issuer to warm the cache.
+    // Failure downgrades to WARN — the daemon will retry on the first auth request.
+    // This is run in a blocking task because JwksProvider uses reqwest::blocking.
+    let issuer_for_prefetch = {
+        AgentConfig::load()
+            .ok()
+            .and_then(|c| if c.issuer.is_empty() { None } else { Some(c) })
+    };
+    if let Some(config) = issuer_for_prefetch {
+        let issuer = config.issuer.clone();
+        let ttl = config.timeouts.jwks_cache_ttl_secs;
+        let http_timeout = config.timeouts.jwks_http_timeout_secs;
+        match tokio::task::spawn_blocking(move || {
+            use pam_unix_oidc::oidc::JwksProvider;
+            let provider = JwksProvider::with_timeouts(&issuer, ttl, http_timeout);
+            provider.refresh_jwks()
+        })
+        .await
+        {
+            Ok(Ok(())) => info!("Initial JWKS prefetch succeeded"),
+            Ok(Err(e)) => warn!(error = %e, "Initial JWKS prefetch failed — will retry on first auth"),
+            Err(e) => warn!(error = %e, "JWKS prefetch task panicked — will retry on first auth"),
+        }
+    } else {
+        info!("No issuer configured; skipping JWKS prefetch");
+    }
+
+    // Send READY=1: all three gates passed (or best-effort failures logged as WARN).
+    // sd_notify is a no-op when NOTIFY_SOCKET is not set (standalone mode).
+    // Source: sd-notify 0.5 — https://docs.rs/sd-notify/0.5.0/sd_notify/
+    let _ = sd_notify::notify(&[
+        sd_notify::NotifyState::Ready,
+        sd_notify::NotifyState::Status("unix-oidc-agent ready"),
+    ]);
+    info!("Agent ready (sd_notify READY=1 sent if systemd-managed)");
+
+    let server = AgentServer::new(socket_path, state);
     server
-        .serve()
+        .serve_with_listener(listener)
         .await
         .map_err(|e| anyhow::anyhow!("Server error: {}", e))
 }
