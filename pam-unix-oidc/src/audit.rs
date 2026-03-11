@@ -112,6 +112,22 @@ pub enum AuditEvent {
         method: String,
         reason: String,
     },
+
+    /// Break-glass emergency access used.
+    ///
+    /// Emitted at CRITICAL severity whenever a break-glass account authenticates.
+    /// This event must be forwarded to SIEM/alerting systems immediately.
+    /// OCSF: Authentication / Privileged Account Use (class_uid 3002).
+    #[serde(rename = "BREAK_GLASS_AUTH")]
+    BreakGlassAuth {
+        timestamp: String,
+        username: String,
+        source_ip: Option<String>,
+        host: String,
+        reason: String,
+        /// Constant "CRITICAL" — break-glass use is always a critical event.
+        severity: &'static str,
+    },
 }
 
 impl AuditEvent {
@@ -223,6 +239,22 @@ impl AuditEvent {
         }
     }
 
+    /// Create a break-glass authentication event.
+    ///
+    /// This event is always CRITICAL severity. The caller must ensure it is
+    /// logged via `.log()` immediately after construction; this constructor
+    /// does not emit it automatically.
+    pub fn break_glass_auth(username: &str, source_ip: Option<&str>) -> Self {
+        Self::BreakGlassAuth {
+            timestamp: iso_timestamp(),
+            username: username.to_string(),
+            source_ip: source_ip.map(String::from),
+            host: get_hostname(),
+            reason: "break-glass bypass".to_string(),
+            severity: "CRITICAL",
+        }
+    }
+
     /// Log this event to the configured audit destinations.
     pub fn log(&self) {
         if let Ok(json) = serde_json::to_string(self) {
@@ -249,6 +281,7 @@ impl AuditEvent {
             Self::StepUpInitiated { .. } => "STEP_UP_INITIATED",
             Self::StepUpSuccess { .. } => "STEP_UP_SUCCESS",
             Self::StepUpFailed { .. } => "STEP_UP_FAILED",
+            Self::BreakGlassAuth { .. } => "BREAK_GLASS_AUTH",
         }
     }
 }
@@ -370,5 +403,66 @@ mod tests {
         // Should be in RFC 3339 format like "2024-01-15T10:30:00.123456789+00:00"
         assert!(ts.contains('T'));
         assert!(ts.contains(':'));
+    }
+
+    // ── Phase 8: BreakGlassAuth tests ───────────────────────────────────────
+
+    #[test]
+    fn test_break_glass_auth_serialization() {
+        let event = AuditEvent::break_glass_auth("emergency", Some("10.0.0.1"));
+        let json = serde_json::to_string(&event).unwrap();
+
+        // Event tag must be BREAK_GLASS_AUTH
+        assert!(json.contains("BREAK_GLASS_AUTH"), "json: {json}");
+        // Username must appear
+        assert!(json.contains("emergency"), "json: {json}");
+        // Source IP must appear
+        assert!(json.contains("10.0.0.1"), "json: {json}");
+        // Severity must be CRITICAL
+        assert!(json.contains("CRITICAL"), "json: {json}");
+        // Reason must be present
+        assert!(json.contains("break-glass bypass"), "json: {json}");
+        // Timestamp must be present
+        assert!(json.contains("timestamp"), "json: {json}");
+    }
+
+    #[test]
+    fn test_break_glass_auth_serialization_no_source_ip() {
+        let event = AuditEvent::break_glass_auth("breakglass1", None);
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("BREAK_GLASS_AUTH"), "json: {json}");
+        assert!(json.contains("breakglass1"), "json: {json}");
+        assert!(json.contains("CRITICAL"), "json: {json}");
+        // source_ip should be null or absent
+        assert!(json.contains("null") || !json.contains("source_ip\":\""));
+    }
+
+    #[test]
+    fn test_break_glass_auth_event_type() {
+        let event = AuditEvent::break_glass_auth("emergency", None);
+        assert_eq!(event.event_type(), "BREAK_GLASS_AUTH");
+    }
+
+    #[test]
+    fn test_break_glass_auth_constructor_populates_all_fields() {
+        let event = AuditEvent::break_glass_auth("testuser", Some("192.168.1.50"));
+        match event {
+            AuditEvent::BreakGlassAuth {
+                timestamp,
+                username,
+                source_ip,
+                host: _,
+                reason,
+                severity,
+            } => {
+                assert!(!timestamp.is_empty(), "timestamp must be populated");
+                assert_eq!(username, "testuser");
+                assert_eq!(source_ip, Some("192.168.1.50".to_string()));
+                assert_eq!(reason, "break-glass bypass");
+                assert_eq!(severity, "CRITICAL");
+            }
+            other => panic!("Expected BreakGlassAuth, got {:?}", other),
+        }
     }
 }

@@ -139,6 +139,58 @@ impl<'de> serde::de::Deserialize<'de> for AcrConfig {
     }
 }
 
+// ── Identity configuration ────────────────────────────────────────────────────
+
+/// Transform specification for the username mapping pipeline.
+///
+/// Supports two deserialization forms:
+/// - Shorthand string: `"strip_domain"` or `"lowercase"`
+/// - Object form: `{ type: "regex", pattern: "^corp-(?P<username>[a-z0-9]+)" }`
+///
+/// The object form is required for the `regex` transform to supply the pattern.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TransformConfig {
+    /// Shorthand form: `"strip_domain"` or `"lowercase"`.
+    Simple(String),
+    /// Object form for parameterised transforms (currently only `regex`).
+    Object {
+        #[serde(rename = "type")]
+        r#type: String,
+        pattern: String,
+    },
+}
+
+/// Username claim extraction and transform pipeline configuration.
+///
+/// Deserialised from the `identity:` section of `policy.yaml`.
+///
+/// ```yaml
+/// identity:
+///   username_claim: email
+///   transforms:
+///     - strip_domain
+///     - lowercase
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IdentityConfig {
+    /// OIDC claim to extract as the raw username. Default: `preferred_username`.
+    pub username_claim: String,
+    /// Ordered sequence of transforms applied to the raw claim value.
+    /// Default: empty (no transforms — use claim value as-is).
+    pub transforms: Vec<TransformConfig>,
+}
+
+impl Default for IdentityConfig {
+    fn default() -> Self {
+        Self {
+            username_claim: "preferred_username".to_string(),
+            transforms: Vec::new(),
+        }
+    }
+}
+
 // ── Security modes ────────────────────────────────────────────────────────────
 
 /// Configurable enforcement modes for security checks (Issue #10).
@@ -161,6 +213,11 @@ pub struct SecurityModes {
     pub amr_enforcement: EnforcementMode,
     /// ACR (Authentication Context Reference) configuration.
     pub acr: AcrConfig,
+    /// NSS group membership enforcement. Default: `warn`.
+    /// - `strict`: deny login if NSS group lookup fails or user not in allowed groups.
+    /// - `warn`: log a warning but allow login if NSS lookup fails.
+    /// - `disabled`: skip group membership check entirely.
+    pub groups_enforcement: EnforcementMode,
 }
 
 impl Default for SecurityModes {
@@ -170,6 +227,7 @@ impl Default for SecurityModes {
             dpop_required: EnforcementMode::Strict,
             amr_enforcement: EnforcementMode::Disabled,
             acr: AcrConfig::default(),
+            groups_enforcement: EnforcementMode::Warn,
         }
     }
 }
@@ -183,6 +241,7 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
             dpop_required: EnforcementMode,
             amr_enforcement: EnforcementMode,
             acr: AcrConfig,
+            groups_enforcement: EnforcementMode,
         }
         impl Default for Raw {
             fn default() -> Self {
@@ -192,6 +251,7 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
                     dpop_required: s.dpop_required,
                     amr_enforcement: s.amr_enforcement,
                     acr: s.acr,
+                    groups_enforcement: s.groups_enforcement,
                 }
             }
         }
@@ -201,6 +261,7 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
             dpop_required: r.dpop_required,
             amr_enforcement: r.amr_enforcement,
             acr: r.acr,
+            groups_enforcement: r.groups_enforcement,
         })
     }
 }
@@ -297,6 +358,10 @@ pub struct SshConfig {
     pub minimum_acr: Option<String>,
     /// Maximum age of auth_time in seconds (re-auth if older)
     pub max_auth_age: Option<i64>,
+    /// NSS group names required for SSH login. Empty = no restriction (allow all).
+    /// Enforcement behaviour is governed by `security_modes.groups_enforcement`.
+    #[serde(default)]
+    pub login_groups: Vec<String>,
 }
 
 impl Default for SshConfig {
@@ -305,6 +370,7 @@ impl Default for SshConfig {
             require_oidc: true,
             minimum_acr: None,
             max_auth_age: Some(3600), // 1 hour default
+            login_groups: Vec::new(),
         }
     }
 }
@@ -322,6 +388,10 @@ pub struct SudoConfig {
     /// Command-specific rules
     #[serde(default)]
     pub commands: Vec<CommandRule>,
+    /// NSS group names permitted to run sudo. Empty = no restriction (allow all).
+    /// Enforcement behaviour is governed by `security_modes.groups_enforcement`.
+    #[serde(default)]
+    pub sudo_groups: Vec<String>,
 }
 
 impl Default for SudoConfig {
@@ -331,6 +401,7 @@ impl Default for SudoConfig {
             allowed_methods: vec![StepUpMethod::DeviceFlow],
             challenge_timeout: 60,
             commands: Vec::new(),
+            sudo_groups: Vec::new(),
         }
     }
 }
@@ -350,12 +421,17 @@ pub struct CommandRule {
 pub struct BreakGlassConfig {
     /// Whether break-glass is enabled
     pub enabled: bool,
-    /// Local account for break-glass access
+    /// Legacy single-account field (v1.0 backward compat). Use `accounts` for new configs.
     pub local_account: Option<String>,
     /// Authentication method (yubikey_otp)
     pub requires: Option<String>,
     /// Whether to send alerts on break-glass use
     pub alert_on_use: bool,
+    /// Break-glass account names (v2.0+). Multiple accounts supported.
+    /// If both `local_account` and `accounts` are set, both are honoured.
+    /// Default: empty (no break-glass accounts).
+    #[serde(default)]
+    pub accounts: Vec<String>,
 }
 
 impl Default for BreakGlassConfig {
@@ -365,6 +441,7 @@ impl Default for BreakGlassConfig {
             local_account: None,
             requires: None,
             alert_on_use: true,
+            accounts: Vec::new(),
         }
     }
 }
@@ -410,6 +487,9 @@ pub struct PolicyConfig {
     pub security_modes: Option<SecurityModes>,
     /// Cache tuning parameters.
     pub cache: CacheConfig,
+    /// Username mapping and transform pipeline configuration.
+    #[serde(default)]
+    pub identity: IdentityConfig,
 }
 
 impl PolicyConfig {
@@ -439,7 +519,7 @@ impl PolicyConfig {
             .merge(
                 Env::prefixed("UNIX_OIDC_")
                     .split("__")
-                    .only(&["security_modes", "cache"]),
+                    .only(&["security_modes", "cache", "identity"]),
             )
             .extract()
             .map_err(|e| PolicyError::ParseError(e.to_string()))?;
@@ -475,7 +555,7 @@ impl PolicyConfig {
                 .merge(
                     Env::prefixed("UNIX_OIDC_")
                         .split("__")
-                        .only(&["security_modes", "cache"]),
+                        .only(&["security_modes", "cache", "identity"]),
                 )
                 .extract()
                 .map_err(|e| PolicyError::ParseError(e.to_string()))?;
@@ -723,7 +803,7 @@ security_modes:
                 .merge(
                     Env::prefixed("UNIX_OIDC_")
                         .split("__")
-                        .only(&["security_modes", "cache"]),
+                        .only(&["security_modes", "cache", "identity"]),
                 )
                 .extract();
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
@@ -843,5 +923,200 @@ sudo:
         let yaml = "classification: standard";
         let host: HostConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(host.classification, HostClassification::Standard);
+    }
+
+    // ── Phase 8: Identity config tests ──────────────────────────────────────
+
+    #[test]
+    fn test_identity_config_defaults() {
+        let config = IdentityConfig::default();
+        assert_eq!(config.username_claim, "preferred_username");
+        assert!(config.transforms.is_empty());
+    }
+
+    #[test]
+    fn test_identity_config_yaml_override() {
+        let yaml = r#"
+identity:
+  username_claim: email
+  transforms:
+    - strip_domain
+    - lowercase
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("identity yaml should load");
+
+        assert_eq!(policy.identity.username_claim, "email");
+        assert_eq!(policy.identity.transforms.len(), 2);
+        // First transform is Simple("strip_domain")
+        assert!(matches!(&policy.identity.transforms[0], TransformConfig::Simple(s) if s == "strip_domain"));
+        assert!(matches!(&policy.identity.transforms[1], TransformConfig::Simple(s) if s == "lowercase"));
+    }
+
+    #[test]
+    fn test_identity_config_regex_object_form() {
+        let yaml = r#"
+identity:
+  username_claim: email
+  transforms:
+    - type: regex
+      pattern: "^corp-(?P<username>[a-z0-9]+)"
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("identity regex yaml should load");
+
+        assert_eq!(policy.identity.transforms.len(), 1);
+        assert!(
+            matches!(&policy.identity.transforms[0], TransformConfig::Object { r#type, pattern } if r#type == "regex" && pattern.contains("username"))
+        );
+    }
+
+    #[test]
+    fn test_v1_yaml_loads_without_identity_section() {
+        let yaml = r#"
+host:
+  classification: standard
+ssh_login:
+  require_oidc: true
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("v1.0 yaml without identity section must load");
+
+        // Should use default identity config
+        assert_eq!(policy.identity.username_claim, "preferred_username");
+        assert!(policy.identity.transforms.is_empty());
+    }
+
+    #[test]
+    fn test_ssh_config_login_groups_defaults_to_empty() {
+        let config = SshConfig::default();
+        assert!(config.login_groups.is_empty());
+    }
+
+    #[test]
+    fn test_ssh_config_login_groups_yaml_override() {
+        let yaml = r#"
+ssh_login:
+  login_groups:
+    - unix-users
+    - developers
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("ssh login_groups yaml should load");
+
+        assert_eq!(policy.ssh_login.login_groups, vec!["unix-users", "developers"]);
+    }
+
+    #[test]
+    fn test_sudo_config_sudo_groups_defaults_to_empty() {
+        let config = SudoConfig::default();
+        assert!(config.sudo_groups.is_empty());
+    }
+
+    #[test]
+    fn test_sudo_config_sudo_groups_yaml_override() {
+        let yaml = r#"
+sudo:
+  sudo_groups:
+    - wheel
+    - admins
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("sudo sudo_groups yaml should load");
+
+        assert_eq!(policy.sudo.sudo_groups, vec!["wheel", "admins"]);
+    }
+
+    #[test]
+    fn test_break_glass_config_accounts_defaults_to_empty() {
+        let config = BreakGlassConfig::default();
+        assert!(config.accounts.is_empty());
+        // local_account backward compat also None by default
+        assert!(config.local_account.is_none());
+    }
+
+    #[test]
+    fn test_break_glass_config_accounts_yaml_override() {
+        let yaml = r#"
+break_glass:
+  enabled: true
+  accounts:
+    - breakglass1
+    - breakglass2
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("break_glass accounts yaml should load");
+
+        assert!(policy.break_glass.enabled);
+        assert_eq!(policy.break_glass.accounts, vec!["breakglass1", "breakglass2"]);
+    }
+
+    #[test]
+    fn test_break_glass_config_v1_local_account_still_works() {
+        // v1.0 backward compat: local_account field must still deserialise
+        let yaml = r#"
+break_glass:
+  enabled: true
+  local_account: emergency
+  alert_on_use: true
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("v1.0 break_glass with local_account must load");
+
+        assert_eq!(policy.break_glass.local_account, Some("emergency".to_string()));
+        assert!(policy.break_glass.accounts.is_empty()); // accounts defaults to empty
+    }
+
+    #[test]
+    fn test_security_modes_groups_enforcement_default_is_warn() {
+        let modes = SecurityModes::default();
+        assert_eq!(modes.groups_enforcement, EnforcementMode::Warn);
+    }
+
+    #[test]
+    fn test_security_modes_groups_enforcement_yaml_override() {
+        let yaml = r#"
+security_modes:
+  groups_enforcement: strict
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("groups_enforcement yaml should load");
+
+        let modes = policy.effective_security_modes();
+        assert_eq!(modes.groups_enforcement, EnforcementMode::Strict);
+    }
+
+    #[test]
+    fn test_v1_yaml_without_groups_enforcement_defaults_to_warn() {
+        // A v1.0 policy without security_modes must still get groups_enforcement = Warn
+        let yaml = r#"
+host:
+  classification: standard
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("v1.0 yaml should load");
+
+        // security_modes absent (None) → effective_security_modes() returns default
+        assert!(policy.security_modes.is_none());
+        let modes = policy.effective_security_modes();
+        assert_eq!(modes.groups_enforcement, EnforcementMode::Warn);
     }
 }
