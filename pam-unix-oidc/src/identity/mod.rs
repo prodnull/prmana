@@ -11,5 +11,5 @@
 pub mod collision;
 pub mod mapper;
 
-pub use collision::validate_collision_safety;
+pub use collision::{check_collision_safety, validate_collision_safety, CollisionError};
 pub use mapper::{IdentityError, UsernameMapper, UsernameTransform};

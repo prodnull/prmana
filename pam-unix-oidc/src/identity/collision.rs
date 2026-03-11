@@ -5,9 +5,17 @@
 //! different identities to authenticate as the same Unix account, which is a
 //! security concern.
 //!
-//! This module provides [`validate_collision_safety`] which returns a list of
-//! warning messages for potentially non-injective configurations.  An empty
-//! return value means no collisions were detected.
+//! This module provides:
+//! - [`check_collision_safety`] — hard-fail gatekeeper (returns `Err(CollisionError)` for
+//!   non-injective pipelines; used in production auth paths).
+//! - [`validate_collision_safety`] — advisory-only variant (returns `Vec<String>` warnings)
+//!   retained for backward compatibility and tooling use.
+//!
+//! # Security invariant (IDN-03)
+//!
+//! The hard-fail path is unconditional and non-configurable — same class as signature
+//! verification.  A non-injective pipeline allows two distinct IdP users to authenticate
+//! as the same Unix account, which is a critical identity security flaw.
 //!
 //! # Current heuristics
 //!
@@ -19,13 +27,58 @@
 
 use crate::policy::config::{IdentityConfig, TransformConfig};
 
+// ── Error type ────────────────────────────────────────────────────────────────
+
+/// Error returned by [`check_collision_safety`] when a non-injective transform pipeline
+/// is detected.
+///
+/// The `reason` field names each offending transform so operators know exactly which
+/// configuration knob to change.  This error is always a hard-fail — it is not
+/// configurable and cannot be suppressed.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Non-injective username transform pipeline detected — potential identity collision: {reason}"
+)]
+pub struct CollisionError {
+    /// Human-readable description naming the offending transform(s).
+    pub reason: String,
+}
+
+// ── Hard-fail gatekeeper ──────────────────────────────────────────────────────
+
+/// Analyse an [`IdentityConfig`] for potentially non-injective transform pipelines.
+///
+/// Returns `Err(CollisionError)` when the pipeline contains any transform that can map
+/// two distinct identity claim values to the same Unix username.  Returns `Ok(())` when
+/// the pipeline is safe (or empty).
+///
+/// # Security
+///
+/// This function is the IDN-03 gatekeeper.  Callers in the authentication path **must**
+/// propagate `Err` immediately as a configuration error (`AuthError::Config`).  The
+/// check is unconditional and non-configurable — same class as signature verification.
+pub fn check_collision_safety(config: &IdentityConfig) -> Result<(), CollisionError> {
+    let warnings = validate_collision_safety(config);
+    if warnings.is_empty() {
+        Ok(())
+    } else {
+        Err(CollisionError {
+            reason: warnings.join("; "),
+        })
+    }
+}
+
+// ── Advisory variant (preserved for backward compat / tooling) ────────────────
+
 /// Analyse an [`IdentityConfig`] for potentially non-injective transform pipelines.
 ///
 /// Returns a `Vec<String>` of human-readable warning messages.  An empty vec
 /// means no collision risk was detected.  Warnings are advisory — they do not
 /// prevent the configuration from loading.
 ///
-/// Warnings should be emitted at `tracing::warn!` level during daemon startup.
+/// **Production auth paths must use [`check_collision_safety`] instead.**  This
+/// function is retained for backward compatibility and may be used by tooling that
+/// wants to surface warnings without hard-failing.
 pub fn validate_collision_safety(config: &IdentityConfig) -> Vec<String> {
     let mut warnings = Vec::new();
 
@@ -82,7 +135,10 @@ mod tests {
 
     #[test]
     fn test_lowercase_alone_is_safe() {
-        let config = config_with("email", vec![TransformConfig::Simple("lowercase".to_string())]);
+        let config = config_with(
+            "email",
+            vec![TransformConfig::Simple("lowercase".to_string())],
+        );
         let warnings = validate_collision_safety(&config);
         assert!(
             warnings.is_empty(),
@@ -115,7 +171,10 @@ mod tests {
             ],
         );
         let warnings = validate_collision_safety(&config);
-        assert!(!warnings.is_empty(), "strip_domain+lowercase must still warn");
+        assert!(
+            !warnings.is_empty(),
+            "strip_domain+lowercase must still warn"
+        );
     }
 
     #[test]
@@ -155,6 +214,114 @@ mod tests {
             ],
         );
         let warnings = validate_collision_safety(&config);
-        assert!(warnings.len() >= 2, "both strip_domain and regex should warn");
+        assert!(
+            warnings.len() >= 2,
+            "both strip_domain and regex should warn"
+        );
+    }
+
+    // ── check_collision_safety tests ──────────────────────────────────────────
+
+    #[test]
+    fn check_strip_domain_returns_err_with_transform_name() {
+        let config = config_with(
+            "email",
+            vec![TransformConfig::Simple("strip_domain".to_string())],
+        );
+        let result = check_collision_safety(&config);
+        assert!(result.is_err(), "strip_domain must hard-fail");
+        let err = result.unwrap_err();
+        assert!(
+            err.reason.contains("strip_domain"),
+            "error must name 'strip_domain' but got: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn check_regex_returns_err_with_transform_name() {
+        let config = config_with(
+            "email",
+            vec![TransformConfig::Object {
+                r#type: "regex".to_string(),
+                pattern: r"^(?P<username>[a-z]+)@corp\.com$".to_string(),
+            }],
+        );
+        let result = check_collision_safety(&config);
+        assert!(result.is_err(), "regex must hard-fail");
+        let err = result.unwrap_err();
+        assert!(
+            err.reason.contains("regex"),
+            "error must name 'regex' but got: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn check_both_strip_domain_and_regex_lists_both() {
+        let config = config_with(
+            "email",
+            vec![
+                TransformConfig::Simple("strip_domain".to_string()),
+                TransformConfig::Object {
+                    r#type: "regex".to_string(),
+                    pattern: r"^(?P<username>[a-z]+)$".to_string(),
+                },
+            ],
+        );
+        let result = check_collision_safety(&config);
+        assert!(result.is_err(), "both strip_domain and regex must hard-fail");
+        let err = result.unwrap_err();
+        assert!(
+            err.reason.contains("strip_domain"),
+            "error must mention strip_domain"
+        );
+        assert!(
+            err.reason.contains("regex"),
+            "error must mention regex"
+        );
+    }
+
+    #[test]
+    fn check_lowercase_only_is_ok() {
+        let config = config_with(
+            "email",
+            vec![TransformConfig::Simple("lowercase".to_string())],
+        );
+        let result = check_collision_safety(&config);
+        assert!(
+            result.is_ok(),
+            "lowercase alone must not hard-fail: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn check_no_transforms_is_ok() {
+        let config = config_with("preferred_username", vec![]);
+        let result = check_collision_safety(&config);
+        assert!(
+            result.is_ok(),
+            "empty transform pipeline must not hard-fail: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn check_collision_error_display_contains_detail() {
+        let config = config_with(
+            "email",
+            vec![TransformConfig::Simple("strip_domain".to_string())],
+        );
+        let err = check_collision_safety(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Non-injective"),
+            "error Display must mention Non-injective: {msg}"
+        );
+        assert!(
+            msg.contains("strip_domain"),
+            "error Display must name the offending transform: {msg}"
+        );
     }
 }
