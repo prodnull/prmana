@@ -42,6 +42,10 @@ pub enum SudoError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// CIBA step-up via agent IPC failed (socket error, agent error, or protocol error).
+    #[error("Step-up IPC error: {0}")]
+    StepUp(String),
+
     #[error("User mismatch: token user {token_user} != sudo user {sudo_user}")]
     UserMismatch {
         token_user: String,
@@ -180,13 +184,26 @@ pub fn authenticate_sudo(
 }
 
 /// Perform the step-up authentication.
+///
+/// Routes to the appropriate step-up method:
+/// - `StepUpMethod::Push` and `StepUpMethod::Fido2` route through agent IPC (CIBA).
+/// - `StepUpMethod::DeviceFlow` uses the existing device-flow client.
 fn perform_step_up(
     ctx: &SudoContext,
     requirements: &SudoStepUpRequirements,
-    display: &dyn StepUpDisplay,
+    _display: &dyn StepUpDisplay,
 ) -> Result<StepUpResult, SudoError> {
-    // For now, we only support device flow
-    // Future: add support for push and FIDO2
+    // Prefer Push/Fido2 (CIBA) when available — lower friction than device flow.
+    if requirements.allowed_methods.contains(&StepUpMethod::Push) {
+        let socket_path = agent_socket_path();
+        return perform_step_up_via_ipc(ctx, requirements, &socket_path, StepUpMethod::Push);
+    }
+
+    if requirements.allowed_methods.contains(&StepUpMethod::Fido2) {
+        let socket_path = agent_socket_path();
+        return perform_step_up_via_ipc(ctx, requirements, &socket_path, StepUpMethod::Fido2);
+    }
+
     if !requirements
         .allowed_methods
         .contains(&StepUpMethod::DeviceFlow)
@@ -195,6 +212,222 @@ fn perform_step_up(
             "No supported step-up method available".to_string(),
         ));
     }
+
+    perform_device_flow_step_up(ctx, requirements, _display)
+}
+
+/// Resolve the agent socket path from environment (same convention as Phase 09 session IPC).
+///
+/// Checks `UNIX_OIDC_AGENT_SOCKET`, then `XDG_RUNTIME_DIR/unix-oidc-agent.sock`,
+/// then falls back to `/run/user/0/unix-oidc-agent.sock` (root sessions).
+fn agent_socket_path() -> String {
+    std::env::var("UNIX_OIDC_AGENT_SOCKET").unwrap_or_else(|_| {
+        let xdg = std::env::var("XDG_RUNTIME_DIR")
+            .unwrap_or_else(|_| "/run/user/0".to_string());
+        format!("{}/unix-oidc-agent.sock", xdg)
+    })
+}
+
+/// Perform CIBA step-up authentication via agent IPC.
+///
+/// Sends a `StepUp` IPC request to the agent, then polls `StepUpResult` at the
+/// returned `poll_interval_secs` until the agent reports complete, timed-out, or
+/// denied. The total PAM-side wall time is bounded by `requirements.timeout`.
+///
+/// ## Protocol
+///
+/// Each IPC call is a short blocking request (2s timeout) — the 30–120s CIBA poll
+/// loop runs entirely in the agent's async Tokio runtime. This avoids blocking PAM
+/// for the full CIBA window (Pitfall 3 from 10-RESEARCH.md: LoginGraceTime race).
+pub(crate) fn perform_step_up_via_ipc(
+    ctx: &SudoContext,
+    requirements: &SudoStepUpRequirements,
+    socket_path: &str,
+    method: StepUpMethod,
+) -> Result<StepUpResult, SudoError> {
+
+    let method_str = match method {
+        StepUpMethod::Push => "push",
+        StepUpMethod::Fido2 => "fido2",
+        StepUpMethod::DeviceFlow => "device_flow",
+    };
+
+    // Resolve hostname (gethostname crate is available in pam-unix-oidc).
+    let hostname = gethostname::gethostname()
+        .to_string_lossy()
+        .to_string();
+
+    // ── Step 1: Send StepUp request ───────────────────────────────────────────
+    let step_up_msg = serde_json::json!({
+        "action": "step_up",
+        "username": ctx.user,
+        "command": ctx.command,
+        "hostname": hostname,
+        "method": method_str,
+        "timeout_secs": requirements.timeout,
+    });
+
+    let correlation_id = {
+        let mut stream = connect_agent_socket(socket_path)?;
+        send_ipc_message(&mut stream, &step_up_msg)?;
+        let response_json = read_ipc_response(&mut stream)?;
+        let response: serde_json::Value = serde_json::from_str(&response_json)
+            .map_err(|e| SudoError::StepUp(format!("Failed to parse StepUp response: {}", e)))?;
+
+        if response["status"] == "error" {
+            let msg = response["message"].as_str().unwrap_or("unknown error");
+            return Err(SudoError::StepUp(format!("Agent StepUp error: {}", msg)));
+        }
+
+        // Extract correlation_id from StepUpPending response.
+        response["correlation_id"]
+            .as_str()
+            .ok_or_else(|| SudoError::StepUp("No correlation_id in StepUpPending response".to_string()))?
+            .to_string()
+    };
+
+    let poll_interval_secs = 5u64; // Default; agent may return a shorter interval.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(requirements.timeout);
+
+    // ── Step 2: Poll for result ───────────────────────────────────────────────
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(SudoError::Timeout);
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(poll_interval_secs));
+
+        if std::time::Instant::now() >= deadline {
+            return Err(SudoError::Timeout);
+        }
+
+        let step_up_result_msg = serde_json::json!({
+            "action": "step_up_result",
+            "correlation_id": correlation_id,
+        });
+
+        let mut stream = match connect_agent_socket(socket_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to poll StepUpResult from agent (continuing)");
+                continue;
+            }
+        };
+
+        if let Err(e) = send_ipc_message(&mut stream, &step_up_result_msg) {
+            tracing::warn!(error = %e, "Failed to send StepUpResult IPC (continuing)");
+            continue;
+        }
+
+        let response_json = match read_ipc_response(&mut stream) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read StepUpResult IPC response (continuing)");
+                continue;
+            }
+        };
+
+        let response: serde_json::Value = match serde_json::from_str(&response_json) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to parse StepUpResult response (continuing)");
+                continue;
+            }
+        };
+
+        if response["status"] == "error" {
+            let code = response["code"].as_str().unwrap_or("");
+            if code == "STEP_UP_NOT_FOUND" {
+                // Correlation ID expired — treat as timeout.
+                return Err(SudoError::Timeout);
+            }
+            let msg = response["message"].as_str().unwrap_or("unknown");
+            return Err(SudoError::StepUp(format!("Agent poll error: {}", msg)));
+        }
+
+        // Distinguish response type by presence of unique fields.
+        if response.get("session_id").is_some() {
+            // StepUpComplete: { acr, session_id }
+            let acr = response["acr"].as_str().map(str::to_string);
+            return Ok(StepUpResult {
+                acr,
+                jti: None, // CIBA does not produce a JTI at the PAM layer.
+            });
+        }
+
+        if response.get("reason").is_some() {
+            // StepUpTimedOut: { reason, user_message }
+            let reason = response["reason"].as_str().unwrap_or("unknown");
+            match reason {
+                "timeout" => return Err(SudoError::Timeout),
+                "denied" => return Err(SudoError::Denied),
+                _ => return Err(SudoError::StepUp(format!("Step-up failed: {}", reason))),
+            }
+        }
+
+        // StepUpPending — still waiting. Continue polling.
+        tracing::debug!(correlation_id = %correlation_id, "Step-up pending; will poll again");
+    }
+}
+
+/// Connect to the agent Unix socket with a 2s timeout.
+fn connect_agent_socket(socket_path: &str) -> Result<std::os::unix::net::UnixStream, SudoError> {
+    use std::os::unix::net::UnixStream;
+
+    let stream = UnixStream::connect(socket_path).map_err(|e| {
+        SudoError::StepUp(format!(
+            "Failed to connect to agent socket '{}': {}",
+            socket_path, e
+        ))
+    })?;
+
+    // Set 2s read/write timeout — same as Phase 09 SessionClosed pattern.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok();
+
+    Ok(stream)
+}
+
+/// Write a JSON message to an agent socket stream, followed by newline.
+fn send_ipc_message(
+    stream: &mut std::os::unix::net::UnixStream,
+    msg: &serde_json::Value,
+) -> Result<(), SudoError> {
+    use std::io::Write;
+
+    let json = serde_json::to_string(msg)
+        .map_err(|e| SudoError::StepUp(format!("Failed to serialize IPC message: {}", e)))?;
+    stream
+        .write_all(json.as_bytes())
+        .map_err(|e| SudoError::StepUp(format!("Failed to write IPC message: {}", e)))?;
+    stream
+        .write_all(b"\n")
+        .map_err(|e| SudoError::StepUp(format!("Failed to write IPC newline: {}", e)))?;
+    Ok(())
+}
+
+/// Read a newline-delimited JSON response from an agent socket stream.
+fn read_ipc_response(stream: &mut std::os::unix::net::UnixStream) -> Result<String, SudoError> {
+    use std::io::BufRead;
+
+    let mut reader = std::io::BufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| SudoError::StepUp(format!("Failed to read IPC response: {}", e)))?;
+    Ok(line)
+}
+
+/// Perform device-flow step-up authentication (existing implementation, extracted from perform_step_up).
+fn perform_device_flow_step_up(
+    ctx: &SudoContext,
+    requirements: &SudoStepUpRequirements,
+    display: &dyn StepUpDisplay,
+) -> Result<StepUpResult, SudoError> {
 
     // Get OIDC configuration from environment
     let issuer = std::env::var("OIDC_ISSUER")
@@ -276,9 +509,11 @@ fn perform_step_up(
     })
 }
 
-#[allow(dead_code)]
-struct StepUpResult {
+#[derive(Debug)]
+pub(crate) struct StepUpResult {
     acr: Option<String>,
+    /// JTI from device-flow token; unused at the PAM layer post-validation.
+    #[allow(dead_code)]
     jti: Option<String>,
 }
 
@@ -355,15 +590,13 @@ fn poll_with_display(
 }
 
 fn log_step_up_initiated(ctx: &SudoContext, requirements: &SudoStepUpRequirements) {
-    let method = if requirements
-        .allowed_methods
-        .contains(&StepUpMethod::DeviceFlow)
-    {
-        "device_flow"
-    } else if requirements.allowed_methods.contains(&StepUpMethod::Push) {
+    // Priority matches perform_step_up() dispatch order: Push > Fido2 > DeviceFlow.
+    let method = if requirements.allowed_methods.contains(&StepUpMethod::Push) {
         "push"
     } else if requirements.allowed_methods.contains(&StepUpMethod::Fido2) {
         "fido2"
+    } else if requirements.allowed_methods.contains(&StepUpMethod::DeviceFlow) {
+        "device_flow"
     } else {
         "unknown"
     };
@@ -399,6 +632,247 @@ fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── TDD RED: CIBA step-up via agent IPC ───────────────────────────────────
+
+    /// SudoError::StepUp variant exists and carries a descriptive message.
+    #[test]
+    fn test_sudo_error_step_up_variant() {
+        let err = SudoError::StepUp("agent socket not reachable".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("agent socket"), "SudoError::StepUp must include the detail message, got: {}", msg);
+    }
+
+    /// challenge_timeout default is 120 (satisfies STP-07: configurable, default 120s).
+    #[test]
+    fn test_challenge_timeout_defaults_to_120() {
+        use crate::policy::config::SudoConfig;
+        let config = SudoConfig::default();
+        assert_eq!(
+            config.challenge_timeout, 120,
+            "challenge_timeout must default to 120 (STP-07)"
+        );
+    }
+
+    /// log_step_up_initiated includes step-up method in audit log (no-panic test).
+    #[test]
+    fn test_log_step_up_initiated_includes_method() {
+        let ctx = SudoContext::new("alice", "/usr/bin/id", Some("/dev/pts/0"));
+        let reqs = SudoStepUpRequirements {
+            allowed_methods: vec![StepUpMethod::Push],
+            timeout: 120,
+            minimum_acr: None,
+        };
+        // Must not panic; method is extracted from allowed_methods.
+        log_step_up_initiated(&ctx, &reqs);
+    }
+
+    /// perform_step_up_via_ipc returns SudoError::StepUp on IPC connection failure.
+    #[test]
+    fn test_perform_step_up_via_ipc_connection_refused() {
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let reqs = SudoStepUpRequirements {
+            allowed_methods: vec![StepUpMethod::Push],
+            timeout: 5,
+            minimum_acr: None,
+        };
+        // Point to a non-existent socket.
+        let socket_path = "/tmp/unix-oidc-agent-test-nonexistent-12345.sock";
+
+        let result = perform_step_up_via_ipc(&ctx, &reqs, socket_path, StepUpMethod::Push);
+        assert!(
+            matches!(result, Err(SudoError::StepUp(_))),
+            "Expected SudoError::StepUp on connection refused, got: {:?}",
+            result
+        );
+    }
+
+    /// Mock IPC test: StepUpPending then StepUpComplete → Ok(StepUpResult).
+    ///
+    /// Creates a temporary Unix socket server that replies with canned JSON.
+    #[test]
+    fn test_step_up_ipc_pending_then_complete() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("mock-agent.sock");
+
+        // Spawn a mock agent that responds with StepUpPending, then StepUpComplete.
+        let socket_path_clone = socket_path.clone();
+        std::thread::spawn(move || {
+            let listener = UnixListener::bind(&socket_path_clone).unwrap();
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let mut buf = vec![0u8; 2048];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        continue;
+                    }
+                    let msg = String::from_utf8_lossy(&buf[..n]);
+                    if msg.contains("step_up\"") {
+                        // First call: respond with StepUpPending.
+                        let resp = serde_json::json!({
+                            "status": "success",
+                            "correlation_id": "test-corr-id",
+                            "expires_in": 120,
+                            "poll_interval_secs": 1
+                        });
+                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
+                    } else if msg.contains("step_up_result") {
+                        // Second call: respond with StepUpComplete.
+                        let resp = serde_json::json!({
+                            "status": "success",
+                            "acr": null,
+                            "session_id": "sess-test-001"
+                        });
+                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
+                    }
+                }
+            }
+        });
+
+        // Give server time to bind.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let reqs = SudoStepUpRequirements {
+            allowed_methods: vec![StepUpMethod::Push],
+            timeout: 10,
+            minimum_acr: None,
+        };
+
+        let result = perform_step_up_via_ipc(
+            &ctx,
+            &reqs,
+            socket_path.to_str().unwrap(),
+            StepUpMethod::Push,
+        );
+        assert!(result.is_ok(), "Expected Ok on Complete, got: {:?}", result);
+    }
+
+    /// Mock IPC test: StepUpTimedOut(reason="timeout") → SudoError::Timeout.
+    #[test]
+    fn test_step_up_ipc_timed_out_reason_timeout() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("mock-agent-timeout.sock");
+
+        let socket_path_clone = socket_path.clone();
+        std::thread::spawn(move || {
+            let listener = UnixListener::bind(&socket_path_clone).unwrap();
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let mut buf = vec![0u8; 2048];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 { continue; }
+                    let msg = String::from_utf8_lossy(&buf[..n]);
+                    if msg.contains("step_up\"") {
+                        let resp = serde_json::json!({
+                            "status": "success",
+                            "correlation_id": "corr-timeout",
+                            "expires_in": 120,
+                            "poll_interval_secs": 1
+                        });
+                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
+                    } else if msg.contains("step_up_result") {
+                        let resp = serde_json::json!({
+                            "status": "success",
+                            "reason": "timeout",
+                            "user_message": "Approval timed out"
+                        });
+                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
+                    }
+                }
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let reqs = SudoStepUpRequirements {
+            allowed_methods: vec![StepUpMethod::Push],
+            timeout: 10,
+            minimum_acr: None,
+        };
+
+        let result = perform_step_up_via_ipc(
+            &ctx,
+            &reqs,
+            socket_path.to_str().unwrap(),
+            StepUpMethod::Push,
+        );
+        assert!(
+            matches!(result, Err(SudoError::Timeout)),
+            "Expected SudoError::Timeout, got: {:?}",
+            result
+        );
+    }
+
+    /// Mock IPC test: StepUpTimedOut(reason="denied") → SudoError::Denied.
+    #[test]
+    fn test_step_up_ipc_denied() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("mock-agent-denied.sock");
+
+        let socket_path_clone = socket_path.clone();
+        std::thread::spawn(move || {
+            let listener = UnixListener::bind(&socket_path_clone).unwrap();
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let mut buf = vec![0u8; 2048];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 { continue; }
+                    let msg = String::from_utf8_lossy(&buf[..n]);
+                    if msg.contains("step_up\"") {
+                        let resp = serde_json::json!({
+                            "status": "success",
+                            "correlation_id": "corr-denied",
+                            "expires_in": 120,
+                            "poll_interval_secs": 1
+                        });
+                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
+                    } else if msg.contains("step_up_result") {
+                        let resp = serde_json::json!({
+                            "status": "success",
+                            "reason": "denied",
+                            "user_message": "User denied the request"
+                        });
+                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
+                    }
+                }
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let reqs = SudoStepUpRequirements {
+            allowed_methods: vec![StepUpMethod::Push],
+            timeout: 10,
+            minimum_acr: None,
+        };
+
+        let result = perform_step_up_via_ipc(
+            &ctx,
+            &reqs,
+            socket_path.to_str().unwrap(),
+            StepUpMethod::Push,
+        );
+        assert!(
+            matches!(result, Err(SudoError::Denied)),
+            "Expected SudoError::Denied, got: {:?}",
+            result
+        );
+    }
 
     #[test]
     fn test_sudo_context_creation() {

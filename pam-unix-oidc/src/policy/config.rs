@@ -523,7 +523,9 @@ impl Default for SudoConfig {
         Self {
             step_up_required: true,
             allowed_methods: vec![StepUpMethod::DeviceFlow],
-            challenge_timeout: 60,
+            // STP-07: step-up timeout defaults to 120s (covers CIBA poll window
+            // with typical IdP push delivery; configurable via policy.yaml).
+            challenge_timeout: 120,
             commands: Vec::new(),
             sudo_groups: Vec::new(),
         }
@@ -957,7 +959,8 @@ security_modes:
         assert_eq!(policy.host.classification, HostClassification::Standard);
         assert!(policy.ssh_login.require_oidc);
         assert!(policy.sudo.step_up_required);
-        assert_eq!(policy.sudo.challenge_timeout, 60);
+        // STP-07: challenge_timeout default updated to 120s for CIBA step-up support.
+        assert_eq!(policy.sudo.challenge_timeout, 120);
     }
 
     #[test]
