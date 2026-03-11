@@ -246,6 +246,37 @@ impl PamServiceModule for PamUnixOidc {
                 )
                 .log();
 
+                // Store session metadata in PAM environment for open_session / close_session.
+                //
+                // Session ID correlation:  authenticate() runs in the sshd auth worker;
+                // open_session() runs in a separate sshd session worker.  PAM environment
+                // variables (putenv/getenv) are the only reliable cross-fork channel
+                // within a single PAM transaction.
+                //
+                // Security: Session correlation is best-effort; failure to set env vars is
+                // logged at WARN but NEVER causes authentication to fail.
+                if let Err(e) = pamh
+                    .putenv(&format!("UNIX_OIDC_SESSION_ID={}", result.session_id))
+                {
+                    tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_SESSION_ID in PAM env");
+                }
+                if let Err(e) = pamh.putenv(&format!(
+                    "UNIX_OIDC_TOKEN_JTI={}",
+                    result.token_jti.as_deref().unwrap_or("")
+                )) {
+                    tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_TOKEN_JTI in PAM env");
+                }
+                if let Err(e) =
+                    pamh.putenv(&format!("UNIX_OIDC_TOKEN_EXP={}", result.token_exp))
+                {
+                    tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_TOKEN_EXP in PAM env");
+                }
+                if let Err(e) =
+                    pamh.putenv(&format!("UNIX_OIDC_ISSUER={}", result.token_issuer))
+                {
+                    tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_ISSUER in PAM env");
+                }
+
                 PamError::SUCCESS
             }
             Err(e) => {
@@ -311,16 +342,259 @@ impl PamServiceModule for PamUnixOidc {
         PamError::SUCCESS
     }
 
-    fn open_session(_pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+    fn open_session(pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+        // Retrieve session ID set by authenticate() via putenv.
+        // If absent (e.g., non-OIDC PAM path), log WARN and return SUCCESS —
+        // session tracking is best-effort and must never block legitimate logins.
+        let session_id = match pamh.getenv("UNIX_OIDC_SESSION_ID") {
+            Ok(Some(s)) => s.to_string_lossy().to_string(),
+            Ok(None) => {
+                tracing::warn!("UNIX_OIDC_SESSION_ID absent in PAM env; skipping session record");
+                return PamError::SUCCESS;
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to read UNIX_OIDC_SESSION_ID from PAM env");
+                return PamError::SUCCESS;
+            }
+        };
+
+        // Retrieve PAM_USER (Unix username for this session)
+        let username = match pamh
+            .get_cached_user()
+            .ok()
+            .flatten()
+            .map(|s| s.to_string_lossy().to_string())
+            .or_else(|| pamh.get_user(None).ok().flatten().map(|s| s.to_string_lossy().to_string()))
+        {
+            Some(u) => u,
+            None => {
+                tracing::warn!("open_session: could not determine PAM user; skipping session record");
+                return PamError::SUCCESS;
+            }
+        };
+
+        // Best-effort: read token metadata from PAM environment (set by authenticate()).
+        let token_jti = pamh
+            .getenv("UNIX_OIDC_TOKEN_JTI")
+            .ok()
+            .flatten()
+            .map(|s| s.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty());
+
+        let token_exp: i64 = pamh
+            .getenv("UNIX_OIDC_TOKEN_EXP")
+            .ok()
+            .flatten()
+            .and_then(|s| s.to_string_lossy().parse().ok())
+            .unwrap_or(0);
+
+        let issuer = pamh
+            .getenv("UNIX_OIDC_ISSUER")
+            .ok()
+            .flatten()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Client IP from PAM_RHOST
+        let client_ip: Option<String> = pamh
+            .get_rhost()
+            .ok()
+            .flatten()
+            .map(|s| s.to_string_lossy().to_string());
+
+        // Load session config (use defaults on error — file may not exist in all deployments)
+        let config = PolicyConfig::from_env()
+            .unwrap_or_default();
+        let session_dir = &config.session.session_dir;
+
+        // Ensure session directory exists with correct permissions
+        if let Err(e) = crate::session::ensure_session_dir(session_dir) {
+            tracing::warn!(
+                error = %e,
+                dir = %session_dir,
+                "Failed to create session directory; skipping session record"
+            );
+            return PamError::SUCCESS;
+        }
+
+        // Build and write the session record
+        let record = crate::session::SessionRecord {
+            session_id: session_id.clone(),
+            username: username.clone(),
+            token_jti,
+            token_exp,
+            session_start: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+            client_ip: client_ip.clone(),
+            sshd_pid: std::process::id(),
+            issuer,
+        };
+
+        if let Err(e) = crate::session::write_session_record(session_dir, &session_id, &record) {
+            tracing::warn!(
+                error = %e,
+                session_id = %session_id,
+                "Failed to write session record; session tracking unavailable"
+            );
+            // Continue — do not fail session open
+        }
+
+        // Emit SESSION_OPENED audit event
+        AuditEvent::session_opened(
+            &session_id,
+            &username,
+            client_ip.as_deref(),
+            record.token_exp,
+        )
+        .log();
+
         PamError::SUCCESS
     }
 
-    fn close_session(_pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+    fn close_session(pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+        // Retrieve session ID set by authenticate() via putenv.
+        // If absent, log WARN and return SUCCESS — session tracking is best-effort.
+        let session_id = match pamh.getenv("UNIX_OIDC_SESSION_ID") {
+            Ok(Some(s)) => s.to_string_lossy().to_string(),
+            Ok(None) => {
+                tracing::warn!("UNIX_OIDC_SESSION_ID absent in PAM env at session close");
+                return PamError::SUCCESS;
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to read UNIX_OIDC_SESSION_ID from PAM env at close");
+                return PamError::SUCCESS;
+            }
+        };
+
+        let config = PolicyConfig::from_env().unwrap_or_default();
+        let session_dir = &config.session.session_dir;
+
+        // Delete the session record and retrieve it for audit / duration calculation
+        let (username, duration_secs) = match crate::session::delete_session_record(
+            session_dir,
+            &session_id,
+        ) {
+            Ok(Some(record)) => {
+                let dur = crate::session::session_duration_secs(record.session_start);
+                (record.username, dur)
+            }
+            Ok(None) => {
+                // Record not found — session may have been cleaned up by other means
+                tracing::warn!(
+                    session_id = %session_id,
+                    "Session record not found on close; cannot compute duration"
+                );
+                // Still emit SessionClosed with empty username and 0 duration
+                (String::new(), 0i64)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %session_id,
+                    "Failed to delete session record"
+                );
+                (String::new(), 0i64)
+            }
+        };
+
+        // Emit SESSION_CLOSED audit event
+        AuditEvent::session_closed(&session_id, &username, duration_secs).log();
+
+        // Notify agent daemon of session close via Unix socket IPC.
+        //
+        // Best-effort: 2-second connect timeout. If the agent is unreachable or the
+        // IPC fails for any reason, we log WARN and continue. Session teardown must
+        // NEVER be blocked by agent availability.
+        //
+        // Protocol: send `{"action":"session_closed","session_id":"..."}` and read ACK.
+        // This is a blocking call in the PAM module — no tokio, just std UnixStream.
+        notify_agent_session_closed(&session_id);
+
+        // INVARIANT: Always return SUCCESS — session teardown must never be blocked.
         PamError::SUCCESS
     }
 
     fn chauthtok(_pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
         PamError::SERVICE_ERR
+    }
+}
+
+/// Send a best-effort session-closed IPC notification to the agent daemon.
+///
+/// Connects to the agent's Unix domain socket and sends a JSON message:
+/// `{"action":"session_closed","session_id":"<id>"}`.
+///
+/// This is intentionally blocking (std UnixStream, not tokio) because the PAM
+/// module has no async runtime.  The connect timeout is 2 seconds.  Any error
+/// is logged at WARN and silently ignored — the agent being unreachable is
+/// a valid operational state (agent may not be running on every host).
+///
+/// The agent socket path follows the same convention used by the oidc-ssh-agent
+/// CLI: `$XDG_RUNTIME_DIR/unix-oidc-agent.sock` falling back to
+/// `/run/user/0/unix-oidc-agent.sock` (root).
+fn notify_agent_session_closed(session_id: &str) {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    // Resolve agent socket path.  Use the same env variable the agent daemon exports.
+    let socket_path = std::env::var("UNIX_OIDC_AGENT_SOCKET")
+        .unwrap_or_else(|_| {
+            // Fallback: use XDG_RUNTIME_DIR if available (user sessions under systemd),
+            // otherwise root runtime dir.
+            let xdg = std::env::var("XDG_RUNTIME_DIR")
+                .unwrap_or_else(|_| "/run/user/0".to_string());
+            format!("{}/unix-oidc-agent.sock", xdg)
+        });
+
+    let stream = match UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                socket = %socket_path,
+                session_id = %session_id,
+                "Agent socket not reachable; session-closed IPC skipped"
+            );
+            return;
+        }
+    };
+
+    // Set 2-second read/write timeout on the stream.
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(2))) {
+        tracing::warn!(error = %e, "Failed to set read timeout on agent socket");
+    }
+    if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(2))) {
+        tracing::warn!(error = %e, "Failed to set write timeout on agent socket");
+    }
+
+    let msg = format!(
+        r#"{{"action":"session_closed","session_id":"{}"}}"#,
+        session_id
+    );
+
+    let mut stream = stream;
+    if let Err(e) = stream.write_all(msg.as_bytes()) {
+        tracing::warn!(
+            error = %e,
+            session_id = %session_id,
+            "Failed to send session_closed IPC to agent"
+        );
+        return;
+    }
+
+    // Read ACK (up to 64 bytes; we don't care about the content, just that the agent responded)
+    let mut ack = [0u8; 64];
+    match stream.read(&mut ack) {
+        Ok(0) | Err(_) => {
+            // Agent closed connection or timed out — best-effort, acceptable
+            tracing::debug!(session_id = %session_id, "Agent IPC ACK not received (best-effort)");
+        }
+        Ok(_) => {
+            tracing::debug!(session_id = %session_id, "Agent session_closed IPC acknowledged");
+        }
     }
 }
 

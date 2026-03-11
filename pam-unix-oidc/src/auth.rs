@@ -72,6 +72,10 @@ pub struct AuthResult {
     /// The original raw claim value before transforms were applied (for audit trail).
     /// `None` when no mapping was performed (e.g. in test paths that use preferred_username directly).
     pub mapped_from: Option<String>,
+    /// Token expiry as Unix timestamp (seconds since epoch). Stored in PAM env for open_session.
+    pub token_exp: i64,
+    /// OIDC issuer URL. Stored in PAM env for open_session.
+    pub token_issuer: String,
 }
 
 /// Authenticate a user with an OIDC token.
@@ -193,6 +197,8 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
         token_auth_time: claims.auth_time,
         dpop_thumbprint: None,
         mapped_from,
+        token_exp: claims.exp,
+        token_issuer: claims.iss,
     })
 }
 
@@ -474,6 +480,8 @@ pub fn authenticate_with_dpop(
         token_auth_time: claims.auth_time,
         dpop_thumbprint,
         mapped_from,
+        token_exp: claims.exp,
+        token_issuer: claims.iss,
     })
 }
 
@@ -522,6 +530,8 @@ pub fn authenticate_with_config(
         token_auth_time: claims.auth_time,
         dpop_thumbprint: None,
         mapped_from: None, // test path — no audit trail needed
+        token_exp: claims.exp,
+        token_issuer: claims.iss,
     })
 }
 
@@ -611,6 +621,8 @@ mod tests {
             token_auth_time: None,
             dpop_thumbprint: None,
             mapped_from: Some("alice@corp.example.com".to_string()),
+            token_exp: 9_999_999_999,
+            token_issuer: "https://idp.example.com".to_string(),
         };
         assert_eq!(
             result.mapped_from.as_deref(),
@@ -631,6 +643,8 @@ mod tests {
             token_auth_time: None,
             dpop_thumbprint: None,
             mapped_from: None,
+            token_exp: 0,
+            token_issuer: String::new(),
         };
         assert!(result.mapped_from.is_none());
     }
