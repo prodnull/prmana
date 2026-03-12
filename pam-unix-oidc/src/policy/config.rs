@@ -1276,7 +1276,10 @@ break_glass:
     fn test_introspection_config_defaults() {
         let config = IntrospectionConfig::default();
         assert!(!config.enabled, "introspection must be disabled by default");
-        assert!(config.endpoint.is_none(), "endpoint must be None by default");
+        assert!(
+            config.endpoint.is_none(),
+            "endpoint must be None by default"
+        );
         assert_eq!(config.enforcement, EnforcementMode::Warn);
         assert_eq!(config.cache_ttl_secs, 60);
     }

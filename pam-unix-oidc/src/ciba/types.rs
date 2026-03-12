@@ -8,13 +8,11 @@ use thiserror::Error;
 
 /// ACR value for phishing-resistant authentication (e.g. FIDO2 security key without hardware binding).
 /// Source: OpenID EAP ACR Values 1.0 Final, §2.1
-pub const ACR_PHR: &str =
-    "http://schemas.openid.net/pape/policies/2007/06/phishing-resistant";
+pub const ACR_PHR: &str = "http://schemas.openid.net/pape/policies/2007/06/phishing-resistant";
 
 /// ACR value for phishing-resistant hardware-bound authentication (e.g. FIDO2 with resident key/TPM).
 /// Source: OpenID EAP ACR Values 1.0 Final, §2.2
-pub const ACR_PHRH: &str =
-    "http://schemas.openid.net/acr/2016/07/phishing-resistant-hardware";
+pub const ACR_PHRH: &str = "http://schemas.openid.net/acr/2016/07/phishing-resistant-hardware";
 
 /// CIBA grant type URN per CIBA Core 1.0 §10.1.
 ///
@@ -207,8 +205,14 @@ mod tests {
 
     #[test]
     fn satisfies_acr_unknown_uri_requires_exact_match() {
-        assert!(satisfies_acr("urn:example:acr:high", "urn:example:acr:high"));
-        assert!(!satisfies_acr("urn:example:acr:high", "urn:example:acr:medium"));
+        assert!(satisfies_acr(
+            "urn:example:acr:high",
+            "urn:example:acr:high"
+        ));
+        assert!(!satisfies_acr(
+            "urn:example:acr:high",
+            "urn:example:acr:medium"
+        ));
     }
 
     // ── validate_acr ──────────────────────────────────────────────────────
@@ -247,10 +251,7 @@ mod tests {
 
     #[test]
     fn parse_ciba_error_slow_down() {
-        assert!(matches!(
-            parse_ciba_error("slow_down"),
-            CibaError::SlowDown
-        ));
+        assert!(matches!(parse_ciba_error("slow_down"), CibaError::SlowDown));
     }
 
     #[test]
@@ -297,7 +298,8 @@ mod tests {
 
     #[test]
     fn ciba_token_response_with_id_token() {
-        let json = r#"{"access_token":"at","id_token":"it","token_type":"Bearer","expires_in":3600}"#;
+        let json =
+            r#"{"access_token":"at","id_token":"it","token_type":"Bearer","expires_in":3600}"#;
         let r: CibaTokenResponse = serde_json::from_str(json).unwrap();
         assert_eq!(r.access_token, "at");
         assert_eq!(r.id_token, Some("it".to_string()));

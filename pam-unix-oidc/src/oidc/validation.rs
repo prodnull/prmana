@@ -194,8 +194,8 @@ impl TokenValidator {
         // a *missing* JTI (no jti claim at all) is handled.
         if self.config.jti_enforcement != EnforcementMode::Disabled {
             // Calculate TTL for JTI cache based on token expiration
-            let ttl_seconds = (claims.exp - now + self.config.clock_skew_tolerance_secs).max(0)
-                as u64;
+            let ttl_seconds =
+                (claims.exp - now + self.config.clock_skew_tolerance_secs).max(0) as u64;
 
             let jti_result = global_jti_cache().check_and_record(
                 claims.jti.as_deref(),

@@ -89,9 +89,7 @@ impl PinCache {
             let mut guard2 = self.state.lock().expect("PinCache mutex poisoned");
             *guard2 = Some(CacheEntry {
                 // Store a copy; re-wrap the exposed bytes.
-                pin: SecretString::new(
-                    secret.expose_secret().to_owned().into(),
-                ),
+                pin: SecretString::new(secret.expose_secret().to_owned().into()),
                 cached_at: Instant::now(),
             });
         }

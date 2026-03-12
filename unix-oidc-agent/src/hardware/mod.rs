@@ -84,9 +84,9 @@ impl SignerConfig {
 
         let paths: Vec<std::path::PathBuf> = std::iter::once(user_path)
             .flatten()
-            .chain(std::iter::once(
-                std::path::PathBuf::from("/etc/unix-oidc/signer.yaml"),
-            ))
+            .chain(std::iter::once(std::path::PathBuf::from(
+                "/etc/unix-oidc/signer.yaml",
+            )))
             .collect();
 
         for path in &paths {
@@ -134,8 +134,7 @@ impl SignerConfig {
 /// or the key cannot be loaded.
 pub fn build_signer(
     signer_spec: &str,
-    #[allow(unused_variables)]
-    config: &SignerConfig,
+    #[allow(unused_variables)] config: &SignerConfig,
 ) -> anyhow::Result<Arc<dyn DPoPSigner>> {
     if signer_spec == "software" || signer_spec.is_empty() {
         anyhow::bail!("Software signer should be handled by caller (load_or_create_signer)");
@@ -165,9 +164,7 @@ pub fn build_signer(
 
     #[cfg(not(feature = "tpm"))]
     if signer_spec == "tpm" {
-        anyhow::bail!(
-            "TPM support not compiled in. Rebuild with `cargo build --features tpm`."
-        );
+        anyhow::bail!("TPM support not compiled in. Rebuild with `cargo build --features tpm`.");
     }
 
     anyhow::bail!(
@@ -190,8 +187,7 @@ pub fn build_signer(
 /// should be persisted in token metadata as `"signer_type"`.
 pub fn provision_signer(
     signer_spec: &str,
-    #[allow(unused_variables)]
-    config: &SignerConfig,
+    #[allow(unused_variables)] config: &SignerConfig,
 ) -> anyhow::Result<(String, Arc<dyn DPoPSigner>)> {
     if signer_spec == "software" || signer_spec.is_empty() {
         anyhow::bail!(
@@ -233,9 +229,7 @@ pub fn provision_signer(
 
     #[cfg(not(feature = "tpm"))]
     if signer_spec == "tpm" {
-        anyhow::bail!(
-            "TPM support not compiled in. Rebuild with `cargo build --features tpm`."
-        );
+        anyhow::bail!("TPM support not compiled in. Rebuild with `cargo build --features tpm`.");
     }
 
     anyhow::bail!(
@@ -268,10 +262,7 @@ tpm:
 "#;
         let cfg: SignerConfig = serde_yaml::from_str(yaml).unwrap();
         let yk = cfg.yubikey.as_ref().unwrap();
-        assert_eq!(
-            yk.pkcs11_library.as_deref(),
-            Some("/usr/lib/libykcs11.so")
-        );
+        assert_eq!(yk.pkcs11_library.as_deref(), Some("/usr/lib/libykcs11.so"));
         assert_eq!(yk.pin_cache_timeout, Some(3600));
 
         let tpm = cfg.tpm.as_ref().unwrap();

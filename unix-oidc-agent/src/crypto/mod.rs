@@ -21,7 +21,9 @@ pub mod yubikey_signer;
 #[cfg(feature = "tpm")]
 pub mod tpm_signer;
 
-pub use dpop::{assemble_dpop_proof, build_dpop_message, generate_dpop_proof, DPoPClaims, DPoPError};
+pub use dpop::{
+    assemble_dpop_proof, build_dpop_message, generate_dpop_proof, DPoPClaims, DPoPError,
+};
 pub use protected_key::{mlock_probe, MlockStatus, ProtectedSigningKey};
 pub use signer::{DPoPSigner, SignerError, SoftwareSigner};
 pub use thumbprint::compute_ec_thumbprint;

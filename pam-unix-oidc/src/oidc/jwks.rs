@@ -307,7 +307,10 @@ mod tests {
         let provider = JwksProvider::with_cache_ttl("https://example.com", 600);
         assert_eq!(provider.cache_ttl, Duration::from_secs(600));
         // HTTP timeout defaults to HTTP_TIMEOUT_SECS when using with_cache_ttl
-        assert_eq!(provider.http_timeout, Duration::from_secs(HTTP_TIMEOUT_SECS));
+        assert_eq!(
+            provider.http_timeout,
+            Duration::from_secs(HTTP_TIMEOUT_SECS)
+        );
     }
 
     #[test]
@@ -320,6 +323,9 @@ mod tests {
     #[test]
     fn test_new_uses_default_http_timeout() {
         let provider = JwksProvider::new("https://example.com");
-        assert_eq!(provider.http_timeout, Duration::from_secs(HTTP_TIMEOUT_SECS));
+        assert_eq!(
+            provider.http_timeout,
+            Duration::from_secs(HTTP_TIMEOUT_SECS)
+        );
     }
 }

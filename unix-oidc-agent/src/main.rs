@@ -14,18 +14,18 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
+use unix_oidc_agent::config::AgentConfig;
 use unix_oidc_agent::crypto::protected_key::mlock_probe;
 use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
-use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
 use unix_oidc_agent::daemon::{
     acquire_listener, spawn_refresh_task, AgentClient, AgentResponse, AgentResponseData,
     AgentServer, AgentState,
 };
+use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
 use unix_oidc_agent::security::disable_core_dumps;
 use unix_oidc_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
-use unix_oidc_agent::config::AgentConfig;
 
 mod askpass;
 
@@ -93,9 +93,7 @@ fn init_tracing() {
             // tracing_journald::layer() returns Err when the journal socket is
             // absent (e.g., inside a container without /run/systemd/journal/socket).
             // We add it best-effort; if unavailable, fall through to JSON-only.
-            let registry = tracing_subscriber::registry()
-                .with(filter)
-                .with(json_layer);
+            let registry = tracing_subscriber::registry().with(filter).with(json_layer);
 
             if std::env::var("JOURNAL_STREAM").is_ok() {
                 if let Ok(journald) = tracing_journald::layer() {
@@ -369,7 +367,10 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
         Ok(mut router) => {
             match router.maybe_migrate() {
                 Ok(0) => {}
-                Ok(n) => info!(n, "Migrated credentials to keyring backend at daemon startup"),
+                Ok(n) => info!(
+                    n,
+                    "Migrated credentials to keyring backend at daemon startup"
+                ),
                 Err(e) => {
                     warn!(error = %e, "Credential migration failed at startup (continuing)");
                 }
@@ -408,7 +409,11 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
         if state_read.is_logged_in() {
             if let Some(token_expires) = state_read.token_expires {
                 drop(state_read); // release read lock before write in spawn_refresh_task
-                let handle = spawn_refresh_task(Arc::clone(&state), token_expires, REFRESH_THRESHOLD_PERCENT);
+                let handle = spawn_refresh_task(
+                    Arc::clone(&state),
+                    token_expires,
+                    REFRESH_THRESHOLD_PERCENT,
+                );
                 state.write().await.refresh_task = Some(handle);
                 info!("Auto-refresh task spawned for existing session");
             }
@@ -459,7 +464,9 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
         .await
         {
             Ok(Ok(())) => info!("Initial JWKS prefetch succeeded"),
-            Ok(Err(e)) => warn!(error = %e, "Initial JWKS prefetch failed — will retry on first auth"),
+            Ok(Err(e)) => {
+                warn!(error = %e, "Initial JWKS prefetch failed — will retry on first auth")
+            }
             Err(e) => warn!(error = %e, "JWKS prefetch task panicked — will retry on first auth"),
         }
     } else {
@@ -643,7 +650,9 @@ async fn run_login(
     match storage.maybe_migrate() {
         Ok(0) => {}
         Ok(n) => info!(n, "Migrated credentials to keyring backend"),
-        Err(e) => warn!(error = %e, "Credential migration failed (continuing with current backend)"),
+        Err(e) => {
+            warn!(error = %e, "Credential migration failed (continuing with current backend)")
+        }
     }
 
     // Select signer backend based on --signer flag.
@@ -923,7 +932,10 @@ async fn run_login(
     println!("Token stored successfully");
     println!("Token expires in: {}s", expires_in);
     if signer_type_for_storage != "software" {
-        println!("Signer: {} (hardware key on device)", format_signer_type(&signer_type_for_storage));
+        println!(
+            "Signer: {} (hardware key on device)",
+            format_signer_type(&signer_type_for_storage)
+        );
     }
     println!();
     println!("Start the agent daemon with: unix-oidc-agent serve");
@@ -962,12 +974,18 @@ async fn run_provision(signer_spec: String) -> anyhow::Result<()> {
         }
     }
 
-    println!("Provisioning key on {}...", format_signer_type(&signer_spec));
+    println!(
+        "Provisioning key on {}...",
+        format_signer_type(&signer_spec)
+    );
 
     let config = SignerConfig::load();
     let (signer_type, signer) = provision_signer(&signer_spec, &config)?;
 
-    println!("Key provisioned successfully on {}.", format_signer_type(&signer_type));
+    println!(
+        "Key provisioned successfully on {}.",
+        format_signer_type(&signer_type)
+    );
     println!("DPoP thumbprint: {}", signer.thumbprint());
     println!();
     println!(
@@ -1218,51 +1236,51 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         .and_then(|v| v["signer_type"].as_str())
         .map(|s| s.to_string());
 
-    let (signer, signer_type): (Option<Arc<dyn unix_oidc_agent::crypto::DPoPSigner>>, Option<String>) =
-        match signer_type_from_metadata.as_deref() {
-            None | Some("software") => {
-                // No signer_type in metadata (pre-hardware-feature login) or explicit "software".
-                let result = match load_or_create_signer(&storage) {
-                    Ok(s) => Some(Arc::new(s) as Arc<dyn unix_oidc_agent::crypto::DPoPSigner>),
-                    Err(e) => {
-                        info!("Could not load software signer: {}", e);
-                        None
-                    }
-                };
-                (result, Some("software".to_string()))
-            }
-            Some(hw_spec) => {
-                // Hardware signer: attempt to re-open from device.
-                // No silent fallback — per CONTEXT.md: if hardware unavailable, daemon
-                // starts without signing capability and user must re-login.
-                let hw_config = SignerConfig::load();
-                match build_signer(hw_spec, &hw_config) {
-                    Ok(arc) => {
-                        info!(signer = %hw_spec, "Hardware signer loaded successfully");
-                        (Some(arc), Some(hw_spec.to_string()))
-                    }
-                    Err(e) => {
-                        error!(
-                            signer = %hw_spec,
-                            error = %e,
-                            "Hardware signer unavailable — re-login required: \
-                             `unix-oidc-agent login --signer {}`",
-                            hw_spec
-                        );
-                        (None, Some(hw_spec.to_string()))
-                    }
+    let (signer, signer_type): (
+        Option<Arc<dyn unix_oidc_agent::crypto::DPoPSigner>>,
+        Option<String>,
+    ) = match signer_type_from_metadata.as_deref() {
+        None | Some("software") => {
+            // No signer_type in metadata (pre-hardware-feature login) or explicit "software".
+            let result = match load_or_create_signer(&storage) {
+                Ok(s) => Some(Arc::new(s) as Arc<dyn unix_oidc_agent::crypto::DPoPSigner>),
+                Err(e) => {
+                    info!("Could not load software signer: {}", e);
+                    None
+                }
+            };
+            (result, Some("software".to_string()))
+        }
+        Some(hw_spec) => {
+            // Hardware signer: attempt to re-open from device.
+            // No silent fallback — per CONTEXT.md: if hardware unavailable, daemon
+            // starts without signing capability and user must re-login.
+            let hw_config = SignerConfig::load();
+            match build_signer(hw_spec, &hw_config) {
+                Ok(arc) => {
+                    info!(signer = %hw_spec, "Hardware signer loaded successfully");
+                    (Some(arc), Some(hw_spec.to_string()))
+                }
+                Err(e) => {
+                    error!(
+                        signer = %hw_spec,
+                        error = %e,
+                        "Hardware signer unavailable — re-login required: \
+                         `unix-oidc-agent login --signer {}`",
+                        hw_spec
+                    );
+                    (None, Some(hw_spec.to_string()))
                 }
             }
-        };
+        }
+    };
 
     let access_token_raw = storage
         .retrieve(KEY_ACCESS_TOKEN)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok());
 
-    let token_expires = metadata
-        .as_ref()
-        .and_then(|v| v["expires_at"].as_i64());
+    let token_expires = metadata.as_ref().and_then(|v| v["expires_at"].as_i64());
 
     // Extract username from token claims (before wrapping in SecretString)
     let username = access_token_raw
@@ -1431,8 +1449,9 @@ async fn run_install(binary_path: Option<String>) -> anyhow::Result<()> {
         let socket_path = format!("{}/unix-oidc-agent.sock", tmpdir.trim_end_matches('/'));
 
         // Home directory for log paths and plist destination.
-        let home = std::env::var("HOME")
-            .map_err(|_| anyhow::anyhow!("$HOME is not set — cannot determine LaunchAgents path"))?;
+        let home = std::env::var("HOME").map_err(|_| {
+            anyhow::anyhow!("$HOME is not set — cannot determine LaunchAgents path")
+        })?;
 
         // Substitute all template placeholders.
         let plist_content = LAUNCHD_PLIST_TEMPLATE
@@ -1443,18 +1462,15 @@ async fn run_install(binary_path: Option<String>) -> anyhow::Result<()> {
         // Ensure ~/Library/LaunchAgents/ and ~/Library/Logs/ exist.
         let launch_agents_dir = format!("{}/Library/LaunchAgents", home);
         let logs_dir = format!("{}/Library/Logs", home);
-        std::fs::create_dir_all(&launch_agents_dir).map_err(|e| {
-            anyhow::anyhow!("Cannot create {}: {}", launch_agents_dir, e)
-        })?;
-        std::fs::create_dir_all(&logs_dir).map_err(|e| {
-            anyhow::anyhow!("Cannot create {}: {}", logs_dir, e)
-        })?;
+        std::fs::create_dir_all(&launch_agents_dir)
+            .map_err(|e| anyhow::anyhow!("Cannot create {}: {}", launch_agents_dir, e))?;
+        std::fs::create_dir_all(&logs_dir)
+            .map_err(|e| anyhow::anyhow!("Cannot create {}: {}", logs_dir, e))?;
 
         // Write the plist file.
         let plist_path = format!("{}/{}.plist", launch_agents_dir, LAUNCHD_LABEL);
-        std::fs::write(&plist_path, &plist_content).map_err(|e| {
-            anyhow::anyhow!("Cannot write plist to {}: {}", plist_path, e)
-        })?;
+        std::fs::write(&plist_path, &plist_content)
+            .map_err(|e| anyhow::anyhow!("Cannot write plist to {}: {}", plist_path, e))?;
         info!(plist_path = %plist_path, "Plist written");
 
         // Load via launchctl — this activates the service immediately.
@@ -1529,15 +1545,14 @@ async fn run_install(binary_path: Option<String>) -> anyhow::Result<()> {
 async fn run_uninstall() -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var("HOME")
-            .map_err(|_| anyhow::anyhow!("$HOME is not set"))?;
-        let plist_path = format!(
-            "{}/Library/LaunchAgents/{}.plist",
-            home, LAUNCHD_LABEL
-        );
+        let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("$HOME is not set"))?;
+        let plist_path = format!("{}/Library/LaunchAgents/{}.plist", home, LAUNCHD_LABEL);
 
         if !std::path::Path::new(&plist_path).exists() {
-            println!("Plist not found at {} — agent may not be installed.", plist_path);
+            println!(
+                "Plist not found at {} — agent may not be installed.",
+                plist_path
+            );
             return Ok(());
         }
 
@@ -1555,9 +1570,8 @@ async fn run_uninstall() -> anyhow::Result<()> {
         }
 
         // Remove plist file.
-        std::fs::remove_file(&plist_path).map_err(|e| {
-            anyhow::anyhow!("Cannot remove {}: {}", plist_path, e)
-        })?;
+        std::fs::remove_file(&plist_path)
+            .map_err(|e| anyhow::anyhow!("Cannot remove {}: {}", plist_path, e))?;
         info!(plist_path = %plist_path, "Plist removed");
 
         println!("unix-oidc-agent uninstalled.");

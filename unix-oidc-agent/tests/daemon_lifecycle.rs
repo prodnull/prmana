@@ -74,7 +74,9 @@ fn test_daemon_lifecycle() {
             .unwrap_or_default()
             .as_nanos()
     ));
-    let socket_str = socket_path.to_str().expect("Socket path must be valid UTF-8");
+    let socket_str = socket_path
+        .to_str()
+        .expect("Socket path must be valid UTF-8");
 
     // Clean up any stale socket from a previous run
     let _ = std::fs::remove_file(&socket_path);
@@ -145,8 +147,7 @@ fn test_daemon_lifecycle() {
     //    is called before any response is written)
     // ---------------------------------------------------------------
     {
-        let mut stream = UnixStream::connect(&socket_path)
-            .expect("Failed to connect for shutdown");
+        let mut stream = UnixStream::connect(&socket_path).expect("Failed to connect for shutdown");
         write!(stream, "{}\n", r#"{"action":"shutdown"}"#)
             .expect("Failed to write shutdown command");
         let _ = stream.flush();

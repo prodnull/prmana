@@ -335,8 +335,13 @@ fn do_introspect(
 
     let response = request.send().map_err(|e| {
         let reason = format!("HTTP request to introspection endpoint failed: {e}");
-        crate::audit::AuditEvent::introspection_failed(session_id, username, &reason, enforcement_str)
-            .log();
+        crate::audit::AuditEvent::introspection_failed(
+            session_id,
+            username,
+            &reason,
+            enforcement_str,
+        )
+        .log();
         IntrospectionError::Http(reason)
     })?;
 
@@ -344,16 +349,26 @@ fn do_introspect(
     let status = response.status();
     if !status.is_success() {
         let reason = format!("Introspection endpoint returned HTTP {status}");
-        crate::audit::AuditEvent::introspection_failed(session_id, username, &reason, enforcement_str)
-            .log();
+        crate::audit::AuditEvent::introspection_failed(
+            session_id,
+            username,
+            &reason,
+            enforcement_str,
+        )
+        .log();
         return Err(IntrospectionError::Http(reason));
     }
 
     // Parse the JSON response.
     let parsed: IntrospectionResponse = response.json().map_err(|e| {
         let reason = format!("Failed to parse introspection response: {e}");
-        crate::audit::AuditEvent::introspection_failed(session_id, username, &reason, enforcement_str)
-            .log();
+        crate::audit::AuditEvent::introspection_failed(
+            session_id,
+            username,
+            &reason,
+            enforcement_str,
+        )
+        .log();
         IntrospectionError::Parse(reason)
     })?;
 
@@ -407,7 +422,15 @@ mod tests {
     fn test_disabled_returns_ok_true_no_http() {
         // disabled=false means introspect_token short-circuits with Ok(true).
         let config = disabled_config();
-        let result = introspect_token(&config, "sometoken", Some("jti-123"), exp_future(), "client-id", None, None);
+        let result = introspect_token(
+            &config,
+            "sometoken",
+            Some("jti-123"),
+            exp_future(),
+            "client-id",
+            None,
+            None,
+        );
         assert_eq!(result.unwrap(), true);
     }
 
@@ -422,7 +445,15 @@ mod tests {
             cache_ttl_secs: 60,
             client_secret: None,
         };
-        let result = introspect_token(&config, "sometoken", Some("jti-456"), exp_future(), "client-id", None, None);
+        let result = introspect_token(
+            &config,
+            "sometoken",
+            Some("jti-456"),
+            exp_future(),
+            "client-id",
+            None,
+            None,
+        );
         assert!(matches!(result, Err(IntrospectionError::NotConfigured)));
     }
 
@@ -458,7 +489,10 @@ mod tests {
     fn test_cache_key_sha256_fallback_different_tokens() {
         let key1 = derive_cache_key(None, "token_a");
         let key2 = derive_cache_key(None, "token_b");
-        assert_ne!(key1, key2, "different tokens must produce different cache keys");
+        assert_ne!(
+            key1, key2,
+            "different tokens must produce different cache keys"
+        );
     }
 
     #[test]
@@ -481,7 +515,11 @@ mod tests {
             Ok(true)
         });
         assert_eq!(result1.unwrap(), true);
-        assert_eq!(call_count.load(Ordering::SeqCst), 1, "first call should invoke closure");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "first call should invoke closure"
+        );
 
         let count2 = Arc::clone(&call_count);
         let result2 = cache.get_or_insert("test-key-hit", exp_future(), move || {
@@ -559,7 +597,10 @@ mod tests {
     #[test]
     fn test_unreachable_endpoint_returns_http_error() {
         // Use an endpoint that is guaranteed not to exist.
-        let config = enabled_config("http://127.0.0.1:19999/introspect_nonexistent", EnforcementMode::Warn);
+        let config = enabled_config(
+            "http://127.0.0.1:19999/introspect_nonexistent",
+            EnforcementMode::Warn,
+        );
         // Give each test its own JTI so tests don't share cache entries.
         let result = introspect_token(
             &config,

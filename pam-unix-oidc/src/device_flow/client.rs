@@ -310,7 +310,10 @@ mod tests {
     fn test_from_discovery_uses_discovery_endpoints() {
         let discovery = make_discovery(Some("https://idp.example/device"));
         let client = DeviceFlowClient::from_discovery(&discovery, "my-client", None).unwrap();
-        assert_eq!(client.device_authorization_endpoint, "https://idp.example/device");
+        assert_eq!(
+            client.device_authorization_endpoint,
+            "https://idp.example/device"
+        );
         assert_eq!(client.token_endpoint, "https://idp.example/token");
         assert_eq!(client.client_id, "my-client");
     }

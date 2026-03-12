@@ -175,10 +175,7 @@ impl StorageRouter {
     /// 6. Update `self.migration_status` to `Migrated(n)` and log at INFO.
     ///
     /// Returns the number of keys migrated.
-    pub fn maybe_migrate_from(
-        &mut self,
-        src: &FileStorage,
-    ) -> Result<usize, StorageError> {
+    pub fn maybe_migrate_from(&mut self, src: &FileStorage) -> Result<usize, StorageError> {
         // No file-to-file migration.
         if self.kind == BackendKind::File {
             self.migration_status = MigrationStatus::NotApplicable;
@@ -205,10 +202,7 @@ impl StorageRouter {
 
         for &key in &present_keys {
             let value = src.retrieve(key).map_err(|e| {
-                StorageError::Migration(format!(
-                    "Failed to read key '{}' from source: {}",
-                    key, e
-                ))
+                StorageError::Migration(format!("Failed to read key '{}' from source: {}", key, e))
             })?;
 
             // Write to destination.
@@ -258,7 +252,10 @@ impl StorageRouter {
 
         let count = migrated.len();
         self.migration_status = MigrationStatus::Migrated(count);
-        info!(count, "Migrated credentials from file storage to keyring backend");
+        info!(
+            count,
+            "Migrated credentials from file storage to keyring backend"
+        );
 
         Ok(count)
     }
@@ -577,7 +574,9 @@ mod tests {
     /// Migration with all 4 keys present: returns Migrated(4) and keys reach destination.
     #[test]
     fn migration_moves_all_4_keys_from_file_to_keyring() {
-        use crate::storage::{KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN, KEY_TOKEN_METADATA};
+        use crate::storage::{
+            KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN, KEY_TOKEN_METADATA,
+        };
 
         let src_tmp = tempfile::TempDir::new().expect("tempdir");
         let src = FileStorage::with_base_dir(src_tmp.path().to_path_buf());
@@ -603,9 +602,18 @@ mod tests {
 
         // All 4 keys should now exist in the destination.
         assert!(router.exists(KEY_DPOP_PRIVATE), "dpop key should be in dst");
-        assert!(router.exists(KEY_ACCESS_TOKEN), "access token should be in dst");
-        assert!(router.exists(KEY_REFRESH_TOKEN), "refresh token should be in dst");
-        assert!(router.exists(KEY_TOKEN_METADATA), "metadata should be in dst");
+        assert!(
+            router.exists(KEY_ACCESS_TOKEN),
+            "access token should be in dst"
+        );
+        assert!(
+            router.exists(KEY_REFRESH_TOKEN),
+            "refresh token should be in dst"
+        );
+        assert!(
+            router.exists(KEY_TOKEN_METADATA),
+            "metadata should be in dst"
+        );
     }
 
     /// Migration returns NotApplicable when no file credentials exist.
@@ -655,7 +663,9 @@ mod tests {
                 use std::sync::atomic::Ordering;
                 let n = self.call_count.fetch_add(1, Ordering::SeqCst);
                 if n >= 1 {
-                    return Err(StorageError::Backend("simulated write failure on key 2+".to_string()));
+                    return Err(StorageError::Backend(
+                        "simulated write failure on key 2+".to_string(),
+                    ));
                 }
                 self.inner.store(key, value)
             }
@@ -678,13 +688,17 @@ mod tests {
 
         let mut router = StorageRouter {
             backend: Box::new(failing_backend),
-            kind: BackendKind::SecretService,  // non-File so migration runs
+            kind: BackendKind::SecretService, // non-File so migration runs
             migration_status: MigrationStatus::NotApplicable,
         };
 
         let result = router.maybe_migrate_from(&src);
         // Migration must fail.
-        assert!(result.is_err(), "migration should fail when write fails: {:?}", result);
+        assert!(
+            result.is_err(),
+            "migration should fail when write fails: {:?}",
+            result
+        );
 
         // After rollback, the first key that WAS written must be deleted from dst.
         // The dst_tmp directory should have 0 remaining files for migrated keys.
@@ -695,7 +709,10 @@ mod tests {
         assert!(
             remaining_files.is_empty(),
             "rollback should delete all partially-migrated keys: {:?}",
-            remaining_files.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+            remaining_files
+                .iter()
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -714,11 +731,19 @@ mod tests {
         let mut router = detect_forced_with_dir("file-dst", dst_tmp.path().to_path_buf())
             .expect("router should be created");
 
-        router.maybe_migrate_from(&src).expect("migration should succeed");
+        router
+            .maybe_migrate_from(&src)
+            .expect("migration should succeed");
 
         // Source files must be deleted.
-        assert!(!src.exists(KEY_DPOP_PRIVATE), "dpop key must be deleted from source");
-        assert!(!src.exists(KEY_ACCESS_TOKEN), "access token must be deleted from source");
+        assert!(
+            !src.exists(KEY_DPOP_PRIVATE),
+            "dpop key must be deleted from source"
+        );
+        assert!(
+            !src.exists(KEY_ACCESS_TOKEN),
+            "access token must be deleted from source"
+        );
     }
 
     /// Migration is skipped when router backend is File (no file-to-file migration).
@@ -750,7 +775,11 @@ mod tests {
         let mut router = detect_forced("file").expect("file backend should succeed");
         // No credentials exist in the default file store for this test environment.
         let result = router.maybe_migrate();
-        assert!(result.is_ok(), "maybe_migrate should return Ok: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "maybe_migrate should return Ok: {:?}",
+            result
+        );
         assert_eq!(result.unwrap(), 0);
     }
 
@@ -932,8 +961,7 @@ mod tests {
         );
         #[cfg(target_os = "linux")]
         assert!(
-            router.kind == BackendKind::SecretService
-                || router.kind == BackendKind::KeyutilsUser,
+            router.kind == BackendKind::SecretService || router.kind == BackendKind::KeyutilsUser,
             "Linux detect_auto must select a keyring backend, got {:?}",
             router.kind
         );
@@ -943,8 +971,7 @@ mod tests {
     #[ignore = "Requires interactive keychain or running D-Bus/Secret Service"]
     fn storage_router_detect_selects_native_keychain() {
         std::env::remove_var("UNIX_OIDC_STORAGE_BACKEND");
-        let router = StorageRouter::detect()
-            .expect("StorageRouter::detect() should succeed");
+        let router = StorageRouter::detect().expect("StorageRouter::detect() should succeed");
 
         #[cfg(target_os = "macos")]
         assert_eq!(
@@ -955,8 +982,7 @@ mod tests {
         );
         #[cfg(target_os = "linux")]
         assert!(
-            router.kind == BackendKind::SecretService
-                || router.kind == BackendKind::KeyutilsUser,
+            router.kind == BackendKind::SecretService || router.kind == BackendKind::KeyutilsUser,
             "Linux detect must select a keyring backend, got {:?}",
             router.kind
         );
@@ -968,7 +994,11 @@ mod tests {
         // Verify probe doesn't leave stale entries in the real keychain.
         let storage = KeyringStorage::new();
         let result = probe_backend(&storage);
-        assert!(result.is_ok(), "keychain probe should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "keychain probe should succeed: {:?}",
+            result
+        );
 
         // The probe key format is "unix-oidc-probe-{pid}-{seq}".
         // We can't predict the exact key, but we can verify a second probe

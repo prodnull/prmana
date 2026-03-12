@@ -53,7 +53,11 @@ pub fn get_peer_credentials(
     {
         // SO_PEERCRED returns a `ucred` struct with pid, uid, gid.
         // Source: socket(7), `SO_PEERCRED` option.
-        let mut ucred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+        let mut ucred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
         let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
         // Safety: fd is valid (comes from a live tokio UnixStream), ucred and len
         // are valid stack variables with correct sizes.
@@ -113,8 +117,7 @@ mod tests {
             .set_nonblocking(true)
             .expect("set_nonblocking failed");
 
-        let tokio_stream = tokio::net::UnixStream::from_std(std_stream_a)
-            .expect("from_std failed");
+        let tokio_stream = tokio::net::UnixStream::from_std(std_stream_a).expect("from_std failed");
 
         let result = get_peer_credentials(&tokio_stream);
         assert!(
@@ -144,8 +147,7 @@ mod tests {
             .set_nonblocking(true)
             .expect("set_nonblocking failed");
 
-        let tokio_stream = tokio::net::UnixStream::from_std(std_stream_a)
-            .expect("from_std failed");
+        let tokio_stream = tokio::net::UnixStream::from_std(std_stream_a).expect("from_std failed");
 
         let (peer_uid, _) = get_peer_credentials(&tokio_stream).unwrap();
         let daemon_uid = unsafe { libc::getuid() };
@@ -166,17 +168,13 @@ mod tests {
             .set_nonblocking(true)
             .expect("set_nonblocking failed");
 
-        let tokio_stream = tokio::net::UnixStream::from_std(std_stream_a)
-            .expect("from_std failed");
+        let tokio_stream = tokio::net::UnixStream::from_std(std_stream_a).expect("from_std failed");
 
         let (_, peer_pid) = get_peer_credentials(&tokio_stream).unwrap();
 
         #[cfg(target_os = "linux")]
         {
-            assert!(
-                peer_pid.is_some(),
-                "Linux: SO_PEERCRED must provide PID"
-            );
+            assert!(peer_pid.is_some(), "Linux: SO_PEERCRED must provide PID");
             // PID should be the current process PID (same-process pair).
             let expected_pid = std::process::id();
             assert_eq!(
@@ -188,10 +186,7 @@ mod tests {
 
         #[cfg(target_os = "macos")]
         {
-            assert!(
-                peer_pid.is_none(),
-                "macOS: getpeereid does not provide PID"
-            );
+            assert!(peer_pid.is_none(), "macOS: getpeereid does not provide PID");
         }
     }
 }

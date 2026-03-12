@@ -17,11 +17,11 @@ use anyhow::{anyhow, bail, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use cryptoki::{
     context::{CInitializeArgs, Pkcs11},
+    error::{Error as Pkcs11Error, RvError},
     mechanism::Mechanism,
     object::{Attribute, AttributeType, KeyType, ObjectClass},
     session::UserType,
     types::AuthPin,
-    error::{Error as Pkcs11Error, RvError},
 };
 use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
@@ -225,9 +225,7 @@ impl YubiKeySigner {
             ];
             let (pub_handle, _priv_handle) = session
                 .generate_key_pair(&Mechanism::EccKeyPairGen, &pub_template, &priv_template)
-                .map_err(|e| {
-                    HardwareSignerError::KeyGenerationFailed(e.to_string())
-                })?;
+                .map_err(|e| HardwareSignerError::KeyGenerationFailed(e.to_string()))?;
 
             tracing::info!(slot = %slot_spec, "Generated new P-256 key pair on YubiKey.");
 
@@ -313,9 +311,8 @@ impl DPoPSigner for YubiKeySigner {
         })?;
 
         // Step 6: Sign — try CKM_ECDSA_SHA256 first, fall back to CKM_ECDSA with prehash.
-        let sig_bytes =
-            sign_with_fallback(&session, priv_handle, message.as_bytes())
-                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
+        let sig_bytes = sign_with_fallback(&session, priv_handle, message.as_bytes())
+            .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
         // Step 7: Session drops here (PCSC released — HW-04).
         drop(session);
@@ -348,16 +345,15 @@ fn open_pkcs11_context(path: &str) -> anyhow::Result<Pkcs11> {
             e
         )
     })?;
-    ctx.initialize(CInitializeArgs::OsThreads)
-        .or_else(|e| {
-            // AlreadyInitialized is OK — some PKCS#11 libraries return this on
-            // the second call within the same process.
-            if matches!(e, Pkcs11Error::AlreadyInitialized) {
-                Ok(())
-            } else {
-                Err(anyhow!("C_Initialize failed: {}", e))
-            }
-        })?;
+    ctx.initialize(CInitializeArgs::OsThreads).or_else(|e| {
+        // AlreadyInitialized is OK — some PKCS#11 libraries return this on
+        // the second call within the same process.
+        if matches!(e, Pkcs11Error::AlreadyInitialized) {
+            Ok(())
+        } else {
+            Err(anyhow!("C_Initialize failed: {}", e))
+        }
+    })?;
     Ok(ctx)
 }
 
@@ -367,9 +363,7 @@ fn first_slot(ctx: &Pkcs11) -> anyhow::Result<cryptoki::slot::Slot> {
         .get_slots_with_token()
         .map_err(|e| anyhow!("get_slots_with_token failed: {}", e))?;
     slots.into_iter().next().ok_or_else(|| {
-        anyhow!(
-            "No YubiKey token found. Ensure the key is inserted and pcscd is running."
-        )
+        anyhow!("No YubiKey token found. Ensure the key is inserted and pcscd is running.")
     })
 }
 
@@ -469,10 +463,7 @@ fn extract_ec_point(attrs: &[Attribute]) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Validate that the point is a 65-byte uncompressed P-256 point and extract x, y.
-fn parse_uncompressed_point(
-    ec_point: &[u8],
-    key_id: u8,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+fn parse_uncompressed_point(ec_point: &[u8], key_id: u8) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     if ec_point.len() != 65 || ec_point[0] != 0x04 {
         bail!(
             "{}",
@@ -492,10 +483,7 @@ fn parse_uncompressed_point(
 }
 
 /// Build the JWK and compute the JWK thumbprint (RFC 7638) from raw x, y bytes.
-fn compute_jwk_and_thumbprint(
-    x_bytes: &[u8],
-    y_bytes: &[u8],
-) -> (String, serde_json::Value) {
+fn compute_jwk_and_thumbprint(x_bytes: &[u8], y_bytes: &[u8]) -> (String, serde_json::Value) {
     let x_b64 = URL_SAFE_NO_PAD.encode(x_bytes);
     let y_b64 = URL_SAFE_NO_PAD.encode(y_bytes);
 
@@ -536,14 +524,13 @@ fn sign_with_fallback(
             session
                 .sign(&Mechanism::Ecdsa, priv_handle, &digest)
                 .map_err(|e| {
-                    anyhow!(
-                        "{}",
-                        HardwareSignerError::MechanismNotSupported
-                    )
-                    .context(e.to_string())
+                    anyhow!("{}", HardwareSignerError::MechanismNotSupported).context(e.to_string())
                 })
         }
-        Err(e) => Err(anyhow!("{}", HardwareSignerError::Pkcs11Error(e.to_string()))),
+        Err(e) => Err(anyhow!(
+            "{}",
+            HardwareSignerError::Pkcs11Error(e.to_string())
+        )),
     }
 }
 
@@ -670,7 +657,7 @@ mod tests {
         let raw_x_high_byte: u8 = 0xff; // deliberately not 0x41
         let mut raw_point = vec![0x04u8, raw_x_high_byte]; // uncompressed prefix + first x byte
         raw_point.extend(vec![0u8; 63]); // remaining 63 bytes
-        // Total: 65 bytes
+                                         // Total: 65 bytes
 
         let attrs = vec![Attribute::EcPoint(raw_point.clone())];
         let result = extract_ec_point(&attrs).unwrap();
@@ -742,11 +729,15 @@ mod tests {
     #[ignore = "Requires YubiKey with P-256 key in slot 9a"]
     fn test_yubikey_sign_proof() {
         let config = SignerConfig::default();
-        let signer = YubiKeySigner::open("9a", &config)
-            .expect("YubiKey with P-256 key in slot 9a required");
+        let signer =
+            YubiKeySigner::open("9a", &config).expect("YubiKey with P-256 key in slot 9a required");
 
         let thumbprint = signer.thumbprint();
-        assert_eq!(thumbprint.len(), 43, "thumbprint must be 43 chars (base64url SHA-256)");
+        assert_eq!(
+            thumbprint.len(),
+            43,
+            "thumbprint must be 43 chars (base64url SHA-256)"
+        );
 
         let proof = signer
             .sign_proof("SSH", "server.example.com", None)
@@ -771,15 +762,13 @@ mod tests {
     #[ignore = "Requires YubiKey and will generate a key"]
     fn test_yubikey_provision() {
         let config = SignerConfig::default();
-        let signer = YubiKeySigner::provision("9a", &config)
-            .expect("YubiKey provision failed");
+        let signer = YubiKeySigner::provision("9a", &config).expect("YubiKey provision failed");
 
         let thumbprint = signer.thumbprint();
         assert_eq!(thumbprint.len(), 43);
 
         // Open the same slot and verify thumbprints match.
-        let signer2 = YubiKeySigner::open("9a", &config)
-            .expect("open after provision failed");
+        let signer2 = YubiKeySigner::open("9a", &config).expect("open after provision failed");
         assert_eq!(
             signer.thumbprint(),
             signer2.thumbprint(),

@@ -320,7 +320,11 @@ mod tests {
         });
         let msg = build_dpop_message(&jwk, "SSH", "server.example.com", None).unwrap();
         let parts: Vec<&str> = msg.split('.').collect();
-        assert_eq!(parts.len(), 2, "build_dpop_message must return header.claims");
+        assert_eq!(
+            parts.len(),
+            2,
+            "build_dpop_message must return header.claims"
+        );
         // Both parts must be valid base64url
         for part in &parts {
             assert!(URL_SAFE_NO_PAD.decode(part).is_ok());
@@ -352,7 +356,11 @@ mod tests {
         let sig = vec![0u8; 64];
         let proof = assemble_dpop_proof(&msg, &sig).unwrap();
         let parts: Vec<&str> = proof.split('.').collect();
-        assert_eq!(parts.len(), 3, "assemble_dpop_proof must produce a 3-part JWT");
+        assert_eq!(
+            parts.len(),
+            3,
+            "assemble_dpop_proof must produce a 3-part JWT"
+        );
         // Third part must decode to 64 bytes
         let decoded = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
         assert_eq!(decoded.len(), 64);

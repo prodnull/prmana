@@ -64,9 +64,7 @@ pub enum AgentRequest {
     ///
     /// Agent returns StepUpPending (still waiting), StepUpComplete, or StepUpTimedOut.
     #[serde(rename = "step_up_result")]
-    StepUpResult {
-        correlation_id: String,
-    },
+    StepUpResult { correlation_id: String },
 }
 
 impl AgentRequest {
@@ -190,7 +188,9 @@ pub enum AgentResponseData {
     /// Must appear before `Ok {}` in the untagged enum: `acknowledged: bool` serves as
     /// a required discriminant field that `Ok {}` does not have, so serde tries
     /// `SessionAcknowledged` first when deserializing `{"acknowledged":true}`.
-    SessionAcknowledged { acknowledged: bool },
+    SessionAcknowledged {
+        acknowledged: bool,
+    },
     /// Generic success with no data fields.
     Ok {},
 }
@@ -262,7 +262,11 @@ impl AgentResponse {
     }
 
     /// Step-up initiated — PAM should poll at poll_interval_secs intervals.
-    pub fn step_up_pending(correlation_id: String, expires_in: u64, poll_interval_secs: u64) -> Self {
+    pub fn step_up_pending(
+        correlation_id: String,
+        expires_in: u64,
+        poll_interval_secs: u64,
+    ) -> Self {
         Self::Success(AgentResponseData::StepUpPending {
             correlation_id,
             expires_in,
@@ -389,9 +393,18 @@ mod tests {
         let resp = AgentResponse::status(false, None, None, None, None, None, None, None);
 
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(!json.contains("storage_backend"), "storage_backend must be absent when None");
-        assert!(!json.contains("migration_status"), "migration_status must be absent when None");
-        assert!(!json.contains("signer_type"), "signer_type must be absent when None");
+        assert!(
+            !json.contains("storage_backend"),
+            "storage_backend must be absent when None"
+        );
+        assert!(
+            !json.contains("migration_status"),
+            "migration_status must be absent when None"
+        );
+        assert!(
+            !json.contains("signer_type"),
+            "signer_type must be absent when None"
+        );
     }
 
     /// TDD: full JSON round-trip with all fields populated.
@@ -535,16 +548,7 @@ mod tests {
     /// Status response omits refresh_failed field when None (backward compat).
     #[test]
     fn test_status_response_refresh_failed_absent_when_none() {
-        let resp = AgentResponse::status(
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let resp = AgentResponse::status(false, None, None, None, None, None, None, None);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             !json.contains("refresh_failed"),
@@ -743,8 +747,7 @@ mod tests {
     /// StepUpTimedOut response round-trips with reason and user_message fields.
     #[test]
     fn test_step_up_timed_out_response_round_trip() {
-        let resp =
-            AgentResponse::step_up_timed_out("timeout", "Approval window expired");
+        let resp = AgentResponse::step_up_timed_out("timeout", "Approval window expired");
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""reason":"timeout""#),

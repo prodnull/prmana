@@ -158,10 +158,7 @@ pub fn write_session_record(dir: &str, session_id: &str, record: &SessionRecord)
 /// Returns `Err` on I/O errors other than `NotFound`.
 ///
 /// The caller should compute `now() - record.session_start` to get session duration.
-pub fn delete_session_record(
-    dir: &str,
-    session_id: &str,
-) -> io::Result<Option<SessionRecord>> {
+pub fn delete_session_record(dir: &str, session_id: &str) -> io::Result<Option<SessionRecord>> {
     validate_session_id(session_id)?;
 
     let path: PathBuf = std::path::Path::new(dir).join(format!("{}.json", session_id));
@@ -277,10 +274,7 @@ mod tests {
         write_session_record(dir_str, session_id, &record).unwrap();
 
         let tmp_path = tmp.path().join(format!("{}.json.tmp", session_id));
-        assert!(
-            !tmp_path.exists(),
-            ".tmp file must be removed after rename"
-        );
+        assert!(!tmp_path.exists(), ".tmp file must be removed after rename");
     }
 
     #[test]
@@ -301,7 +295,10 @@ mod tests {
 
         // File must be gone after delete
         let path = tmp.path().join(format!("{}.json", session_id));
-        assert!(!path.exists(), "file must be deleted after delete_session_record");
+        assert!(
+            !path.exists(),
+            "file must be deleted after delete_session_record"
+        );
     }
 
     #[test]
@@ -313,7 +310,10 @@ mod tests {
         assert!(json.contains("\"username\""), "must have username");
         assert!(json.contains("\"token_jti\""), "must have token_jti");
         assert!(json.contains("\"token_exp\""), "must have token_exp");
-        assert!(json.contains("\"session_start\""), "must have session_start");
+        assert!(
+            json.contains("\"session_start\""),
+            "must have session_start"
+        );
         assert!(json.contains("\"client_ip\""), "must have client_ip");
         assert!(json.contains("\"sshd_pid\""), "must have sshd_pid");
         assert!(json.contains("\"issuer\""), "must have issuer");
@@ -345,7 +345,10 @@ mod tests {
         let dir_str = tmp.path().to_str().unwrap();
 
         let result = delete_session_record(dir_str, "unix-oidc-nonexistent").unwrap();
-        assert!(result.is_none(), "missing file must return Ok(None), not panic");
+        assert!(
+            result.is_none(),
+            "missing file must return Ok(None), not panic"
+        );
     }
 
     // ── Path traversal rejection ───────────────────────────────────────────
@@ -370,10 +373,7 @@ mod tests {
         let record = make_record("x");
 
         let result = write_session_record(dir_str, "valid\0inject", &record);
-        assert!(
-            result.is_err(),
-            "null byte in session_id must be rejected"
-        );
+        assert!(result.is_err(), "null byte in session_id must be rejected");
     }
 
     #[test]
@@ -393,10 +393,7 @@ mod tests {
         let record = make_record("x");
 
         let result = write_session_record(dir_str, "some/path", &record);
-        assert!(
-            result.is_err(),
-            "session_id with slash must be rejected"
-        );
+        assert!(result.is_err(), "session_id with slash must be rejected");
     }
 
     #[test]
@@ -405,10 +402,7 @@ mod tests {
         let dir_str = tmp.path().to_str().unwrap();
 
         let result = delete_session_record(dir_str, "../etc/passwd");
-        assert!(
-            result.is_err(),
-            "path traversal on delete must be rejected"
-        );
+        assert!(result.is_err(), "path traversal on delete must be rejected");
     }
 
     // ── Duration helper ────────────────────────────────────────────────────

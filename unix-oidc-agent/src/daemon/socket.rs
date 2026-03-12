@@ -717,15 +717,13 @@ async fn handle_request(
 
         // SessionClosed is intercepted in handle_connection before reaching here.
         // This arm is unreachable at runtime but required for exhaustive match.
-        AgentRequest::SessionClosed { .. } => {
-            (
-                AgentResponse::error(
-                    "SessionClosed must be handled before handle_request",
-                    "INTERNAL_ERROR",
-                ),
-                true,
-            )
-        }
+        AgentRequest::SessionClosed { .. } => (
+            AgentResponse::error(
+                "SessionClosed must be handled before handle_request",
+                "INTERNAL_ERROR",
+            ),
+            true,
+        ),
 
         // CIBA step-up: initiate backchannel authentication.
         // Dispatches to handle_step_up() which fetches OIDC discovery, sends the
@@ -1042,8 +1040,7 @@ pub fn spawn_refresh_task(
                         succeeded = true;
                         info!(
                             new_expires,
-                            threshold_percent,
-                            "Auto-refresh succeeded; re-arming for next cycle"
+                            threshold_percent, "Auto-refresh succeeded; re-arming for next cycle"
                         );
                         break;
                     }
@@ -1348,9 +1345,7 @@ async fn handle_step_up(
     method: String,
     timeout_secs: u64,
 ) -> AgentResponse {
-    use pam_unix_oidc::ciba::{
-        build_binding_message, CibaClient, ACR_PHR,
-    };
+    use pam_unix_oidc::ciba::{build_binding_message, CibaClient, ACR_PHR};
     use pam_unix_oidc::oidc::OidcDiscovery;
 
     // ── Guard: concurrent step-up for same username ───────────────────────────
@@ -1445,16 +1440,15 @@ async fn handle_step_up(
     };
 
     // ── Construct CibaClient ──────────────────────────────────────────────────
-    let ciba_client =
-        match CibaClient::new(&discovery, &client_id, client_secret_opt.as_deref()) {
-            Ok(c) => c,
-            Err(e) => {
-                return AgentResponse::error(
-                    format!("CIBA not supported by IdP: {}", e),
-                    "CIBA_NOT_SUPPORTED",
-                );
-            }
-        };
+    let ciba_client = match CibaClient::new(&discovery, &client_id, client_secret_opt.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            return AgentResponse::error(
+                format!("CIBA not supported by IdP: {}", e),
+                "CIBA_NOT_SUPPORTED",
+            );
+        }
+    };
 
     // ── Build backchannel auth params ─────────────────────────────────────────
     let binding_message = build_binding_message(&command, &hostname);
@@ -1505,16 +1499,15 @@ async fn handle_step_up(
         );
     }
 
-    let bc_auth: pam_unix_oidc::ciba::BackchannelAuthResponse =
-        match bc_response.json().await {
-            Ok(r) => r,
-            Err(e) => {
-                return AgentResponse::error(
-                    format!("Failed to parse backchannel auth response: {}", e),
-                    "CIBA_PARSE_ERROR",
-                );
-            }
-        };
+    let bc_auth: pam_unix_oidc::ciba::BackchannelAuthResponse = match bc_response.json().await {
+        Ok(r) => r,
+        Err(e) => {
+            return AgentResponse::error(
+                format!("Failed to parse backchannel auth response: {}", e),
+                "CIBA_PARSE_ERROR",
+            );
+        }
+    };
 
     // ── Build token poll params (owned for the spawned task) ─────────────────
     let token_endpoint = ciba_client.token_endpoint().to_string();
@@ -1607,10 +1600,7 @@ async fn handle_step_up_result(
             let state_read = state.read().await;
             let Some(pending) = state_read.pending_step_ups.get(&correlation_id) else {
                 // Entry removed between checks — result already consumed.
-                return AgentResponse::error(
-                    "Step-up result already consumed",
-                    "STEP_UP_CONSUMED",
-                );
+                return AgentResponse::error("Step-up result already consumed", "STEP_UP_CONSUMED");
             };
             let now = tokio::time::Instant::now();
             if pending.expires_at > now {
@@ -1632,10 +1622,7 @@ async fn handle_step_up_result(
         Some(p) => p.handle,
         None => {
             // Race: another poll already consumed it — unlikely but safe.
-            return AgentResponse::error(
-                "Step-up result already consumed",
-                "STEP_UP_NOT_FOUND",
-            );
+            return AgentResponse::error("Step-up result already consumed", "STEP_UP_NOT_FOUND");
         }
     };
 
@@ -1643,9 +1630,10 @@ async fn handle_step_up_result(
         Ok(StepUpOutcome::Complete { acr, session_id }) => {
             AgentResponse::step_up_complete(acr, session_id)
         }
-        Ok(StepUpOutcome::TimedOut { reason, user_message }) => {
-            AgentResponse::step_up_timed_out(reason, user_message)
-        }
+        Ok(StepUpOutcome::TimedOut {
+            reason,
+            user_message,
+        }) => AgentResponse::step_up_timed_out(reason, user_message),
         Err(e) => AgentResponse::error(
             format!("CIBA poll task panicked: {}", e),
             "STEP_UP_INTERNAL_ERROR",
@@ -1720,7 +1708,9 @@ pub(crate) async fn poll_ciba(
                         );
                         return StepUpOutcome::TimedOut {
                             reason: "acr_failed".to_string(),
-                            user_message: "Step-up authentication did not meet the required assurance level".to_string(),
+                            user_message:
+                                "Step-up authentication did not meet the required assurance level"
+                                    .to_string(),
                         };
                     }
 
@@ -1771,7 +1761,8 @@ pub(crate) async fn poll_ciba(
                 CibaError::ExpiredToken => {
                     return StepUpOutcome::TimedOut {
                         reason: "expired".to_string(),
-                        user_message: "Approval window expired before user authenticated".to_string(),
+                        user_message: "Approval window expired before user authenticated"
+                            .to_string(),
                     };
                 }
                 _ => {
@@ -2165,18 +2156,26 @@ mod tests {
     fn test_agent_state_debug_with_refresh_task() {
         let mut state = AgentState::new();
         // Spawn a no-op task and store its AbortHandle to simulate an active refresh.
-        let handle = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async {
-                let jh = tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_secs(3600)).await });
-                jh.abort_handle()
+        let handle = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let jh = tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await
             });
+            jh.abort_handle()
+        });
         state.refresh_task = Some(handle);
         state.refresh_failed = true;
 
         let debug_str = format!("{:?}", state);
-        assert!(debug_str.contains("<AbortHandle>"), "Expected <AbortHandle> in debug: {}", debug_str);
-        assert!(debug_str.contains("refresh_failed: true"), "Expected refresh_failed in debug: {}", debug_str);
+        assert!(
+            debug_str.contains("<AbortHandle>"),
+            "Expected <AbortHandle> in debug: {}",
+            debug_str
+        );
+        assert!(
+            debug_str.contains("refresh_failed: true"),
+            "Expected refresh_failed in debug: {}",
+            debug_str
+        );
     }
 
     /// Refresh threshold calculation: sleep = lifetime * threshold / 100.
@@ -2212,7 +2211,11 @@ mod tests {
         assert_eq!(BACKOFF_DELAYS_SECS[1], 10);
         assert_eq!(BACKOFF_DELAYS_SECS[2], 20);
         // Total attempts = 1 initial + 3 retries = 4.
-        assert_eq!(BACKOFF_DELAYS_SECS.len(), 3, "3 retry delays → 4 total attempts");
+        assert_eq!(
+            BACKOFF_DELAYS_SECS.len(),
+            3,
+            "3 retry delays → 4 total attempts"
+        );
     }
 
     /// spawn_refresh_task returns an AbortHandle that can be called without panic.
@@ -2276,7 +2279,9 @@ mod tests {
         assert!(
             matches!(
                 response,
-                AgentResponse::Success(AgentResponseData::SessionAcknowledged { acknowledged: true })
+                AgentResponse::Success(AgentResponseData::SessionAcknowledged {
+                    acknowledged: true
+                })
             ),
             "Expected SessionAcknowledged, got: {:?}",
             response
@@ -2309,8 +2314,14 @@ mod tests {
         cleanup_session(Arc::clone(&state), "test-sess-002".to_string()).await;
 
         let state_read = state.read().await;
-        assert!(state_read.access_token.is_none(), "access_token must be cleared");
-        assert!(state_read.token_expires.is_none(), "token_expires must be cleared");
+        assert!(
+            state_read.access_token.is_none(),
+            "access_token must be cleared"
+        );
+        assert!(
+            state_read.token_expires.is_none(),
+            "token_expires must be cleared"
+        );
         assert!(state_read.username.is_none(), "username must be cleared");
         assert!(!state_read.refresh_failed, "refresh_failed must be reset");
         assert!(state_read.signer.is_none(), "signer Arc must be dropped");
@@ -2325,7 +2336,8 @@ mod tests {
         let far_future = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64 + 31_536_000;
+            .as_secs() as i64
+            + 31_536_000;
         let handle = spawn_refresh_task(Arc::clone(&state), far_future, 80);
         {
             let mut sw = state.write().await;
@@ -2336,7 +2348,10 @@ mod tests {
 
         // After cleanup, refresh_task must be None.
         let state_read = state.read().await;
-        assert!(state_read.refresh_task.is_none(), "refresh_task must be None after cleanup");
+        assert!(
+            state_read.refresh_task.is_none(),
+            "refresh_task must be None after cleanup"
+        );
     }
 
     // ── TDD RED: CIBA step-up handler ────────────────────────────────────────────
@@ -2346,33 +2361,54 @@ mod tests {
     #[test]
     fn test_agent_state_has_oidc_config_fields() {
         let mut state = AgentState::new();
-        assert!(state.oidc_issuer.is_none(), "oidc_issuer must be None initially");
-        assert!(state.oidc_client_id.is_none(), "oidc_client_id must be None initially");
-        assert!(state.oidc_client_secret.is_none(), "oidc_client_secret must be None initially");
+        assert!(
+            state.oidc_issuer.is_none(),
+            "oidc_issuer must be None initially"
+        );
+        assert!(
+            state.oidc_client_id.is_none(),
+            "oidc_client_id must be None initially"
+        );
+        assert!(
+            state.oidc_client_secret.is_none(),
+            "oidc_client_secret must be None initially"
+        );
 
         state.oidc_issuer = Some("https://idp.example.com/realms/corp".to_string());
         state.oidc_client_id = Some("unix-oidc-agent".to_string());
         state.oidc_client_secret = Some(SecretString::from("s3cr3t".to_string()));
 
-        assert_eq!(state.oidc_issuer.as_deref(), Some("https://idp.example.com/realms/corp"));
+        assert_eq!(
+            state.oidc_issuer.as_deref(),
+            Some("https://idp.example.com/realms/corp")
+        );
         assert_eq!(state.oidc_client_id.as_deref(), Some("unix-oidc-agent"));
         // Secret must not appear in Debug output (MEM-03)
         let debug = format!("{:?}", state);
-        assert!(!debug.contains("s3cr3t"), "oidc_client_secret must not appear in Debug: {}", debug);
+        assert!(
+            !debug.contains("s3cr3t"),
+            "oidc_client_secret must not appear in Debug: {}",
+            debug
+        );
     }
 
     /// AgentState must carry pending_step_ups HashMap for active CIBA poll tasks.
     #[test]
     fn test_agent_state_has_pending_step_ups() {
         let state = AgentState::new();
-        assert!(state.pending_step_ups.is_empty(), "pending_step_ups must be empty initially");
+        assert!(
+            state.pending_step_ups.is_empty(),
+            "pending_step_ups must be empty initially"
+        );
     }
 
     /// StepUpOutcome::Complete carries acr and session_id.
     #[test]
     fn test_step_up_outcome_complete_fields() {
         let outcome = StepUpOutcome::Complete {
-            acr: Some("http://schemas.openid.net/pape/policies/2007/06/phishing-resistant".to_string()),
+            acr: Some(
+                "http://schemas.openid.net/pape/policies/2007/06/phishing-resistant".to_string(),
+            ),
             session_id: "sess-abc".to_string(),
         };
         match outcome {
@@ -2392,7 +2428,10 @@ mod tests {
             user_message: "Step-up request was denied".to_string(),
         };
         match outcome {
-            StepUpOutcome::TimedOut { reason, user_message } => {
+            StepUpOutcome::TimedOut {
+                reason,
+                user_message,
+            } => {
                 assert_eq!(reason, "denied");
                 assert!(user_message.contains("denied"));
             }
@@ -2416,13 +2455,16 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let client = AgentClient::new(socket_path);
-        let response = client.send(AgentRequest::StepUp {
-            username: "alice".to_string(),
-            command: "/usr/bin/ls".to_string(),
-            hostname: "server-01".to_string(),
-            method: "push".to_string(),
-            timeout_secs: 120,
-        }).await.unwrap();
+        let response = client
+            .send(AgentRequest::StepUp {
+                username: "alice".to_string(),
+                command: "/usr/bin/ls".to_string(),
+                hostname: "server-01".to_string(),
+                method: "push".to_string(),
+                timeout_secs: 120,
+            })
+            .await
+            .unwrap();
 
         assert!(
             matches!(response, AgentResponse::Error { .. }),
@@ -2467,7 +2509,9 @@ mod tests {
         // concurrent guard. So we need to set oidc_issuer to test the guard.
         // We test the guard logic directly using the state inspection approach.
         let state_read = state.read().await;
-        let alice_has_pending = state_read.pending_step_ups.values()
+        let alice_has_pending = state_read
+            .pending_step_ups
+            .values()
             .any(|p| p.username == "alice" && !p.handle.is_finished());
         assert!(alice_has_pending, "alice must have a pending step-up");
 
@@ -2480,8 +2524,8 @@ mod tests {
     #[tokio::test]
     async fn test_poll_ciba_returns_complete_on_200() {
         // Start a mock HTTP server that returns a successful token response.
-        use tokio::net::TcpListener;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2509,7 +2553,10 @@ mod tests {
 
         let token_endpoint = format!("http://127.0.0.1:{}/token", port);
         let params = vec![
-            ("grant_type".to_string(), "urn:openid:params:grant-type:ciba".to_string()),
+            (
+                "grant_type".to_string(),
+                "urn:openid:params:grant-type:ciba".to_string(),
+            ),
             ("auth_req_id".to_string(), "req-abc".to_string()),
         ];
 
@@ -2520,7 +2567,8 @@ mod tests {
             std::time::Duration::from_millis(10), // tiny interval for test
             std::time::Duration::from_secs(10),
             None, // no ACR required
-        ).await;
+        )
+        .await;
 
         assert!(
             matches!(outcome, StepUpOutcome::Complete { .. }),
@@ -2532,8 +2580,8 @@ mod tests {
     /// poll_ciba adds 5s on SlowDown and returns TimedOut on AccessDenied.
     #[tokio::test]
     async fn test_poll_ciba_returns_timed_out_on_denied() {
-        use tokio::net::TcpListener;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2564,7 +2612,8 @@ mod tests {
             std::time::Duration::from_millis(10),
             std::time::Duration::from_secs(10),
             None,
-        ).await;
+        )
+        .await;
 
         assert!(
             matches!(outcome, StepUpOutcome::TimedOut { ref reason, .. } if reason == "denied"),
@@ -2580,10 +2629,10 @@ mod tests {
     /// the interval was extended.
     #[tokio::test]
     async fn test_poll_ciba_slow_down_increases_interval() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::net::TcpListener;
+        use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2626,7 +2675,8 @@ mod tests {
             std::time::Duration::from_millis(50), // initial interval: 50ms
             std::time::Duration::from_secs(15),
             None,
-        ).await;
+        )
+        .await;
 
         let elapsed = start.elapsed();
 
@@ -2642,7 +2692,11 @@ mod tests {
             "Expected TimedOut(denied), got: {:?}",
             outcome
         );
-        assert_eq!(call_count.load(Ordering::SeqCst), 2, "Expected exactly 2 poll requests");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "Expected exactly 2 poll requests"
+        );
     }
 
     /// extract_acr_from_id_token correctly extracts the `acr` claim from a JWT payload.
@@ -2652,9 +2706,8 @@ mod tests {
 
         // Build a minimal JWT: header.payload.signature
         let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(
-            r#"{"sub":"user1","acr":"urn:mace:incommon:iap:silver"}"#,
-        );
+        let payload =
+            URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","acr":"urn:mace:incommon:iap:silver"}"#);
         let signature = URL_SAFE_NO_PAD.encode(b"fakesig");
         let id_token = format!("{}.{}.{}", header, payload, signature);
 
@@ -2679,10 +2732,7 @@ mod tests {
             extract_acr_from_id_token("not.a.valid.jwt.too.many.parts"),
             None,
         );
-        assert_eq!(
-            extract_acr_from_id_token("onlyone"),
-            None,
-        );
+        assert_eq!(extract_acr_from_id_token("onlyone"), None,);
     }
 
     /// poll_ciba returns TimedOut("timeout") when the outer timeout expires.
@@ -2702,7 +2752,8 @@ mod tests {
             std::time::Duration::from_millis(10),
             std::time::Duration::from_millis(100), // 100ms outer timeout
             None,
-        ).await;
+        )
+        .await;
 
         assert!(
             matches!(outcome, StepUpOutcome::TimedOut { .. }),
@@ -2725,7 +2776,11 @@ mod tests {
         // Note: LISTEN_FDS may be set in CI if the test runner uses socket activation,
         // but in a unit test context it is absent.
         let result = acquire_listener(&socket_path);
-        assert!(result.is_ok(), "acquire_listener failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "acquire_listener failed: {:?}",
+            result.err()
+        );
 
         // The socket file must exist after binding.
         assert!(
@@ -2740,11 +2795,7 @@ mod tests {
             use std::os::unix::fs::MetadataExt;
             let meta = std::fs::metadata(&socket_path).unwrap();
             let mode = meta.mode() & 0o7777;
-            assert_eq!(
-                mode, 0o600,
-                "expected socket mode 0600, got {:o}",
-                mode
-            );
+            assert_eq!(mode, 0o600, "expected socket mode 0600, got {:o}", mode);
         }
     }
 
@@ -2770,7 +2821,10 @@ mod tests {
             "acquire_listener failed with stale socket: {:?}",
             result.err()
         );
-        assert!(socket_path.exists(), "new socket file must exist after bind");
+        assert!(
+            socket_path.exists(),
+            "new socket file must exist after bind"
+        );
     }
 
     /// Idle timeout: a connected client that sends no data for the configured
@@ -2819,22 +2873,17 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Connect a client socket and send nothing.
-        let client_stream = tokio::net::UnixStream::connect(
-            temp_dir.path().join("idle_timeout_test.sock"),
-        )
-        .await
-        .expect("client connect failed");
+        let client_stream =
+            tokio::net::UnixStream::connect(temp_dir.path().join("idle_timeout_test.sock"))
+                .await
+                .expect("client connect failed");
 
         let (mut reader, _writer) = client_stream.into_split();
         let mut buf = [0u8; 64];
 
         // The server should close the connection after 200ms idle timeout.
         // We wait up to 1s; a read returning 0 bytes means EOF (server closed).
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            reader.read(&mut buf),
-        )
-        .await;
+        let result = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buf)).await;
 
         match result {
             Ok(Ok(0)) => {
@@ -2898,7 +2947,10 @@ mod tests {
 
         // Verify we got a successful proof response.
         assert!(
-            matches!(response, AgentResponse::Success(AgentResponseData::Proof { .. })),
+            matches!(
+                response,
+                AgentResponse::Success(AgentResponseData::Proof { .. })
+            ),
             "Expected Proof response; got: {:?}",
             response
         );
@@ -2934,7 +2986,8 @@ mod tests {
         let state = Arc::new(RwLock::new(AgentState::new()));
 
         // Call handle_step_up_result with an unknown correlation_id.
-        let response = handle_step_up_result(&state, "nonexistent-correlation-id".to_string()).await;
+        let response =
+            handle_step_up_result(&state, "nonexistent-correlation-id".to_string()).await;
 
         // Must return an error response, not panic.
         match response {
@@ -2953,17 +3006,19 @@ mod tests {
     #[tokio::test]
     async fn test_handle_step_up_result_finished_task_returns_complete() {
         // Spawn a task that immediately completes.
-        let completed_handle: tokio::task::JoinHandle<StepUpOutcome> =
-            tokio::spawn(async {
-                StepUpOutcome::Complete {
-                    acr: Some("urn:example:acr:mfa".to_string()),
-                    session_id: "sess-abc".to_string(),
-                }
-            });
+        let completed_handle: tokio::task::JoinHandle<StepUpOutcome> = tokio::spawn(async {
+            StepUpOutcome::Complete {
+                acr: Some("urn:example:acr:mfa".to_string()),
+                session_id: "sess-abc".to_string(),
+            }
+        });
 
         // Wait for the task to finish.
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        assert!(completed_handle.is_finished(), "handle must be finished before test");
+        assert!(
+            completed_handle.is_finished(),
+            "handle must be finished before test"
+        );
 
         let correlation_id = "test-finished-task-id".to_string();
         let state = Arc::new(RwLock::new(AgentState::new()));
@@ -2975,8 +3030,7 @@ mod tests {
                 PendingStepUp {
                     handle: completed_handle,
                     username: "alice".to_string(),
-                    expires_at: tokio::time::Instant::now()
-                        + tokio::time::Duration::from_secs(120),
+                    expires_at: tokio::time::Instant::now() + tokio::time::Duration::from_secs(120),
                 },
             );
         }
@@ -2988,7 +3042,10 @@ mod tests {
             AgentResponse::Success(AgentResponseData::StepUpComplete { .. }) => {
                 // Correct — completed task produces StepUpComplete response.
             }
-            other => panic!("Expected StepUpComplete response for finished task, got: {:?}", other),
+            other => panic!(
+                "Expected StepUpComplete response for finished task, got: {:?}",
+                other
+            ),
         }
     }
 }

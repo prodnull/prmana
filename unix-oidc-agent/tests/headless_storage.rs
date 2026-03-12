@@ -44,12 +44,13 @@ mod linux {
         let key = "headless-test-key";
         let value = b"test-key-material-headless";
 
-        router.store(key, value).expect("store should work with keyutils");
-        let retrieved = router.retrieve(key).expect("retrieve should work with keyutils");
-        assert_eq!(
-            retrieved, value,
-            "retrieved value must match stored value"
-        );
+        router
+            .store(key, value)
+            .expect("store should work with keyutils");
+        let retrieved = router
+            .retrieve(key)
+            .expect("retrieve should work with keyutils");
+        assert_eq!(retrieved, value, "retrieved value must match stored value");
 
         // Cleanup: best-effort, do not fail the test on cleanup error.
         router.delete(key).ok();
@@ -73,8 +74,7 @@ mod linux {
 
         // First router instance: stores a credential, then is dropped.
         {
-            let router_first = StorageRouter::detect()
-                .expect("first detect should succeed");
+            let router_first = StorageRouter::detect().expect("first detect should succeed");
             assert!(
                 matches!(router_first.kind, BackendKind::KeyutilsUser),
                 "first router should use keyutils, got {:?}",
@@ -88,8 +88,8 @@ mod linux {
 
         // Second router instance: simulates daemon restart.
         {
-            let router_second = StorageRouter::detect()
-                .expect("second detect (simulated restart) should succeed");
+            let router_second =
+                StorageRouter::detect().expect("second detect (simulated restart) should succeed");
             assert!(
                 matches!(router_second.kind, BackendKind::KeyutilsUser),
                 "second router should use keyutils, got {:?}",

@@ -278,8 +278,7 @@ impl PamServiceModule for PamUnixOidc {
                                 .log();
                                 match enforcement {
                                     EnforcementMode::Strict => {
-                                        global_rate_limiter()
-                                            .record_failure(&pam_user, source_ip);
+                                        global_rate_limiter().record_failure(&pam_user, source_ip);
                                         return PamError::AUTH_ERR;
                                     }
                                     EnforcementMode::Warn | EnforcementMode::Disabled => {
@@ -323,8 +322,7 @@ impl PamServiceModule for PamUnixOidc {
                                     "Introspection endpoint error"
                                 );
                                 if enforcement == EnforcementMode::Strict {
-                                    global_rate_limiter()
-                                        .record_failure(&pam_user, source_ip);
+                                    global_rate_limiter().record_failure(&pam_user, source_ip);
                                     return PamError::AUTH_ERR;
                                 }
                                 // Warn/Disabled: fail-open — log already emitted, proceed.
@@ -357,8 +355,7 @@ impl PamServiceModule for PamUnixOidc {
                 //
                 // Security: Session correlation is best-effort; failure to set env vars is
                 // logged at WARN but NEVER causes authentication to fail.
-                if let Err(e) = pamh
-                    .putenv(&format!("UNIX_OIDC_SESSION_ID={}", result.session_id))
+                if let Err(e) = pamh.putenv(&format!("UNIX_OIDC_SESSION_ID={}", result.session_id))
                 {
                     tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_SESSION_ID in PAM env");
                 }
@@ -368,14 +365,10 @@ impl PamServiceModule for PamUnixOidc {
                 )) {
                     tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_TOKEN_JTI in PAM env");
                 }
-                if let Err(e) =
-                    pamh.putenv(&format!("UNIX_OIDC_TOKEN_EXP={}", result.token_exp))
-                {
+                if let Err(e) = pamh.putenv(&format!("UNIX_OIDC_TOKEN_EXP={}", result.token_exp)) {
                     tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_TOKEN_EXP in PAM env");
                 }
-                if let Err(e) =
-                    pamh.putenv(&format!("UNIX_OIDC_ISSUER={}", result.token_issuer))
-                {
+                if let Err(e) = pamh.putenv(&format!("UNIX_OIDC_ISSUER={}", result.token_issuer)) {
                     tracing::warn!(error = ?e, "Failed to set UNIX_OIDC_ISSUER in PAM env");
                 }
 
@@ -466,11 +459,17 @@ impl PamServiceModule for PamUnixOidc {
             .ok()
             .flatten()
             .map(|s| s.to_string_lossy().to_string())
-            .or_else(|| pamh.get_user(None).ok().flatten().map(|s| s.to_string_lossy().to_string()))
-        {
+            .or_else(|| {
+                pamh.get_user(None)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.to_string_lossy().to_string())
+            }) {
             Some(u) => u,
             None => {
-                tracing::warn!("open_session: could not determine PAM user; skipping session record");
+                tracing::warn!(
+                    "open_session: could not determine PAM user; skipping session record"
+                );
                 return PamError::SUCCESS;
             }
         };
@@ -505,8 +504,7 @@ impl PamServiceModule for PamUnixOidc {
             .map(|s| s.to_string_lossy().to_string());
 
         // Load session config (use defaults on error — file may not exist in all deployments)
-        let config = PolicyConfig::from_env()
-            .unwrap_or_default();
+        let config = PolicyConfig::from_env().unwrap_or_default();
         let session_dir = &config.session.session_dir;
 
         // Ensure session directory exists with correct permissions
@@ -574,32 +572,30 @@ impl PamServiceModule for PamUnixOidc {
         let session_dir = &config.session.session_dir;
 
         // Delete the session record and retrieve it for audit / duration calculation
-        let (username, duration_secs) = match crate::session::delete_session_record(
-            session_dir,
-            &session_id,
-        ) {
-            Ok(Some(record)) => {
-                let dur = crate::session::session_duration_secs(record.session_start);
-                (record.username, dur)
-            }
-            Ok(None) => {
-                // Record not found — session may have been cleaned up by other means
-                tracing::warn!(
-                    session_id = %session_id,
-                    "Session record not found on close; cannot compute duration"
-                );
-                // Still emit SessionClosed with empty username and 0 duration
-                (String::new(), 0i64)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    session_id = %session_id,
-                    "Failed to delete session record"
-                );
-                (String::new(), 0i64)
-            }
-        };
+        let (username, duration_secs) =
+            match crate::session::delete_session_record(session_dir, &session_id) {
+                Ok(Some(record)) => {
+                    let dur = crate::session::session_duration_secs(record.session_start);
+                    (record.username, dur)
+                }
+                Ok(None) => {
+                    // Record not found — session may have been cleaned up by other means
+                    tracing::warn!(
+                        session_id = %session_id,
+                        "Session record not found on close; cannot compute duration"
+                    );
+                    // Still emit SessionClosed with empty username and 0 duration
+                    (String::new(), 0i64)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        session_id = %session_id,
+                        "Failed to delete session record"
+                    );
+                    (String::new(), 0i64)
+                }
+            };
 
         // Emit SESSION_CLOSED audit event
         AuditEvent::session_closed(&session_id, &username, duration_secs).log();
@@ -642,14 +638,12 @@ fn notify_agent_session_closed(session_id: &str) {
     use std::time::Duration;
 
     // Resolve agent socket path.  Use the same env variable the agent daemon exports.
-    let socket_path = std::env::var("UNIX_OIDC_AGENT_SOCKET")
-        .unwrap_or_else(|_| {
-            // Fallback: use XDG_RUNTIME_DIR if available (user sessions under systemd),
-            // otherwise root runtime dir.
-            let xdg = std::env::var("XDG_RUNTIME_DIR")
-                .unwrap_or_else(|_| "/run/user/0".to_string());
-            format!("{}/unix-oidc-agent.sock", xdg)
-        });
+    let socket_path = std::env::var("UNIX_OIDC_AGENT_SOCKET").unwrap_or_else(|_| {
+        // Fallback: use XDG_RUNTIME_DIR if available (user sessions under systemd),
+        // otherwise root runtime dir.
+        let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/0".to_string());
+        format!("{}/unix-oidc-agent.sock", xdg)
+    });
 
     let stream = match UnixStream::connect(&socket_path) {
         Ok(s) => s,

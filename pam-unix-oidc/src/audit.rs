@@ -441,9 +441,7 @@ fn get_hostname() -> String {
             return override_host;
         }
     }
-    gethostname::gethostname()
-        .to_string_lossy()
-        .into_owned()
+    gethostname::gethostname().to_string_lossy().into_owned()
 }
 
 /// Append a line to a file.
@@ -746,9 +744,7 @@ mod tests {
         let _guard = ENV_MUTEX.lock();
         std::env::remove_var("UNIX_OIDC_HOSTNAME");
         // gethostname::gethostname() returns the same value
-        let syscall_result = gethostname::gethostname()
-            .to_string_lossy()
-            .into_owned();
+        let syscall_result = gethostname::gethostname().to_string_lossy().into_owned();
         let h = get_hostname();
         // Both should agree (no env override in play)
         assert_eq!(h, syscall_result);

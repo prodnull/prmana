@@ -142,9 +142,7 @@ pub async fn run_ssh_askpass(prompt: String) -> anyhow::Result<()> {
 
         match response {
             AgentResponse::Success(AgentResponseData::Proof {
-                token,
-                dpop_proof,
-                ..
+                token, dpop_proof, ..
             }) => {
                 // Cache the token for round 3 (OIDC Token prompt).
                 // Failure to cache is non-fatal: round 3 will fall back to another
@@ -263,7 +261,10 @@ mod tests {
     fn test_nonce_tmpfile_path_includes_ppid() {
         let path = nonce_tmpfile_path(12345);
         let name = path.file_name().unwrap().to_str().unwrap();
-        assert!(name.contains("12345"), "Expected PPID in tmpfile name, got: {name}");
+        assert!(
+            name.contains("12345"),
+            "Expected PPID in tmpfile name, got: {name}"
+        );
         assert!(name.starts_with(".unix-oidc-nonce-"));
     }
 
@@ -271,7 +272,10 @@ mod tests {
     fn test_token_tmpfile_path_includes_ppid() {
         let path = token_tmpfile_path(12345);
         let name = path.file_name().unwrap().to_str().unwrap();
-        assert!(name.contains("12345"), "Expected PPID in token tmpfile name, got: {name}");
+        assert!(
+            name.contains("12345"),
+            "Expected PPID in token tmpfile name, got: {name}"
+        );
         assert!(name.starts_with(".unix-oidc-token-"));
     }
 
@@ -279,21 +283,32 @@ mod tests {
     fn test_two_ppids_produce_different_nonce_paths() {
         let path1 = nonce_tmpfile_path(100);
         let path2 = nonce_tmpfile_path(200);
-        assert_ne!(path1, path2, "Different PPIDs should produce different tmpfile paths");
+        assert_ne!(
+            path1, path2,
+            "Different PPIDs should produce different tmpfile paths"
+        );
     }
 
     #[test]
     fn test_two_ppids_produce_different_token_paths() {
         let path1 = token_tmpfile_path(100);
         let path2 = token_tmpfile_path(200);
-        assert_ne!(path1, path2, "Different PPIDs should produce different token tmpfile paths");
+        assert_ne!(
+            path1, path2,
+            "Different PPIDs should produce different token tmpfile paths"
+        );
     }
 
     #[test]
     fn test_write_with_restricted_perms_creates_file() {
-        let path = std::env::temp_dir().join(format!(".unix-oidc-test-perms-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!(".unix-oidc-test-perms-{}", std::process::id()));
         let result = write_with_restricted_perms(&path, "test-content");
-        assert!(result.is_ok(), "write_with_restricted_perms should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "write_with_restricted_perms should succeed: {:?}",
+            result
+        );
 
         let content = fs::read_to_string(&path).expect("File should be readable");
         assert_eq!(content, "test-content");
@@ -322,7 +337,10 @@ mod tests {
             use std::os::unix::fs::MetadataExt;
             let meta = fs::metadata(&nonce_path).expect("Tmpfile should exist");
             let mode = meta.mode() & 0o777;
-            assert_eq!(mode, 0o600, "Expected 0600 permissions on nonce tmpfile, got: {mode:o}");
+            assert_eq!(
+                mode, 0o600,
+                "Expected 0600 permissions on nonce tmpfile, got: {mode:o}"
+            );
         }
 
         let _ = fs::remove_file(&nonce_path);
@@ -378,8 +396,15 @@ mod tests {
         fs::write(&path, "  hello  ").unwrap();
 
         let result = read_and_delete(&path);
-        assert_eq!(result, Some("hello".to_string()), "Expected trimmed content");
-        assert!(!path.exists(), "File should be deleted after read_and_delete");
+        assert_eq!(
+            result,
+            Some("hello".to_string()),
+            "Expected trimmed content"
+        );
+        assert!(
+            !path.exists(),
+            "File should be deleted after read_and_delete"
+        );
     }
 
     #[test]

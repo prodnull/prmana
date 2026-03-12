@@ -161,11 +161,7 @@ mod linux_impl {
                 .map_err(|e| TpmSignerError::TpmNotAvailable(e.to_string()))?;
 
             let (capability_data, _more_data) = ctx
-                .get_capability(
-                    tss_esapi::constants::CapabilityType::EccCurves,
-                    0,
-                    32,
-                )
+                .get_capability(tss_esapi::constants::CapabilityType::EccCurves, 0, 32)
                 .context("Failed to query TPM ECC capabilities")?;
 
             let curves = match capability_data {
@@ -256,30 +252,24 @@ mod linux_impl {
             let handle_val = tpm_cfg
                 .and_then(|t| t.persistent_handle)
                 .unwrap_or(DEFAULT_HANDLE);
-            let pin_timeout = tpm_cfg
-                .and_then(|t| t.pin_cache_timeout)
-                .unwrap_or(28800);
+            let pin_timeout = tpm_cfg.and_then(|t| t.pin_cache_timeout).unwrap_or(28800);
 
             let tcti_conf = parse_tcti(&tcti)?;
             let mut ctx = Context::new(tcti_conf)
                 .map_err(|e| TpmSignerError::TpmNotAvailable(e.to_string()))?;
 
-            let persistent_tpm_handle = PersistentTpmHandle::new(handle_val)
-                .map_err(|e| {
-                    anyhow::anyhow!(TpmSignerError::KeyNotFound(handle_val)).context(e.to_string())
-                })?;
+            let persistent_tpm_handle = PersistentTpmHandle::new(handle_val).map_err(|e| {
+                anyhow::anyhow!(TpmSignerError::KeyNotFound(handle_val)).context(e.to_string())
+            })?;
             let tpm_handle = TpmHandle::Persistent(persistent_tpm_handle);
             let key_handle: KeyHandle = ctx
                 .tr_from_tpm_public(tpm_handle)
                 .map_err(|_| TpmSignerError::KeyNotFound(handle_val))?
                 .into();
 
-            let (out_public, _, _) = ctx
-                .read_public(key_handle)
-                .map_err(|e| {
-                    anyhow::anyhow!(TpmSignerError::KeyNotFound(handle_val))
-                        .context(e.to_string())
-                })?;
+            let (out_public, _, _) = ctx.read_public(key_handle).map_err(|e| {
+                anyhow::anyhow!(TpmSignerError::KeyNotFound(handle_val)).context(e.to_string())
+            })?;
 
             let (jwk, thumbprint) = extract_p256_jwk_from_public(&out_public)?;
 
@@ -320,8 +310,8 @@ mod linux_impl {
             // Step 3: Open a fresh TPM context per call (no persistent context — HW-04 pattern).
             let tcti_conf = parse_tcti(&self.tcti_conf)
                 .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
-            let mut ctx = Context::new(tcti_conf)
-                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
+            let mut ctx =
+                Context::new(tcti_conf).map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
             // Step 4: Load the key handle from the persistent handle.
             let persistent_tpm_handle = PersistentTpmHandle::new(self.persistent_handle)
@@ -346,8 +336,7 @@ mod linux_impl {
             // (the TPM does not verify the hash itself). Pass a null ticket.
             let validation = tss_esapi::structures::HashcheckTicket::try_from(
                 tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
-                    tag: tss_esapi::interface_types::structure_tags::StructureTag::Hashcheck
-                        .into(),
+                    tag: tss_esapi::interface_types::structure_tags::StructureTag::Hashcheck.into(),
                     hierarchy: tss_esapi::constants::tpm::Handles::Null.into(),
                     digest: Default::default(),
                 },

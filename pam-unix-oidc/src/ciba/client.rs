@@ -120,7 +120,11 @@ pub fn build_binding_message(command: &str, hostname: &str) -> String {
     let exe_path = command.split_whitespace().next().unwrap_or("");
     // Take only the last path component (basename).
     let exe_name = exe_path.split('/').next_back().unwrap_or("unknown");
-    let exe_name = if exe_name.is_empty() { "unknown" } else { exe_name };
+    let exe_name = if exe_name.is_empty() {
+        "unknown"
+    } else {
+        exe_name
+    };
 
     let msg = format!("sudo {} on {}", exe_name, hostname);
 
@@ -140,10 +144,7 @@ mod tests {
     use super::*;
     use crate::oidc::jwks::OidcDiscovery;
 
-    fn make_discovery(
-        backchannel: Option<&str>,
-        modes: Option<Vec<&str>>,
-    ) -> OidcDiscovery {
+    fn make_discovery(backchannel: Option<&str>, modes: Option<Vec<&str>>) -> OidcDiscovery {
         OidcDiscovery {
             jwks_uri: "https://idp.example.com/jwks".to_string(),
             issuer: "https://idp.example.com".to_string(),
@@ -177,10 +178,7 @@ mod tests {
 
     #[test]
     fn new_succeeds_when_poll_in_modes() {
-        let d = make_discovery(
-            Some("https://idp.example.com/bc-authn"),
-            Some(vec!["poll"]),
-        );
+        let d = make_discovery(Some("https://idp.example.com/bc-authn"), Some(vec!["poll"]));
         assert!(CibaClient::new(&d, "my-client", None).is_ok());
     }
 
@@ -210,10 +208,12 @@ mod tests {
     fn backchannel_auth_params_includes_acr_values_when_some() {
         let d = make_discovery(Some("https://idp.example.com/bc-authn"), None);
         let client = CibaClient::new(&d, "my-client", None).unwrap();
-        let params =
-            client.build_backchannel_auth_params("alice", "sudo cat on srv", Some("phr"));
+        let params = client.build_backchannel_auth_params("alice", "sudo cat on srv", Some("phr"));
 
-        let acr = params.iter().find(|(k, _)| *k == "acr_values").map(|(_, v)| *v);
+        let acr = params
+            .iter()
+            .find(|(k, _)| *k == "acr_values")
+            .map(|(_, v)| *v);
         assert_eq!(acr, Some("phr"));
     }
 

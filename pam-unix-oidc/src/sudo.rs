@@ -222,8 +222,7 @@ fn perform_step_up(
 /// then falls back to `/run/user/0/unix-oidc-agent.sock` (root sessions).
 fn agent_socket_path() -> String {
     std::env::var("UNIX_OIDC_AGENT_SOCKET").unwrap_or_else(|_| {
-        let xdg = std::env::var("XDG_RUNTIME_DIR")
-            .unwrap_or_else(|_| "/run/user/0".to_string());
+        let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/0".to_string());
         format!("{}/unix-oidc-agent.sock", xdg)
     })
 }
@@ -245,7 +244,6 @@ pub(crate) fn perform_step_up_via_ipc(
     socket_path: &str,
     method: StepUpMethod,
 ) -> Result<StepUpResult, SudoError> {
-
     let method_str = match method {
         StepUpMethod::Push => "push",
         StepUpMethod::Fido2 => "fido2",
@@ -253,9 +251,7 @@ pub(crate) fn perform_step_up_via_ipc(
     };
 
     // Resolve hostname (gethostname crate is available in pam-unix-oidc).
-    let hostname = gethostname::gethostname()
-        .to_string_lossy()
-        .to_string();
+    let hostname = gethostname::gethostname().to_string_lossy().to_string();
 
     // ── Step 1: Send StepUp request ───────────────────────────────────────────
     let step_up_msg = serde_json::json!({
@@ -282,7 +278,9 @@ pub(crate) fn perform_step_up_via_ipc(
         // Extract correlation_id from StepUpPending response.
         response["correlation_id"]
             .as_str()
-            .ok_or_else(|| SudoError::StepUp("No correlation_id in StepUpPending response".to_string()))?
+            .ok_or_else(|| {
+                SudoError::StepUp("No correlation_id in StepUpPending response".to_string())
+            })?
             .to_string()
     };
 
@@ -428,7 +426,6 @@ fn perform_device_flow_step_up(
     requirements: &SudoStepUpRequirements,
     display: &dyn StepUpDisplay,
 ) -> Result<StepUpResult, SudoError> {
-
     // Get OIDC configuration from environment
     let issuer = std::env::var("OIDC_ISSUER")
         .map_err(|_| SudoError::Config("OIDC_ISSUER not set".to_string()))?;
@@ -596,7 +593,10 @@ fn log_step_up_initiated(ctx: &SudoContext, requirements: &SudoStepUpRequirement
         "push"
     } else if requirements.allowed_methods.contains(&StepUpMethod::Fido2) {
         "fido2"
-    } else if requirements.allowed_methods.contains(&StepUpMethod::DeviceFlow) {
+    } else if requirements
+        .allowed_methods
+        .contains(&StepUpMethod::DeviceFlow)
+    {
         "device_flow"
     } else {
         "unknown"
@@ -641,7 +641,11 @@ mod tests {
     fn test_sudo_error_step_up_variant() {
         let err = SudoError::StepUp("agent socket not reachable".to_string());
         let msg = err.to_string();
-        assert!(msg.contains("agent socket"), "SudoError::StepUp must include the detail message, got: {}", msg);
+        assert!(
+            msg.contains("agent socket"),
+            "SudoError::StepUp must include the detail message, got: {}",
+            msg
+        );
     }
 
     /// challenge_timeout default is 120 (satisfies STP-07: configurable, default 120s).
@@ -770,7 +774,9 @@ mod tests {
                 if let Ok(mut stream) = stream {
                     let mut buf = vec![0u8; 2048];
                     let n = stream.read(&mut buf).unwrap_or(0);
-                    if n == 0 { continue; }
+                    if n == 0 {
+                        continue;
+                    }
                     let msg = String::from_utf8_lossy(&buf[..n]);
                     if msg.contains("step_up\"") {
                         let resp = serde_json::json!({
@@ -831,7 +837,9 @@ mod tests {
                 if let Ok(mut stream) = stream {
                     let mut buf = vec![0u8; 2048];
                     let n = stream.read(&mut buf).unwrap_or(0);
-                    if n == 0 { continue; }
+                    if n == 0 {
+                        continue;
+                    }
                     let msg = String::from_utf8_lossy(&buf[..n]);
                     if msg.contains("step_up\"") {
                         let resp = serde_json::json!({
