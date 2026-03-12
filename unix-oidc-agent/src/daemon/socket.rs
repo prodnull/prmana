@@ -489,7 +489,7 @@ async fn handle_connection(
                     state_read.metrics.record_request(true);
                 }
                 let response =
-                    AgentResponse::error(format!("Invalid request: {}", e), "INVALID_REQUEST");
+                    AgentResponse::error(format!("Invalid request: {e}"), "INVALID_REQUEST");
                 let response_json = serde_json::to_string(&response)? + "\n";
                 writer.write_all(response_json.as_bytes()).await?;
                 line.clear();
@@ -832,7 +832,7 @@ async fn perform_token_refresh(
     _state: &Arc<RwLock<AgentState>>,
 ) -> Result<(SecretString, i64, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
     // Load storage
-    let storage = StorageRouter::detect().map_err(|e| format!("Storage error: {}", e))?;
+    let storage = StorageRouter::detect().map_err(|e| format!("Storage error: {e}"))?;
 
     // Load token metadata
     let metadata_bytes = storage
@@ -840,7 +840,7 @@ async fn perform_token_refresh(
         .map_err(|_| "No token metadata found. Please login first.")?;
 
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_bytes)
-        .map_err(|e| format!("Failed to parse token metadata: {}", e))?;
+        .map_err(|e| format!("Failed to parse token metadata: {e}"))?;
 
     // Security (MEM-03): wrap refresh_token in SecretString at extraction — must not appear in logs.
     let refresh_token = SecretString::from(
@@ -875,7 +875,7 @@ async fn perform_token_refresh(
         let http_client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
         let refresh_token_str: &str = refresh_token_clone.expose_secret();
         let mut params = vec![
@@ -895,12 +895,12 @@ async fn perform_token_refresh(
             .post(&token_endpoint)
             .form(&params)
             .send()
-            .map_err(|e| format!("Token refresh request failed: {}", e))?;
+            .map_err(|e| format!("Token refresh request failed: {e}"))?;
 
         if response.status().is_success() {
             let token_response: serde_json::Value = response
                 .json()
-                .map_err(|e| format!("Failed to parse token response: {}", e))?;
+                .map_err(|e| format!("Failed to parse token response: {e}"))?;
             Ok(token_response)
         } else {
             let error: serde_json::Value = response
@@ -910,11 +910,11 @@ async fn perform_token_refresh(
                 .as_str()
                 .or(error["error"].as_str())
                 .unwrap_or("Unknown error");
-            Err(format!("Token refresh failed: {}", error_msg))
+            Err(format!("Token refresh failed: {error_msg}"))
         }
     })
     .await
-    .map_err(|e| format!("Task error: {}", e))??;
+    .map_err(|e| format!("Task error: {e}"))??;
 
     // Extract new token information.
     // Wrap in SecretString immediately — the raw token must never appear in logs.
@@ -940,7 +940,7 @@ async fn perform_token_refresh(
     // Storage write: expose_secret() is the audit boundary for persistence.
     storage
         .store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())
-        .map_err(|e| format!("Failed to store access token: {}", e))?;
+        .map_err(|e| format!("Failed to store access token: {e}"))?;
 
     // Update token metadata — preserve all fields including revocation_endpoint and signer_type.
     let updated_metadata = serde_json::json!({
@@ -957,7 +957,7 @@ async fn perform_token_refresh(
     });
     storage
         .store(KEY_TOKEN_METADATA, updated_metadata.to_string().as_bytes())
-        .map_err(|e| format!("Failed to store metadata: {}", e))?;
+        .map_err(|e| format!("Failed to store metadata: {e}"))?;
 
     // Extract username from token (base64 decode of payload, no signature check).
     // expose_secret() here: username extraction only, result is non-sensitive.
@@ -1357,7 +1357,7 @@ async fn handle_step_up(
             .any(|p| p.username == username && !p.handle.is_finished());
         if already_active {
             return AgentResponse::error(
-                format!("Step-up already in progress for user '{}'", username),
+                format!("Step-up already in progress for user '{username}'"),
                 "STEP_UP_IN_PROGRESS",
             );
         }
@@ -1404,7 +1404,7 @@ async fn handle_step_up(
         Ok(c) => c,
         Err(e) => {
             return AgentResponse::error(
-                format!("Failed to create HTTP client: {}", e),
+                format!("Failed to create HTTP client: {e}"),
                 "INTERNAL_ERROR",
             );
         }
@@ -1420,7 +1420,7 @@ async fn handle_step_up(
             Ok(d) => d,
             Err(e) => {
                 return AgentResponse::error(
-                    format!("Failed to parse OIDC discovery: {}", e),
+                    format!("Failed to parse OIDC discovery: {e}"),
                     "DISCOVERY_ERROR",
                 );
             }
@@ -1433,7 +1433,7 @@ async fn handle_step_up(
         }
         Err(e) => {
             return AgentResponse::error(
-                format!("Failed to fetch OIDC discovery: {}", e),
+                format!("Failed to fetch OIDC discovery: {e}"),
                 "DISCOVERY_ERROR",
             );
         }
@@ -1444,7 +1444,7 @@ async fn handle_step_up(
         Ok(c) => c,
         Err(e) => {
             return AgentResponse::error(
-                format!("CIBA not supported by IdP: {}", e),
+                format!("CIBA not supported by IdP: {e}"),
                 "CIBA_NOT_SUPPORTED",
             );
         }
@@ -1481,7 +1481,7 @@ async fn handle_step_up(
         Ok(r) => r,
         Err(e) => {
             return AgentResponse::error(
-                format!("CIBA backchannel request failed: {}", e),
+                format!("CIBA backchannel request failed: {e}"),
                 "CIBA_NETWORK_ERROR",
             );
         }
@@ -1494,7 +1494,7 @@ async fn handle_step_up(
             .await
             .unwrap_or_else(|_| "<unreadable>".to_string());
         return AgentResponse::error(
-            format!("CIBA backchannel returned {}: {}", status, body),
+            format!("CIBA backchannel returned {status}: {body}"),
             "CIBA_AUTH_ERROR",
         );
     }
@@ -1503,7 +1503,7 @@ async fn handle_step_up(
         Ok(r) => r,
         Err(e) => {
             return AgentResponse::error(
-                format!("Failed to parse backchannel auth response: {}", e),
+                format!("Failed to parse backchannel auth response: {e}"),
                 "CIBA_PARSE_ERROR",
             );
         }
@@ -1534,7 +1534,7 @@ async fn handle_step_up(
         Ok(c) => c,
         Err(e) => {
             return AgentResponse::error(
-                format!("Failed to create poll HTTP client: {}", e),
+                format!("Failed to create poll HTTP client: {e}"),
                 "INTERNAL_ERROR",
             );
         }
@@ -1583,7 +1583,7 @@ async fn handle_step_up_result(
         match state_read.pending_step_ups.get(&correlation_id) {
             None => {
                 return AgentResponse::error(
-                    format!("Unknown step-up correlation ID: {}", correlation_id),
+                    format!("Unknown step-up correlation ID: {correlation_id}"),
                     "STEP_UP_NOT_FOUND",
                 );
             }
@@ -1635,7 +1635,7 @@ async fn handle_step_up_result(
             user_message,
         }) => AgentResponse::step_up_timed_out(reason, user_message),
         Err(e) => AgentResponse::error(
-            format!("CIBA poll task panicked: {}", e),
+            format!("CIBA poll task panicked: {e}"),
             "STEP_UP_INTERNAL_ERROR",
         ),
     }
@@ -1686,7 +1686,7 @@ pub(crate) async fn poll_ciba(
                     Err(e) => {
                         return StepUpOutcome::TimedOut {
                             reason: "error".to_string(),
-                            user_message: format!("Failed to parse CIBA token response: {}", e),
+                            user_message: format!("Failed to parse CIBA token response: {e}"),
                         };
                     }
                 };
@@ -1768,7 +1768,7 @@ pub(crate) async fn poll_ciba(
                 _ => {
                     return StepUpOutcome::TimedOut {
                         reason: "error".to_string(),
-                        user_message: format!("CIBA error: {}", error_desc),
+                        user_message: format!("CIBA error: {error_desc}"),
                     };
                 }
             }
@@ -1892,7 +1892,7 @@ mod tests {
             assert!(logged_in);
             assert_eq!(username, Some("testuser".to_string()));
         } else {
-            panic!("Unexpected response: {:?}", response);
+            panic!("Unexpected response: {response:?}");
         }
     }
 
@@ -1941,7 +1941,7 @@ mod tests {
             // Proof should be a JWT (3 parts)
             assert_eq!(dpop_proof.split('.').count(), 3);
         } else {
-            panic!("Unexpected response: {:?}", response);
+            panic!("Unexpected response: {response:?}");
         }
     }
 
@@ -1969,7 +1969,7 @@ mod tests {
         if let AgentResponse::Error { code, .. } = response {
             assert_eq!(code, "NOT_LOGGED_IN");
         } else {
-            panic!("Expected error response: {:?}", response);
+            panic!("Expected error response: {response:?}");
         }
     }
 
@@ -1998,7 +1998,7 @@ mod tests {
             .encode(r#"{"alg":"none","typ":"JWT"}"#);
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"preferred_username":"testuser","sub":"123"}"#);
-        let token = format!("{}.{}.", header, payload);
+        let token = format!("{header}.{payload}.");
 
         let result = extract_username_from_token(&token);
         assert_eq!(result, Some("testuser".to_string()));
@@ -2028,7 +2028,7 @@ mod tests {
             .encode(r#"{"alg":"none","typ":"JWT"}"#);
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"sub":"user123","iat":1234567890}"#);
-        let token = format!("{}.{}.", header, payload);
+        let token = format!("{header}.{payload}.");
 
         let result = extract_username_from_token(&token);
         assert_eq!(result, Some("user123".to_string()));
@@ -2036,7 +2036,7 @@ mod tests {
         // Test: unix_username takes priority
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"unix_username":"unixuser","preferred_username":"preferred","sub":"sub"}"#);
-        let token = format!("{}.{}.", header, payload);
+        let token = format!("{header}.{payload}.");
 
         let result = extract_username_from_token(&token);
         assert_eq!(result, Some("unixuser".to_string()));
@@ -2044,7 +2044,7 @@ mod tests {
         // Test: email extraction (strip domain)
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"email":"user@example.com"}"#);
-        let token = format!("{}.{}.", header, payload);
+        let token = format!("{header}.{payload}.");
 
         let result = extract_username_from_token(&token);
         assert_eq!(result, Some("user".to_string()));
@@ -2082,16 +2082,14 @@ mod tests {
             oidc_client_secret: None,
             pending_step_ups: HashMap::new(),
         };
-        let debug_output = format!("{:?}", state);
+        let debug_output = format!("{state:?}");
         assert!(
             !debug_output.contains("super-secret-access-token"),
-            "Debug output must not contain raw token value, got: {}",
-            debug_output
+            "Debug output must not contain raw token value, got: {debug_output}"
         );
         assert!(
             debug_output.contains("[REDACTED]"),
-            "Debug output must contain [REDACTED] for Secret fields, got: {}",
-            debug_output
+            "Debug output must contain [REDACTED] for Secret fields, got: {debug_output}"
         );
     }
 
@@ -2165,16 +2163,14 @@ mod tests {
         state.refresh_task = Some(handle);
         state.refresh_failed = true;
 
-        let debug_str = format!("{:?}", state);
+        let debug_str = format!("{state:?}");
         assert!(
             debug_str.contains("<AbortHandle>"),
-            "Expected <AbortHandle> in debug: {}",
-            debug_str
+            "Expected <AbortHandle> in debug: {debug_str}"
         );
         assert!(
             debug_str.contains("refresh_failed: true"),
-            "Expected refresh_failed in debug: {}",
-            debug_str
+            "Expected refresh_failed in debug: {debug_str}"
         );
     }
 
@@ -2283,8 +2279,7 @@ mod tests {
                     acknowledged: true
                 })
             ),
-            "Expected SessionAcknowledged, got: {:?}",
-            response
+            "Expected SessionAcknowledged, got: {response:?}"
         );
     }
 
@@ -2384,11 +2379,10 @@ mod tests {
         );
         assert_eq!(state.oidc_client_id.as_deref(), Some("unix-oidc-agent"));
         // Secret must not appear in Debug output (MEM-03)
-        let debug = format!("{:?}", state);
+        let debug = format!("{state:?}");
         assert!(
             !debug.contains("s3cr3t"),
-            "oidc_client_secret must not appear in Debug: {}",
-            debug
+            "oidc_client_secret must not appear in Debug: {debug}"
         );
     }
 
@@ -2468,8 +2462,7 @@ mod tests {
 
         assert!(
             matches!(response, AgentResponse::Error { .. }),
-            "Expected error when oidc_issuer is None, got: {:?}",
-            response
+            "Expected error when oidc_issuer is None, got: {response:?}"
         );
     }
 
@@ -2551,7 +2544,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let token_endpoint = format!("http://127.0.0.1:{}/token", port);
+        let token_endpoint = format!("http://127.0.0.1:{port}/token");
         let params = vec![
             (
                 "grant_type".to_string(),
@@ -2572,8 +2565,7 @@ mod tests {
 
         assert!(
             matches!(outcome, StepUpOutcome::Complete { .. }),
-            "Expected Complete, got: {:?}",
-            outcome
+            "Expected Complete, got: {outcome:?}"
         );
     }
 
@@ -2607,7 +2599,7 @@ mod tests {
 
         let outcome = poll_ciba(
             http,
-            format!("http://127.0.0.1:{}/token", port),
+            format!("http://127.0.0.1:{port}/token"),
             vec![],
             std::time::Duration::from_millis(10),
             std::time::Duration::from_secs(10),
@@ -2617,8 +2609,7 @@ mod tests {
 
         assert!(
             matches!(outcome, StepUpOutcome::TimedOut { ref reason, .. } if reason == "denied"),
-            "Expected TimedOut(denied), got: {:?}",
-            outcome
+            "Expected TimedOut(denied), got: {outcome:?}"
         );
     }
 
@@ -2670,7 +2661,7 @@ mod tests {
         let start = std::time::Instant::now();
         let outcome = poll_ciba(
             http,
-            format!("http://127.0.0.1:{}/token", port),
+            format!("http://127.0.0.1:{port}/token"),
             vec![],
             std::time::Duration::from_millis(50), // initial interval: 50ms
             std::time::Duration::from_secs(15),
@@ -2684,13 +2675,11 @@ mod tests {
         // Total: first sleep(50ms) + second sleep(5050ms) ≥ 5s.
         assert!(
             elapsed >= std::time::Duration::from_secs(5),
-            "Expected ≥5s elapsed after slow_down, got {:?}",
-            elapsed
+            "Expected ≥5s elapsed after slow_down, got {elapsed:?}"
         );
         assert!(
             matches!(outcome, StepUpOutcome::TimedOut { ref reason, .. } if reason == "denied"),
-            "Expected TimedOut(denied), got: {:?}",
-            outcome
+            "Expected TimedOut(denied), got: {outcome:?}"
         );
         assert_eq!(
             call_count.load(Ordering::SeqCst),
@@ -2709,7 +2698,7 @@ mod tests {
         let payload =
             URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","acr":"urn:mace:incommon:iap:silver"}"#);
         let signature = URL_SAFE_NO_PAD.encode(b"fakesig");
-        let id_token = format!("{}.{}.{}", header, payload, signature);
+        let id_token = format!("{header}.{payload}.{signature}");
 
         let acr = extract_acr_from_id_token(&id_token);
         assert_eq!(
@@ -2720,7 +2709,7 @@ mod tests {
 
         // No acr claim → None
         let payload_no_acr = URL_SAFE_NO_PAD.encode(r#"{"sub":"user1"}"#);
-        let id_token_no_acr = format!("{}.{}.{}", header, payload_no_acr, signature);
+        let id_token_no_acr = format!("{header}.{payload_no_acr}.{signature}");
         assert_eq!(
             extract_acr_from_id_token(&id_token_no_acr),
             None,
@@ -2757,8 +2746,7 @@ mod tests {
 
         assert!(
             matches!(outcome, StepUpOutcome::TimedOut { .. }),
-            "Expected TimedOut, got: {:?}",
-            outcome
+            "Expected TimedOut, got: {outcome:?}"
         );
     }
 
@@ -2785,8 +2773,7 @@ mod tests {
         // The socket file must exist after binding.
         assert!(
             socket_path.exists(),
-            "socket file was not created at {:?}",
-            socket_path
+            "socket file was not created at {socket_path:?}"
         );
 
         // Socket must be owner-only (0600).
@@ -2795,7 +2782,7 @@ mod tests {
             use std::os::unix::fs::MetadataExt;
             let meta = std::fs::metadata(&socket_path).unwrap();
             let mode = meta.mode() & 0o7777;
-            assert_eq!(mode, 0o600, "expected socket mode 0600, got {:o}", mode);
+            assert_eq!(mode, 0o600, "expected socket mode 0600, got {mode:o}");
         }
     }
 
@@ -2890,7 +2877,7 @@ mod tests {
                 // EOF — server closed the connection. Test passes.
             }
             Ok(Ok(n)) => {
-                panic!("Expected EOF after idle timeout, got {} bytes", n);
+                panic!("Expected EOF after idle timeout, got {n} bytes");
             }
             Ok(Err(e)) => {
                 // Connection reset is also acceptable (OS closed the socket).
@@ -2951,8 +2938,7 @@ mod tests {
                 response,
                 AgentResponse::Success(AgentResponseData::Proof { .. })
             ),
-            "Expected Proof response; got: {:?}",
-            response
+            "Expected Proof response; got: {response:?}"
         );
 
         // Verify the INFO log was emitted with the expected message and fields.
@@ -2994,7 +2980,7 @@ mod tests {
             AgentResponse::Error { code, .. } => {
                 assert_eq!(code, "STEP_UP_NOT_FOUND");
             }
-            other => panic!("Expected Error response, got: {:?}", other),
+            other => panic!("Expected Error response, got: {other:?}"),
         }
     }
 
@@ -3042,10 +3028,7 @@ mod tests {
             AgentResponse::Success(AgentResponseData::StepUpComplete { .. }) => {
                 // Correct — completed task produces StepUpComplete response.
             }
-            other => panic!(
-                "Expected StepUpComplete response for finished task, got: {:?}",
-                other
-            ),
+            other => panic!("Expected StepUpComplete response for finished task, got: {other:?}"),
         }
     }
 }

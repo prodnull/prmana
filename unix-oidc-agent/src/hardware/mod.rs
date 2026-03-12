@@ -168,8 +168,7 @@ pub fn build_signer(
     }
 
     anyhow::bail!(
-        "Unknown signer: '{}'. Valid options: software, yubikey:<slot> (e.g. yubikey:9a), tpm",
-        signer_spec
+        "Unknown signer: '{signer_spec}'. Valid options: software, yubikey:<slot> (e.g. yubikey:9a), tpm"
     )
 }
 
@@ -233,8 +232,7 @@ pub fn provision_signer(
     }
 
     anyhow::bail!(
-        "Unknown signer: '{}'. Valid options: yubikey:<slot> (e.g. yubikey:9a), tpm",
-        signer_spec
+        "Unknown signer: '{signer_spec}'. Valid options: yubikey:<slot> (e.g. yubikey:9a), tpm"
     )
 }
 

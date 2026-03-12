@@ -297,7 +297,7 @@ impl TokenValidator {
 
         // Convert JWK to DecodingKey
         let decoding_key = DecodingKey::from_jwk(&jwk)
-            .map_err(|e| ValidationError::InvalidSignature(format!("Invalid JWK: {}", e)))?;
+            .map_err(|e| ValidationError::InvalidSignature(format!("Invalid JWK: {e}")))?;
 
         // Set up validation
         let mut validation = Validation::new(algorithm);
@@ -468,8 +468,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(ValidationError::MissingJti)),
-            "Strict mode must reject tokens without JTI, got: {:?}",
-            result
+            "Strict mode must reject tokens without JTI, got: {result:?}"
         );
     }
 
@@ -488,8 +487,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "Warn mode must allow tokens without JTI (with warning), got: {:?}",
-            result
+            "Warn mode must allow tokens without JTI (with warning), got: {result:?}"
         );
     }
 
@@ -508,8 +506,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "Disabled mode must skip JTI check entirely, got: {:?}",
-            result
+            "Disabled mode must skip JTI check entirely, got: {result:?}"
         );
     }
 
@@ -557,7 +554,7 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
-        format!("{}.{}.fake-signature", header_b64, payload_b64)
+        format!("{header_b64}.{payload_b64}.fake-signature")
     }
 
     #[allow(dead_code)]
@@ -569,7 +566,7 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
-        format!("{}.{}.fake-signature", header_b64, payload_b64)
+        format!("{header_b64}.{payload_b64}.fake-signature")
     }
 
     /// Token without a JTI claim — used to test enforcement mode behavior.
@@ -582,7 +579,7 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
-        format!("{}.{}.fake-signature", header_b64, payload_b64)
+        format!("{header_b64}.{payload_b64}.fake-signature")
     }
 
     #[allow(dead_code)]
@@ -594,7 +591,7 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
-        format!("{}.{}.fake-signature", header_b64, payload_b64)
+        format!("{header_b64}.{payload_b64}.fake-signature")
     }
 
     #[allow(dead_code)]
@@ -606,7 +603,7 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
-        format!("{}.{}.fake-signature", header_b64, payload_b64)
+        format!("{header_b64}.{payload_b64}.fake-signature")
     }
 
     #[test]

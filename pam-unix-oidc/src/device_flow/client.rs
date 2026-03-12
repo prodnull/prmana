@@ -81,8 +81,8 @@ impl DeviceFlowClient {
                 .map_err(|e| {
                     DeviceFlowError::NetworkError(format!("Failed to create HTTP client: {e}"))
                 })?,
-            device_authorization_endpoint: format!("{}/protocol/openid-connect/auth/device", base),
-            token_endpoint: format!("{}/protocol/openid-connect/token", base),
+            device_authorization_endpoint: format!("{base}/protocol/openid-connect/auth/device"),
+            token_endpoint: format!("{base}/protocol/openid-connect/token"),
             client_id: client_id.to_string(),
             client_secret: client_secret.map(String::from),
         })
@@ -146,8 +146,7 @@ impl DeviceFlowClient {
                 .text()
                 .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(DeviceFlowError::InvalidResponse(format!(
-                "HTTP {}: {}",
-                status, body
+                "HTTP {status}: {body}"
             )));
         }
 
@@ -235,6 +234,7 @@ impl DeviceFlowClient {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -330,8 +330,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             matches!(err, DeviceFlowError::ConfigError(_)),
-            "Expected ConfigError, got: {:?}",
-            err
+            "Expected ConfigError, got: {err:?}"
         );
     }
 

@@ -90,7 +90,7 @@ pub fn build_dpop_message(
     let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
     let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims)?.as_bytes());
 
-    Ok(format!("{}.{}", header_b64, claims_b64))
+    Ok(format!("{header_b64}.{claims_b64}"))
 }
 
 /// Assemble a DPoP JWT from a signed message and raw r‖s signature bytes.
@@ -113,7 +113,7 @@ pub fn assemble_dpop_proof(message: &str, sig_rs_bytes: &[u8]) -> Result<String,
         return Err(DPoPError::InvalidSignatureLength(sig_rs_bytes.len()));
     }
     let sig_b64 = URL_SAFE_NO_PAD.encode(sig_rs_bytes);
-    Ok(format!("{}.{}", message, sig_b64))
+    Ok(format!("{message}.{sig_b64}"))
 }
 
 /// Generate a DPoP proof JWT using a software signing key.

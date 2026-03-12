@@ -223,7 +223,7 @@ fn perform_step_up(
 fn agent_socket_path() -> String {
     std::env::var("UNIX_OIDC_AGENT_SOCKET").unwrap_or_else(|_| {
         let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/0".to_string());
-        format!("{}/unix-oidc-agent.sock", xdg)
+        format!("{xdg}/unix-oidc-agent.sock")
     })
 }
 
@@ -268,11 +268,11 @@ pub(crate) fn perform_step_up_via_ipc(
         send_ipc_message(&mut stream, &step_up_msg)?;
         let response_json = read_ipc_response(&mut stream)?;
         let response: serde_json::Value = serde_json::from_str(&response_json)
-            .map_err(|e| SudoError::StepUp(format!("Failed to parse StepUp response: {}", e)))?;
+            .map_err(|e| SudoError::StepUp(format!("Failed to parse StepUp response: {e}")))?;
 
         if response["status"] == "error" {
             let msg = response["message"].as_str().unwrap_or("unknown error");
-            return Err(SudoError::StepUp(format!("Agent StepUp error: {}", msg)));
+            return Err(SudoError::StepUp(format!("Agent StepUp error: {msg}")));
         }
 
         // Extract correlation_id from StepUpPending response.
@@ -340,7 +340,7 @@ pub(crate) fn perform_step_up_via_ipc(
                 return Err(SudoError::Timeout);
             }
             let msg = response["message"].as_str().unwrap_or("unknown");
-            return Err(SudoError::StepUp(format!("Agent poll error: {}", msg)));
+            return Err(SudoError::StepUp(format!("Agent poll error: {msg}")));
         }
 
         // Distinguish response type by presence of unique fields.
@@ -359,7 +359,7 @@ pub(crate) fn perform_step_up_via_ipc(
             match reason {
                 "timeout" => return Err(SudoError::Timeout),
                 "denied" => return Err(SudoError::Denied),
-                _ => return Err(SudoError::StepUp(format!("Step-up failed: {}", reason))),
+                _ => return Err(SudoError::StepUp(format!("Step-up failed: {reason}"))),
             }
         }
 
@@ -374,8 +374,7 @@ fn connect_agent_socket(socket_path: &str) -> Result<std::os::unix::net::UnixStr
 
     let stream = UnixStream::connect(socket_path).map_err(|e| {
         SudoError::StepUp(format!(
-            "Failed to connect to agent socket '{}': {}",
-            socket_path, e
+            "Failed to connect to agent socket '{socket_path}': {e}"
         ))
     })?;
 
@@ -398,13 +397,13 @@ fn send_ipc_message(
     use std::io::Write;
 
     let json = serde_json::to_string(msg)
-        .map_err(|e| SudoError::StepUp(format!("Failed to serialize IPC message: {}", e)))?;
+        .map_err(|e| SudoError::StepUp(format!("Failed to serialize IPC message: {e}")))?;
     stream
         .write_all(json.as_bytes())
-        .map_err(|e| SudoError::StepUp(format!("Failed to write IPC message: {}", e)))?;
+        .map_err(|e| SudoError::StepUp(format!("Failed to write IPC message: {e}")))?;
     stream
         .write_all(b"\n")
-        .map_err(|e| SudoError::StepUp(format!("Failed to write IPC newline: {}", e)))?;
+        .map_err(|e| SudoError::StepUp(format!("Failed to write IPC newline: {e}")))?;
     Ok(())
 }
 
@@ -416,7 +415,7 @@ fn read_ipc_response(stream: &mut std::os::unix::net::UnixStream) -> Result<Stri
     let mut line = String::new();
     reader
         .read_line(&mut line)
-        .map_err(|e| SudoError::StepUp(format!("Failed to read IPC response: {}", e)))?;
+        .map_err(|e| SudoError::StepUp(format!("Failed to read IPC response: {e}")))?;
     Ok(line)
 }
 
@@ -627,10 +626,11 @@ fn generate_session_id() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("sudo-{:x}", timestamp)
+    format!("sudo-{timestamp:x}")
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -643,8 +643,7 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("agent socket"),
-            "SudoError::StepUp must include the detail message, got: {}",
-            msg
+            "SudoError::StepUp must include the detail message, got: {msg}"
         );
     }
 
@@ -687,8 +686,7 @@ mod tests {
         let result = perform_step_up_via_ipc(&ctx, &reqs, socket_path, StepUpMethod::Push);
         assert!(
             matches!(result, Err(SudoError::StepUp(_))),
-            "Expected SudoError::StepUp on connection refused, got: {:?}",
-            result
+            "Expected SudoError::StepUp on connection refused, got: {result:?}"
         );
     }
 
@@ -708,32 +706,30 @@ mod tests {
         let socket_path_clone = socket_path.clone();
         std::thread::spawn(move || {
             let listener = UnixListener::bind(&socket_path_clone).unwrap();
-            for stream in listener.incoming() {
-                if let Ok(mut stream) = stream {
-                    let mut buf = vec![0u8; 2048];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    if n == 0 {
-                        continue;
-                    }
-                    let msg = String::from_utf8_lossy(&buf[..n]);
-                    if msg.contains("step_up\"") {
-                        // First call: respond with StepUpPending.
-                        let resp = serde_json::json!({
-                            "status": "success",
-                            "correlation_id": "test-corr-id",
-                            "expires_in": 120,
-                            "poll_interval_secs": 1
-                        });
-                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
-                    } else if msg.contains("step_up_result") {
-                        // Second call: respond with StepUpComplete.
-                        let resp = serde_json::json!({
-                            "status": "success",
-                            "acr": null,
-                            "session_id": "sess-test-001"
-                        });
-                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
-                    }
+            for mut stream in listener.incoming().filter_map(Result::ok) {
+                let mut buf = vec![0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let msg = String::from_utf8_lossy(&buf[..n]);
+                if msg.contains("step_up\"") {
+                    // First call: respond with StepUpPending.
+                    let resp = serde_json::json!({
+                        "status": "success",
+                        "correlation_id": "test-corr-id",
+                        "expires_in": 120,
+                        "poll_interval_secs": 1
+                    });
+                    let _ = stream.write_all(format!("{resp}\n").as_bytes());
+                } else if msg.contains("step_up_result") {
+                    // Second call: respond with StepUpComplete.
+                    let resp = serde_json::json!({
+                        "status": "success",
+                        "acr": null,
+                        "session_id": "sess-test-001"
+                    });
+                    let _ = stream.write_all(format!("{resp}\n").as_bytes());
                 }
             }
         });
@@ -754,7 +750,7 @@ mod tests {
             socket_path.to_str().unwrap(),
             StepUpMethod::Push,
         );
-        assert!(result.is_ok(), "Expected Ok on Complete, got: {:?}", result);
+        assert!(result.is_ok(), "Expected Ok on Complete, got: {result:?}");
     }
 
     /// Mock IPC test: StepUpTimedOut(reason="timeout") → SudoError::Timeout.
@@ -770,30 +766,28 @@ mod tests {
         let socket_path_clone = socket_path.clone();
         std::thread::spawn(move || {
             let listener = UnixListener::bind(&socket_path_clone).unwrap();
-            for stream in listener.incoming() {
-                if let Ok(mut stream) = stream {
-                    let mut buf = vec![0u8; 2048];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    if n == 0 {
-                        continue;
-                    }
-                    let msg = String::from_utf8_lossy(&buf[..n]);
-                    if msg.contains("step_up\"") {
-                        let resp = serde_json::json!({
-                            "status": "success",
-                            "correlation_id": "corr-timeout",
-                            "expires_in": 120,
-                            "poll_interval_secs": 1
-                        });
-                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
-                    } else if msg.contains("step_up_result") {
-                        let resp = serde_json::json!({
-                            "status": "success",
-                            "reason": "timeout",
-                            "user_message": "Approval timed out"
-                        });
-                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
-                    }
+            for mut stream in listener.incoming().filter_map(Result::ok) {
+                let mut buf = vec![0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let msg = String::from_utf8_lossy(&buf[..n]);
+                if msg.contains("step_up\"") {
+                    let resp = serde_json::json!({
+                        "status": "success",
+                        "correlation_id": "corr-timeout",
+                        "expires_in": 120,
+                        "poll_interval_secs": 1
+                    });
+                    let _ = stream.write_all(format!("{resp}\n").as_bytes());
+                } else if msg.contains("step_up_result") {
+                    let resp = serde_json::json!({
+                        "status": "success",
+                        "reason": "timeout",
+                        "user_message": "Approval timed out"
+                    });
+                    let _ = stream.write_all(format!("{resp}\n").as_bytes());
                 }
             }
         });
@@ -815,8 +809,7 @@ mod tests {
         );
         assert!(
             matches!(result, Err(SudoError::Timeout)),
-            "Expected SudoError::Timeout, got: {:?}",
-            result
+            "Expected SudoError::Timeout, got: {result:?}"
         );
     }
 
@@ -833,30 +826,28 @@ mod tests {
         let socket_path_clone = socket_path.clone();
         std::thread::spawn(move || {
             let listener = UnixListener::bind(&socket_path_clone).unwrap();
-            for stream in listener.incoming() {
-                if let Ok(mut stream) = stream {
-                    let mut buf = vec![0u8; 2048];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    if n == 0 {
-                        continue;
-                    }
-                    let msg = String::from_utf8_lossy(&buf[..n]);
-                    if msg.contains("step_up\"") {
-                        let resp = serde_json::json!({
-                            "status": "success",
-                            "correlation_id": "corr-denied",
-                            "expires_in": 120,
-                            "poll_interval_secs": 1
-                        });
-                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
-                    } else if msg.contains("step_up_result") {
-                        let resp = serde_json::json!({
-                            "status": "success",
-                            "reason": "denied",
-                            "user_message": "User denied the request"
-                        });
-                        let _ = stream.write_all(format!("{}\n", resp).as_bytes());
-                    }
+            for mut stream in listener.incoming().filter_map(Result::ok) {
+                let mut buf = vec![0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let msg = String::from_utf8_lossy(&buf[..n]);
+                if msg.contains("step_up\"") {
+                    let resp = serde_json::json!({
+                        "status": "success",
+                        "correlation_id": "corr-denied",
+                        "expires_in": 120,
+                        "poll_interval_secs": 1
+                    });
+                    let _ = stream.write_all(format!("{resp}\n").as_bytes());
+                } else if msg.contains("step_up_result") {
+                    let resp = serde_json::json!({
+                        "status": "success",
+                        "reason": "denied",
+                        "user_message": "User denied the request"
+                    });
+                    let _ = stream.write_all(format!("{resp}\n").as_bytes());
                 }
             }
         });
@@ -878,8 +869,7 @@ mod tests {
         );
         assert!(
             matches!(result, Err(SudoError::Denied)),
-            "Expected SudoError::Denied, got: {:?}",
-            result
+            "Expected SudoError::Denied, got: {result:?}"
         );
     }
 

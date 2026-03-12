@@ -202,7 +202,7 @@ impl StorageRouter {
 
         for &key in &present_keys {
             let value = src.retrieve(key).map_err(|e| {
-                StorageError::Migration(format!("Failed to read key '{}' from source: {}", key, e))
+                StorageError::Migration(format!("Failed to read key '{key}' from source: {e}"))
             })?;
 
             // Write to destination.
@@ -210,8 +210,7 @@ impl StorageRouter {
                 warn!(key, error = %e, "Migration write failed; rolling back");
                 self.rollback_migration(&migrated);
                 return Err(StorageError::Migration(format!(
-                    "Failed to write key '{}' to destination: {}",
-                    key, e
+                    "Failed to write key '{key}' to destination: {e}"
                 )));
             }
 
@@ -226,8 +225,7 @@ impl StorageRouter {
                     let _ = self.backend.delete(key);
                     self.rollback_migration(&migrated);
                     return Err(StorageError::Migration(format!(
-                        "Read-back verification failed for key '{}'",
-                        key
+                        "Read-back verification failed for key '{key}'"
                     )));
                 }
                 Err(e) => {
@@ -235,8 +233,7 @@ impl StorageRouter {
                     let _ = self.backend.delete(key);
                     self.rollback_migration(&migrated);
                     return Err(StorageError::Migration(format!(
-                        "Read-back failed for key '{}': {}",
-                        key, e
+                        "Read-back failed for key '{key}': {e}"
                     )));
                 }
             }
@@ -317,8 +314,7 @@ fn probe_backend(backend: &dyn SecureStorage) -> Result<(), StorageError> {
     let retrieved = read_result?;
     if retrieved != PROBE_VALUE {
         return Err(StorageError::Backend(format!(
-            "probe read-back mismatch: expected {:?}, got {:?}",
-            PROBE_VALUE, retrieved
+            "probe read-back mismatch: expected {PROBE_VALUE:?}, got {retrieved:?}"
         )));
     }
 
@@ -331,7 +327,7 @@ fn detect_forced(name: &str) -> Result<StorageRouter, StorageError> {
         "file" => {
             let storage = FileStorage::new()?;
             probe_backend(&storage).map_err(|e| {
-                StorageError::Backend(format!("forced backend 'file' failed probe: {}", e))
+                StorageError::Backend(format!("forced backend 'file' failed probe: {e}"))
             })?;
             info!(backend = "file (fallback)", "Storage backend selected (forced)");
             Ok(StorageRouter {
@@ -351,16 +347,15 @@ fn detect_forced(name: &str) -> Result<StorageRouter, StorageError> {
                 let storage = KeyringStorage::new();
                 probe_backend(&storage).map_err(|e| {
                     StorageError::Backend(format!(
-                        "forced backend 'secret-service' failed probe: {}",
-                        e
+                        "forced backend 'secret-service' failed probe: {e}"
                     ))
                 })?;
                 info!(backend = "keyring (Secret Service)", "Storage backend selected (forced)");
-                return Ok(StorageRouter {
+                Ok(StorageRouter {
                     backend: Box::new(storage),
                     kind: BackendKind::SecretService,
                     migration_status: MigrationStatus::NotApplicable,
-                });
+                })
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -381,16 +376,15 @@ fn detect_forced(name: &str) -> Result<StorageRouter, StorageError> {
                 let storage = KeyringStorage::new();
                 probe_backend(&storage).map_err(|e| {
                     StorageError::Backend(format!(
-                        "forced backend 'keyutils' failed probe: {}",
-                        e
+                        "forced backend 'keyutils' failed probe: {e}"
                     ))
                 })?;
                 info!(backend = "keyring (keyutils @u)", "Storage backend selected (forced)");
-                return Ok(StorageRouter {
+                Ok(StorageRouter {
                     backend: Box::new(storage),
                     kind: BackendKind::KeyutilsUser,
                     migration_status: MigrationStatus::NotApplicable,
-                });
+                })
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -432,8 +426,7 @@ fn detect_forced(name: &str) -> Result<StorageRouter, StorageError> {
         }
 
         other => Err(StorageError::Backend(format!(
-            "unknown forced backend '{}'; valid values: file, secret-service, keyutils, macos-keychain",
-            other
+            "unknown forced backend '{other}'; valid values: file, secret-service, keyutils, macos-keychain"
         ))),
     }
 }
@@ -593,7 +586,7 @@ mod tests {
             .expect("router should be created");
 
         let result = router.maybe_migrate_from(&src);
-        assert!(result.is_ok(), "migration should succeed: {:?}", result);
+        assert!(result.is_ok(), "migration should succeed: {result:?}");
         assert_eq!(result.unwrap(), 4, "should report 4 keys migrated");
         assert!(
             matches!(router.migration_status, MigrationStatus::Migrated(4)),
@@ -628,7 +621,7 @@ mod tests {
             .expect("router should be created");
 
         let result = router.maybe_migrate_from(&src);
-        assert!(result.is_ok(), "should return Ok(0): {:?}", result);
+        assert!(result.is_ok(), "should return Ok(0): {result:?}");
         assert_eq!(result.unwrap(), 0, "should report 0 keys migrated");
         assert!(
             matches!(router.migration_status, MigrationStatus::NotApplicable),
@@ -696,8 +689,7 @@ mod tests {
         // Migration must fail.
         assert!(
             result.is_err(),
-            "migration should fail when write fails: {:?}",
-            result
+            "migration should fail when write fails: {result:?}"
         );
 
         // After rollback, the first key that WAS written must be deleted from dst.
@@ -759,7 +751,7 @@ mod tests {
         let mut router = file_router;
 
         let result = router.maybe_migrate_from(&src);
-        assert!(result.is_ok(), "should return Ok: {:?}", result);
+        assert!(result.is_ok(), "should return Ok: {result:?}");
         assert_eq!(result.unwrap(), 0, "should report 0 (skipped)");
         assert!(
             matches!(router.migration_status, MigrationStatus::NotApplicable),
@@ -775,11 +767,7 @@ mod tests {
         let mut router = detect_forced("file").expect("file backend should succeed");
         // No credentials exist in the default file store for this test environment.
         let result = router.maybe_migrate();
-        assert!(
-            result.is_ok(),
-            "maybe_migrate should return Ok: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "maybe_migrate should return Ok: {result:?}");
         assert_eq!(result.unwrap(), 0);
     }
 
@@ -832,8 +820,7 @@ mod tests {
         let result = probe_backend(&storage);
         assert!(
             result.is_ok(),
-            "probe should succeed with file backend: {:?}",
-            result
+            "probe should succeed with file backend: {result:?}"
         );
     }
 
@@ -882,8 +869,7 @@ mod tests {
         let result = probe_backend(&storage);
         assert!(
             result.is_err(),
-            "probe must fail when backend rejects reads: {:?}",
-            result
+            "probe must fail when backend rejects reads: {result:?}"
         );
     }
 
@@ -897,8 +883,7 @@ mod tests {
         let result = detect_forced("file");
         assert!(
             result.is_ok(),
-            "file forced backend should succeed: {:?}",
-            result
+            "file forced backend should succeed: {result:?}"
         );
         let router = result.unwrap();
         assert_eq!(router.kind, BackendKind::File);
@@ -909,14 +894,12 @@ mod tests {
         let result = detect_forced("nonexistent-backend");
         assert!(
             matches!(result, Err(StorageError::Backend(_))),
-            "invalid backend name should return Err(Backend): {:?}",
-            result
+            "invalid backend name should return Err(Backend): {result:?}"
         );
         if let Err(StorageError::Backend(msg)) = result {
             assert!(
                 msg.contains("unknown forced backend"),
-                "error message should mention 'unknown forced backend', got: {}",
-                msg
+                "error message should mention 'unknown forced backend', got: {msg}"
             );
         }
     }
@@ -994,11 +977,7 @@ mod tests {
         // Verify probe doesn't leave stale entries in the real keychain.
         let storage = KeyringStorage::new();
         let result = probe_backend(&storage);
-        assert!(
-            result.is_ok(),
-            "keychain probe should succeed: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "keychain probe should succeed: {result:?}");
 
         // The probe key format is "unix-oidc-probe-{pid}-{seq}".
         // We can't predict the exact key, but we can verify a second probe
@@ -1007,8 +986,7 @@ mod tests {
         let result2 = probe_backend(&storage);
         assert!(
             result2.is_ok(),
-            "second keychain probe should succeed (cleanup worked): {:?}",
-            result2
+            "second keychain probe should succeed (cleanup worked): {result2:?}"
         );
     }
 
@@ -1049,8 +1027,7 @@ mod tests {
         let result = router.retrieve("completely-nonexistent-key-xyz-999");
         assert!(
             matches!(result, Err(StorageError::NotFound(_))),
-            "missing key should return NotFound: {:?}",
-            result
+            "missing key should return NotFound: {result:?}"
         );
     }
 }

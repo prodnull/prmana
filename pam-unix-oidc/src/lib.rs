@@ -108,12 +108,8 @@ impl PamServiceModule for PamUnixOidc {
 
         // Check rate limiting before attempting authentication
         if let Err(e) = global_rate_limiter().check_allowed(&pam_user, source_ip) {
-            AuditEvent::ssh_login_failed(
-                Some(&pam_user),
-                source_ip,
-                &format!("Rate limited: {}", e),
-            )
-            .log();
+            AuditEvent::ssh_login_failed(Some(&pam_user), source_ip, &format!("Rate limited: {e}"))
+                .log();
             return PamError::AUTH_ERR;
         }
 
@@ -401,7 +397,7 @@ impl PamServiceModule for PamUnixOidc {
                     AuthError::DPoPValidation(_) => {
                         AuditEvent::token_validation_failed(
                             Some(&pam_user),
-                            &format!("DPoP validation failed: {}", reason),
+                            &format!("DPoP validation failed: {reason}"),
                             source_ip,
                         )
                         .log();
@@ -642,7 +638,7 @@ fn notify_agent_session_closed(session_id: &str) {
         // Fallback: use XDG_RUNTIME_DIR if available (user sessions under systemd),
         // otherwise root runtime dir.
         let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/0".to_string());
-        format!("{}/unix-oidc-agent.sock", xdg)
+        format!("{xdg}/unix-oidc-agent.sock")
     });
 
     let stream = match UnixStream::connect(&socket_path) {
@@ -666,10 +662,7 @@ fn notify_agent_session_closed(session_id: &str) {
         tracing::warn!(error = %e, "Failed to set write timeout on agent socket");
     }
 
-    let msg = format!(
-        r#"{{"action":"session_closed","session_id":"{}"}}"#,
-        session_id
-    );
+    let msg = format!(r#"{{"action":"session_closed","session_id":"{session_id}"}}"#);
 
     let mut stream = stream;
     if let Err(e) = stream.write_all(msg.as_bytes()) {
@@ -928,8 +921,7 @@ mod tests {
             std::env::set_var("UNIX_OIDC_TEST_MODE", value);
             assert!(
                 !is_test_mode_enabled(),
-                "SECURITY: Test mode MUST NOT be enabled by value '{}'",
-                value
+                "SECURITY: Test mode MUST NOT be enabled by value '{value}'"
             );
         }
         std::env::remove_var("UNIX_OIDC_TEST_MODE");
@@ -974,8 +966,7 @@ mod tests {
             std::env::set_var("UNIX_OIDC_ACCEPT_PAM_ENV", value);
             assert!(
                 !is_pam_env_token_enabled(),
-                "SECURITY: PAM env token MUST NOT be enabled by value '{}'",
-                value
+                "SECURITY: PAM env token MUST NOT be enabled by value '{value}'"
             );
         }
         std::env::remove_var("UNIX_OIDC_ACCEPT_PAM_ENV");
@@ -1227,8 +1218,7 @@ mod tests {
         // The line must end with '\n' (the fix) and be valid JSON.
         assert!(
             line.ends_with('\n'),
-            "IPC message must end with \\n for BufReader::read_line compatibility, got: {:?}",
-            line
+            "IPC message must end with \\n for BufReader::read_line compatibility, got: {line:?}"
         );
         let trimmed = line.trim_end_matches('\n');
         assert!(

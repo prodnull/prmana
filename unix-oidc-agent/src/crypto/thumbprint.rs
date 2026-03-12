@@ -16,7 +16,7 @@ pub fn compute_ec_thumbprint(verifying_key: &VerifyingKey) -> String {
 
     // RFC 7638: Members MUST be in lexicographic order
     // For EC P-256: crv < kty < x < y
-    let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#, x, y);
+    let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
 
     let hash = Sha256::digest(canonical.as_bytes());
     URL_SAFE_NO_PAD.encode(hash)
@@ -75,7 +75,7 @@ mod tests {
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
 
-        let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#, x, y);
+        let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
 
         // Verify lexicographic order: crv < kty < x < y
         assert!(canonical.contains(r#""crv":"P-256","kty":"EC","x":"#));

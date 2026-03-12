@@ -81,7 +81,7 @@ fn generate_random_bytes() -> Result<[u8; 8], getrandom::Error> {
 
 /// Hex encode bytes to string.
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Validate a session ID format.
@@ -107,6 +107,7 @@ pub fn is_valid_session_id(session_id: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::collections::HashSet;

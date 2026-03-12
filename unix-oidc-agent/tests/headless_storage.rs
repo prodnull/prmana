@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Headless storage integration tests.
 //!
 //! These tests verify the keyutils fallback path used in headless (no-D-Bus)
@@ -13,7 +14,7 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use unix_oidc_agent::storage::{BackendKind, StorageRouter};
+    use unix_oidc_agent::storage::{BackendKind, SecureStorage, StorageRouter};
 
     /// Verify that when `DBUS_SESSION_BUS_ADDRESS` is empty (no D-Bus session bus
     /// available), `StorageRouter::detect()` falls back to the keyutils user keyring.

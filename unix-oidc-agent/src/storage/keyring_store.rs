@@ -54,7 +54,7 @@ impl SecureStorage for KeyringStorage {
 
         STANDARD
             .decode(&encoded)
-            .map_err(|e| StorageError::Backend(format!("Base64 decode error: {}", e)))
+            .map_err(|e| StorageError::Backend(format!("Base64 decode error: {e}")))
     }
 
     fn delete(&self, key: &str) -> Result<(), StorageError> {

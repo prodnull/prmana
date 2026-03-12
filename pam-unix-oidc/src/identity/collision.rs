@@ -122,6 +122,7 @@ pub fn validate_collision_safety(config: &IdentityConfig) -> Vec<String> {
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::policy::config::TransformConfig;
@@ -291,8 +292,7 @@ mod tests {
         let result = check_collision_safety(&config);
         assert!(
             result.is_ok(),
-            "lowercase alone must not hard-fail: {:?}",
-            result
+            "lowercase alone must not hard-fail: {result:?}"
         );
     }
 
@@ -302,8 +302,7 @@ mod tests {
         let result = check_collision_safety(&config);
         assert!(
             result.is_ok(),
-            "empty transform pipeline must not hard-fail: {:?}",
-            result
+            "empty transform pipeline must not hard-fail: {result:?}"
         );
     }
 

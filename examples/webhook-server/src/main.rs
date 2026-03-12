@@ -364,7 +364,7 @@ async fn index_handler(State(state): State<SharedState>) -> Html<String> {
                     stored.request.hostname,
                     id,
                     if remaining > 0 {
-                        format!("{}", remaining)
+                        format!("{remaining}")
                     } else {
                         "expired".to_string()
                     },
@@ -372,10 +372,9 @@ async fn index_handler(State(state): State<SharedState>) -> Html<String> {
                     if remaining > 0 {
                         format!(
                             r#"<div class="actions">
-                                <button class="approve-btn" onclick="approve('{}')">✓ Approve</button>
-                                <button class="deny-btn" onclick="deny('{}')">✗ Deny</button>
-                            </div>"#,
-                            id, id
+                                <button class="approve-btn" onclick="approve('{id}')">✓ Approve</button>
+                                <button class="deny-btn" onclick="deny('{id}')">✗ Deny</button>
+                            </div>"#
                         )
                     } else {
                         String::new()
@@ -416,7 +415,7 @@ async fn index_handler(State(state): State<SharedState>) -> Html<String> {
                     stored
                         .approver
                         .as_ref()
-                        .map(|a| format!(" | <strong>Approver:</strong> {}", a))
+                        .map(|a| format!(" | <strong>Approver:</strong> {a}"))
                         .unwrap_or_default(),
                     stored.request.command.as_deref().unwrap_or("(no command)")
                 ));

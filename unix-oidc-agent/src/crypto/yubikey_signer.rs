@@ -58,9 +58,8 @@ fn parse_slot(slot_spec: &str) -> anyhow::Result<u8> {
         "9d" => Ok(0x03),
         "9e" => Ok(0x04),
         other => bail!(
-            "Unknown YubiKey PIV slot '{}'. Supported slots: 9a, 9c, 9d, 9e. \
-             Use '9a' for the default Authentication slot.",
-            other
+            "Unknown YubiKey PIV slot '{other}'. Supported slots: 9a, 9c, 9d, 9e. \
+             Use '9a' for the default Authentication slot."
         ),
     }
 }
@@ -178,7 +177,7 @@ impl YubiKeySigner {
         let slot = first_slot(&ctx)?;
         let session = ctx
             .open_rw_session(slot)
-            .map_err(|e| anyhow!("Cannot open RW session: {}", e))?;
+            .map_err(|e| anyhow!("Cannot open RW session: {e}"))?;
 
         // Login with PIN.
         let auth_pin = AuthPin::new(pin_str);
@@ -192,13 +191,13 @@ impl YubiKeySigner {
         ];
         let existing = session
             .find_objects(&search_template)
-            .map_err(|e| anyhow!("find_objects failed: {}", e))?;
+            .map_err(|e| anyhow!("find_objects failed: {e}"))?;
 
         let (thumbprint, jwk) = if !existing.is_empty() {
             let pub_handle = existing[0];
             let attrs = session
                 .get_attributes(pub_handle, &[AttributeType::EcPoint])
-                .map_err(|e| anyhow!("get_attributes failed: {}", e))?;
+                .map_err(|e| anyhow!("get_attributes failed: {e}"))?;
 
             let ec_point_raw = extract_ec_point(&attrs)?;
             let (x_bytes, y_bytes) = parse_uncompressed_point(&ec_point_raw, key_id)?;
@@ -231,7 +230,7 @@ impl YubiKeySigner {
 
             let attrs = session
                 .get_attributes(pub_handle, &[AttributeType::EcPoint])
-                .map_err(|e| anyhow!("get_attributes after keygen failed: {}", e))?;
+                .map_err(|e| anyhow!("get_attributes after keygen failed: {e}"))?;
             let ec_point_raw = extract_ec_point(&attrs)?;
             let (x_bytes, y_bytes) = parse_uncompressed_point(&ec_point_raw, key_id)?;
             compute_jwk_and_thumbprint(&x_bytes, &y_bytes)
@@ -338,11 +337,9 @@ fn open_pkcs11_context(path: &str) -> anyhow::Result<Pkcs11> {
     let ctx = Pkcs11::new(path).map_err(|e| {
         // Library load failure usually means ykcs11 isn't installed.
         anyhow!(
-            "Failed to load PKCS#11 library '{}': {}. \
+            "Failed to load PKCS#11 library '{path}': {e}. \
              Install yubico-piv-tool (Linux: apt install yubico-piv-tool, \
-             macOS: brew install yubico-piv-tool).",
-            path,
-            e
+             macOS: brew install yubico-piv-tool)."
         )
     })?;
     ctx.initialize(CInitializeArgs::OsThreads).or_else(|e| {
@@ -351,7 +348,7 @@ fn open_pkcs11_context(path: &str) -> anyhow::Result<Pkcs11> {
         if matches!(e, Pkcs11Error::AlreadyInitialized) {
             Ok(())
         } else {
-            Err(anyhow!("C_Initialize failed: {}", e))
+            Err(anyhow!("C_Initialize failed: {e}"))
         }
     })?;
     Ok(ctx)
@@ -361,7 +358,7 @@ fn open_pkcs11_context(path: &str) -> anyhow::Result<Pkcs11> {
 fn first_slot(ctx: &Pkcs11) -> anyhow::Result<cryptoki::slot::Slot> {
     let slots = ctx
         .get_slots_with_token()
-        .map_err(|e| anyhow!("get_slots_with_token failed: {}", e))?;
+        .map_err(|e| anyhow!("get_slots_with_token failed: {e}"))?;
     slots.into_iter().next().ok_or_else(|| {
         anyhow!("No YubiKey token found. Ensure the key is inserted and pcscd is running.")
     })
@@ -384,7 +381,7 @@ fn login_with_pin(
         Err(Pkcs11Error::Pkcs11(RvError::PinLocked, _)) => {
             bail!("{}", HardwareSignerError::PinLocked)
         }
-        Err(e) => bail!("PKCS#11 login failed: {}", e),
+        Err(e) => bail!("PKCS#11 login failed: {e}"),
     }
 }
 
@@ -395,7 +392,7 @@ fn read_public_key(pkcs11_path: &str, key_id: u8) -> anyhow::Result<(String, ser
     // Public key read does not require login.
     let session = ctx
         .open_ro_session(slot)
-        .map_err(|e| anyhow!("Cannot open RO session: {}", e))?;
+        .map_err(|e| anyhow!("Cannot open RO session: {e}"))?;
 
     let search_template = [
         Attribute::Class(ObjectClass::PUBLIC_KEY),
@@ -404,22 +401,21 @@ fn read_public_key(pkcs11_path: &str, key_id: u8) -> anyhow::Result<(String, ser
     ];
     let objects = session
         .find_objects(&search_template)
-        .map_err(|e| anyhow!("find_objects failed: {}", e))?;
+        .map_err(|e| anyhow!("find_objects failed: {e}"))?;
 
     let pub_handle = objects.into_iter().next().ok_or_else(|| {
         anyhow!(
             "{}",
             HardwareSignerError::KeyNotFound(format!(
-                "No P-256 key found in YubiKey PIV slot (key ID {:#x}). \
-                 Use `unix-oidc-agent provision --signer yubikey:9a` to generate one.",
-                key_id
+                "No P-256 key found in YubiKey PIV slot (key ID {key_id:#x}). \
+                 Use `unix-oidc-agent provision --signer yubikey:9a` to generate one."
             ))
         )
     })?;
 
     let attrs = session
         .get_attributes(pub_handle, &[AttributeType::EcPoint])
-        .map_err(|e| anyhow!("get_attributes failed: {}", e))?;
+        .map_err(|e| anyhow!("get_attributes failed: {e}"))?;
 
     let ec_point_raw = extract_ec_point(&attrs)?;
     let (x_bytes, y_bytes) = parse_uncompressed_point(&ec_point_raw, key_id)?;
@@ -489,10 +485,7 @@ fn compute_jwk_and_thumbprint(x_bytes: &[u8], y_bytes: &[u8]) -> (String, serde_
 
     // RFC 7638 §3.3: canonical JSON with lexicographic key order for P-256.
     // Security: hardcoded field names and values — never use user-supplied kty/crv.
-    let canonical = format!(
-        r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
-        x_b64, y_b64
-    );
+    let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x_b64}","y":"{y_b64}"}}"#);
     let digest = Sha256::digest(canonical.as_bytes());
     let thumbprint = URL_SAFE_NO_PAD.encode(digest);
 
@@ -571,8 +564,8 @@ mod tests {
     fn test_parse_slot_error_message_is_actionable() {
         let err = parse_slot("bad").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("9a"), "error should list valid slots: {}", msg);
-        assert!(msg.contains("9e"), "error should list valid slots: {}", msg);
+        assert!(msg.contains("9a"), "error should list valid slots: {msg}");
+        assert!(msg.contains("9e"), "error should list valid slots: {msg}");
     }
 
     /// Test that build_dpop_message + assemble_dpop_proof produce a valid 3-part JWT.
@@ -593,8 +586,7 @@ mod tests {
         for (i, part) in parts.iter().enumerate() {
             assert!(
                 URL_SAFE_NO_PAD.decode(part).is_ok(),
-                "part {} is not valid base64url",
-                i
+                "part {i} is not valid base64url"
             );
         }
         // Verify signature part decodes to our 64 bytes.
@@ -610,8 +602,7 @@ mod tests {
         let err = assemble_dpop_proof(&message, &sig).unwrap_err();
         assert!(
             matches!(err, DPoPError::InvalidSignatureLength(63)),
-            "expected InvalidSignatureLength(63), got {:?}",
-            err
+            "expected InvalidSignatureLength(63), got {err:?}"
         );
     }
 
@@ -623,8 +614,7 @@ mod tests {
         let err = assemble_dpop_proof(&message, &sig).unwrap_err();
         assert!(
             matches!(err, DPoPError::InvalidSignatureLength(65)),
-            "expected InvalidSignatureLength(65), got {:?}",
-            err
+            "expected InvalidSignatureLength(65), got {err:?}"
         );
     }
 
@@ -718,8 +708,7 @@ mod tests {
         let dpop_err: DPoPError = hw_err.into();
         assert!(
             matches!(dpop_err, DPoPError::HardwareSigner(_)),
-            "expected DPoPError::HardwareSigner, got {:?}",
-            dpop_err
+            "expected DPoPError::HardwareSigner, got {dpop_err:?}"
         );
     }
 

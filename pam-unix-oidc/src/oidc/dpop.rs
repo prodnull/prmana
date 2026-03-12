@@ -429,6 +429,7 @@ fn compute_jwk_thumbprint(jwk: &EcJwk) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use p256::ecdsa::{signature::Signer, SigningKey};
@@ -477,12 +478,12 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
         let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims).unwrap().as_bytes());
 
-        let message = format!("{}.{}", header_b64, claims_b64);
+        let message = format!("{header_b64}.{claims_b64}");
 
         let signature: Signature = signing_key.sign(message.as_bytes());
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-        let proof = format!("{}.{}", message, sig_b64);
+        let proof = format!("{message}.{sig_b64}");
         let thumbprint = compute_jwk_thumbprint(&jwk);
 
         (proof, thumbprint)
@@ -647,7 +648,7 @@ mod tests {
             .as_secs() as i64;
 
         // Use a fixed JTI for this test
-        let fixed_jti = format!("replay-test-{}", now);
+        let fixed_jti = format!("replay-test-{now}");
 
         let claims = DPoPProofClaims {
             jti: fixed_jti.clone(),
@@ -671,11 +672,11 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
         let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims).unwrap().as_bytes());
 
-        let message = format!("{}.{}", header_b64, claims_b64);
+        let message = format!("{header_b64}.{claims_b64}");
         let signature: Signature = signing_key.sign(message.as_bytes());
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-        let proof = format!("{}.{}", message, sig_b64);
+        let proof = format!("{message}.{sig_b64}");
 
         let config = DPoPConfig {
             max_proof_age: 60,

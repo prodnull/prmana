@@ -395,7 +395,7 @@ impl AuditEvent {
             let _ = append_to_file(&log_path, &json);
 
             // 3. Log to stderr for debugging/testing
-            eprintln!("unix-oidc-audit: {}", json);
+            eprintln!("unix-oidc-audit: {json}");
         }
     }
 
@@ -448,7 +448,7 @@ fn get_hostname() -> String {
 fn append_to_file(path: &str, content: &str) -> std::io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
 
-    writeln!(file, "{}", content)?;
+    writeln!(file, "{content}")?;
     Ok(())
 }
 
@@ -463,6 +463,7 @@ fn log_to_syslog(message: &str) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -714,7 +715,7 @@ mod tests {
                 assert_eq!(reason, "break-glass bypass");
                 assert_eq!(severity, "CRITICAL");
             }
-            other => panic!("Expected BreakGlassAuth, got {:?}", other),
+            other => panic!("Expected BreakGlassAuth, got {other:?}"),
         }
     }
 
@@ -727,7 +728,7 @@ mod tests {
         // return a non-empty string on any properly configured system.
         std::env::remove_var("UNIX_OIDC_HOSTNAME");
         let h = get_hostname();
-        assert!(!h.is_empty(), "hostname must be non-empty, got: {:?}", h);
+        assert!(!h.is_empty(), "hostname must be non-empty, got: {h:?}");
     }
 
     #[test]

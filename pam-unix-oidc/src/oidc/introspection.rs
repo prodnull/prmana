@@ -431,7 +431,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     // ── Endpoint not configured ───────────────────────────────────────────
@@ -514,7 +514,7 @@ mod tests {
             count1.fetch_add(1, Ordering::SeqCst);
             Ok(true)
         });
-        assert_eq!(result1.unwrap(), true);
+        assert!(result1.unwrap());
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             1,
@@ -526,7 +526,7 @@ mod tests {
             count2.fetch_add(1, Ordering::SeqCst);
             Ok(true)
         });
-        assert_eq!(result2.unwrap(), true);
+        assert!(result2.unwrap());
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             1,
@@ -613,8 +613,7 @@ mod tests {
         );
         assert!(
             matches!(result, Err(IntrospectionError::Http(_))),
-            "unreachable endpoint must return Http error, got: {:?}",
-            result
+            "unreachable endpoint must return Http error, got: {result:?}"
         );
     }
 }

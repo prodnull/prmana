@@ -228,10 +228,11 @@ fn generate_request_id() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("apr-{:x}", timestamp)
+    format!("apr-{timestamp:x}")
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

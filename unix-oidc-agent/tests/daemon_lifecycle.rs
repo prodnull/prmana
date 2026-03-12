@@ -47,12 +47,12 @@ fn wait_for_socket(path: &std::path::Path, timeout: Duration) -> bool {
 /// Send a JSON request over a new Unix socket connection and read the response.
 fn send_ipc_request(socket_path: &std::path::Path, request: &str) -> String {
     let mut stream = UnixStream::connect(socket_path)
-        .unwrap_or_else(|e| panic!("Failed to connect to socket {:?}: {}", socket_path, e));
+        .unwrap_or_else(|e| panic!("Failed to connect to socket {socket_path:?}: {e}"));
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("Failed to set read timeout");
 
-    write!(stream, "{}\n", request).expect("Failed to write request");
+    writeln!(stream, "{request}").expect("Failed to write request");
     stream.flush().expect("Failed to flush");
 
     let mut reader = BufReader::new(stream);
@@ -104,8 +104,7 @@ fn test_daemon_lifecycle() {
     // ---------------------------------------------------------------
     assert!(
         wait_for_socket(&socket_path, Duration::from_secs(5)),
-        "Daemon did not create socket at {:?} within 5 seconds",
-        socket_path
+        "Daemon did not create socket at {socket_path:?} within 5 seconds"
     );
 
     // ---------------------------------------------------------------
@@ -117,13 +116,11 @@ fn test_daemon_lifecycle() {
 
     assert_eq!(
         status_json["status"], "success",
-        "Status response should be success, got: {}",
-        status_resp
+        "Status response should be success, got: {status_resp}"
     );
     assert_eq!(
         status_json["logged_in"], false,
-        "Fresh daemon should report logged_in=false, got: {}",
-        status_resp
+        "Fresh daemon should report logged_in=false, got: {status_resp}"
     );
 
     // ---------------------------------------------------------------
@@ -138,8 +135,7 @@ fn test_daemon_lifecycle() {
 
     assert_eq!(
         proof_json["status"], "error",
-        "GetProof on unauthenticated daemon should return error, got: {}",
-        proof_resp
+        "GetProof on unauthenticated daemon should return error, got: {proof_resp}"
     );
 
     // ---------------------------------------------------------------
@@ -148,8 +144,7 @@ fn test_daemon_lifecycle() {
     // ---------------------------------------------------------------
     {
         let mut stream = UnixStream::connect(&socket_path).expect("Failed to connect for shutdown");
-        write!(stream, "{}\n", r#"{"action":"shutdown"}"#)
-            .expect("Failed to write shutdown command");
+        writeln!(stream, r#"{{"action":"shutdown"}}"#).expect("Failed to write shutdown command");
         let _ = stream.flush();
         // Drop stream immediately -- no response expected
     }
@@ -169,7 +164,7 @@ fn test_daemon_lifecycle() {
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
-                panic!("Error waiting for daemon to exit: {}", e);
+                panic!("Error waiting for daemon to exit: {e}");
             }
         }
     }

@@ -116,8 +116,7 @@ impl SecureStorage for FileStorage {
         // Replaces the previous single zero-overwrite (MEM-05).
         secure_delete::secure_remove(&path).map_err(|e| {
             StorageError::Io(std::io::Error::other(format!(
-                "Secure delete failed for key '{}': {}",
-                key, e
+                "Secure delete failed for key '{key}': {e}"
             )))
         })
     }
@@ -188,8 +187,7 @@ mod tests {
         let result = storage.delete(test_key);
         assert!(
             matches!(result, Err(StorageError::NotFound(_))),
-            "Expected NotFound on second delete, got: {:?}",
-            result
+            "Expected NotFound on second delete, got: {result:?}"
         );
     }
 

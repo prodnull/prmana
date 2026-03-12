@@ -125,8 +125,8 @@ pub fn write_session_record(dir: &str, session_id: &str, record: &SessionRecord)
     validate_session_id(session_id)?;
 
     let dir_path = std::path::Path::new(dir);
-    let tmp_path: PathBuf = dir_path.join(format!("{}.json.tmp", session_id));
-    let final_path: PathBuf = dir_path.join(format!("{}.json", session_id));
+    let tmp_path: PathBuf = dir_path.join(format!("{session_id}.json.tmp"));
+    let final_path: PathBuf = dir_path.join(format!("{session_id}.json"));
 
     // Serialize to JSON
     let json = serde_json::to_string(record).map_err(|e| {
@@ -161,7 +161,7 @@ pub fn write_session_record(dir: &str, session_id: &str, record: &SessionRecord)
 pub fn delete_session_record(dir: &str, session_id: &str) -> io::Result<Option<SessionRecord>> {
     validate_session_id(session_id)?;
 
-    let path: PathBuf = std::path::Path::new(dir).join(format!("{}.json", session_id));
+    let path: PathBuf = std::path::Path::new(dir).join(format!("{session_id}.json"));
 
     let json = match fs::read_to_string(&path) {
         Ok(content) => content,
@@ -229,7 +229,7 @@ mod tests {
         assert!(dir.is_dir());
         let meta = fs::metadata(&dir).unwrap();
         let mode = meta.mode() & 0o777;
-        assert_eq!(mode, 0o700, "session dir must be 0700, got {:#o}", mode);
+        assert_eq!(mode, 0o700, "session dir must be 0700, got {mode:#o}");
     }
 
     #[test]
@@ -256,12 +256,12 @@ mod tests {
 
         write_session_record(dir_str, session_id, &record).unwrap();
 
-        let final_path = tmp.path().join(format!("{}.json", session_id));
+        let final_path = tmp.path().join(format!("{session_id}.json"));
         assert!(final_path.exists(), "session record file must be created");
 
         let meta = fs::metadata(&final_path).unwrap();
         let mode = meta.mode() & 0o777;
-        assert_eq!(mode, 0o600, "session record must be 0600, got {:#o}", mode);
+        assert_eq!(mode, 0o600, "session record must be 0600, got {mode:#o}");
     }
 
     #[test]
@@ -273,7 +273,7 @@ mod tests {
 
         write_session_record(dir_str, session_id, &record).unwrap();
 
-        let tmp_path = tmp.path().join(format!("{}.json.tmp", session_id));
+        let tmp_path = tmp.path().join(format!("{session_id}.json.tmp"));
         assert!(!tmp_path.exists(), ".tmp file must be removed after rename");
     }
 
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(r.issuer, "https://idp.example.com");
 
         // File must be gone after delete
-        let path = tmp.path().join(format!("{}.json", session_id));
+        let path = tmp.path().join(format!("{session_id}.json"));
         assert!(
             !path.exists(),
             "file must be deleted after delete_session_record"
@@ -412,9 +412,8 @@ mod tests {
         let past_start = now_unix_secs() - 120;
         let duration = session_duration_secs(past_start);
         assert!(
-            duration >= 119 && duration <= 125,
-            "duration must be approximately 120 seconds, got {}",
-            duration
+            (119..=125).contains(&duration),
+            "duration must be approximately 120 seconds, got {duration}"
         );
     }
 }

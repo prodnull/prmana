@@ -381,7 +381,7 @@ mod tests {
                 );
                 assert_eq!(allowed_groups, vec![impossible]);
             }
-            other => panic!("expected GroupDenied, got {:?}", other),
+            other => panic!("expected GroupDenied, got {other:?}"),
         }
     }
 }

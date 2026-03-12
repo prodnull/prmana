@@ -354,7 +354,7 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     let mlock_status_str = match &mlock_result {
         MlockStatus::Active => "mlock active: key pages memory-locked".to_string(),
         MlockStatus::Unavailable(reason) => {
-            format!("mlock unavailable: {}", reason)
+            format!("mlock unavailable: {reason}")
         }
     };
     info!("Memory protection: {}", mlock_status_str);
@@ -426,7 +426,7 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     // Uses systemd socket activation when LISTEN_FDS/LISTEN_PID are set;
     // falls back to standalone bind otherwise.
     let listener = acquire_listener(&socket_path)
-        .map_err(|e| anyhow::anyhow!("Failed to acquire socket: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to acquire socket: {e}"))?;
     info!(socket_path = %socket_path.display(), "Socket acquired");
 
     // Gate 2: Config validated.
@@ -487,7 +487,7 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     server
         .serve_with_listener(listener)
         .await
-        .map_err(|e| anyhow::anyhow!("Server error: {}", e))
+        .map_err(|e| anyhow::anyhow!("Server error: {e}"))
 }
 
 /// Get status from the running daemon
@@ -509,10 +509,10 @@ async fn run_status() -> anyhow::Result<()> {
             if logged_in {
                 println!("Status: Logged in");
                 if let Some(u) = username {
-                    println!("  User: {}", u);
+                    println!("  User: {u}");
                 }
                 if let Some(t) = thumbprint {
-                    println!("  DPoP thumbprint: {}", t);
+                    println!("  DPoP thumbprint: {t}");
                 }
                 if let Some(exp) = token_expires {
                     let now = std::time::SystemTime::now()
@@ -521,7 +521,7 @@ async fn run_status() -> anyhow::Result<()> {
                         .as_secs() as i64;
                     let remaining = exp - now;
                     if remaining > 0 {
-                        println!("  Token expires in: {}s", remaining);
+                        println!("  Token expires in: {remaining}s");
                     } else {
                         println!("  Token: EXPIRED");
                     }
@@ -529,20 +529,20 @@ async fn run_status() -> anyhow::Result<()> {
             } else {
                 println!("Status: Not logged in");
                 if let Some(t) = thumbprint {
-                    println!("  DPoP thumbprint: {} (keypair exists)", t);
+                    println!("  DPoP thumbprint: {t} (keypair exists)");
                 }
             }
             if let Some(signer) = signer_type {
                 println!("  Signer: {}", format_signer_type(&signer));
             }
             if let Some(mem) = mlock_status {
-                println!("  Memory protection: {}", mem);
+                println!("  Memory protection: {mem}");
             }
             if let Some(backend) = storage_backend {
-                println!("  Storage: {}", backend);
+                println!("  Storage: {backend}");
             }
             if let Some(migration) = migration_status {
-                println!("  Migration: {}", migration);
+                println!("  Migration: {migration}");
             }
             if refresh_failed == Some(true) {
                 println!("  Auto-refresh: FAILED (token will expire; re-login required)");
@@ -551,13 +551,13 @@ async fn run_status() -> anyhow::Result<()> {
         }
         Ok(AgentResponse::Error { message, code }) => {
             error!("Agent error: {} ({})", message, code);
-            Err(anyhow::anyhow!("Agent error: {}", message))
+            Err(anyhow::anyhow!("Agent error: {message}"))
         }
         Ok(_) => Err(anyhow::anyhow!("Unexpected response from agent")),
         Err(e) => {
             // Agent might not be running
             println!("Status: Agent not running");
-            println!("  Error: {}", e);
+            println!("  Error: {e}");
             println!("  Start the agent with: unix-oidc-agent serve");
 
             // Check if we have stored credentials
@@ -591,8 +591,8 @@ async fn run_get_proof(
             expires_in,
         })) => {
             // Output in a format that SSH can consume
-            println!("{}", token);
-            println!("{}", dpop_proof);
+            println!("{token}");
+            println!("{dpop_proof}");
             info!("Token expires in {}s", expires_in);
             Ok(())
         }
@@ -601,13 +601,13 @@ async fn run_get_proof(
             if code == "NOT_LOGGED_IN" {
                 eprintln!("Error: Not logged in. Run: unix-oidc-agent login");
             }
-            Err(anyhow::anyhow!("Agent error: {}", message))
+            Err(anyhow::anyhow!("Agent error: {message}"))
         }
         Ok(_) => Err(anyhow::anyhow!("Unexpected response from agent")),
         Err(e) => {
-            eprintln!("Error: Could not connect to agent: {}", e);
+            eprintln!("Error: Could not connect to agent: {e}");
             eprintln!("Start the agent with: unix-oidc-agent serve");
-            Err(anyhow::anyhow!("Agent connection error: {}", e))
+            Err(anyhow::anyhow!("Agent connection error: {e}"))
         }
     }
 }
@@ -675,8 +675,8 @@ async fn run_login(
 
     println!("DPoP thumbprint: {}", signer.thumbprint());
     println!();
-    println!("Starting device authorization flow with: {}", issuer);
-    println!("Client ID: {}", client_id);
+    println!("Starting device authorization flow with: {issuer}");
+    println!("Client ID: {client_id}");
     println!();
 
     // Use spawn_blocking for the sync device flow client
@@ -711,9 +711,9 @@ async fn run_login(
         let discovery: serde_json::Value = http_client
             .get(&discovery_url)
             .send()
-            .map_err(|e| anyhow::anyhow!("Failed to fetch OIDC discovery: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Failed to fetch OIDC discovery: {e}"))?
             .json()
-            .map_err(|e| anyhow::anyhow!("Failed to parse OIDC discovery: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse OIDC discovery: {e}"))?;
 
         let device_endpoint = discovery["device_authorization_endpoint"]
             .as_str()
@@ -743,9 +743,9 @@ async fn run_login(
             .post(device_endpoint)
             .form(&params)
             .send()
-            .map_err(|e| anyhow::anyhow!("Device authorization request failed: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Device authorization request failed: {e}"))?
             .json()
-            .map_err(|e| anyhow::anyhow!("Failed to parse device response: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse device response: {e}"))?;
 
         let device_code = device_response["device_code"]
             .as_str()
@@ -796,10 +796,7 @@ async fn run_login(
             );
             println!("│                                                          │");
         }
-        println!(
-            "│  Code expires in {} seconds                            │",
-            expires_in
-        );
+        println!("│  Code expires in {expires_in} seconds                            │");
         println!("└──────────────────────────────────────────────────────────┘");
         println!();
         println!("Waiting for authentication...");
@@ -832,12 +829,12 @@ async fn run_login(
                 .post(&token_endpoint)
                 .form(&token_params)
                 .send()
-                .map_err(|e| anyhow::anyhow!("Token request failed: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Token request failed: {e}"))?;
 
             if response.status().is_success() {
                 let token_response: serde_json::Value = response
                     .json()
-                    .map_err(|e| anyhow::anyhow!("Failed to parse token response: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Failed to parse token response: {e}"))?;
 
                 // Return token response, token endpoint, and revocation endpoint (if any).
                 return Ok((token_response, token_endpoint, revocation_endpoint.clone()));
@@ -845,7 +842,7 @@ async fn run_login(
 
             let error_response: serde_json::Value = response
                 .json()
-                .map_err(|e| anyhow::anyhow!("Failed to parse error response: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to parse error response: {e}"))?;
 
             match error_response["error"].as_str() {
                 Some("authorization_pending") => {
@@ -868,7 +865,7 @@ async fn run_login(
                     let desc = error_response["error_description"]
                         .as_str()
                         .unwrap_or("Unknown error");
-                    return Err(anyhow::anyhow!("Authentication failed: {} - {}", err, desc));
+                    return Err(anyhow::anyhow!("Authentication failed: {err} - {desc}"));
                 }
                 None => {
                     return Err(anyhow::anyhow!("Unknown error response"));
@@ -930,7 +927,7 @@ async fn run_login(
     storage.store(KEY_TOKEN_METADATA, metadata.to_string().as_bytes())?;
 
     println!("Token stored successfully");
-    println!("Token expires in: {}s", expires_in);
+    println!("Token expires in: {expires_in}s");
     if signer_type_for_storage != "software" {
         println!(
             "Signer: {} (hardware key on device)",
@@ -950,7 +947,7 @@ async fn run_login(
 /// - `"tpm"` → `"tpm"`
 fn format_signer_type(spec: &str) -> String {
     if let Some(slot) = spec.strip_prefix("yubikey:") {
-        format!("yubikey (slot {})", slot)
+        format!("yubikey (slot {slot})")
     } else {
         spec.to_string()
     }
@@ -988,10 +985,7 @@ async fn run_provision(signer_spec: String) -> anyhow::Result<()> {
     );
     println!("DPoP thumbprint: {}", signer.thumbprint());
     println!();
-    println!(
-        "Run `unix-oidc-agent login --signer {}` to authenticate.",
-        signer_type
-    );
+    println!("Run `unix-oidc-agent login --signer {signer_type}` to authenticate.");
 
     Ok(())
 }
@@ -1041,7 +1035,7 @@ async fn run_refresh() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("No token metadata found. Please login first."))?;
 
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_bytes)
-        .map_err(|e| anyhow::anyhow!("Failed to parse token metadata: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse token metadata: {e}"))?;
 
     // Security (MEM-03): wrap refresh_token in SecretString at extraction — must not appear in logs.
     let refresh_token = SecretString::from(
@@ -1105,12 +1099,12 @@ async fn run_refresh() -> anyhow::Result<()> {
             .post(&token_endpoint)
             .form(&params)
             .send()
-            .map_err(|e| anyhow::anyhow!("Token refresh request failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Token refresh request failed: {e}"))?;
 
         if response.status().is_success() {
             let token_response: serde_json::Value = response
                 .json()
-                .map_err(|e| anyhow::anyhow!("Failed to parse token response: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to parse token response: {e}"))?;
             Ok(token_response)
         } else {
             let error: serde_json::Value = response
@@ -1120,7 +1114,7 @@ async fn run_refresh() -> anyhow::Result<()> {
                 .as_str()
                 .or(error["error"].as_str())
                 .unwrap_or("Unknown error");
-            Err(anyhow::anyhow!("Token refresh failed: {}", error_msg))
+            Err(anyhow::anyhow!("Token refresh failed: {error_msg}"))
         }
     })
     .await??;
@@ -1163,7 +1157,7 @@ async fn run_refresh() -> anyhow::Result<()> {
     storage.store(KEY_TOKEN_METADATA, updated_metadata.to_string().as_bytes())?;
 
     println!("Token refreshed successfully!");
-    println!("Token expires in: {}s", expires_in);
+    println!("Token expires in: {expires_in}s");
 
     Ok(())
 }
@@ -1199,7 +1193,7 @@ async fn run_reset(force: bool) -> anyhow::Result<()> {
     } else {
         println!("Cleared credentials:");
         for key in &cleared {
-            println!("  - {}", key);
+            println!("  - {key}");
         }
         println!();
         println!("All credentials deleted.");
@@ -1332,7 +1326,7 @@ fn load_or_create_signer(storage: &dyn SecureStorage) -> anyhow::Result<Software
     if let Ok(key_bytes) = storage.retrieve(KEY_DPOP_PRIVATE) {
         info!("Loading existing DPoP keypair");
         SoftwareSigner::import_key(&key_bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to import key: {}", e))
+            .map_err(|e| anyhow::anyhow!("Failed to import key: {e}"))
     } else {
         info!("Generating new DPoP keypair");
         let signer = SoftwareSigner::generate();
@@ -1415,10 +1409,12 @@ fn extract_username_from_token(token: &str) -> Option<String> {
 //
 // The template is embedded so that `unix-oidc-agent install` works without
 // requiring the contrib/ directory to be present on the target machine.
+#[cfg(target_os = "macos")]
 const LAUNCHD_PLIST_TEMPLATE: &str =
     include_str!("../../contrib/launchd/com.unix-oidc.agent.plist.template");
 
 /// Label used in the plist and in launchctl commands.
+#[cfg(target_os = "macos")]
 const LAUNCHD_LABEL: &str = "com.unix-oidc.agent";
 
 /// Install the agent as a launchd service (macOS) or print instructions (Linux).
@@ -1600,7 +1596,6 @@ async fn run_uninstall() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json;
 
     /// Helper that mimics the updated_metadata construction pattern used in
     /// run_refresh() and perform_token_refresh(). This is the exact pattern

@@ -471,13 +471,11 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(
             json.contains(r#""action":"session_closed""#),
-            "expected action=session_closed in: {}",
-            json
+            "expected action=session_closed in: {json}"
         );
         assert!(
             json.contains(r#""session_id":"sess-abc-123""#),
-            "expected session_id in: {}",
-            json
+            "expected session_id in: {json}"
         );
     }
 
@@ -490,7 +488,7 @@ mod tests {
             AgentRequest::SessionClosed { session_id } => {
                 assert_eq!(session_id, "sess-xyz-789");
             }
-            _ => panic!("Expected SessionClosed, got {:?}", req),
+            _ => panic!("Expected SessionClosed, got {req:?}"),
         }
     }
 
@@ -501,13 +499,11 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""status":"success""#),
-            "expected success status in: {}",
-            json
+            "expected success status in: {json}"
         );
         assert!(
             json.contains(r#""acknowledged":true"#),
-            "expected acknowledged=true discriminant in: {}",
-            json
+            "expected acknowledged=true discriminant in: {json}"
         );
         // Round-trip: must deserialize back to SessionAcknowledged, not Ok
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
@@ -518,8 +514,7 @@ mod tests {
                     acknowledged: true
                 })
             ),
-            "expected SessionAcknowledged, got: {:?}",
-            parsed
+            "expected SessionAcknowledged, got: {parsed:?}"
         );
     }
 
@@ -540,8 +535,7 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""refresh_failed":true"#),
-            "expected refresh_failed in: {}",
-            json
+            "expected refresh_failed in: {json}"
         );
     }
 
@@ -552,8 +546,7 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             !json.contains("refresh_failed"),
-            "refresh_failed must be absent when None, got: {}",
-            json
+            "refresh_failed must be absent when None, got: {json}"
         );
     }
 
@@ -572,33 +565,27 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(
             json.contains(r#""action":"step_up""#),
-            "expected action=step_up in: {}",
-            json
+            "expected action=step_up in: {json}"
         );
         assert!(
             json.contains(r#""username":"alice""#),
-            "expected username in: {}",
-            json
+            "expected username in: {json}"
         );
         assert!(
             json.contains(r#""command":"systemctl restart""#),
-            "expected command in: {}",
-            json
+            "expected command in: {json}"
         );
         assert!(
             json.contains(r#""hostname":"prod-01""#),
-            "expected hostname in: {}",
-            json
+            "expected hostname in: {json}"
         );
         assert!(
             json.contains(r#""method":"push""#),
-            "expected method in: {}",
-            json
+            "expected method in: {json}"
         );
         assert!(
             json.contains(r#""timeout_secs":120"#),
-            "expected timeout_secs in: {}",
-            json
+            "expected timeout_secs in: {json}"
         );
     }
 
@@ -621,7 +608,7 @@ mod tests {
                 assert_eq!(method, "push");
                 assert_eq!(timeout_secs, 120);
             }
-            _ => panic!("Expected StepUp, got {:?}", req),
+            _ => panic!("Expected StepUp, got {req:?}"),
         }
     }
 
@@ -634,13 +621,11 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(
             json.contains(r#""action":"step_up_result""#),
-            "expected action=step_up_result in: {}",
-            json
+            "expected action=step_up_result in: {json}"
         );
         assert!(
             json.contains(r#""correlation_id":"uuid-here""#),
-            "expected correlation_id in: {}",
-            json
+            "expected correlation_id in: {json}"
         );
     }
 
@@ -653,7 +638,7 @@ mod tests {
             AgentRequest::StepUpResult { correlation_id } => {
                 assert_eq!(correlation_id, "uuid-here");
             }
-            _ => panic!("Expected StepUpResult, got {:?}", req),
+            _ => panic!("Expected StepUpResult, got {req:?}"),
         }
     }
 
@@ -664,18 +649,15 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""correlation_id":"uuid""#),
-            "expected correlation_id in: {}",
-            json
+            "expected correlation_id in: {json}"
         );
         assert!(
             json.contains(r#""expires_in":120"#),
-            "expected expires_in in: {}",
-            json
+            "expected expires_in in: {json}"
         );
         assert!(
             json.contains(r#""poll_interval_secs":5"#),
-            "expected poll_interval_secs in: {}",
-            json
+            "expected poll_interval_secs in: {json}"
         );
         // Round-trip deserialization
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
@@ -688,8 +670,7 @@ mod tests {
                     poll_interval_secs: 5,
                 }) if correlation_id == "uuid"
             ),
-            "expected StepUpPending, got: {:?}",
-            parsed
+            "expected StepUpPending, got: {parsed:?}"
         );
     }
 
@@ -700,8 +681,7 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""session_id":"sess-123""#),
-            "expected session_id in: {}",
-            json
+            "expected session_id in: {json}"
         );
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
         assert!(
@@ -712,8 +692,7 @@ mod tests {
                     ref session_id,
                 }) if session_id == "sess-123"
             ),
-            "expected StepUpComplete with no acr, got: {:?}",
-            parsed
+            "expected StepUpComplete with no acr, got: {parsed:?}"
         );
     }
 
@@ -727,8 +706,7 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""session_id":"sess-456""#),
-            "expected session_id in: {}",
-            json
+            "expected session_id in: {json}"
         );
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
         assert!(
@@ -739,8 +717,7 @@ mod tests {
                     ref session_id,
                 }) if acr.as_deref() == Some("http://schemas.openid.net/phr") && session_id == "sess-456"
             ),
-            "expected StepUpComplete with acr, got: {:?}",
-            parsed
+            "expected StepUpComplete with acr, got: {parsed:?}"
         );
     }
 
@@ -751,13 +728,11 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""reason":"timeout""#),
-            "expected reason in: {}",
-            json
+            "expected reason in: {json}"
         );
         assert!(
             json.contains(r#""user_message":"Approval window expired""#),
-            "expected user_message in: {}",
-            json
+            "expected user_message in: {json}"
         );
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
         assert!(
@@ -768,8 +743,7 @@ mod tests {
                     ref user_message,
                 }) if reason == "timeout" && user_message == "Approval window expired"
             ),
-            "expected StepUpTimedOut, got: {:?}",
-            parsed
+            "expected StepUpTimedOut, got: {parsed:?}"
         );
     }
 
@@ -786,8 +760,7 @@ mod tests {
                     acknowledged: true
                 })
             ),
-            "SessionAcknowledged must still parse correctly, got: {:?}",
-            parsed
+            "SessionAcknowledged must still parse correctly, got: {parsed:?}"
         );
     }
 }

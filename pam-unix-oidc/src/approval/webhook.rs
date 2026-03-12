@@ -133,7 +133,7 @@ impl WebhookApprovalProvider {
             .danger_accept_invalid_certs(!config.verify_tls)
             .build()
             .map_err(|e| {
-                ApprovalError::ConfigError(format!("Failed to create HTTP client: {}", e))
+                ApprovalError::ConfigError(format!("Failed to create HTTP client: {e}"))
             })?;
 
         Ok(Self { config, client })
@@ -176,8 +176,7 @@ impl ApprovalProvider for WebhookApprovalProvider {
             let status = response.status();
             let body = response.text().unwrap_or_default();
             return Err(ApprovalError::NetworkError(format!(
-                "Webhook returned HTTP {}: {}",
-                status, body
+                "Webhook returned HTTP {status}: {body}"
             )));
         }
 
@@ -190,7 +189,7 @@ impl ApprovalProvider for WebhookApprovalProvider {
     }
 
     fn check_status(&self, request_id: &str) -> Result<ApprovalResponse, ApprovalError> {
-        let path = format!("/approve/{}", request_id);
+        let path = format!("/approve/{request_id}");
         let response = self
             .build_request(reqwest::Method::GET, &path)
             .send()
@@ -200,8 +199,7 @@ impl ApprovalProvider for WebhookApprovalProvider {
             let status = response.status();
             let body = response.text().unwrap_or_default();
             return Err(ApprovalError::NetworkError(format!(
-                "Webhook returned HTTP {}: {}",
-                status, body
+                "Webhook returned HTTP {status}: {body}"
             )));
         }
 

@@ -303,8 +303,7 @@ mod tests {
         let result = secure_remove(&path);
         assert!(
             matches!(result, Err(SecureDeleteError::NotFound(_))),
-            "expected NotFound, got {:?}",
-            result
+            "expected NotFound, got {result:?}"
         );
     }
 

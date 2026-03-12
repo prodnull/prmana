@@ -59,6 +59,7 @@ pub fn get_user_info(username: &str) -> Result<UserInfo, UserError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

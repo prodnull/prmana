@@ -126,7 +126,7 @@ pub fn build_binding_message(command: &str, hostname: &str) -> String {
         exe_name
     };
 
-    let msg = format!("sudo {} on {}", exe_name, hostname);
+    let msg = format!("sudo {exe_name} on {hostname}");
 
     // Truncate to 64 characters (CIBA spec recommends short binding_message for
     // authenticator UI display; see CIBA Core 1.0 §7.1 binding_message guidance).
@@ -140,6 +140,7 @@ pub fn build_binding_message(command: &str, hostname: &str) -> String {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::oidc::jwks::OidcDiscovery;

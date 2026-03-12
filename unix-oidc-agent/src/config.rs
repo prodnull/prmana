@@ -333,31 +333,39 @@ issuer: https://idp.example.com
 
     #[test]
     fn test_timeouts_validate_rejects_zero_jwks_http() {
-        let mut t = TimeoutsConfig::default();
-        t.jwks_http_timeout_secs = 0;
+        let t = TimeoutsConfig {
+            jwks_http_timeout_secs: 0,
+            ..TimeoutsConfig::default()
+        };
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn test_timeouts_validate_rejects_zero_device_flow() {
-        let mut t = TimeoutsConfig::default();
-        t.device_flow_http_timeout_secs = 0;
+        let t = TimeoutsConfig {
+            device_flow_http_timeout_secs: 0,
+            ..TimeoutsConfig::default()
+        };
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn test_timeouts_validate_rejects_cache_ttl_less_than_http_timeout() {
-        let mut t = TimeoutsConfig::default();
-        t.jwks_http_timeout_secs = 20;
-        t.jwks_cache_ttl_secs = 15; // less than http timeout
+        let t = TimeoutsConfig {
+            jwks_http_timeout_secs: 20,
+            jwks_cache_ttl_secs: 15, // less than http timeout
+            ..TimeoutsConfig::default()
+        };
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn test_timeouts_validate_rejects_skew_future_greater_than_staleness() {
-        let mut t = TimeoutsConfig::default();
-        t.clock_skew_future_secs = 90;
-        t.clock_skew_staleness_secs = 60; // less than future skew
+        let t = TimeoutsConfig {
+            clock_skew_future_secs: 90,
+            clock_skew_staleness_secs: 60, // less than future skew
+            ..TimeoutsConfig::default()
+        };
         assert!(t.validate().is_err());
     }
 

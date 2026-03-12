@@ -764,8 +764,7 @@ mod tests {
                         DPoPValidationError::NonceMismatch
                     ))
                 ),
-                "replay must hard-fail in mode {:?}",
-                mode
+                "replay must hard-fail in mode {mode:?}"
             );
         }
     }
@@ -890,8 +889,7 @@ mod tests {
         let result = construct_mapper_like_auth(&identity);
         assert!(
             result.is_ok(),
-            "lowercase pipeline must not hard-fail, got: {:?}",
-            result
+            "lowercase pipeline must not hard-fail, got: {result:?}"
         );
     }
 

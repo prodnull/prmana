@@ -238,25 +238,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    // Use the current process PID as a stable test PPID.
-    // Tests must use unique paths to avoid collisions when run in parallel.
-    fn test_ppid() -> u32 {
-        std::process::id()
-    }
-
-    fn test_nonce_path() -> PathBuf {
-        nonce_tmpfile_path(test_ppid())
-    }
-
-    fn test_token_path() -> PathBuf {
-        token_tmpfile_path(test_ppid())
-    }
-
-    fn cleanup_test_files() {
-        let _ = fs::remove_file(test_nonce_path());
-        let _ = fs::remove_file(test_token_path());
-    }
-
     #[test]
     fn test_nonce_tmpfile_path_includes_ppid() {
         let path = nonce_tmpfile_path(12345);
@@ -306,8 +287,7 @@ mod tests {
         let result = write_with_restricted_perms(&path, "test-content");
         assert!(
             result.is_ok(),
-            "write_with_restricted_perms should succeed: {:?}",
-            result
+            "write_with_restricted_perms should succeed: {result:?}"
         );
 
         let content = fs::read_to_string(&path).expect("File should be readable");
@@ -324,11 +304,19 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    /// Generate a unique temp path for each test to avoid parallel races.
+    fn unique_nonce_path(suffix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            ".unix-oidc-nonce-test-{}-{suffix}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn test_nonce_tmpfile_permissions_are_0600() {
         // Verify that write_with_restricted_perms sets 0600
-        cleanup_test_files();
-        let nonce_path = test_nonce_path();
+        let nonce_path = unique_nonce_path("perms");
+        let _ = fs::remove_file(&nonce_path);
 
         write_with_restricted_perms(&nonce_path, "test-nonce").unwrap();
 
@@ -350,8 +338,8 @@ mod tests {
     fn test_dpop_nonce_prompt_writes_nonce_to_tmpfile() {
         // Simulate DPOP_NONCE:<value> handling (the write-to-tmpfile side,
         // without going through the async entry point).
-        cleanup_test_files();
-        let nonce_path = test_nonce_path();
+        let nonce_path = unique_nonce_path("write");
+        let _ = fs::remove_file(&nonce_path);
 
         // Replicate what run_ssh_askpass does for DPOP_NONCE: prompts.
         let prompt = "DPOP_NONCE:abc123";
@@ -368,8 +356,8 @@ mod tests {
 
     #[test]
     fn test_dpop_nonce_prompt_trims_whitespace() {
-        cleanup_test_files();
-        let nonce_path = test_nonce_path();
+        let nonce_path = unique_nonce_path("trim");
+        let _ = fs::remove_file(&nonce_path);
 
         let prompt = "DPOP_NONCE:  spaced-nonce  ";
         if let Some(nonce_value) = prompt.strip_prefix("DPOP_NONCE:") {

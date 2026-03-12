@@ -160,6 +160,7 @@ pub fn parse_ciba_error(error: &str) -> CibaError {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

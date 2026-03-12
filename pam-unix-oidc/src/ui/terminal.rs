@@ -26,8 +26,8 @@ impl StepUpDisplay for TerminalDisplay {
         eprintln!("═══════════════════════════════════════════════════════════");
         eprintln!("  Sudo requires step-up authentication");
         eprintln!();
-        eprintln!("  Visit: {}", verification_uri);
-        eprintln!("  Enter code: {}", user_code);
+        eprintln!("  Visit: {verification_uri}");
+        eprintln!("  Enter code: {user_code}");
         eprintln!();
         eprintln!("  Waiting for authentication...");
         eprintln!("═══════════════════════════════════════════════════════════");
@@ -35,10 +35,7 @@ impl StepUpDisplay for TerminalDisplay {
 
     fn show_waiting(&self, elapsed_seconds: u64, timeout_seconds: u64) {
         let remaining = timeout_seconds.saturating_sub(elapsed_seconds);
-        eprint!(
-            "\r  Waiting for authentication... ({}s remaining)   ",
-            remaining
-        );
+        eprint!("\r  Waiting for authentication... ({remaining}s remaining)   ");
     }
 
     fn show_success(&self) {
@@ -50,7 +47,7 @@ impl StepUpDisplay for TerminalDisplay {
 
     fn show_failure(&self, reason: &str) {
         eprintln!();
-        eprintln!("  Authentication failed: {}", reason);
+        eprintln!("  Authentication failed: {reason}");
         eprintln!("═══════════════════════════════════════════════════════════");
         eprintln!();
     }
@@ -79,12 +76,11 @@ impl<'a> StepUpDisplay for PamDisplay<'a> {
             ═══════════════════════════════════════════════════════════\n\
               Sudo requires step-up authentication\n\
             \n\
-              Visit: {}\n\
-              Enter code: {}\n\
+              Visit: {verification_uri}\n\
+              Enter code: {user_code}\n\
             \n\
               Waiting for authentication...\n\
-            ═══════════════════════════════════════════════════════════",
-            verification_uri, user_code
+            ═══════════════════════════════════════════════════════════"
         );
 
         // Use PAM conversation to show the message
@@ -97,7 +93,7 @@ impl<'a> StepUpDisplay for PamDisplay<'a> {
         use pamsm::PamLibExt;
 
         let remaining = timeout_seconds.saturating_sub(elapsed_seconds);
-        let message = format!("Waiting for authentication... ({}s remaining)", remaining);
+        let message = format!("Waiting for authentication... ({remaining}s remaining)");
         let _ = self
             .pamh
             .conv(Some(&message), pamsm::PamMsgStyle::TEXT_INFO);
@@ -115,9 +111,8 @@ impl<'a> StepUpDisplay for PamDisplay<'a> {
         use pamsm::PamLibExt;
 
         let message = format!(
-            "\n  Authentication failed: {}\n\
-            ═══════════════════════════════════════════════════════════\n",
-            reason
+            "\n  Authentication failed: {reason}\n\
+            ═══════════════════════════════════════════════════════════\n"
         );
         let _ = self
             .pamh

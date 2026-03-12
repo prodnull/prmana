@@ -56,13 +56,15 @@ pub fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
 
 #[cfg(target_os = "linux")]
 mod linux_impl {
-    use anyhow::{anyhow, bail, Context as AnyhowContext};
+    use anyhow::{bail, Context as AnyhowContext};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use sha2::{Digest, Sha256};
     use tss_esapi::{
+        constants::{ecc::EccCurveIdentifier, tss::TPM2_RH_NULL},
         handles::{KeyHandle, PersistentTpmHandle, TpmHandle},
         interface_types::{
             algorithm::{HashingAlgorithm, PublicAlgorithm},
+            dynamic_handles::Persistent,
             ecc::EccCurve,
             resource_handles::{Hierarchy, Provision},
         },
@@ -136,7 +138,7 @@ mod linux_impl {
     pub struct TpmSigner {
         persistent_handle: u32,
         tcti_conf: String,
-        pin_cache: PinCache,
+        _pin_cache: PinCache,
         thumbprint: String,
         public_key_jwk: serde_json::Value,
     }
@@ -169,7 +171,7 @@ mod linux_impl {
                 _ => bail!("Unexpected capability response type from TPM"),
             };
 
-            let has_p256 = curves.iter().any(|c| *c == EccCurve::NistP256);
+            let has_p256 = curves.contains(&EccCurveIdentifier::NistP256);
 
             if !has_p256 {
                 return Err(TpmSignerError::P256NotSupported.into());
@@ -225,7 +227,7 @@ mod linux_impl {
                 ctx.evict_control(
                     Provision::Owner,
                     key_handle.into(),
-                    tss_esapi::handles::ObjectHandle::from(persistent_handle),
+                    Persistent::Persistent(persistent_handle),
                 )
             })
             .map_err(|e| TpmSignerError::ProvisionFailed(e.to_string()))?;
@@ -276,7 +278,7 @@ mod linux_impl {
             Ok(Self {
                 persistent_handle: handle_val,
                 tcti_conf: tcti,
-                pin_cache: PinCache::new(pin_timeout),
+                _pin_cache: PinCache::new(pin_timeout),
                 thumbprint,
                 public_key_jwk: jwk,
             })
@@ -304,7 +306,7 @@ mod linux_impl {
             // Step 2: SHA-256 hash of the message.
             // Unrestricted signing keys use a pre-computed digest + null hash-check ticket.
             let hash_bytes = Sha256::digest(message.as_bytes());
-            let digest = TpmDigest::try_from(hash_bytes.as_slice())
+            let digest = TpmDigest::try_from(hash_bytes.as_ref())
                 .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
             // Step 3: Open a fresh TPM context per call (no persistent context — HW-04 pattern).
@@ -334,10 +336,12 @@ mod linux_impl {
             // Step 6: Build null hash-check ticket.
             // Unrestricted signing keys do not require a TPM-internal hash check
             // (the TPM does not verify the hash itself). Pass a null ticket.
+            // tss-esapi 7.6: TPMT_TK_HASHCHECK.hierarchy is TPMI_RH_HIERARCHY (u32).
+            // There is no From<Hierarchy> for u32; use the raw TPM2_RH_NULL constant.
             let validation = tss_esapi::structures::HashcheckTicket::try_from(
                 tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
                     tag: tss_esapi::constants::StructureTag::Hashcheck.into(),
-                    hierarchy: Hierarchy::Null.into(),
+                    hierarchy: TPM2_RH_NULL,
                     digest: Default::default(),
                 },
             )
@@ -367,8 +371,7 @@ mod linux_impl {
                 }
                 other => {
                     return Err(DPoPError::HardwareSigner(format!(
-                        "Expected EcDsa signature from TPM, got {:?}",
-                        other
+                        "Expected EcDsa signature from TPM, got {other:?}"
                     )));
                 }
             };
@@ -391,9 +394,8 @@ mod linux_impl {
             Ok(TctiNameConf::Mssim(NetworkTPMConfig::default()))
         } else {
             bail!(
-                "Unknown TCTI '{}'. Supported values: tabrmd, device, mssim. \
-                 See `man tss2-tcti` for advanced TCTI strings.",
-                tcti
+                "Unknown TCTI '{tcti}'. Supported values: tabrmd, device, mssim. \
+                 See `man tss2-tcti` for advanced TCTI strings."
             )
         }
     }
@@ -438,10 +440,7 @@ mod linux_impl {
 
         // RFC 7638 §3.3: canonical JSON with lexicographic key order.
         // Security: hardcoded field names — never use user-supplied kty/crv.
-        let canonical = format!(
-            r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
-            x_b64, y_b64
-        );
+        let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x_b64}","y":"{y_b64}"}}"#);
         let digest = Sha256::digest(canonical.as_bytes());
         let thumbprint = URL_SAFE_NO_PAD.encode(digest);
 
@@ -558,8 +557,7 @@ mod tests {
         assert_eq!(result.len(), 32);
         assert!(
             !result.contains(&0xFF),
-            "leading byte must be truncated, result: {:?}",
-            result
+            "leading byte must be truncated, result: {result:?}"
         );
         assert_eq!(result.as_slice(), &input[1..33]);
     }

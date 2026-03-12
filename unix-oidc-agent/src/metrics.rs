@@ -363,9 +363,9 @@ mod tests {
         let p95 = hist.percentile(95);
         let p99 = hist.percentile(99);
 
-        assert!((49..=51).contains(&p50), "p50 was {}", p50);
-        assert!((94..=96).contains(&p95), "p95 was {}", p95);
-        assert!((98..=100).contains(&p99), "p99 was {}", p99);
+        assert!((49..=51).contains(&p50), "p50 was {p50}");
+        assert!((94..=96).contains(&p95), "p95 was {p95}");
+        assert!((98..=100).contains(&p99), "p99 was {p99}");
     }
 
     #[test]

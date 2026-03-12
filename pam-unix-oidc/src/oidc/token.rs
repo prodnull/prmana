@@ -167,6 +167,7 @@ fn base64_decode_url_safe(input: &str) -> Result<Vec<u8>, base64::DecodeError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -213,7 +214,7 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
-        format!("{}.{}.fake-signature", header_b64, payload_b64)
+        format!("{header_b64}.{payload_b64}.fake-signature")
     }
 
     fn create_test_token_with_extra() -> String {
@@ -226,7 +227,7 @@ mod tests {
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
-        format!("{}.{}.fake-signature", header_b64, payload_b64)
+        format!("{header_b64}.{payload_b64}.fake-signature")
     }
 
     // ── Phase 8: get_claim_str and groups_for_audit tests ───────────────────
