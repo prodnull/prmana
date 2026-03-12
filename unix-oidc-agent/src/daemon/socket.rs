@@ -1600,9 +1600,18 @@ async fn handle_step_up_result(
 
     if !is_finished {
         // Still running — return StepUpPending with remaining time estimate.
+        // TOCTOU guard: the entry could be removed between the is_finished read above
+        // and this second read-lock (another task may have consumed the result
+        // concurrently). Use let-else instead of unwrap() to handle this safely.
         let remaining_secs = {
             let state_read = state.read().await;
-            let pending = state_read.pending_step_ups.get(&correlation_id).unwrap();
+            let Some(pending) = state_read.pending_step_ups.get(&correlation_id) else {
+                // Entry removed between checks — result already consumed.
+                return AgentResponse::error(
+                    "Step-up result already consumed",
+                    "STEP_UP_CONSUMED",
+                );
+            };
             let now = tokio::time::Instant::now();
             if pending.expires_at > now {
                 (pending.expires_at - now).as_secs()
@@ -2913,6 +2922,74 @@ mod tests {
             logs_contain("software"),
             "Expected signer_type field 'software' in log"
         );
+    }
+
+    // ── handle_step_up_result TOCTOU safety test (Phase 14-01) ──────────────
+
+    /// Verify that handle_step_up_result returns an error response (not a panic) when
+    /// the pending_step_ups entry is absent (unknown correlation ID).
+    #[tokio::test]
+    async fn test_handle_step_up_result_no_panic_on_missing_entry() {
+        // Create state with NO pending step-ups.
+        let state = Arc::new(RwLock::new(AgentState::new()));
+
+        // Call handle_step_up_result with an unknown correlation_id.
+        let response = handle_step_up_result(&state, "nonexistent-correlation-id".to_string()).await;
+
+        // Must return an error response, not panic.
+        match response {
+            AgentResponse::Error { code, .. } => {
+                assert_eq!(code, "STEP_UP_NOT_FOUND");
+            }
+            other => panic!("Expected Error response, got: {:?}", other),
+        }
+    }
+
+    /// Verify that handle_step_up_result returns StepUpComplete (not panic) when a
+    /// FINISHED task's entry exists — exercises the remove() → handle.await path.
+    ///
+    /// This also confirms that the safe let-else fix at the second HashMap::get()
+    /// does not regress the happy path for finished tasks.
+    #[tokio::test]
+    async fn test_handle_step_up_result_finished_task_returns_complete() {
+        // Spawn a task that immediately completes.
+        let completed_handle: tokio::task::JoinHandle<StepUpOutcome> =
+            tokio::spawn(async {
+                StepUpOutcome::Complete {
+                    acr: Some("urn:example:acr:mfa".to_string()),
+                    session_id: "sess-abc".to_string(),
+                }
+            });
+
+        // Wait for the task to finish.
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        assert!(completed_handle.is_finished(), "handle must be finished before test");
+
+        let correlation_id = "test-finished-task-id".to_string();
+        let state = Arc::new(RwLock::new(AgentState::new()));
+
+        {
+            let mut w = state.write().await;
+            w.pending_step_ups.insert(
+                correlation_id.clone(),
+                PendingStepUp {
+                    handle: completed_handle,
+                    username: "alice".to_string(),
+                    expires_at: tokio::time::Instant::now()
+                        + tokio::time::Duration::from_secs(120),
+                },
+            );
+        }
+
+        let response = handle_step_up_result(&state, correlation_id).await;
+
+        // Finished task must produce StepUpComplete, not panic.
+        match response {
+            AgentResponse::Success(AgentResponseData::StepUpComplete { .. }) => {
+                // Correct — completed task produces StepUpComplete response.
+            }
+            other => panic!("Expected StepUpComplete response for finished task, got: {:?}", other),
+        }
     }
 }
 
