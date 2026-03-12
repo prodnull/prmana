@@ -108,11 +108,6 @@ impl ValidationConfig {
     }
 }
 
-/// Fallback clock skew constant retained for the module-level default.
-/// All active code paths use `self.config.clock_skew_tolerance_secs` instead.
-#[allow(dead_code)]
-const CLOCK_SKEW_TOLERANCE: i64 = 60;
-
 pub struct TokenValidator {
     config: ValidationConfig,
     jwks_provider: Arc<JwksProvider>,

@@ -235,31 +235,24 @@ impl Default for DPoPAuthConfig {
 }
 
 impl DPoPAuthConfig {
-    /// Create config from environment variables
-    pub fn from_env() -> Result<Self, String> {
-        let target_host = gethostname::gethostname().to_string_lossy().to_string();
-
-        let max_proof_age = std::env::var("UNIX_OIDC_DPOP_MAX_AGE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(60);
-
-        let require_nonce = std::env::var("UNIX_OIDC_DPOP_REQUIRE_NONCE")
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false);
-
-        let require_dpop_for_bound_tokens = std::env::var("UNIX_OIDC_DPOP_REQUIRE_FOR_BOUND")
-            .map(|v| v != "false" && v != "0")
-            .unwrap_or(true);
-
-        Ok(Self {
-            target_host,
-            max_proof_age,
-            clock_skew_future_secs: 5,
-            require_nonce,
+    /// Create config from a loaded [`PolicyConfig`], reading clock-skew values
+    /// from `policy.timeouts` (Phase 14+).
+    ///
+    /// `target_host` is left empty — callers in `lib.rs` set it via struct
+    /// literal update syntax (`..DPoPAuthConfig::from_policy(&policy)`).
+    /// Other fields default to safe values: `require_nonce = false`,
+    /// `expected_nonce = None`, `require_dpop_for_bound_tokens = true`.
+    ///
+    /// Replaces the removed `from_env()` dead code (Phase 14-01 cleanup).
+    pub fn from_policy(policy: &PolicyConfig) -> Self {
+        Self {
+            target_host: String::new(),
+            max_proof_age: policy.timeouts.clock_skew_staleness_secs,
+            clock_skew_future_secs: policy.timeouts.clock_skew_future_secs,
+            require_nonce: false,
             expected_nonce: None,
-            require_dpop_for_bound_tokens,
-        })
+            require_dpop_for_bound_tokens: true,
+        }
     }
 }
 
@@ -289,12 +282,15 @@ pub fn authenticate_with_dpop(
     let mut config = ValidationConfig::from_env().map_err(|e| AuthError::Config(e.to_string()))?;
 
     // Thread JTI and dpop_required enforcement modes from policy config (Issue #10).
+    // Also wire clock_skew_staleness_secs from policy.timeouts into ValidationConfig (Phase 14-01).
     let mut dpop_nonce_enforcement = EnforcementMode::Strict; // safe default
     let policy_opt = PolicyConfig::from_env().ok();
     if let Some(ref policy) = policy_opt {
         let modes = policy.effective_security_modes();
         config.jti_enforcement = modes.jti_enforcement;
         dpop_nonce_enforcement = modes.dpop_required;
+        // Wire operator-configurable clock skew from policy.timeouts (Phase 14-01).
+        config.clock_skew_tolerance_secs = policy.timeouts.clock_skew_staleness_secs as i64;
     }
 
     // Construct username mapper from policy identity config.
@@ -546,6 +542,7 @@ pub fn authenticate_with_config(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use figment::providers::Format as _;
 
     #[test]
     fn test_secure_session_id_format() {
@@ -954,5 +951,38 @@ mod tests {
         let result = validate_dpop_proof(&proof, &config).unwrap();
         assert_eq!(result.nonce.as_deref(), Some("test-nonce-abc"));
         assert!(!result.thumbprint.is_empty());
+    }
+
+    // ── DPoPAuthConfig::from_policy tests (Phase 14-01) ──────────────────────
+
+    #[test]
+    fn test_dpop_auth_config_from_policy_reads_clock_skew() {
+        // DPoPAuthConfig::from_policy must read clock_skew values from PolicyConfig.timeouts.
+        let yaml = r#"
+timeouts:
+  clock_skew_future_secs: 12
+  clock_skew_staleness_secs: 90
+"#;
+        let policy: crate::policy::config::PolicyConfig =
+            figment::Figment::from(figment::providers::Serialized::defaults(
+                crate::policy::config::PolicyConfig::default(),
+            ))
+            .merge(figment::providers::Yaml::string(yaml))
+            .extract()
+            .expect("policy yaml should load");
+
+        let config = DPoPAuthConfig::from_policy(&policy);
+        assert_eq!(config.clock_skew_future_secs, 12);
+        // max_proof_age maps to clock_skew_staleness_secs
+        assert_eq!(config.max_proof_age, 90);
+    }
+
+    #[test]
+    fn test_dpop_auth_config_from_policy_defaults_when_timeouts_absent() {
+        // PolicyConfig with no timeouts section must yield default clock skew.
+        let policy = crate::policy::config::PolicyConfig::default();
+        let config = DPoPAuthConfig::from_policy(&policy);
+        assert_eq!(config.clock_skew_future_secs, 5);
+        assert_eq!(config.max_proof_age, 60);
     }
 }

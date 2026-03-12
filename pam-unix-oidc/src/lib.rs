@@ -201,13 +201,14 @@ impl PamServiceModule for PamUnixOidc {
         //   (cnf.jkt present) correctly via its internal DPoPRequired check.
         let auth_result = if dpop_proof.is_some() || dpop_mode == EnforcementMode::Strict {
             // DPoP path (strict or proof provided).
+            // Clock skew values come from PolicyConfig.timeouts (Phase 14-01).
+            // Fall back to DPoPAuthConfig defaults if policy could not be loaded.
+            let policy_for_dpop = PolicyConfig::from_env().unwrap_or_default();
             let dpop_config = DPoPAuthConfig {
                 target_host: gethostname::gethostname().to_string_lossy().to_string(),
-                max_proof_age: 60,
-                clock_skew_future_secs: 5,
                 require_nonce: true,  // cache-backed nonce enforcement
                 expected_nonce: None, // None = cache path (auth.rs consumes from cache)
-                require_dpop_for_bound_tokens: true,
+                ..DPoPAuthConfig::from_policy(&policy_for_dpop)
             };
             authenticate_with_dpop(&token, dpop_proof.as_deref(), &dpop_config)
         } else {
@@ -682,6 +683,16 @@ fn notify_agent_session_closed(session_id: &str) {
             error = %e,
             session_id = %session_id,
             "Failed to send session_closed IPC to agent"
+        );
+        return;
+    }
+    // Append newline so the agent's BufReader::read_line() returns immediately
+    // instead of blocking until the 2s timeout expires (Phase 14-01 fix).
+    if let Err(e) = stream.write_all(b"\n") {
+        tracing::warn!(
+            error = %e,
+            session_id = %session_id,
+            "Failed to send session_closed IPC newline to agent"
         );
         return;
     }
@@ -1175,5 +1186,64 @@ mod tests {
         assert!(is_break_glass_user("new1", &policy));
         assert!(is_break_glass_user("new2", &policy));
         assert!(!is_break_glass_user("notlisted", &policy));
+    }
+
+    // ── SessionClosed IPC newline test (Phase 14-01) ─────────────────────────
+
+    #[test]
+    fn test_notify_agent_session_closed_sends_newline_framed_json() {
+        // Verify that notify_agent_session_closed writes JSON + '\n' so that the
+        // agent's BufReader::read_line() returns immediately without blocking.
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+        use std::path::PathBuf;
+
+        // Bind a temp socket.
+        let dir = std::env::temp_dir();
+        let sock_path: PathBuf = dir.join(format!("oidc-test-{}.sock", std::process::id()));
+        if sock_path.exists() {
+            let _ = std::fs::remove_file(&sock_path);
+        }
+        let listener = UnixListener::bind(&sock_path).expect("bind test socket");
+
+        // Spawn a thread to capture what the PAM sends.
+        let sock_path_str = sock_path.to_str().unwrap().to_string();
+        let handle = std::thread::spawn(move || {
+            let _guard = ENV_MUTEX.lock();
+            std::env::set_var("UNIX_OIDC_AGENT_SOCKET", &sock_path_str);
+            notify_agent_session_closed("test-session-id-123");
+            std::env::remove_var("UNIX_OIDC_AGENT_SOCKET");
+        });
+
+        // Accept the connection and read a line (newline-framed).
+        listener.set_nonblocking(false).ok();
+        let (stream, _) = listener.accept().expect("accept");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .ok();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("read_line must not block indefinitely");
+
+        handle.join().ok();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // The line must end with '\n' (the fix) and be valid JSON.
+        assert!(
+            line.ends_with('\n'),
+            "IPC message must end with \\n for BufReader::read_line compatibility, got: {:?}",
+            line
+        );
+        let trimmed = line.trim_end_matches('\n');
+        assert!(
+            trimmed.contains("session_closed"),
+            "JSON must contain action=session_closed"
+        );
+        assert!(
+            trimmed.contains("test-session-id-123"),
+            "JSON must contain the session_id"
+        );
     }
 }

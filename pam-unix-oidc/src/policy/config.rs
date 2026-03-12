@@ -588,6 +588,39 @@ impl Default for HostConfig {
     }
 }
 
+// ── PamTimeoutsConfig ──────────────────────────────────────────────────────────
+
+/// Clock-skew tolerance values for DPoP proof validation and token staleness checks.
+///
+/// Loaded from `policy.yaml` under the `timeouts:` key (Phase 14+).
+/// Defaults match the previously hardcoded values so v1.0 deployments are
+/// unaffected when the section is absent.
+///
+/// Environment variable override pattern (double-underscore nesting):
+/// - `UNIX_OIDC_TIMEOUTS__CLOCK_SKEW_FUTURE_SECS=10`
+/// - `UNIX_OIDC_TIMEOUTS__CLOCK_SKEW_STALENESS_SECS=90`
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PamTimeoutsConfig {
+    /// Maximum number of seconds a DPoP proof is allowed to be issued in the future
+    /// (client clock slightly ahead of server). Matches `DPoPAuthConfig::clock_skew_future_secs`.
+    /// Default: 5 seconds.
+    pub clock_skew_future_secs: u64,
+    /// Maximum age of a DPoP proof relative to server clock (proof staleness tolerance).
+    /// Also used as `ValidationConfig::clock_skew_tolerance_secs` for ID token expiry checks.
+    /// Matches `DPoPAuthConfig::max_proof_age`. Default: 60 seconds.
+    pub clock_skew_staleness_secs: u64,
+}
+
+impl Default for PamTimeoutsConfig {
+    fn default() -> Self {
+        Self {
+            clock_skew_future_secs: 5,
+            clock_skew_staleness_secs: 60,
+        }
+    }
+}
+
 // ── PolicyConfig ──────────────────────────────────────────────────────────────
 
 /// Complete policy configuration.
@@ -622,6 +655,10 @@ pub struct PolicyConfig {
     /// Session lifecycle configuration (Phase 09+).
     #[serde(default)]
     pub session: SessionConfig,
+    /// Clock-skew tolerance values for DPoP proof validation (Phase 14+).
+    /// Absent in v1.0 files — defaults match prior hardcoded values.
+    #[serde(default)]
+    pub timeouts: PamTimeoutsConfig,
 }
 
 impl PolicyConfig {
@@ -654,6 +691,7 @@ impl PolicyConfig {
                 "identity",
                 "introspection",
                 "session",
+                "timeouts",
             ]))
             .extract()
             .map_err(|e| PolicyError::ParseError(e.to_string()))?;
@@ -692,6 +730,7 @@ impl PolicyConfig {
                     "identity",
                     "introspection",
                     "session",
+                    "timeouts",
                 ]))
                 .extract()
                 .map_err(|e| PolicyError::ParseError(e.to_string()))?;
@@ -1385,5 +1424,70 @@ host:
         assert!(policy.security_modes.is_none());
         let modes = policy.effective_security_modes();
         assert_eq!(modes.groups_enforcement, EnforcementMode::Warn);
+    }
+
+    // ── PamTimeoutsConfig tests (Phase 14-01) ──────────────────────────────
+
+    #[test]
+    fn test_pam_timeouts_defaults() {
+        // PamTimeoutsConfig must exist and have clock_skew_future_secs=5, staleness=60 defaults.
+        let policy = PolicyConfig::default();
+        assert_eq!(policy.timeouts.clock_skew_future_secs, 5);
+        assert_eq!(policy.timeouts.clock_skew_staleness_secs, 60);
+    }
+
+    #[test]
+    fn test_pam_timeouts_custom_yaml() {
+        let yaml = r#"
+timeouts:
+  clock_skew_future_secs: 10
+  clock_skew_staleness_secs: 120
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .merge(Env::prefixed("UNIX_OIDC_").split("__").only(&[
+                "security_modes",
+                "cache",
+                "identity",
+                "introspection",
+                "session",
+                "timeouts",
+            ]))
+            .extract()
+            .expect("custom timeouts yaml should load");
+
+        assert_eq!(policy.timeouts.clock_skew_future_secs, 10);
+        assert_eq!(policy.timeouts.clock_skew_staleness_secs, 120);
+    }
+
+    #[test]
+    fn test_pam_timeouts_missing_section_uses_defaults() {
+        // A v1.0 policy.yaml without a timeouts section must load successfully.
+        let yaml = r#"
+host:
+  classification: standard
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("v1.0 yaml without timeouts section must load");
+
+        assert_eq!(policy.timeouts.clock_skew_future_secs, 5);
+        assert_eq!(policy.timeouts.clock_skew_staleness_secs, 60);
+    }
+
+    #[test]
+    fn test_pam_timeouts_env_override() {
+        // UNIX_OIDC_TIMEOUTS__CLOCK_SKEW_FUTURE_SECS overrides default via figment env provider.
+        // Uses bare split("__") (no .only()) to match production load_from() behavior.
+        std::env::set_var("UNIX_OIDC_TIMEOUTS__CLOCK_SKEW_FUTURE_SECS", "15");
+        let result: Result<PolicyConfig, _> =
+            Figment::from(Serialized::defaults(PolicyConfig::default()))
+                .merge(Env::prefixed("UNIX_OIDC_").split("__"))
+                .extract();
+        std::env::remove_var("UNIX_OIDC_TIMEOUTS__CLOCK_SKEW_FUTURE_SECS");
+
+        let policy = result.expect("env override for timeouts should succeed");
+        assert_eq!(policy.timeouts.clock_skew_future_secs, 15);
     }
 }
