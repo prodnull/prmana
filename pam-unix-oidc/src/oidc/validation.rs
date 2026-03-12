@@ -344,6 +344,7 @@ mod tests {
             required_acr: None,
             max_auth_age: None,
             jti_enforcement: EnforcementMode::Disabled,
+            clock_skew_tolerance_secs: 60,
         }
     }
 

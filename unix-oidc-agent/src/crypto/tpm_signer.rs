@@ -60,18 +60,18 @@ mod linux_impl {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use sha2::{Digest, Sha256};
     use tss_esapi::{
-        handles::{KeyHandle, TpmHandle},
+        handles::{KeyHandle, PersistentTpmHandle, TpmHandle},
         interface_types::{
-            algorithm::{EccScheme, HashingAlgorithm, PublicAlgorithm},
+            algorithm::{HashingAlgorithm, PublicAlgorithm},
             ecc::EccCurve,
-            resource_handles::Hierarchy,
+            resource_handles::{Hierarchy, Provision},
         },
         structures::{
-            CreatePrimaryKeyResult, Digest as TpmDigest, HashScheme, PersistentTpmHandle, Public,
+            CreatePrimaryKeyResult, Digest as TpmDigest, EccScheme, HashScheme, Public,
             PublicBuilder, PublicEccParametersBuilder, SignatureScheme,
         },
         tcti_ldr::{DeviceConfig, NetworkTPMConfig, TabrmdConfig, TctiNameConf},
-        Context, Provision,
+        Context,
     };
 
     use crate::crypto::dpop::{assemble_dpop_proof, build_dpop_message, DPoPError};
@@ -336,8 +336,8 @@ mod linux_impl {
             // (the TPM does not verify the hash itself). Pass a null ticket.
             let validation = tss_esapi::structures::HashcheckTicket::try_from(
                 tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
-                    tag: tss_esapi::interface_types::structure_tags::StructureTag::Hashcheck.into(),
-                    hierarchy: tss_esapi::constants::tpm::Handles::Null.into(),
+                    tag: tss_esapi::constants::StructureTag::Hashcheck.into(),
+                    hierarchy: Hierarchy::Null.into(),
                     digest: Default::default(),
                 },
             )
@@ -422,8 +422,8 @@ mod linux_impl {
     fn extract_p256_jwk_from_public(
         public: &Public,
     ) -> anyhow::Result<(serde_json::Value, String)> {
-        let ecc_point = match public.unique() {
-            tss_esapi::structures::PublicIdUnion::Ecc(point) => point,
+        let ecc_point = match public {
+            Public::Ecc { unique, .. } => unique,
             _ => bail!("Expected ECC public key type from TPM"),
         };
 

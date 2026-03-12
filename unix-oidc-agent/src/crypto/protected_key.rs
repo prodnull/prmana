@@ -87,7 +87,10 @@ pub fn mlock_probe() -> MlockStatus {
             tracing::info!("mlock probe succeeded; DPoP key pages will be memory-locked");
             MlockStatus::Active
         } else {
+            #[cfg(target_os = "macos")]
             let errno = unsafe { *libc::__error() };
+            #[cfg(not(target_os = "macos"))]
+            let errno = unsafe { *libc::__errno_location() };
             let reason = match errno {
                 libc::EPERM => "EPERM (insufficient privileges; increase RLIMIT_MEMLOCK or run as appropriate user)".to_string(),
                 libc::ENOMEM => "ENOMEM (locked-memory limit exceeded; increase RLIMIT_MEMLOCK)".to_string(),
