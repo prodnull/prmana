@@ -27,6 +27,8 @@ use unix_oidc_agent::storage::{
 };
 use unix_oidc_agent::config::AgentConfig;
 
+mod askpass;
+
 /// Initialise the tracing subscriber with JSON auto-detection.
 ///
 /// # JSON auto-detection
@@ -251,6 +253,30 @@ enum Commands {
     ///
     /// On macOS, runs `launchctl unload` and removes the plist from ~/Library/LaunchAgents/.
     Uninstall,
+
+    /// Handle SSH keyboard-interactive prompts (invoked as SSH_ASKPASS).
+    ///
+    /// SSH spawns this binary once per prompt with the prompt string as argv[1].
+    /// Handles three PAM prompt types from the DPoP authentication flow:
+    ///
+    /// - `DPOP_NONCE:<value>` — stores the server nonce in a tmpfile for the next round.
+    /// - `DPOP_PROOF: ` — reads the stored nonce, calls GetProof IPC, prints the DPoP proof.
+    /// - `OIDC Token: ` — reads the cached token (from the DPOP_PROOF round) or calls GetProof IPC.
+    ///
+    /// # Usage
+    ///
+    /// ```shell
+    /// export SSH_ASKPASS=unix-oidc-agent
+    /// export SSH_ASKPASS_REQUIRE=force
+    /// ssh user@host
+    /// ```
+    ///
+    /// The agent binary must be in $PATH for SSH_ASKPASS to work.
+    #[command(name = "ssh-askpass")]
+    SshAskpass {
+        /// The prompt string from SSH keyboard-interactive conversation (passed as argv[1] by SSH).
+        prompt: String,
+    },
 }
 
 #[tokio::main]
@@ -295,6 +321,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Install { binary_path } => run_install(binary_path).await,
 
         Commands::Uninstall => run_uninstall().await,
+
+        Commands::SshAskpass { prompt } => askpass::run_ssh_askpass(prompt).await,
     }
 }
 
