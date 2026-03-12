@@ -272,6 +272,47 @@ jobs:
         run: docker compose -f docker-compose.token-exchange.yaml down -v
 
   # ============================================================================
+  # CIBA Integration Tests (INT-01, INT-03, INT-04)
+  # ============================================================================
+  ciba-integration:
+    name: CIBA & Break-Glass Integration
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y curl jq
+
+      - name: Make scripts executable
+        run: chmod +x test/tests/test_ciba_integration.sh test/tests/test_break_glass_fallback.sh
+
+      - name: Start CIBA test environment
+        run: |
+          docker compose -f docker-compose.ciba-integration.yaml up -d
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/health/ready && echo "Keycloak ready" && break
+            echo "Waiting for Keycloak... ($i/30)"
+            sleep 5
+          done
+
+      - name: Run CIBA integration test
+        run: bash test/tests/test_ciba_integration.sh
+
+      - name: Run break-glass fallback test
+        run: bash test/tests/test_break_glass_fallback.sh
+        env:
+          COMPOSE_FILE: docker-compose.ciba-integration.yaml
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.ciba-integration.yaml logs
+
+      - name: Stop environment
+        if: always()
+        run: docker compose -f docker-compose.ciba-integration.yaml down -v
+
+  # ============================================================================
   # Minimum Supported Rust Version
   # ============================================================================
   msrv:
