@@ -89,7 +89,8 @@ print_info() {
 base64url_encode() {
     # Read from stdin or argument
     local input="${1:-$(cat)}"
-    echo -n "$input" | base64 | tr '+/' '-_' | tr -d '='
+    # tr -d '\n' removes the trailing newline macOS base64 appends after each output line
+    echo -n "$input" | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
 # Base64URL decode
@@ -121,21 +122,23 @@ generate_ec_keypair() {
 }
 
 # Extract x coordinate from EC public key (in base64url format)
-# The public key point is the last 64 bytes of the DER-encoded public key
+# The public key point is the last 64 bytes of the DER-encoded public key.
+# NOTE: Binary is piped directly through base64 to avoid bash variable assignment
+# corrupting bytes containing backslash sequences (e.g., 0x5c 0x30 = \0 → null byte).
 get_ec_x_coordinate() {
     local keyfile="$1"
     # Export public key in DER format, extract the point (last 65 bytes: 04 || x || y)
-    # x is bytes 1-32 of the point
+    # x is bytes 1-32 of the point. Pipe directly to avoid shell variable binary corruption.
     openssl ec -in "$keyfile" -pubout -outform DER 2>/dev/null | \
-        tail -c 64 | head -c 32 | base64url_encode
+        tail -c 64 | head -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
 # Extract y coordinate from EC public key (in base64url format)
 get_ec_y_coordinate() {
     local keyfile="$1"
-    # y is bytes 33-64 of the point
+    # y is bytes 33-64 of the point. Pipe directly to avoid shell variable binary corruption.
     openssl ec -in "$keyfile" -pubout -outform DER 2>/dev/null | \
-        tail -c 32 | base64url_encode
+        tail -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
 # Build JWK (JSON Web Key) for EC P-256 public key
@@ -169,8 +172,8 @@ compute_jwk_thumbprint() {
     local canonical
     canonical="{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"$x\",\"y\":\"$y\"}"
 
-    # SHA-256 hash, then base64url encode
-    echo -n "$canonical" | openssl dgst -sha256 -binary | base64url_encode
+    # SHA-256 hash, then base64url encode. Pipe directly (binary output — no variable assignment).
+    echo -n "$canonical" | openssl dgst -sha256 -binary | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
 # Sign data with EC P-256 key, producing DER signature
@@ -185,11 +188,11 @@ ec_sign_to_jws() {
 
     # Parse DER signature to extract R and S
     # DER format: 30 <len> 02 <r_len> <r_bytes> 02 <s_len> <s_bytes>
-    # This is a simplified parser that handles most cases
+    # Each field is two hex characters per byte.
 
-    # Skip the SEQUENCE header (30 xx)
-    local offset=4
-    # Get R length (after 02)
+    # Skip the SEQUENCE header (30 XX) = 4 hex chars, then skip the INTEGER tag (02) = 2 hex chars
+    local offset=6
+    # Get R length
     local r_len_hex="${der_sig:$offset:2}"
     local r_len=$((16#$r_len_hex))
     offset=$((offset + 2))
@@ -198,7 +201,7 @@ ec_sign_to_jws() {
     local r_hex="${der_sig:$offset:$((r_len * 2))}"
     offset=$((offset + r_len * 2))
 
-    # Skip 02 marker
+    # Skip 02 marker for S
     offset=$((offset + 2))
 
     # Get S length
@@ -214,8 +217,8 @@ ec_sign_to_jws() {
     r_hex=$(printf '%064s' "$r_hex" | tr ' ' '0' | tail -c 64)
     s_hex=$(printf '%064s' "$s_hex" | tr ' ' '0' | tail -c 64)
 
-    # Concatenate R || S and base64url encode
-    echo -n "${r_hex}${s_hex}" | xxd -r -p | base64url_encode
+    # Concatenate R || S and base64url encode. Pipe directly (binary — no variable assignment).
+    echo -n "${r_hex}${s_hex}" | xxd -r -p | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
 # Create and sign a DPoP proof JWT
@@ -309,7 +312,8 @@ get_jwt_claim() {
 # per RFC 9449 Section 4.2
 compute_ath() {
     local access_token="$1"
-    echo -n "$access_token" | openssl dgst -sha256 -binary | base64url_encode
+    # Pipe directly (binary SHA-256 output — no variable assignment to avoid byte corruption).
+    echo -n "$access_token" | openssl dgst -sha256 -binary | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
 # ============================================================================
@@ -553,6 +557,8 @@ test_step_7_perform_token_exchange() {
 
     print_step "Exchanging user token for target-host-bound token..."
 
+    # Try without audience first (Keycloak 26 standard token exchange V2 default);
+    # fall back to explicit audience if the first attempt fails.
     local response
     response=$(curl -s -X POST "$TOKEN_ENDPOINT" \
         -H "Content-Type: application/x-www-form-urlencoded" \
@@ -560,9 +566,23 @@ test_step_7_perform_token_exchange() {
         -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
         -d "subject_token=$USER_ACCESS_TOKEN" \
         -d "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
-        -d "audience=$TARGET_AUDIENCE" \
         -d "client_id=$JUMP_HOST_CLIENT_ID" \
         -d "client_secret=$JUMP_HOST_CLIENT_SECRET")
+
+    # If exchange without audience failed, retry with explicit audience
+    if [ "$(echo "$response" | jq -r '.error // empty')" = "access_denied" ]; then
+        print_info "Retrying with explicit audience parameter..."
+        JUMP_HOST_DPOP_PROOF=$(create_dpop_proof "$JUMP_HOST_KEY" "POST" "$TOKEN_ENDPOINT")
+        response=$(curl -s -X POST "$TOKEN_ENDPOINT" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -H "DPoP: $JUMP_HOST_DPOP_PROOF" \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            -d "subject_token=$USER_ACCESS_TOKEN" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "audience=$TARGET_AUDIENCE" \
+            -d "client_id=$JUMP_HOST_CLIENT_ID" \
+            -d "client_secret=$JUMP_HOST_CLIENT_SECRET")
+    fi
 
     EXCHANGED_TOKEN=$(echo "$response" | jq -r '.access_token // empty')
     local error error_description

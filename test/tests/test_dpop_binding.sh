@@ -43,7 +43,8 @@ done
 
 base64url_encode() {
     local input="${1:-$(cat)}"
-    echo -n "$input" | base64 | tr '+/' '-_' | tr -d '='
+    # tr -d '\n' removes the trailing newline macOS base64 appends after each output line
+    echo -n "$input" | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
 base64url_decode() {
@@ -63,13 +64,15 @@ echo ""
 openssl ecparam -name prime256v1 -genkey -noout -out "$KEY_FILE" 2>/dev/null
 
 # Extract x, y coordinates from uncompressed EC point (04 || x[32] || y[32])
-X_B64=$(openssl ec -in "$KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 64 | head -c 32 | base64url_encode)
-Y_B64=$(openssl ec -in "$KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 32 | base64url_encode)
+# Pipe directly to base64 to avoid bash variable assignment corrupting binary bytes
+# containing backslash sequences (0x5c 0x30 = \0 → null byte truncation).
+X_B64=$(openssl ec -in "$KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 64 | head -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+Y_B64=$(openssl ec -in "$KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
 
 # ---- Step 2: Compute JWK thumbprint (RFC 7638) ----
 # Canonical JSON with members in lexicographic order: crv, kty, x, y
 CANONICAL="{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"$X_B64\",\"y\":\"$Y_B64\"}"
-THUMBPRINT=$(echo -n "$CANONICAL" | openssl dgst -sha256 -binary | base64url_encode)
+THUMBPRINT=$(echo -n "$CANONICAL" | openssl dgst -sha256 -binary | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
 echo "Computed JWK thumbprint: $THUMBPRINT"
 
 # ---- Step 3: Build and sign DPoP proof JWT ----
@@ -84,7 +87,8 @@ SIGNING_INPUT="${HEADER}.${PAYLOAD}"
 # Sign with ES256 and convert DER signature to JWS format (R || S, each 32 bytes)
 DER_SIG=$(echo -n "$SIGNING_INPUT" | openssl dgst -sha256 -sign "$KEY_FILE" | xxd -p | tr -d '\n')
 # Parse DER: 30 <len> 02 <r_len> <r_bytes> 02 <s_len> <s_bytes>
-OFFSET=4
+# Skip SEQUENCE header (30 XX) = 4 hex chars, then INTEGER tag (02) = 2 hex chars → offset 6
+OFFSET=6
 R_LEN=$((16#${DER_SIG:$OFFSET:2}))
 OFFSET=$((OFFSET + 2))
 R_HEX="${DER_SIG:$OFFSET:$((R_LEN * 2))}"
@@ -96,7 +100,7 @@ S_HEX="${DER_SIG:$OFFSET:$((S_LEN * 2))}"
 # Pad/trim to exactly 32 bytes each
 R_HEX=$(printf '%064s' "$R_HEX" | tr ' ' '0' | tail -c 64)
 S_HEX=$(printf '%064s' "$S_HEX" | tr ' ' '0' | tail -c 64)
-SIGNATURE=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64url_encode)
+SIGNATURE=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
 
 DPOP_PROOF="${SIGNING_INPUT}.${SIGNATURE}"
 
