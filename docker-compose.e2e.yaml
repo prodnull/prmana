@@ -1,0 +1,79 @@
+# docker-compose.e2e.yaml
+# Real-signature E2E integration test stack.
+# NO TEST_MODE — all token validation uses real JWKS signature verification.
+# Keycloak 26.4+: DPoP is GA, device flow stable.
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      # Use internal hostname for issuer URL alignment.
+      # Tokens issued by Keycloak will carry iss: http://keycloak:8080/realms/unix-oidc
+      # which matches the PAM module's OIDC_ISSUER config exactly.
+      KC_HOSTNAME: keycloak
+      KC_HOSTNAME_PORT: "8080"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8080:8080"
+      - "9000:9000"
+    volumes:
+      - ./test/fixtures/keycloak/e2e:/opt/keycloak/data/import:ro
+    healthcheck:
+      # INFR-02: Use /health/ready endpoint (port 9000), not just TCP port check.
+      # Keycloak's UBI image does not include curl; use bash /dev/tcp + read.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && timeout 2 cat <&3 | grep -q 'UP'"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 60s
+
+  openldap:
+    image: osixia/openldap:1.5.0
+    environment:
+      LDAP_ORGANISATION: "Unix OIDC Test"
+      LDAP_DOMAIN: "test.local"
+      LDAP_ADMIN_PASSWORD: "admin"
+      LDAP_CONFIG_PASSWORD: "config"
+    volumes:
+      - ./test/fixtures/ldap:/container/service/slapd/assets/config/bootstrap/ldif/custom:ro
+    command: --copy-service
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost", "-b", "dc=test,dc=local", "-D", "cn=admin,dc=test,dc=local", "-w", "admin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  test-host-e2e:
+    build:
+      context: .
+      dockerfile: test/docker/Dockerfile.test-host-e2e
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      openldap:
+        condition: service_healthy
+    ports:
+      - "2222:22"
+    environment:
+      # NO UNIX_OIDC_TEST_MODE — real signature verification only.
+      OIDC_ISSUER: "http://keycloak:8080/realms/unix-oidc"
+      OIDC_CLIENT_ID: "unix-oidc"
+      LDAP_URI: "ldap://openldap:389"
+      LDAP_BASE: "dc=test,dc=local"
+    volumes:
+      - ./target/release:/opt/unix-oidc:ro
+    healthcheck:
+      test: ["CMD", "pgrep", "sshd"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  default:
+    name: unix-oidc-e2e

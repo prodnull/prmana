@@ -22,8 +22,8 @@ use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::crypto::dpop::{build_dpop_message_with_alg, assemble_dpop_proof_composite, DPoPError};
-use crate::crypto::protected_key::{MlockGuard, ProtectedSigningKey, try_mlock};
+use crate::crypto::dpop::{assemble_dpop_proof_composite, build_dpop_message_with_alg, DPoPError};
+use crate::crypto::protected_key::{try_mlock, MlockGuard, ProtectedSigningKey};
 use crate::crypto::signer::{DPoPSigner, SignerError};
 
 /// JWS algorithm identifier for composite ML-DSA-65 + ES256.
@@ -264,7 +264,8 @@ impl DPoPSigner for HybridPqcSigner {
         nonce: Option<&str>,
     ) -> Result<String, DPoPError> {
         let jwk = self.composite_jwk();
-        let message = build_dpop_message_with_alg(&jwk, method, target, nonce, ALG_ML_DSA_65_ES256)?;
+        let message =
+            build_dpop_message_with_alg(&jwk, method, target, nonce, ALG_ML_DSA_65_ES256)?;
 
         let composite_sig = self.composite_sign(message.as_bytes())?;
         assemble_dpop_proof_composite(&message, &composite_sig)

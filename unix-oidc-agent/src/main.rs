@@ -23,11 +23,11 @@ use unix_oidc_agent::daemon::{
 };
 use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
 use unix_oidc_agent::security::disable_core_dumps;
+#[cfg(feature = "pqc")]
+use unix_oidc_agent::storage::KEY_PQ_SEED;
 use unix_oidc_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
-#[cfg(feature = "pqc")]
-use unix_oidc_agent::storage::KEY_PQ_SEED;
 
 mod askpass;
 
@@ -710,6 +710,9 @@ async fn run_login(
     let client_id_clone = client_id.clone();
     // SecretString is Clone (String: CloneableSecret in secrecy 0.10) — safe to clone for closure capture.
     let secret_clone = client_secret.clone();
+    // RFC 9449 §4.2: DPoP proof MUST be included in token requests.
+    // Clone the Arc so the blocking closure can generate fresh proofs per poll iteration.
+    let signer_for_poll = Arc::clone(&signer_arc);
 
     // Store issuer for refresh operations
     let issuer_for_storage = issuer.clone();
@@ -851,8 +854,17 @@ async fn run_login(
                 token_params.push(("client_secret", secret_str));
             }
 
+            // RFC 9449 §4.2: Include a fresh DPoP proof with each token request
+            // so the AS can bind the issued access token to the client's key.
+            let dpop_proof = signer_for_poll
+                .sign_proof("POST", &token_endpoint, None)
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to generate DPoP proof for token request: {e}")
+                })?;
+
             let response = http_client
                 .post(&token_endpoint)
+                .header("DPoP", &dpop_proof)
                 .form(&token_params)
                 .send()
                 .map_err(|e| anyhow::anyhow!("Token request failed: {e}"))?;
@@ -1095,6 +1107,23 @@ async fn run_refresh() -> anyhow::Result<()> {
         .map(|c| c.timeouts.device_flow_http_timeout_secs)
         .unwrap_or(30);
 
+    // RFC 9449 §4.2: DPoP proof must be included in token refresh requests.
+    // Load the signer from storage to generate a fresh proof.
+    let signer: Arc<dyn DPoPSigner> = {
+        let signer_type = metadata["signer_type"].as_str().unwrap_or("software");
+        match signer_type {
+            #[cfg(feature = "pqc")]
+            "pqc" => {
+                let pqc = load_or_create_pqc_signer(&storage)?;
+                Arc::new(*pqc) as Arc<dyn DPoPSigner>
+            }
+            _ => {
+                let sw = load_or_create_signer(&storage)?;
+                Arc::new(sw) as Arc<dyn DPoPSigner>
+            }
+        }
+    };
+
     // Perform refresh in blocking task.
     // SecretString is Clone (String: CloneableSecret in secrecy 0.10) — safe to clone for closure capture.
     let refresh_token_clone = refresh_token.clone();
@@ -1121,8 +1150,14 @@ async fn run_refresh() -> anyhow::Result<()> {
             params.push(("client_secret", secret_str));
         }
 
+        // RFC 9449 §4.2: Include fresh DPoP proof in refresh requests.
+        let dpop_proof = signer
+            .sign_proof("POST", &token_endpoint, None)
+            .map_err(|e| anyhow::anyhow!("Failed to generate DPoP proof for refresh: {e}"))?;
+
         let response = http_client
             .post(&token_endpoint)
+            .header("DPoP", &dpop_proof)
             .form(&params)
             .send()
             .map_err(|e| anyhow::anyhow!("Token refresh request failed: {e}"))?;

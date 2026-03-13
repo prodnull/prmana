@@ -81,7 +81,11 @@ impl DeviceAuthResponse {
             if !self.verification_uri.starts_with("https://") {
                 return Err(DeviceFlowError::InvalidResponse(format!(
                     "verification_uri must use HTTPS scheme, got: {}",
-                    self.verification_uri.split('/').take(3).collect::<Vec<_>>().join("/"),
+                    self.verification_uri
+                        .split('/')
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("/"),
                 )));
             }
             if let Some(ref uri) = self.verification_uri_complete {

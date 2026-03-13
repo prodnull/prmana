@@ -782,7 +782,9 @@ mod tests {
         let json = r#"{"action":"step_up","username":"alice","command":"/usr/bin/ls","hostname":"prod-01","method":"push","timeout_secs":120}"#;
         let req: AgentRequest = serde_json::from_str(json).unwrap();
         match req {
-            AgentRequest::StepUp { parent_session_id, .. } => {
+            AgentRequest::StepUp {
+                parent_session_id, ..
+            } => {
                 assert!(
                     parent_session_id.is_none(),
                     "parent_session_id must be None when absent in JSON (backward compat)"
@@ -798,7 +800,9 @@ mod tests {
         let json = r#"{"action":"step_up","username":"alice","command":"/usr/bin/ls","hostname":"prod-01","method":"push","timeout_secs":120,"parent_session_id":"abc-123"}"#;
         let req: AgentRequest = serde_json::from_str(json).unwrap();
         match req {
-            AgentRequest::StepUp { parent_session_id, .. } => {
+            AgentRequest::StepUp {
+                parent_session_id, ..
+            } => {
                 assert_eq!(
                     parent_session_id.as_deref(),
                     Some("abc-123"),
@@ -824,7 +828,11 @@ mod tests {
         );
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
         match parsed {
-            AgentResponse::Success(AgentResponseData::StepUpComplete { parent_session_id, session_id, .. }) => {
+            AgentResponse::Success(AgentResponseData::StepUpComplete {
+                parent_session_id,
+                session_id,
+                ..
+            }) => {
                 assert_eq!(parent_session_id.as_deref(), Some("parent-sess-001"));
                 assert_eq!(session_id, "sess-789");
             }
@@ -838,7 +846,11 @@ mod tests {
         let json = r#"{"status":"success","acr":null,"session_id":"sess-456"}"#;
         let parsed: AgentResponse = serde_json::from_str(json).unwrap();
         match parsed {
-            AgentResponse::Success(AgentResponseData::StepUpComplete { parent_session_id, session_id, .. }) => {
+            AgentResponse::Success(AgentResponseData::StepUpComplete {
+                parent_session_id,
+                session_id,
+                ..
+            }) => {
                 assert!(
                     parent_session_id.is_none(),
                     "parent_session_id must be None when absent in JSON (backward compat)"
@@ -853,7 +865,11 @@ mod tests {
     #[test]
     fn test_step_up_complete_still_discriminates_with_parent_session_id() {
         // With parent_session_id present, must still deserialize as StepUpComplete (not Ok or SessionAcknowledged)
-        let resp = AgentResponse::step_up_complete(None, "sess-disc-test".to_string(), Some("parent-abc".to_string()));
+        let resp = AgentResponse::step_up_complete(
+            None,
+            "sess-disc-test".to_string(),
+            Some("parent-abc".to_string()),
+        );
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
         assert!(

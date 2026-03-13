@@ -61,7 +61,8 @@ fn pqc_hybrid_roundtrip_with_nonce() {
         expected_target: "nonce-test.example.com".to_string(),
     };
 
-    let result = validate_dpop_proof(&proof, &config).expect("validation with nonce should succeed");
+    let result =
+        validate_dpop_proof(&proof, &config).expect("validation with nonce should succeed");
     assert_eq!(result.nonce.as_deref(), Some("server-nonce-42"));
 }
 
@@ -153,6 +154,7 @@ fn pqc_key_persistence_roundtrip() {
         expected_target: "persist-test.example.com".to_string(),
     };
 
-    let result = validate_dpop_proof(&proof, &config).expect("restored signer proof should validate");
+    let result =
+        validate_dpop_proof(&proof, &config).expect("restored signer proof should validate");
     assert_eq!(result.thumbprint, signer1.thumbprint());
 }

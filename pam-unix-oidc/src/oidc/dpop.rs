@@ -455,9 +455,9 @@ fn validate_composite_proof(
     let pq_jwk = jwk_value
         .get("pq")
         .ok_or_else(|| DPoPValidationError::InvalidHeader("missing pq component in JWK".into()))?;
-    let trad_jwk = jwk_value
-        .get("trad")
-        .ok_or_else(|| DPoPValidationError::InvalidHeader("missing trad component in JWK".into()))?;
+    let trad_jwk = jwk_value.get("trad").ok_or_else(|| {
+        DPoPValidationError::InvalidHeader("missing trad component in JWK".into())
+    })?;
 
     // Validate kty
     if jwk_value.get("kty").and_then(|v| v.as_str()) != Some("COMPOSITE") {
@@ -481,8 +481,9 @@ fn validate_composite_proof(
         return Err(DPoPValidationError::InvalidKeyParameters);
     }
 
-    let pq_vk_encoded = ml_dsa::EncodedVerifyingKey::<ml_dsa::MlDsa65>::try_from(pq_pub_bytes.as_slice())
-        .map_err(|_| DPoPValidationError::InvalidKeyParameters)?;
+    let pq_vk_encoded =
+        ml_dsa::EncodedVerifyingKey::<ml_dsa::MlDsa65>::try_from(pq_pub_bytes.as_slice())
+            .map_err(|_| DPoPValidationError::InvalidKeyParameters)?;
     let pq_vk = ml_dsa::VerifyingKey::<ml_dsa::MlDsa65>::decode(&pq_vk_encoded);
 
     // Parse composite signature: 2-byte BE length + ML-DSA sig + ES256 sig
@@ -511,8 +512,8 @@ fn validate_composite_proof(
         .map_err(|_| DPoPValidationError::InvalidSignature)?;
 
     // Verify ES256 signature
-    let ec_sig = Signature::from_slice(ec_sig_bytes)
-        .map_err(|_| DPoPValidationError::InvalidSignature)?;
+    let ec_sig =
+        Signature::from_slice(ec_sig_bytes).map_err(|_| DPoPValidationError::InvalidSignature)?;
     ec_vk
         .verify(message, &ec_sig)
         .map_err(|_| DPoPValidationError::InvalidSignature)?;

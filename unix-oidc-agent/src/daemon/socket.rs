@@ -668,8 +668,16 @@ async fn handle_request(
                 "DPoP proof requested"
             );
 
-            let username_str = state_read.username.as_deref().unwrap_or("unknown").to_string();
-            let signer_type_str = state_read.signer_type.as_deref().unwrap_or("unknown").to_string();
+            let username_str = state_read
+                .username
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string();
+            let signer_type_str = state_read
+                .signer_type
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string();
 
             let signer = match &state_read.signer {
                 Some(s) => s,
@@ -882,8 +890,16 @@ async fn handle_request(
             timeout_secs,
             parent_session_id,
         } => {
-            let response =
-                handle_step_up(state, username, command, hostname, method, timeout_secs, parent_session_id).await;
+            let response = handle_step_up(
+                state,
+                username,
+                command,
+                hostname,
+                method,
+                timeout_secs,
+                parent_session_id,
+            )
+            .await;
             let is_err = matches!(response, AgentResponse::Error { .. });
             (response, is_err)
         }
@@ -2647,7 +2663,9 @@ mod tests {
             parent_session_id: None,
         };
         match outcome {
-            StepUpOutcome::Complete { acr, session_id, .. } => {
+            StepUpOutcome::Complete {
+                acr, session_id, ..
+            } => {
                 assert!(acr.is_some());
                 assert_eq!(session_id, "sess-abc");
             }

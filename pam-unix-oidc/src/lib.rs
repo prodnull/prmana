@@ -391,8 +391,13 @@ impl PamServiceModule for PamUnixOidc {
                         PamError::USER_UNKNOWN
                     }
                     AuthError::TokenValidation(_) => {
-                        AuditEvent::token_validation_failed(Some(&pam_user), &reason, source_ip, None)
-                            .log();
+                        AuditEvent::token_validation_failed(
+                            Some(&pam_user),
+                            &reason,
+                            source_ip,
+                            None,
+                        )
+                        .log();
                         PamError::AUTH_ERR
                     }
                     AuthError::UserResolution(_) => {

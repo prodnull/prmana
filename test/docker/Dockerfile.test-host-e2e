@@ -1,0 +1,57 @@
+# test/docker/Dockerfile.test-host-e2e
+# E2E test-host: real OIDC signature verification, no TEST_MODE.
+# Includes unix-oidc-agent binary on PATH for device flow + DPoP proof generation.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install SSH, PAM, SSSD, sudo, and dependencies
+RUN apt-get update && apt-get install -y \
+    openssh-server \
+    sssd \
+    sssd-ldap \
+    libpam0g \
+    ldap-utils \
+    curl \
+    jq \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create SSH directory
+RUN mkdir /var/run/sshd
+
+# Configure SSH for PAM-based OIDC authentication
+RUN sed -i 's/KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config && \
+    echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/UsePAM no/UsePAM yes/' /etc/ssh/sshd_config && \
+    echo "UsePAM yes" >> /etc/ssh/sshd_config
+
+# Create test user (will be overridden by SSSD in real tests)
+RUN useradd -m -s /bin/bash testuser
+
+# Copy SSSD configuration template
+COPY test/fixtures/sssd/sssd.conf /etc/sssd/sssd.conf
+RUN chmod 600 /etc/sssd/sssd.conf
+
+# Copy PAM configuration
+COPY test/fixtures/pam/sshd /etc/pam.d/sshd.unix-oidc
+COPY test/fixtures/pam/sudo /etc/pam.d/sudo.unix-oidc
+
+# Copy policy configuration
+RUN mkdir -p /etc/unix-oidc
+COPY test/fixtures/policy/policy-e2e.yaml /etc/unix-oidc/policy.yaml
+
+# OIDC configuration in /etc/environment
+# Issuer uses internal Docker DNS name — aligned with Keycloak KC_HOSTNAME.
+RUN echo 'OIDC_ISSUER=http://keycloak:8080/realms/unix-oidc' >> /etc/environment && \
+    echo 'OIDC_CLIENT_ID=unix-oidc' >> /etc/environment
+
+# Startup script
+COPY test/docker/entrypoint-e2e.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+
+CMD ["/entrypoint.sh"]
