@@ -1,7 +1,7 @@
 # test/docker/Dockerfile.test-host-e2e
 # E2E test-host: real OIDC signature verification, no TEST_MODE.
 # Includes unix-oidc-agent binary on PATH for device flow + DPoP proof generation.
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     jq \
     sudo \
+    socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Create SSH directory
@@ -44,8 +45,8 @@ RUN mkdir -p /etc/unix-oidc
 COPY test/fixtures/policy/policy-e2e.yaml /etc/unix-oidc/policy.yaml
 
 # OIDC configuration in /etc/environment
-# Issuer uses internal Docker DNS name — aligned with Keycloak KC_HOSTNAME.
-RUN echo 'OIDC_ISSUER=http://keycloak:8080/realms/unix-oidc' >> /etc/environment && \
+# Issuer matches KC_HOSTNAME=localhost. socat proxies localhost:8080 → keycloak:8080.
+RUN echo 'OIDC_ISSUER=http://localhost:8080/realms/unix-oidc' >> /etc/environment && \
     echo 'OIDC_CLIENT_ID=unix-oidc' >> /etc/environment
 
 # Startup script

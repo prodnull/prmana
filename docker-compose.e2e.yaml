@@ -5,7 +5,7 @@
 
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:26.4
+    image: quay.io/keycloak/keycloak:26.5.5
     command: start-dev --import-realm
     environment:
       KEYCLOAK_ADMIN: admin
@@ -14,7 +14,7 @@ services:
       # Use internal hostname for issuer URL alignment.
       # Tokens issued by Keycloak will carry iss: http://keycloak:8080/realms/unix-oidc
       # which matches the PAM module's OIDC_ISSUER config exactly.
-      KC_HOSTNAME: keycloak
+      KC_HOSTNAME: localhost
       KC_HOSTNAME_PORT: "8080"
       KC_HOSTNAME_STRICT: "false"
       KC_HOSTNAME_STRICT_HTTPS: "false"
@@ -62,12 +62,13 @@ services:
       - "2222:22"
     environment:
       # NO UNIX_OIDC_TEST_MODE — real signature verification only.
-      OIDC_ISSUER: "http://keycloak:8080/realms/unix-oidc"
+      # Issuer must match token iss claim (KC_HOSTNAME=localhost).
+      OIDC_ISSUER: "http://localhost:8080/realms/unix-oidc"
       OIDC_CLIENT_ID: "unix-oidc"
       LDAP_URI: "ldap://openldap:389"
       LDAP_BASE: "dc=test,dc=local"
     volumes:
-      - ./target/release:/opt/unix-oidc:ro
+      - ./target/release-linux:/opt/unix-oidc:ro
     healthcheck:
       test: ["CMD", "pgrep", "sshd"]
       interval: 5s

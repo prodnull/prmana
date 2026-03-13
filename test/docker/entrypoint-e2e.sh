@@ -60,10 +60,17 @@ mkdir -p /run/unix-oidc/sessions
 chmod 700 /run/unix-oidc
 
 # Export OIDC configuration for PAM module (no TEST_MODE)
-export OIDC_ISSUER="${OIDC_ISSUER:-http://keycloak:8080/realms/unix-oidc}"
+export OIDC_ISSUER="${OIDC_ISSUER:-http://localhost:8080/realms/unix-oidc}"
 export OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-unix-oidc}"
 echo "OIDC_ISSUER=$OIDC_ISSUER"
 echo "TEST_MODE: NOT SET (real signature verification)"
+
+# Proxy localhost:8080 → keycloak:8080 so the PAM module can fetch JWKS
+# from the issuer URL (http://localhost:8080/...) inside this container.
+# KC_HOSTNAME=localhost means token iss = http://localhost:8080/realms/unix-oidc,
+# and the PAM module derives the JWKS URL from the issuer.
+echo "Starting socat proxy: localhost:8080 → keycloak:8080..."
+socat TCP-LISTEN:8080,fork,reuseaddr TCP:keycloak:8080 &
 
 # Start SSH
 echo "Starting SSH server..."

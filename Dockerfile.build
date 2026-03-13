@@ -1,5 +1,5 @@
 # Dockerfile.build - Build the PAM module in a Linux container
-FROM rust:1.85-slim-bookworm
+FROM rust:1.88-slim-bookworm
 
 RUN apt-get update && apt-get install -y \
     libpam0g-dev \
@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     clang \
     pkg-config \
     libssl-dev \
+    libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
