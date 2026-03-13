@@ -327,6 +327,29 @@ impl TokenValidator {
                     "Token header claims {header_alg_name} but JWKS key specifies {jwk_alg_name}"
                 )));
             }
+        } else {
+            // HARDEN-2: No algorithm specified in JWKS key. Apply allowlist to prevent
+            // algorithm confusion attacks (e.g. HS256 with RSA public key as secret).
+            // Only asymmetric signing algorithms are permitted; symmetric (HS*) and
+            // "none" are always rejected when the key doesn't declare its algorithm.
+            //
+            // The `Algorithm` enum in jsonwebtoken does not have a `None` variant,
+            // so `alg: "none"` tokens fail at header decode. This guard catches HS*.
+            const BLOCKED_ALGS: &[jsonwebtoken::Algorithm] = &[
+                jsonwebtoken::Algorithm::HS256,
+                jsonwebtoken::Algorithm::HS384,
+                jsonwebtoken::Algorithm::HS512,
+            ];
+            if BLOCKED_ALGS.contains(&algorithm) {
+                tracing::warn!(
+                    token_alg = ?algorithm,
+                    kid = ?header.kid,
+                    "Symmetric algorithm in token header rejected — JWKS key has no alg field"
+                );
+                return Err(ValidationError::UnsupportedAlgorithm(format!(
+                    "Symmetric algorithm {algorithm:?} not permitted when JWKS key omits alg"
+                )));
+            }
         }
 
         // Convert JWK to DecodingKey
@@ -676,6 +699,22 @@ mod tests {
             result,
             Err(ValidationError::AuthTimeTooOld { .. })
         ));
+    }
+
+    /// HARDEN-2: Symmetric algorithms must be blocked when JWKS key omits alg.
+    #[test]
+    fn test_blocked_symmetric_algorithms() {
+        const BLOCKED: &[jsonwebtoken::Algorithm] = &[
+            jsonwebtoken::Algorithm::HS256,
+            jsonwebtoken::Algorithm::HS384,
+            jsonwebtoken::Algorithm::HS512,
+        ];
+        assert!(BLOCKED.contains(&jsonwebtoken::Algorithm::HS256));
+        assert!(BLOCKED.contains(&jsonwebtoken::Algorithm::HS384));
+        assert!(BLOCKED.contains(&jsonwebtoken::Algorithm::HS512));
+        assert!(!BLOCKED.contains(&jsonwebtoken::Algorithm::RS256));
+        assert!(!BLOCKED.contains(&jsonwebtoken::Algorithm::ES256));
+        assert!(!BLOCKED.contains(&jsonwebtoken::Algorithm::EdDSA));
     }
 
     #[test]
