@@ -255,6 +255,17 @@ pub struct AgentServer {
     /// Limits concurrent IPC connections to prevent resource exhaustion.
     /// See: docs/threat-model.md §7 Recommendation 6 (P2).
     connection_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Interval for the session expiry background sweep task.
+    ///
+    /// When `Some`, a `sweep::session_expiry_sweep_loop` task is spawned inside
+    /// `serve_with_listener` before the accept loop.  `None` disables the sweep
+    /// (used in tests that do not need session directory maintenance).
+    sweep_interval: Option<Duration>,
+    /// Directory containing session `.json` files to sweep.
+    ///
+    /// Typically `/run/unix-oidc/sessions/` in production.  Only used when
+    /// `sweep_interval` is also `Some`.
+    session_dir: Option<PathBuf>,
 }
 
 impl AgentServer {
@@ -264,6 +275,8 @@ impl AgentServer {
             state,
             idle_timeout: Duration::from_secs(DEFAULT_IPC_IDLE_TIMEOUT_SECS),
             connection_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS)),
+            sweep_interval: None,
+            session_dir: None,
         }
     }
 
@@ -276,6 +289,32 @@ impl AgentServer {
     /// ```
     pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
         self.idle_timeout = timeout;
+        self
+    }
+
+    /// Set the session expiry sweep interval.
+    ///
+    /// When both `sweep_interval` and `session_dir` are `Some`,
+    /// `serve_with_listener` spawns a background `sweep::session_expiry_sweep_loop`
+    /// task that removes expired and corrupt session files from `session_dir` on
+    /// each tick.
+    ///
+    /// Call this in the builder chain after `new()`:
+    /// ```ignore
+    /// let server = AgentServer::new(path, state)
+    ///     .with_sweep_interval(Duration::from_secs(config.timeouts.sweep_interval_secs))
+    ///     .with_session_dir(PathBuf::from("/run/unix-oidc/sessions/"));
+    /// ```
+    pub fn with_sweep_interval(mut self, interval: Duration) -> Self {
+        self.sweep_interval = Some(interval);
+        self
+    }
+
+    /// Set the session directory to sweep for expired records.
+    ///
+    /// Must be combined with `with_sweep_interval` to activate the background sweep task.
+    pub fn with_session_dir(mut self, dir: PathBuf) -> Self {
+        self.session_dir = Some(dir);
         self
     }
 
@@ -322,6 +361,28 @@ impl AgentServer {
 
         // Capture idle_timeout so it can be moved into spawned tasks.
         let idle_timeout = self.idle_timeout;
+
+        // Spawn the session expiry background sweep task if both sweep_interval
+        // and session_dir are configured.  The task removes expired and corrupt
+        // session files from session_dir at the configured interval.
+        //
+        // The task is cancelled implicitly when the Tokio runtime shuts down
+        // (on SIGTERM/SIGINT the accept loop exits and the runtime is dropped).
+        // This is intentional — no explicit abort handle is needed; orphaned
+        // session files will be swept on the next daemon restart.
+        //
+        // Reference: SES-09 (session expiry sweep requirement).
+        if let (Some(interval), Some(ref dir)) = (self.sweep_interval, &self.session_dir) {
+            let sweep_dir = dir.clone();
+            tokio::spawn(async move {
+                crate::daemon::sweep::session_expiry_sweep_loop(sweep_dir, interval).await;
+            });
+            info!(
+                session_dir = %dir.display(),
+                interval_secs = interval.as_secs(),
+                "Session expiry sweep task spawned"
+            );
+        }
 
         loop {
             tokio::select! {
