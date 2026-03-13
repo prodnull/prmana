@@ -40,9 +40,12 @@ issuers:
   # Issuer 2: Entra ID-like — DPoP disabled (Entra uses SHR not RFC 9449 DPoP),
   #           UPN email claim + strip_domain transform, ACR mapping for Entra levels.
   #           See CLAUDE.md: "Entra ID is bearer-only scope — dpop_required: off".
+  #           allow_unsafe_identity_pipeline: true because strip_domain on email is non-injective
+  #           across tenants but safe for single-tenant Entra (IdP enforces domain membership).
   - issuer_url: "https://login.microsoftonline.com/tenant-id/v2.0"
     client_id: "unix-oidc-entra"
     dpop_enforcement: disabled
+    allow_unsafe_identity_pipeline: true
     claim_mapping:
       username_claim: email
       transforms:

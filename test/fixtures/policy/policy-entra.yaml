@@ -1,0 +1,57 @@
+# Entra ID integration test fixture (Phase 22).
+#
+# Requires environment variable substitution before use:
+#   ENTRA_TENANT_ID    — Directory (tenant) ID from Azure Portal -> App registrations -> Overview
+#   ENTRA_CLIENT_ID    — Application (client) ID from Azure Portal -> App registrations -> Overview
+#
+# Key design decisions (from 22-CONTEXT.md / 22-RESEARCH.md):
+#
+# dpop_enforcement: disabled
+#   Entra ID access tokens use Signed HTTP Requests (SHR, aka Proof of Possession),
+#   not RFC 9449 DPoP. Setting strict here would reject all Entra tokens.
+#   See 22-RESEARCH.md §Entra DPoP Scope and CLAUDE.md key decisions.
+#
+# username_claim: email (not preferred_username)
+#   preferred_username carries the UPN (User@Tenant.onmicrosoft.com) and collides
+#   across tenants. email is more stable for single-tenant deployments. When
+#   preferred_username is available and stable, it is also acceptable; adjust
+#   and remove allow_unsafe_identity_pipeline: true if using a non-domain claim.
+#
+# allow_unsafe_identity_pipeline: true
+#   strip_domain applied to email is technically non-injective across tenants (alice@a
+#   and alice@b both map to alice). For a single-tenant Entra app, the IdP enforces
+#   domain membership — only users from ENTRA_TENANT_ID can obtain tokens. This makes
+#   the pipeline safe in practice. A WARN is logged at authentication time when this
+#   bypass is active. See 22-CONTEXT.md locked decision.
+#
+# jti_enforcement: warn
+#   Entra emits the uti (unique token identifier) claim, not the standard jti. Our
+#   validator checks jti; uti is absent so strict would reject all tokens. See
+#   22-RESEARCH.md Pitfall 5.
+#
+# transforms: strip_domain + lowercase
+#   Alice@Corp.Example -> alice. Lowercase handles mixed-case UPNs from Entra.
+#
+# expected_audience: (commented out — uncomment if custom App ID URI is configured)
+#   When the Entra app registration has an Application ID URI set (e.g. api://unix-oidc),
+#   the access token aud claim will carry that URI instead of the client_id GUID.
+#   In that case, uncomment the expected_audience line and set it to the App ID URI.
+
+security_modes:
+  jti_enforcement: warn
+
+issuers:
+  - issuer_url: "https://login.microsoftonline.com/ENTRA_TENANT_ID_PLACEHOLDER/v2.0"
+    client_id: "ENTRA_CLIENT_ID_PLACEHOLDER"
+    dpop_enforcement: disabled
+    allow_unsafe_identity_pipeline: true
+    # expected_audience: "api://unix-oidc"  # uncomment if custom App ID URI is set
+    claim_mapping:
+      username_claim: email
+      transforms:
+        - strip_domain
+        - lowercase
+    acr_mapping:
+      enforcement: warn
+    group_mapping:
+      source: nss_only
