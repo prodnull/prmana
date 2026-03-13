@@ -300,18 +300,31 @@ impl TokenValidator {
         // token header's `alg` to trick the verifier into using a weaker algorithm
         // or a different key type. Analogous to DPoP ES256 enforcement in dpop.rs.
         // See: docs/threat-model.md §7 Recommendation 4 (P1), closes R-8.
+        //
+        // Uses serde serialization for canonical string comparison rather than
+        // Debug formatting, which is fragile across crate updates (HARDEN-1).
         if let Some(jwk_alg) = &jwk.common.key_algorithm {
-            let jwk_alg_str = format!("{jwk_alg:?}");
-            let header_alg_str = format!("{algorithm:?}");
-            if jwk_alg_str != header_alg_str {
+            // Serialize both to their canonical JOSE algorithm name (e.g. "RS256").
+            // KeyAlgorithm and Algorithm share identical variant names for signing
+            // algorithms; serde Serialize produces matching strings.
+            let jwk_alg_name = serde_json::to_value(jwk_alg)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| format!("{jwk_alg:?}"));
+            let header_alg_name = serde_json::to_value(algorithm)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| format!("{algorithm:?}"));
+
+            if jwk_alg_name != header_alg_name {
                 tracing::warn!(
-                    jwk_alg = %jwk_alg_str,
-                    token_alg = %header_alg_str,
+                    jwk_alg = %jwk_alg_name,
+                    token_alg = %header_alg_name,
                     kid = ?header.kid,
                     "Algorithm mismatch: token header alg does not match JWKS-advertised alg"
                 );
                 return Err(ValidationError::UnsupportedAlgorithm(format!(
-                    "Token header claims {header_alg_str} but JWKS key specifies {jwk_alg_str}"
+                    "Token header claims {header_alg_name} but JWKS key specifies {jwk_alg_name}"
                 )));
             }
         }
