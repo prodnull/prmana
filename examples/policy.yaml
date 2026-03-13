@@ -15,6 +15,39 @@ security_modes:
   # warn (default): log warning if JTI missing, still allow
   jti_enforcement: warn
 
+  # AMR (Authentication Methods References) enforcement. Options: strict | warn | disabled
+  # disabled (default): AMR claims not checked
+  amr_enforcement: disabled
+
+  # NSS group membership enforcement. Options: strict | warn | disabled
+  # warn (default): log warning but allow if group lookup fails
+  groups_enforcement: warn
+
+  # ACR (Authentication Context Reference) configuration
+  # acr:
+  #   enforcement: warn          # strict | warn | disabled
+  #   required_values: []        # e.g., ["urn:keycloak:acr:loa2"]
+
+# Identity — username claim mapping and transforms.
+# Controls how OIDC token claims are mapped to Unix usernames.
+identity:
+  # OIDC claim to extract as the raw username. Default: preferred_username
+  username_claim: preferred_username
+  # Ordered transforms applied to the raw claim value.
+  # Options: strip_domain (alice@corp.com → alice)
+  transforms: []
+  # transforms:
+  #   - strip_domain
+
+# Break-glass — emergency local access when IdP is unavailable.
+# MANDATORY for production. See docs/security-guide.md §Break-Glass Procedure.
+break_glass:
+  enabled: true
+  accounts:
+    - breakglass       # Must exist as a local Unix account with password set
+  # requires: yubikey_otp  # Optional: require hardware token
+  alert_on_use: true     # Log alert when break-glass access is used
+
 # Host classification affects default security requirements
 # Options:
 #   - standard: Regular workstations (minimal step-up)

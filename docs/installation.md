@@ -120,7 +120,36 @@ sudo:
 
 See [examples/policy.yaml](../examples/policy.yaml) for a complete example with command-specific rules.
 
-### 5. Configure PAM
+### 5. Configure Break-Glass Access (MANDATORY)
+
+> **Never deploy OIDC authentication as the only authentication path.** If your IdP goes down, you will be locked out.
+
+Add a break-glass section to `/etc/unix-oidc/policy.yaml`:
+
+```yaml
+break_glass:
+  enabled: true
+  accounts:
+    - breakglass  # Must exist as a local Unix account with password set
+  alert_on_use: true
+```
+
+Create and test the local break-glass account:
+
+```bash
+# Create the account
+sudo useradd -m -s /bin/bash breakglass
+sudo passwd breakglass  # Set a strong password, store in secure vault
+
+# Test that local password auth works for this account
+su - breakglass
+
+# Document credentials in your organization's emergency procedures
+```
+
+See [Security Guide — Break-Glass Procedure](security-guide.md#break-glass-procedure) for full details.
+
+### 6. Configure PAM
 
 #### For SSH
 
@@ -154,7 +183,7 @@ account required      pam_unix.so
 session required      pam_unix.so
 ```
 
-### 6. Configure SSH Daemon
+### 7. Configure SSH Daemon
 
 Edit `/etc/ssh/sshd_config`:
 
@@ -162,8 +191,10 @@ Edit `/etc/ssh/sshd_config`:
 # Enable PAM authentication
 UsePAM yes
 
-# Enable challenge-response (for OIDC token prompts)
-ChallengeResponseAuthentication yes
+# Enable keyboard-interactive authentication (for OIDC token prompts)
+# OpenSSH 9.0+: KbdInteractiveAuthentication yes
+# OpenSSH <9.0: ChallengeResponseAuthentication yes
+KbdInteractiveAuthentication yes
 
 # Optionally disable password authentication
 PasswordAuthentication no
@@ -175,7 +206,7 @@ Restart SSH:
 sudo systemctl restart sshd
 ```
 
-### 7. Configure Audit Logging (Optional)
+### 8. Configure Audit Logging (Optional)
 
 Create audit log directory:
 

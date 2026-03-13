@@ -54,8 +54,10 @@ export OIDC_CLIENT_ID="<application-id>"
 **Username Mapping:**
 ```yaml
 # /etc/unix-oidc/policy.yaml
-username_claim: preferred_username  # or upn, email
-username_transform: strip_domain    # alice@corp.com → alice
+identity:
+  username_claim: preferred_username  # or upn, email
+  transforms:
+    - strip_domain  # alice@corp.com → alice
 ```
 
 #### Auth0
@@ -310,18 +312,19 @@ Regardless of pattern, you need to map OIDC identities to Linux usernames.
 
 | Strategy | Example | Configuration |
 |----------|---------|---------------|
-| Email prefix | `alice@corp.com` → `alice` | `username_transform: strip_domain` |
-| Custom claim | `unix_username: alice` | `username_claim: unix_username` |
-| UPN | `alice@corp.com` → `alice` | `username_claim: upn`, transform |
-| Subject | `sub: abc123` → `abc123` | `username_claim: sub` |
+| Email prefix | `alice@corp.com` → `alice` | `identity.transforms: [strip_domain]` |
+| Custom claim | `unix_username: alice` | `identity.username_claim: unix_username` |
+| UPN | `alice@corp.com` → `alice` | `identity.username_claim: upn` + `identity.transforms: [strip_domain]` |
+| Subject | `sub: abc123` → `abc123` | `identity.username_claim: sub` |
 
 ### Configuring in unix-oidc
 
 ```yaml
 # /etc/unix-oidc/policy.yaml
-defaults:
-  username_claim: preferred_username
-  username_transform: strip_domain
+identity:
+  username_claim: preferred_username  # OIDC claim to extract username from
+  transforms:
+    - strip_domain  # alice@corp.com → alice
 
   # Or for custom claim from IdP:
   # username_claim: linux_username

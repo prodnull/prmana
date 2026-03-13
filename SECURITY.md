@@ -82,7 +82,7 @@ unix-oidc follows these security principles aligned with NIST guidelines:
 
 ### Threat Model
 
-See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for comprehensive threat analysis including:
+See [docs/threat-model.md](docs/threat-model.md) for comprehensive threat analysis including:
 - STRIDE threat categorization
 - MITRE ATT&CK technique mapping
 - Attack surface analysis
@@ -140,8 +140,8 @@ Complete this checklist before deploying unix-oidc to production:
 - [ ] Enabled DPoP if IdP supports it
 
 #### File Permissions
-- [ ] Configuration file restricted: `chmod 600 /etc/unix-oidc/config.toml`
-- [ ] Configuration owned by root: `chown root:root /etc/unix-oidc/config.toml`
+- [ ] Configuration file restricted: `chmod 600 /etc/unix-oidc/policy.yaml`
+- [ ] Configuration owned by root: `chown root:root /etc/unix-oidc/policy.yaml`
 - [ ] PAM module permissions: `chmod 755 /usr/lib/security/pam_unix_oidc.so`
 - [ ] Agent socket directory: `chmod 750 /run/unix-oidc`
 - [ ] Log directory permissions: `chmod 750 /var/log/unix-oidc`
@@ -174,13 +174,7 @@ Complete this checklist before deploying unix-oidc to production:
 - [ ] `pam_faillock` or equivalent configured for brute-force protection
 
 #### Logging and Monitoring
-- [ ] Audit logging enabled:
-  ```toml
-  [logging]
-  level = "info"
-  format = "json"
-  destination = "syslog"
-  ```
+- [ ] Audit logging enabled (set `UNIX_OIDC_AUDIT_LOG` env var or configure syslog)
 - [ ] Log forwarding to SIEM configured
 - [ ] Alerts configured for:
   - [ ] Authentication failures > threshold
@@ -219,17 +213,12 @@ cosign verify-blob --certificate unix-oidc-agent.pem \
   unix-oidc-agent
 
 # Set strict file permissions
-chmod 600 /etc/unix-oidc/config.toml
-chown root:root /etc/unix-oidc/config.toml
+chmod 600 /etc/unix-oidc/policy.yaml
+chown root:root /etc/unix-oidc/policy.yaml
 chmod 755 /usr/lib/security/pam_unix_oidc.so
 
-# Enable audit logging (in config.toml)
-cat >> /etc/unix-oidc/config.toml << 'EOF'
-[logging]
-level = "info"
-format = "json"
-destination = "syslog"
-EOF
+# Enable audit logging
+export UNIX_OIDC_AUDIT_LOG=/var/log/unix-oidc/audit.log
 
 # Verify PAM configuration
 pamtester sshd testuser authenticate

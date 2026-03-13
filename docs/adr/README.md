@@ -12,6 +12,9 @@ ADRs document significant architectural decisions made during the project's deve
 | [002](./002-pam-agent-architecture.md) | PAM Module and Agent Daemon Separation | Accepted | 2026-01-16 |
 | [003](./003-token-validation-strategy.md) | Local Token Validation Strategy | Accepted | 2026-01-16 |
 | [004](./004-device-authorization-grant.md) | Device Authorization Grant for Headless Auth | Accepted | 2026-01-17 |
+| [005](./005-dpop-token-exchange.md) | DPoP-Chained Token Exchange for Multi-Hop SSH | Proposed | 2026-01-18 |
+| [005-alignment](./005-dpop-token-exchange-alignment.md) | ADR-005 Alignment with IETF OAuth WG Direction | Proposed | 2026-01-18 |
+| [006](./006-agent-ssh-introspection.md) | Agent SSH Config Introspection for Automatic Audience Discovery | Proposed | 2026-01-18 |
 
 ## ADR Format
 

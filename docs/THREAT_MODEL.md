@@ -1,8 +1,12 @@
-# unix-oidc Threat Model
+# unix-oidc Threat Model (v1.0 — Superseded)
 
+> **⚠️ This document is superseded by [threat-model.md](threat-model.md) (v3.0, 2026-03-12).**
+> This file is retained for historical reference. All new threat analysis, STRIDE categorization,
+> and mitigation tracking is maintained in the current version.
+>
 > **Last Updated:** 2026-01-18 (Supply Chain Hardening)
 > **Review Cycle:** Quarterly or after significant architecture changes
-> **Status:** Active
+> **Status:** Superseded
 
 ## 1. System Overview
 

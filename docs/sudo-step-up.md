@@ -89,7 +89,7 @@ Set these in the PAM environment or system-wide:
 | `OIDC_ISSUER` | Yes | OIDC issuer URL (e.g., `https://keycloak.example.com/realms/myrealm`) |
 | `OIDC_CLIENT_ID` | No | Client ID (default: `unix-oidc`) |
 | `OIDC_CLIENT_SECRET` | No | Client secret if required by IdP |
-| `UNIX_OIDC_POLICY_PATH` | No | Path to policy file (default: `/etc/unix-oidc/policy.yaml`) |
+| `UNIX_OIDC_POLICY_FILE` | No | Path to policy file (default: `/etc/unix-oidc/policy.yaml`) |
 
 ### PAM Configuration
 

@@ -180,28 +180,16 @@ DPoP (Demonstrating Proof of Possession) binds tokens to cryptographic keys, pre
 ### Enabling DPoP
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
-defaults:
-  dpop:
-    enabled: true
-    required: true  # Reject non-DPoP tokens
-    algorithms:
-      - ES256       # ECDSA P-256 (recommended)
-      - ML-DSA-65   # Post-quantum (if supported)
-    max_age: 60     # Maximum proof age in seconds
-    replay_cache_size: 10000
+# /etc/unix-oidc/policy.yaml — DPoP is controlled via security_modes
+security_modes:
+  dpop_required: strict  # strict (default) | warn | disabled
 ```
+
+DPoP uses ES256 (P-256 ECDSA) exclusively. The algorithm is enforced at the code level — there is no configuration to change it, preventing algorithm downgrade attacks. Max proof age defaults to 60 seconds.
 
 ### Post-Quantum Readiness
 
-unix-oidc supports ML-DSA-65 (FIPS 204) for post-quantum security:
-
-```yaml
-dpop:
-  algorithms:
-    - ML-DSA-65   # Post-quantum (primary)
-    - ES256       # Fallback for compatibility
-```
+> **Status: Planned (not yet implemented).** The configuration schema includes an `enable_pqc` flag for forward compatibility, but ML-DSA-65 support is not yet available. ES256 (P-256 ECDSA) is the only supported DPoP algorithm today. Post-quantum algorithm support will be added when mature Rust PQC libraries are available and OIDC ecosystem support emerges. See NIST FIPS 204 for the ML-DSA specification.
 
 ---
 
@@ -268,17 +256,20 @@ iptables -A OUTPUT -p tcp --dport 443 -j DROP
 
 ```bash
 # Secure environment configuration
-# In /etc/environment or PAM environment
+# Set in /etc/unix-oidc/env (chmod 600, root:root)
 
 # Required
 OIDC_ISSUER="https://auth.example.com/realms/production"
 OIDC_CLIENT_ID="unix-oidc"
 
-# Optional security settings
-OIDC_VERIFY_TLS="true"          # Never disable in production
-OIDC_JWKS_CACHE_TTL="3600"      # Cache JWKS for 1 hour
-OIDC_CONNECT_TIMEOUT="5"         # 5 second timeout
+# Optional: Override policy file location (default: /etc/unix-oidc/policy.yaml)
+# UNIX_OIDC_POLICY_FILE="/etc/unix-oidc/policy.yaml"
+
+# Optional: Audit log file path
+# UNIX_OIDC_AUDIT_LOG="/var/log/unix-oidc/audit.log"
 ```
+
+> **Note:** TLS verification is always enabled and cannot be disabled via configuration. This is by design — all IdP communication must use HTTPS with proper certificate validation.
 
 ---
 
@@ -395,12 +386,14 @@ For emergency access when IdP is unavailable:
 # /etc/unix-oidc/policy.yaml
 break_glass:
   enabled: true
-  users:
-    - alice  # Pre-authorized emergency users
-  method: totp
-  secret_file: /etc/unix-oidc/break-glass.key  # chmod 400
-  audit: always
+  accounts:
+    - breakglass       # Pre-authorized emergency accounts
+    - emergency-admin
+  requires: yubikey_otp  # Optional: require hardware token for break-glass
+  alert_on_use: true     # Log alert when break-glass is used
 ```
+
+> **Note:** Break-glass accounts must exist as local Unix accounts with password authentication configured. See the [installation guide](installation.md) for setup instructions.
 
 ---
 

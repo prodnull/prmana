@@ -128,7 +128,7 @@ This collaboration demonstrates that human expertise and AI capabilities can com
   - Custom webhook approval workflows
   - Future: Push notifications, [FIDO2/WebAuthn](https://fidoalliance.org/fido2/)
 - **[DPoP Token Binding](https://datatracker.ietf.org/doc/html/rfc9449)** (RFC 9449): Cryptographically bind tokens to prevent theft
-  - [ES256](https://datatracker.ietf.org/doc/html/rfc7518#section-3.4) and ML-DSA-65 (post-quantum ready)
+  - [ES256](https://datatracker.ietf.org/doc/html/rfc7518#section-3.4) (P-256 ECDSA); ML-DSA-65 post-quantum support planned
   - Replay attack protection
   - Cross-language libraries: [Rust](rust-oauth-dpop/), [Go](go-oauth-dpop/), [Python](python-oauth-dpop/), [Java](java-oauth-dpop/)
 - **[JWT](https://datatracker.ietf.org/doc/html/rfc7519) Signature Verification**: Cryptographically validates tokens using [JWKS](https://datatracker.ietf.org/doc/html/rfc7517) from OIDC discovery
@@ -250,7 +250,7 @@ make dev-down
 
 ### Security Documentation
 - [Security Guide](docs/security-guide.md) - Hardening, compliance, and best practices
-- [Threat Model](docs/THREAT_MODEL.md) - Security analysis with NIST CSF and MITRE ATT&CK mapping
+- [Threat Model](docs/threat-model.md) - STRIDE analysis, residual risks, and prioritized recommendations
 - [Security Policy](SECURITY.md) - Vulnerability reporting
 
 ### Developer Documentation

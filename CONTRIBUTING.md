@@ -17,7 +17,7 @@ and information for contributors.
 
 ## Code of Conduct
 
-This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+This project follows the [Contributor Covenant Code of Conduct](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 By participating, you are expected to uphold this code. Please report unacceptable
 behavior to conduct@unix-oidc.dev.
 
@@ -25,7 +25,7 @@ behavior to conduct@unix-oidc.dev.
 
 ### Prerequisites
 
-- Rust 1.70+ (stable)
+- Rust 1.88+ (stable)
 - Linux development environment (or Docker)
 - PAM development headers (`libpam0g-dev` on Debian/Ubuntu)
 - OpenSSL development headers
@@ -66,27 +66,15 @@ cargo build
 
 ### macOS (Cross-compilation)
 
-The PAM module requires Linux. For macOS development:
+The PAM module targets Linux. On macOS you can build and test the agent crate
+and shared libraries natively, but the PAM module requires a Linux toolchain:
 
 ```bash
-# Use Docker for PAM module development
-docker-compose -f docker-compose.dev.yaml up -d
+# Build non-PAM crates on macOS
+cargo build -p unix-oidc-agent
 
-# Or use the devcontainer
-code --folder-uri vscode-remote://dev-container+$(pwd)
-```
-
-### Docker Development Environment
-
-```bash
-# Start development environment
-docker-compose -f docker-compose.dev.yaml up -d
-
-# Enter the container
-docker exec -it unix-oidc-dev bash
-
-# Build and test inside container
-cargo build && cargo test
+# For PAM module development, use a Linux VM or container
+# with libpam0g-dev / pam-devel installed
 ```
 
 ## Making Contributions
@@ -409,7 +397,7 @@ docs: update installation guide for Ubuntu 24.04
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same
-terms as the project: Apache-2.0 OR MIT (at the user's option).
+terms as the project: [CC BY-NC-SA 4.0](LICENSE) (Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International).
 
 See [LICENSE](LICENSE) for details.
 
