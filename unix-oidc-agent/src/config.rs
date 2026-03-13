@@ -52,6 +52,16 @@ pub struct TimeoutsConfig {
     /// IPC connection idle timeout for the agent daemon (seconds).
     #[serde(default = "default_ipc_idle_timeout")]
     pub ipc_idle_timeout_secs: u64,
+
+    /// Session expiry sweep interval (seconds).
+    ///
+    /// The background sweep task removes expired and corrupt session records from
+    /// `/run/unix-oidc/sessions/` at this interval.  Minimum 60s to prevent
+    /// unnecessary I/O on systems with many sessions.
+    ///
+    /// Reference: SES-09 (session expiry sweep requirement).
+    #[serde(default = "default_sweep_interval")]
+    pub sweep_interval_secs: u64,
 }
 
 fn default_jwks_http_timeout() -> u64 {
@@ -72,6 +82,9 @@ fn default_jwks_cache_ttl() -> u64 {
 fn default_ipc_idle_timeout() -> u64 {
     60
 }
+fn default_sweep_interval() -> u64 {
+    300
+}
 
 impl Default for TimeoutsConfig {
     fn default() -> Self {
@@ -82,6 +95,7 @@ impl Default for TimeoutsConfig {
             clock_skew_staleness_secs: default_clock_skew_staleness(),
             jwks_cache_ttl_secs: default_jwks_cache_ttl(),
             ipc_idle_timeout_secs: default_ipc_idle_timeout(),
+            sweep_interval_secs: default_sweep_interval(),
         }
     }
 }
@@ -117,6 +131,13 @@ impl TimeoutsConfig {
             return Err(ConfigError::Validation(format!(
                 "clock_skew_future_secs ({}) must be <= clock_skew_staleness_secs ({})",
                 self.clock_skew_future_secs, self.clock_skew_staleness_secs
+            )));
+        }
+        // Minimum 60s prevents excessive I/O thrashing on active servers.
+        if self.sweep_interval_secs < 60 {
+            return Err(ConfigError::Validation(format!(
+                "sweep_interval_secs ({}) must be >= 60",
+                self.sweep_interval_secs
             )));
         }
         Ok(())

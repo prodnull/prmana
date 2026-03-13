@@ -8,6 +8,7 @@
 pub mod peer_cred;
 pub mod protocol;
 pub mod socket;
+pub mod sweep;
 
 pub use protocol::{AgentRequest, AgentResponse, AgentResponseData};
 pub use socket::{
