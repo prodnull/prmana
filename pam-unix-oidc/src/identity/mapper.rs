@@ -240,7 +240,7 @@ mod tests {
     fn make_claims(preferred_username: &str) -> TokenClaims {
         TokenClaims {
             sub: preferred_username.to_string(),
-            preferred_username: preferred_username.to_string(),
+            preferred_username: Some(preferred_username.to_string()),
             iss: "https://idp.example.com".to_string(),
             aud: StringOrVec::String("unix-oidc".to_string()),
             exp: 9_999_999_999,
@@ -384,7 +384,7 @@ mod tests {
         let mapper = UsernameMapper::from_config(&config).unwrap();
         // Inject null byte via the claim value
         let mut claims = make_claims("test\0user");
-        claims.preferred_username = "test\0user".to_string();
+        claims.preferred_username = Some("test\0user".to_string());
         let result = mapper.map(&claims);
         assert!(
             matches!(result, Err(IdentityError::InvalidUsername(_, _))),
@@ -397,7 +397,7 @@ mod tests {
         let config = make_config("preferred_username", &[]);
         let mapper = UsernameMapper::from_config(&config).unwrap();
         let mut claims = make_claims("alice/bob");
-        claims.preferred_username = "alice/bob".to_string();
+        claims.preferred_username = Some("alice/bob".to_string());
         let result = mapper.map(&claims);
         assert!(matches!(result, Err(IdentityError::InvalidUsername(_, _))));
     }
@@ -408,7 +408,7 @@ mod tests {
         let config = make_config("preferred_username", &[]);
         let mapper = UsernameMapper::from_config(&config).unwrap();
         let mut claims = make_claims(&long);
-        claims.preferred_username = long.clone();
+        claims.preferred_username = Some(long.clone());
         let result = mapper.map(&claims);
         assert!(matches!(result, Err(IdentityError::InvalidUsername(_, _))));
     }
@@ -419,7 +419,7 @@ mod tests {
         let config = make_config("preferred_username", &[]);
         let mapper = UsernameMapper::from_config(&config).unwrap();
         let mut claims = make_claims(&exactly_256);
-        claims.preferred_username = exactly_256.clone();
+        claims.preferred_username = Some(exactly_256.clone());
         assert!(mapper.map(&claims).is_ok());
     }
 

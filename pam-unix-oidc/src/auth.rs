@@ -137,7 +137,7 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
     // After .transpose()?, mapper is Option<UsernameMapper> — None when policy is absent.
     let (username_str, mapped_from) = match mapper {
         Some(ref m) => {
-            let raw = claims.preferred_username.clone();
+            let raw = claims.preferred_username.clone().unwrap_or_default();
             let mapped = m
                 .map(&claims)
                 .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
@@ -145,7 +145,7 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
             let from = if mapped != raw { Some(raw) } else { None };
             (mapped, from)
         }
-        None => (claims.preferred_username.clone(), None),
+        None => (claims.preferred_username.clone().unwrap_or_default(), None),
     };
 
     // Log token groups for audit enrichment — NEVER used for access decisions.
@@ -425,14 +425,14 @@ pub fn authenticate_with_dpop(
     // After .transpose()?, mapper is Option<UsernameMapper> — None when policy is absent.
     let (username_str, mapped_from) = match mapper {
         Some(ref m) => {
-            let raw = claims.preferred_username.clone();
+            let raw = claims.preferred_username.clone().unwrap_or_default();
             let mapped = m
                 .map(&claims)
                 .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
             let from = if mapped != raw { Some(raw) } else { None };
             (mapped, from)
         }
-        None => (claims.preferred_username.clone(), None),
+        None => (claims.preferred_username.clone().unwrap_or_default(), None),
     };
 
     // Log token groups for audit enrichment — NEVER used for access decisions.
@@ -510,7 +510,7 @@ pub fn authenticate_with_config(
         Some(m) => m
             .map(&claims)
             .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?,
-        None => claims.preferred_username.clone(),
+        None => claims.preferred_username.clone().unwrap_or_default(),
     };
 
     if !user_exists(&username_str) {

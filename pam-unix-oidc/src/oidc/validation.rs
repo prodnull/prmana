@@ -199,7 +199,7 @@ impl TokenValidator {
 
             let jti_result = global_jti_cache().check_and_record(
                 claims.jti.as_deref(),
-                &claims.preferred_username,
+                claims.preferred_username.as_deref().unwrap_or("unknown"),
                 ttl_seconds,
             );
 
@@ -221,7 +221,7 @@ impl TokenValidator {
                             tracing::warn!(
                                 check = "jti",
                                 mode = "strict",
-                                username = %claims.preferred_username,
+                                username = %claims.preferred_username.as_deref().unwrap_or("unknown"),
                                 "JTI missing — rejecting token (strict mode)"
                             );
                             return Err(ValidationError::MissingJti);
@@ -230,7 +230,7 @@ impl TokenValidator {
                             tracing::warn!(
                                 check = "jti",
                                 mode = "warn",
-                                username = %claims.preferred_username,
+                                username = %claims.preferred_username.as_deref().unwrap_or("unknown"),
                                 "Token missing JTI claim — allowing with warning (some IdPs omit JTI)"
                             );
                         }
@@ -472,7 +472,7 @@ mod tests {
 
         assert!(result.is_ok());
         let claims = result.unwrap();
-        assert_eq!(claims.preferred_username, "testuser");
+        assert_eq!(claims.preferred_username.as_deref(), Some("testuser"));
     }
 
     // ── JTI enforcement mode tests ───────────────────────────────────────────

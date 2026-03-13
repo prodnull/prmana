@@ -491,9 +491,10 @@ fn perform_device_flow_step_up(
     let claims = validator.validate(token_to_validate)?;
 
     // Verify username matches
-    if claims.preferred_username != ctx.user {
+    let token_user = claims.preferred_username.clone().unwrap_or_default();
+    if token_user != ctx.user {
         return Err(SudoError::UserMismatch {
-            token_user: claims.preferred_username,
+            token_user,
             sudo_user: ctx.user.clone(),
         });
     }

@@ -20,8 +20,10 @@ pub struct TokenClaims {
     /// Subject (user identifier)
     pub sub: String,
 
-    /// Preferred username (maps to SSSD uid)
-    pub preferred_username: String,
+    /// Preferred username (maps to SSSD uid).
+    /// OIDC Core §5.1: OPTIONAL. Some IdPs (Google, Azure in certain configs) omit this.
+    #[serde(default)]
+    pub preferred_username: Option<String>,
 
     /// Issuer
     pub iss: String,
@@ -103,7 +105,7 @@ impl TokenClaims {
     pub fn get_claim_str(&self, claim: &str) -> Option<String> {
         match claim {
             "sub" => Some(self.sub.clone()),
-            "preferred_username" => Some(self.preferred_username.clone()),
+            "preferred_username" => self.preferred_username.clone(),
             "iss" => Some(self.iss.clone()),
             "acr" => self.acr.clone(),
             "jti" => self.jti.clone(),
@@ -176,9 +178,23 @@ mod tests {
         let token = create_test_token();
         let claims = TokenClaims::from_token(&token).unwrap();
 
-        assert_eq!(claims.preferred_username, "testuser");
+        assert_eq!(claims.preferred_username.as_deref(), Some("testuser"));
         assert_eq!(claims.sub, "testuser");
         assert_eq!(claims.iss, "http://localhost:8080/realms/test");
+    }
+
+    #[test]
+    fn test_parse_token_without_preferred_username() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let header = r#"{"alg":"RS256","typ":"JWT"}"#;
+        let payload = r#"{"sub":"user123","iss":"http://localhost:8080/realms/test","aud":"unix-oidc","exp":1705500000,"iat":1705400000}"#;
+        let header_b64 = URL_SAFE_NO_PAD.encode(header);
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
+        let token = format!("{header_b64}.{payload_b64}.fake-signature");
+        let claims = TokenClaims::from_token(&token).unwrap();
+        assert!(claims.preferred_username.is_none());
+        assert_eq!(claims.sub, "user123");
+        assert_eq!(claims.get_claim_str("preferred_username"), None);
     }
 
     #[test]
@@ -300,7 +316,7 @@ mod tests {
         let token = create_test_token();
         let claims = TokenClaims::from_token(&token).unwrap();
 
-        assert_eq!(claims.preferred_username, "testuser");
+        assert_eq!(claims.preferred_username.as_deref(), Some("testuser"));
         assert_eq!(claims.sub, "testuser");
         assert_eq!(claims.iss, "http://localhost:8080/realms/test");
     }
