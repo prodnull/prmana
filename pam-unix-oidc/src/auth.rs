@@ -1,12 +1,12 @@
 //! Authentication flow combining OIDC token validation and SSSD user resolution.
 
 use crate::identity::mapper::{IdentityError, UsernameMapper};
+use crate::oidc::jwks::IssuerJwksRegistry;
+use crate::oidc::token::TokenClaims;
 use crate::oidc::{
     validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPProofResult, DPoPValidationError,
     TokenValidator, ValidationConfig, ValidationError,
 };
-use crate::oidc::jwks::IssuerJwksRegistry;
-use crate::oidc::token::TokenClaims;
 use crate::policy::config::{EnforcementMode, IssuerConfig, PolicyConfig};
 use crate::security::jti_cache::global_jti_cache;
 use crate::security::nonce_cache::{global_nonce_cache, NonceConsumeError};
@@ -72,8 +72,7 @@ fn is_test_mode_enabled() -> bool {
 /// The extracted issuer is trailing-slash normalized to match the normalization
 /// applied in `PolicyConfig::issuer_by_url()`.
 pub fn extract_iss_for_routing(token: &str) -> Result<String, AuthError> {
-    let claims =
-        TokenClaims::from_token(token).map_err(|e| AuthError::Config(e.to_string()))?;
+    let claims = TokenClaims::from_token(token).map_err(|e| AuthError::Config(e.to_string()))?;
     // Normalize: trim trailing slash to match issuer_by_url() normalization.
     Ok(claims.iss.trim_end_matches('/').to_string())
 }
@@ -111,22 +110,31 @@ pub fn authenticate_multi_issuer(
 
     // Step 2: Look up the matching IssuerConfig.
     // Security: unknown issuers are ALWAYS hard-rejected.
-    let issuer_config: &IssuerConfig = policy
-        .issuer_by_url(&iss)
-        .ok_or_else(|| {
-            tracing::warn!(issuer = %iss, "Token from unknown issuer — rejected");
-            AuthError::UnknownIssuer(iss.clone())
-        })?;
+    let issuer_config: &IssuerConfig = policy.issuer_by_url(&iss).ok_or_else(|| {
+        tracing::warn!(issuer = %iss, "Token from unknown issuer — rejected");
+        AuthError::UnknownIssuer(iss.clone())
+    })?;
 
     // Step 3: Build ValidationConfig from IssuerConfig.
+    //
+    // JTI enforcement is DISABLED in the inner validator because it records
+    // unscoped JTI keys (raw "abc123"). In a multi-issuer setup, this causes
+    // cross-issuer false positives: if issuer A uses JTI "x", the inner check
+    // would incorrectly flag issuer B's JTI "x" as replay. Instead, JTI replay
+    // prevention is handled at Step 8 with issuer-scoped keys ("{iss}:{jti}").
     let jti_enforcement = policy.effective_security_modes().jti_enforcement;
     let clock_skew = policy.timeouts.clock_skew_staleness_secs as i64;
     let validation_config = ValidationConfig {
-        issuer: issuer_config.issuer_url.clone(),
+        // Normalize issuer URL for the validator's exact-match comparison.
+        // Without this, a config with "https://idp.example.com/" would fail
+        // validation against a token with "https://idp.example.com" (no slash).
+        issuer: issuer_config.issuer_url.trim_end_matches('/').to_string(),
         client_id: issuer_config.client_id.clone(),
-        required_acr: None,  // ACR check via acr_mapping is future work (MIDP-03 extension)
+        required_acr: None, // ACR check via acr_mapping is future work (MIDP-03 extension)
         max_auth_age: None,
-        jti_enforcement,
+        // Disabled: inner validator must NOT record unscoped JTI keys.
+        // Scoped enforcement happens at Step 8 below (MIDP-07).
+        jti_enforcement: EnforcementMode::Disabled,
         clock_skew_tolerance_secs: clock_skew,
     };
 
@@ -185,23 +193,70 @@ pub fn authenticate_multi_issuer(
         None
     };
 
-    // Step 8: JTI cache check with issuer-scoped key (MIDP-07 anti-collision).
-    // The caller-side scoping (format "{iss}:{jti}") prevents cross-issuer JTI collisions.
-    // The JtiCache struct itself is NOT modified — scoping is purely at the call site.
-    let scoped_jti = claims.jti.as_deref().map(|jti| format!("{}:{}", iss, jti));
-    let token_ttl = {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let exp_u64 = claims.exp.max(0) as u64;
-        exp_u64.saturating_sub(now)
-    };
-    // Note: JTI replay check is also performed inside TokenValidator.validate() via the
-    // global_jti_cache with the raw JTI key.  Here we re-record with the scoped key so
-    // cross-issuer lookups use different namespace buckets.  The inner validator already
-    // enforces the jti_enforcement mode; we skip enforcement here to avoid double-checking.
-    global_jti_cache().check_and_record(scoped_jti.as_deref(), &username_str, token_ttl);
+    // Step 8: JTI replay prevention with issuer-scoped keys (MIDP-07).
+    //
+    // The inner TokenValidator's JTI check is disabled (Step 3) because it uses
+    // unscoped keys that would cause cross-issuer false positives. All JTI
+    // enforcement for the multi-issuer path happens here with scoped keys.
+    //
+    // Key format: "{iss}:{jti}" — so issuer A's JTI "x" and issuer B's JTI "x"
+    // are independent cache entries, preventing cross-issuer replay collisions.
+    if jti_enforcement != EnforcementMode::Disabled {
+        let scoped_jti = claims.jti.as_deref().map(|jti| format!("{}:{}", iss, jti));
+        let token_ttl = {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let exp_u64 = claims.exp.max(0) as u64;
+            exp_u64.saturating_sub(now)
+        };
+
+        let jti_result =
+            global_jti_cache().check_and_record(scoped_jti.as_deref(), &username_str, token_ttl);
+
+        match jti_result {
+            crate::security::jti_cache::JtiCheckResult::Valid => {
+                // First use of this scoped JTI — allow.
+            }
+            crate::security::jti_cache::JtiCheckResult::Replay => {
+                // Replay is always a hard-fail (CLAUDE.md §Security Check Decision Matrix).
+                let jti_display = claims.jti.as_deref().unwrap_or("unknown");
+                tracing::warn!(
+                    jti = %jti_display,
+                    issuer = %iss,
+                    username = %username_str,
+                    "JTI replay detected (issuer-scoped) — rejecting token"
+                );
+                return Err(AuthError::TokenValidation(ValidationError::TokenReplay {
+                    jti: jti_display.to_string(),
+                }));
+            }
+            crate::security::jti_cache::JtiCheckResult::Missing => {
+                // Token has no JTI claim — behavior depends on enforcement mode.
+                match jti_enforcement {
+                    EnforcementMode::Strict => {
+                        tracing::warn!(
+                            issuer = %iss,
+                            username = %username_str,
+                            "JTI missing — rejecting token (strict mode, multi-issuer)"
+                        );
+                        return Err(AuthError::TokenValidation(ValidationError::MissingJti));
+                    }
+                    EnforcementMode::Warn => {
+                        tracing::warn!(
+                            issuer = %iss,
+                            username = %username_str,
+                            "Token missing JTI claim — allowing with warning (multi-issuer)"
+                        );
+                    }
+                    EnforcementMode::Disabled => {
+                        // Unreachable: outer if-guard checks != Disabled.
+                    }
+                }
+            }
+        }
+    }
 
     // Log token groups for audit enrichment — NEVER used for access decisions.
     if let Some(token_groups) = claims.groups_for_audit() {
@@ -1284,9 +1339,7 @@ timeouts:
             .unwrap_or_default()
             .as_secs();
         let exp = now + 3600;
-        let jti_field = jti
-            .map(|j| format!(r#","jti":"{j}""#))
-            .unwrap_or_default();
+        let jti_field = jti.map(|j| format!(r#","jti":"{j}""#)).unwrap_or_default();
         let payload = format!(
             r#"{{"iss":"{iss}","sub":"{sub}","aud":"unix-oidc","exp":{exp},"iat":{now},"preferred_username":"{preferred_username}"{jti_field}}}"#
         );
@@ -1302,7 +1355,7 @@ timeouts:
         dpop_a: crate::policy::config::EnforcementMode,
         strip_domain_a: bool,
     ) -> crate::policy::config::PolicyConfig {
-        use crate::policy::config::{IssuerConfig, IdentityConfig, TransformConfig};
+        use crate::policy::config::{IdentityConfig, IssuerConfig, TransformConfig};
         let claim_a = if strip_domain_a {
             IdentityConfig {
                 username_claim: "preferred_username".to_string(),
@@ -1333,6 +1386,7 @@ timeouts:
 
     // ── extract_iss_for_routing ───────────────────────────────────────────────
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_extract_iss_valid_token() {
         let token = make_test_jwt(
@@ -1345,6 +1399,7 @@ timeouts:
         assert_eq!(iss, "https://keycloak.example.com/realms/test");
     }
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_extract_iss_trailing_slash_normalized() {
         let token = make_test_jwt(
@@ -1369,9 +1424,12 @@ timeouts:
 
     // ── Unknown issuer rejection ──────────────────────────────────────────────
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_unknown_issuer_is_rejected() {
-        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
         let token = make_test_jwt(
             "https://evil.example.com",
@@ -1397,11 +1455,14 @@ timeouts:
 
     // ── Per-issuer DPoP enforcement ───────────────────────────────────────────
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_per_issuer_dpop_disabled_accepts_token_without_proof() {
         // Issuer B has dpop_enforcement: Disabled.
         // A token from issuer B with no DPoP proof must succeed (up to SSSD check).
-        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
         let token = make_test_jwt(
             "https://entra.example.com",
@@ -1427,11 +1488,14 @@ timeouts:
         );
     }
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_per_issuer_dpop_strict_rejects_token_without_proof() {
         // Issuer A has dpop_enforcement: Strict.
         // A token from issuer A with no proof must return DPoPRequired.
-        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
         let token = make_test_jwt(
             "https://keycloak.example.com/realms/test",
@@ -1457,12 +1521,15 @@ timeouts:
 
     // ── Per-issuer claim mapping ──────────────────────────────────────────────
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_per_issuer_strip_domain_applied_only_for_issuer_a() {
         // This test verifies that the collision-safety check fires for a bad
         // strip_domain pipeline (non-injective) before we even get to SSSD.
         // This is the expected hard-fail behaviour from check_collision_safety().
-        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
         let token = make_test_jwt(
             "https://keycloak.example.com/realms/test",
@@ -1474,7 +1541,7 @@ timeouts:
             "https://keycloak.example.com/realms/test",
             "https://entra.example.com",
             EnforcementMode::Disabled, // Disabled so we don't hit DPoP error first
-            true, // strip_domain on issuer A
+            true,                      // strip_domain on issuer A
         );
         let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
         let dpop_config = DPoPAuthConfig::default();
@@ -1487,12 +1554,15 @@ timeouts:
         );
     }
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_per_issuer_no_mapping_on_issuer_b_preserves_full_username() {
         // Issuer B (Entra) has no transforms — preferred_username is used as-is.
         // This test verifies no strip_domain is applied for issuer B.
         // Result may be UserNotFound (no SSSD) but NOT Config error from mapping.
-        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
         let token = make_test_jwt(
             "https://entra.example.com",
@@ -1537,8 +1607,7 @@ timeouts:
         global_jti_cache().check_and_record(Some(&scoped_a), "alice", 3600);
 
         // Issuer B's scoped JTI must still be Valid (no collision).
-        let result_b =
-            global_jti_cache().check_and_record(Some(&scoped_b), "bob", 3600);
+        let result_b = global_jti_cache().check_and_record(Some(&scoped_b), "bob", 3600);
         assert!(
             result_b.is_valid(),
             "same JTI from different issuer must not collide; got: {result_b:?}"
