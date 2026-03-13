@@ -290,6 +290,25 @@ pub struct IssuerConfig {
     pub acr_mapping: Option<AcrMappingConfig>,
     /// Group membership mapping for this issuer. Default: `None` (NSS-only, WARN logged).
     pub group_mapping: Option<GroupMappingConfig>,
+    /// Optional audience URI override. When set, the token `aud` claim is validated against
+    /// this value instead of `client_id`. Required when the Entra app registration exposes an
+    /// Application ID URI (e.g. `api://unix-oidc`) that differs from the client ID GUID.
+    /// Falls back to `client_id` if None (OIDC standard behavior).
+    ///
+    /// Security: This does not weaken audience validation — it simply allows the operator to
+    /// specify the correct audience when IdP uses a different URI scheme than the client_id.
+    #[serde(default)]
+    pub expected_audience: Option<String>,
+    /// When true, bypasses the collision-safety hard-fail for non-injective transform pipelines
+    /// (strip_domain, regex). Use for single-tenant IdPs where the domain constraint is enforced
+    /// by the IdP itself (e.g. Entra ID single-tenant app). Default: false (safe).
+    ///
+    /// Security: Setting this to true acknowledges that the transform pipeline is technically
+    /// non-injective but safe in the operator's deployment context. A WARN is logged whenever
+    /// this bypass is active. Only set this when you understand the injectivity trade-off and
+    /// the IdP's domain constraint fully compensates for it.
+    #[serde(default)]
+    pub allow_unsafe_identity_pipeline: bool,
 }
 
 impl Default for IssuerConfig {
@@ -302,6 +321,8 @@ impl Default for IssuerConfig {
             claim_mapping: IdentityConfig::default(),
             acr_mapping: None,
             group_mapping: None,
+            expected_audience: None,
+            allow_unsafe_identity_pipeline: false,
         }
     }
 }

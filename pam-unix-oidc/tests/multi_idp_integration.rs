@@ -737,3 +737,147 @@ fn test_forged_iss_from_unconfigured_issuer_is_rejected() {
         "forged iss must be rejected as UnknownIssuer, got: {result:?}"
     );
 }
+
+// ── ENTR-01: expected_audience + allow_unsafe_identity_pipeline ───────────────
+
+/// ENTR-01: expected_audience=Some deserialises from YAML correctly.
+#[test]
+fn test_expected_audience_overrides_client_id_in_config() {
+    let yaml = r#"
+issuers:
+  - issuer_url: "https://login.microsoftonline.com/tenant-id/v2.0"
+    client_id: "00000000-0000-0000-0000-000000000001"
+    expected_audience: "api://unix-oidc"
+    dpop_enforcement: disabled
+"#;
+    let policy: PolicyConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        PolicyConfig::default(),
+    ))
+    .merge(figment::providers::Yaml::string(yaml))
+    .extract()
+    .expect("expected_audience must deserialise from YAML");
+
+    assert_eq!(policy.issuers.len(), 1);
+    let issuer = &policy.issuers[0];
+    assert_eq!(
+        issuer.expected_audience,
+        Some("api://unix-oidc".to_string()),
+        "expected_audience must deserialise as Some(\"api://unix-oidc\")"
+    );
+    // client_id must remain unchanged — expected_audience overrides only at validation time
+    assert_eq!(issuer.client_id, "00000000-0000-0000-0000-000000000001");
+}
+
+/// ENTR-01: IssuerConfig with expected_audience=None has None default.
+#[test]
+fn test_expected_audience_defaults_to_none() {
+    let yaml = r#"
+issuers:
+  - issuer_url: "https://idp.example.com"
+    client_id: "unix-oidc"
+"#;
+    let policy: PolicyConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        PolicyConfig::default(),
+    ))
+    .merge(figment::providers::Yaml::string(yaml))
+    .extract()
+    .expect("must deserialise");
+
+    assert_eq!(
+        policy.issuers[0].expected_audience, None,
+        "expected_audience must default to None when not set"
+    );
+}
+
+/// ENTR-01: allow_unsafe_identity_pipeline defaults to false (safe by default).
+#[test]
+fn test_allow_unsafe_identity_pipeline_defaults_to_false() {
+    let yaml = r#"
+issuers:
+  - issuer_url: "https://idp.example.com"
+    client_id: "unix-oidc"
+"#;
+    let policy: PolicyConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        PolicyConfig::default(),
+    ))
+    .merge(figment::providers::Yaml::string(yaml))
+    .extract()
+    .expect("must deserialise");
+
+    assert!(
+        !policy.issuers[0].allow_unsafe_identity_pipeline,
+        "allow_unsafe_identity_pipeline must default to false (safe by default)"
+    );
+}
+
+/// ENTR-01: allow_unsafe_identity_pipeline=true + strip_domain bypasses collision-safety.
+/// With the bypass active, authenticate_multi_issuer proceeds past the collision-safety gate
+/// and reaches UserNotFound (no SSSD in tests) instead of Config error.
+#[test]
+fn test_allow_unsafe_pipeline_bypasses_collision_safety() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss = "https://entra-unsafe.example.com";
+    // Token uses email claim (UPN-style) — strip_domain would extract "alice"
+    let token = make_test_token(iss, "alice@corp.example", "alice@corp.example", Some("jti-unsafe-entr-01"));
+
+    let mut policy = PolicyConfig::default();
+    policy.issuers = vec![IssuerConfig {
+        issuer_url: iss.to_string(),
+        client_id: "unix-oidc".to_string(),
+        dpop_enforcement: EnforcementMode::Disabled,
+        allow_unsafe_identity_pipeline: true,
+        claim_mapping: IdentityConfig {
+            username_claim: "preferred_username".to_string(),
+            transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
+        },
+        ..IssuerConfig::default()
+    }];
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // With allow_unsafe_identity_pipeline=true, collision-safety is bypassed.
+    // The transform runs and reaches UserNotFound (no SSSD), NOT Config error.
+    assert!(
+        matches!(result, Err(AuthError::UserNotFound(_))),
+        "allow_unsafe_identity_pipeline=true must bypass collision-safety (UserNotFound not Config), got: {result:?}"
+    );
+}
+
+/// ENTR-01: allow_unsafe_identity_pipeline=false (default) + strip_domain still blocks.
+#[test]
+fn test_allow_unsafe_pipeline_default_false_still_blocks() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss = "https://entra-safe.example.com";
+    let token = make_test_token(iss, "bob@corp.example", "bob@corp.example", Some("jti-safe-entr-02"));
+
+    let mut policy = PolicyConfig::default();
+    policy.issuers = vec![IssuerConfig {
+        issuer_url: iss.to_string(),
+        client_id: "unix-oidc".to_string(),
+        dpop_enforcement: EnforcementMode::Disabled,
+        allow_unsafe_identity_pipeline: false, // explicit false = same as default
+        claim_mapping: IdentityConfig {
+            username_claim: "preferred_username".to_string(),
+            transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
+        },
+        ..IssuerConfig::default()
+    }];
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // Without bypass, strip_domain on preferred_username is non-injective → Config error
+    assert!(
+        matches!(result, Err(AuthError::Config(_))),
+        "allow_unsafe_identity_pipeline=false must preserve collision-safety hard-fail, got: {result:?}"
+    );
+}

@@ -129,7 +129,14 @@ pub fn authenticate_multi_issuer(
         // Without this, a config with "https://idp.example.com/" would fail
         // validation against a token with "https://idp.example.com" (no slash).
         issuer: issuer_config.issuer_url.trim_end_matches('/').to_string(),
-        client_id: issuer_config.client_id.clone(),
+        // Security: Use expected_audience override when configured; supports Entra app
+        // registrations with custom Application ID URIs (api://...) that differ from the
+        // GUID client_id. Falls back to client_id (OIDC standard behavior, RFC 7519 §4.1.3).
+        client_id: issuer_config
+            .expected_audience
+            .as_deref()
+            .unwrap_or(&issuer_config.client_id)
+            .to_string(),
         required_acr: None, // ACR check via acr_mapping is future work (MIDP-03 extension)
         max_auth_age: None,
         // Disabled: inner validator must NOT record unscoped JTI keys.
@@ -177,9 +184,21 @@ pub fn authenticate_multi_issuer(
     )?;
 
     // Step 7: Per-issuer claim mapping (MIDP-03).
-    // Security (IDN-03): check_collision_safety() is a hard-fail gatekeeper.
-    crate::identity::collision::check_collision_safety(&issuer_config.claim_mapping)
-        .map_err(|e| AuthError::Config(e.to_string()))?;
+    // Security (IDN-03): check_collision_safety() is a hard-fail gatekeeper that prevents
+    // non-injective transform pipelines from allowing multiple identities to map to the same
+    // Unix username. The bypass is only active when the operator explicitly sets
+    // allow_unsafe_identity_pipeline=true, acknowledging that the IdP's own domain constraint
+    // (e.g. single-tenant Entra ID) makes the pipeline safe in their specific deployment.
+    if issuer_config.allow_unsafe_identity_pipeline {
+        tracing::warn!(
+            issuer = %issuer_config.issuer_url,
+            "Collision-safety check bypassed by allow_unsafe_identity_pipeline — \
+             operator acknowledges non-injective transform pipeline"
+        );
+    } else {
+        crate::identity::collision::check_collision_safety(&issuer_config.claim_mapping)
+            .map_err(|e| AuthError::Config(e.to_string()))?;
+    }
     let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
         .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
 
