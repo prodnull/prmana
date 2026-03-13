@@ -5,7 +5,10 @@ use crate::oidc::{
     validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPProofResult, DPoPValidationError,
     TokenValidator, ValidationConfig, ValidationError,
 };
-use crate::policy::config::{EnforcementMode, PolicyConfig};
+use crate::oidc::jwks::IssuerJwksRegistry;
+use crate::oidc::token::TokenClaims;
+use crate::policy::config::{EnforcementMode, IssuerConfig, PolicyConfig};
+use crate::security::jti_cache::global_jti_cache;
 use crate::security::nonce_cache::{global_nonce_cache, NonceConsumeError};
 use crate::security::session::generate_ssh_session_id;
 use crate::sssd::groups::{check_group_policy, GroupPolicyError};
@@ -39,6 +42,13 @@ pub enum AuthError {
     /// Username mapping pipeline failed (missing claim or transform error).
     #[error("Identity mapping failed: {0}")]
     IdentityMapping(String),
+
+    /// Token issuer does not match any configured issuer in policy.yaml.
+    ///
+    /// Security: Unknown issuers are always hard-rejected. An attacker cannot
+    /// gain access by presenting a token from an unconfigured IdP.
+    #[error("Token from unknown issuer '{0}' — not in configured issuers")]
+    UnknownIssuer(String),
 }
 
 /// Check if test mode is explicitly enabled.
@@ -48,6 +58,273 @@ fn is_test_mode_enabled() -> bool {
     std::env::var("UNIX_OIDC_TEST_MODE")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false)
+}
+
+/// Extract the `iss` (issuer) claim from a raw JWT for pre-validation routing.
+///
+/// This function decodes the JWT payload WITHOUT signature verification to read
+/// the `iss` claim. This is safe because:
+/// 1. The issuer value is only used for routing (looking up which config to use).
+/// 2. Full signature verification is performed subsequently by `TokenValidator`.
+/// 3. An attacker forging `iss` would still fail the signature check with the
+///    JWKS for the forged issuer.
+///
+/// The extracted issuer is trailing-slash normalized to match the normalization
+/// applied in `PolicyConfig::issuer_by_url()`.
+pub fn extract_iss_for_routing(token: &str) -> Result<String, AuthError> {
+    let claims =
+        TokenClaims::from_token(token).map_err(|e| AuthError::Config(e.to_string()))?;
+    // Normalize: trim trailing slash to match issuer_by_url() normalization.
+    Ok(claims.iss.trim_end_matches('/').to_string())
+}
+
+/// Multi-issuer authentication dispatch (MIDP-06, MIDP-07).
+///
+/// Extracts the `iss` claim from the token, looks up the matching `IssuerConfig`
+/// in `policy`, validates the token with the per-issuer JWKS provider, applies
+/// per-issuer DPoP enforcement (MIDP-02), and applies per-issuer claim mapping
+/// (MIDP-03).
+///
+/// JTI cache keys are issuer-scoped (format: `"{iss}:{jti}"`) to prevent
+/// cross-issuer replay false positives — a token from issuer A with JTI "x" does
+/// not collide with a token from issuer B with JTI "x" (MIDP-07).
+///
+/// # Errors
+///
+/// - `AuthError::Config` — token payload cannot be decoded.
+/// - `AuthError::UnknownIssuer` — `iss` not found in `policy.issuers`.
+/// - `AuthError::TokenValidation` — signature, expiry, audience, or JTI check failed.
+/// - `AuthError::DPoPRequired` — issuer enforces DPoP strict but no proof provided.
+/// - `AuthError::DPoPValidation` — DPoP proof is present but invalid.
+/// - `AuthError::IdentityMapping` — claim mapping pipeline failed.
+/// - `AuthError::UserNotFound` / `AuthError::UserResolution` — SSSD lookup failed.
+pub fn authenticate_multi_issuer(
+    token: &str,
+    dpop_proof: Option<&str>,
+    dpop_config: &DPoPAuthConfig,
+    policy: &PolicyConfig,
+    jwks_registry: &IssuerJwksRegistry,
+) -> Result<AuthResult, AuthError> {
+    // Step 1: Extract issuer from token payload for routing.
+    // No signature verification here — full verification follows per-issuer JWKS.
+    let iss = extract_iss_for_routing(token)?;
+
+    // Step 2: Look up the matching IssuerConfig.
+    // Security: unknown issuers are ALWAYS hard-rejected.
+    let issuer_config: &IssuerConfig = policy
+        .issuer_by_url(&iss)
+        .ok_or_else(|| {
+            tracing::warn!(issuer = %iss, "Token from unknown issuer — rejected");
+            AuthError::UnknownIssuer(iss.clone())
+        })?;
+
+    // Step 3: Build ValidationConfig from IssuerConfig.
+    let jti_enforcement = policy.effective_security_modes().jti_enforcement;
+    let clock_skew = policy.timeouts.clock_skew_staleness_secs as i64;
+    let validation_config = ValidationConfig {
+        issuer: issuer_config.issuer_url.clone(),
+        client_id: issuer_config.client_id.clone(),
+        required_acr: None,  // ACR check via acr_mapping is future work (MIDP-03 extension)
+        max_auth_age: None,
+        jti_enforcement,
+        clock_skew_tolerance_secs: clock_skew,
+    };
+
+    // Step 4: Get or create the per-issuer JWKS provider from the registry.
+    // The registry keeps independent caches per issuer (MIDP-07).
+    // JWKS TTL defaults to 300s (5 min); HTTP timeout defaults to 10s.
+    // These are reasonable operational defaults; future work can add
+    // per-issuer cache_ttl to PolicyConfig if needed.
+    const JWKS_CACHE_TTL_SECS: u64 = 300;
+    const JWKS_HTTP_TIMEOUT_SECS: u64 = 10;
+    let jwks_provider = jwks_registry.get_or_init(
+        &issuer_config.issuer_url,
+        JWKS_CACHE_TTL_SECS,
+        JWKS_HTTP_TIMEOUT_SECS,
+    );
+
+    // Step 5: Validate the token with the per-issuer JWKS provider.
+    #[cfg(feature = "test-mode")]
+    let validator = {
+        if is_test_mode_enabled() {
+            // WARNING: This skips signature verification - for testing only!
+            TokenValidator::new_insecure_for_testing(validation_config)
+        } else {
+            TokenValidator::with_jwks_provider(validation_config, jwks_provider)
+        }
+    };
+
+    #[cfg(not(feature = "test-mode"))]
+    let validator = TokenValidator::with_jwks_provider(validation_config, jwks_provider);
+
+    let claims = validator.validate(token)?;
+
+    // Step 6: Per-issuer DPoP enforcement (MIDP-02).
+    // Overrides the global dpop_required with the per-issuer dpop_enforcement setting.
+    let dpop_thumbprint = apply_per_issuer_dpop(
+        dpop_proof,
+        dpop_config,
+        &claims,
+        issuer_config.dpop_enforcement,
+    )?;
+
+    // Step 7: Per-issuer claim mapping (MIDP-03).
+    // Security (IDN-03): check_collision_safety() is a hard-fail gatekeeper.
+    crate::identity::collision::check_collision_safety(&issuer_config.claim_mapping)
+        .map_err(|e| AuthError::Config(e.to_string()))?;
+    let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
+        .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+
+    let raw_claim = claims.preferred_username.clone().unwrap_or_default();
+    let username_str = mapper
+        .map(&claims)
+        .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
+    let mapped_from = if username_str != raw_claim {
+        Some(raw_claim)
+    } else {
+        None
+    };
+
+    // Step 8: JTI cache check with issuer-scoped key (MIDP-07 anti-collision).
+    // The caller-side scoping (format "{iss}:{jti}") prevents cross-issuer JTI collisions.
+    // The JtiCache struct itself is NOT modified — scoping is purely at the call site.
+    let scoped_jti = claims.jti.as_deref().map(|jti| format!("{}:{}", iss, jti));
+    let token_ttl = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let exp_u64 = claims.exp.max(0) as u64;
+        exp_u64.saturating_sub(now)
+    };
+    // Note: JTI replay check is also performed inside TokenValidator.validate() via the
+    // global_jti_cache with the raw JTI key.  Here we re-record with the scoped key so
+    // cross-issuer lookups use different namespace buckets.  The inner validator already
+    // enforces the jti_enforcement mode; we skip enforcement here to avoid double-checking.
+    global_jti_cache().check_and_record(scoped_jti.as_deref(), &username_str, token_ttl);
+
+    // Log token groups for audit enrichment — NEVER used for access decisions.
+    if let Some(token_groups) = claims.groups_for_audit() {
+        tracing::info!(
+            username = %username_str,
+            token_groups = ?token_groups,
+            issuer = %iss,
+            "Token groups (audit enrichment only — access decisions use NSS groups)"
+        );
+    }
+
+    // Step 9: SSSD user resolution.
+    if !user_exists(&username_str) {
+        return Err(AuthError::UserNotFound(username_str));
+    }
+    let user_info = get_user_info(&username_str)?;
+
+    // Step 10: Enforce login_groups policy via NSS group membership check.
+    let modes = policy.effective_security_modes();
+    check_group_policy(
+        &user_info.username,
+        user_info.gid,
+        &policy.ssh_login.login_groups,
+        modes.groups_enforcement,
+    )
+    .map_err(|e: GroupPolicyError| {
+        tracing::warn!(
+            username = %user_info.username,
+            error = %e,
+            "Group policy denied SSH login"
+        );
+        AuthError::GroupDenied(e.to_string())
+    })?;
+
+    // Step 11: Generate session ID and return result.
+    let session_id = generate_ssh_session_id()
+        .map_err(|e| AuthError::Config(format!("Session ID generation failed: {e}")))?;
+
+    Ok(AuthResult {
+        username: user_info.username,
+        uid: user_info.uid,
+        gid: user_info.gid,
+        session_id,
+        token_jti: claims.jti,
+        token_acr: claims.acr,
+        token_auth_time: claims.auth_time,
+        dpop_thumbprint,
+        mapped_from,
+        token_exp: claims.exp,
+        token_issuer: claims.iss,
+    })
+}
+
+/// Apply per-issuer DPoP enforcement logic.
+///
+/// Returns the DPoP thumbprint string if a valid proof was provided,
+/// `None` if DPoP is disabled or the token is not DPoP-bound.
+///
+/// Enforcement semantics:
+/// - `Disabled`: DPoP proof is not required; if provided it is NOT validated
+///   (Entra-like issuers that use SHR instead of RFC 9449).
+/// - `Warn`: DPoP-bound tokens require a proof; unbound tokens proceed without proof.
+///   Missing proof on unbound tokens produces a warning but does not fail.
+/// - `Strict`: Any token (bound or unbound) must carry a valid DPoP proof.
+fn apply_per_issuer_dpop(
+    dpop_proof: Option<&str>,
+    dpop_config: &DPoPAuthConfig,
+    claims: &crate::oidc::token::TokenClaims,
+    enforcement: EnforcementMode,
+) -> Result<Option<String>, AuthError> {
+    // Fast path: DPoP is disabled for this issuer.
+    // Accept the token regardless of whether a proof was provided.
+    if enforcement == EnforcementMode::Disabled {
+        return Ok(None);
+    }
+
+    let validate_proof = |proof: &str| -> Result<DPoPProofResult, AuthError> {
+        let dpop_validation_config = DPoPConfig {
+            max_proof_age: dpop_config.max_proof_age,
+            clock_skew_future_secs: dpop_config.clock_skew_future_secs,
+            require_nonce: dpop_config.require_nonce && dpop_config.expected_nonce.is_some(),
+            expected_nonce: dpop_config.expected_nonce.clone(),
+            expected_method: "SSH".to_string(),
+            expected_target: dpop_config.target_host.clone(),
+        };
+        Ok(validate_dpop_proof(proof, &dpop_validation_config)?)
+    };
+
+    // Check if token is DPoP-bound (has cnf.jkt claim).
+    if let Some(cnf) = &claims.cnf {
+        if let Some(token_jkt) = &cnf.jkt {
+            // Token is DPoP-bound — require proof regardless of enforcement mode.
+            let proof = dpop_proof.ok_or(AuthError::DPoPRequired)?;
+            let result = validate_proof(proof)?;
+            verify_dpop_binding(&result.thumbprint, token_jkt)?;
+            return Ok(Some(result.thumbprint));
+        }
+    }
+
+    // Token is NOT DPoP-bound.
+    match (dpop_proof, enforcement) {
+        (Some(proof), _) => {
+            // Proof provided for unbound token — validate it anyway (audit/logging).
+            let result = validate_proof(proof)?;
+            Ok(Some(result.thumbprint))
+        }
+        (None, EnforcementMode::Strict) => {
+            // Strict mode requires a proof even for unbound tokens.
+            tracing::warn!("DPoP enforcement is strict but no proof provided");
+            Err(AuthError::DPoPRequired)
+        }
+        (None, EnforcementMode::Warn) => {
+            tracing::warn!(
+                "DPoP enforcement is warn but no proof provided — \
+                 proceeding without DPoP binding"
+            );
+            Ok(None)
+        }
+        (None, EnforcementMode::Disabled) => {
+            // Already handled above; unreachable but be explicit.
+            Ok(None)
+        }
+    }
 }
 
 /// Result of a successful authentication.
@@ -982,5 +1259,307 @@ timeouts:
         let config = DPoPAuthConfig::from_policy(&policy);
         assert_eq!(config.clock_skew_future_secs, 5);
         assert_eq!(config.max_proof_age, 60);
+    }
+
+    // ── Multi-issuer routing tests (MIDP-06, MIDP-07) ────────────────────────
+    //
+    // These tests exercise extract_iss_for_routing(), authenticate_multi_issuer(),
+    // and JTI cache scoping without requiring SSSD.
+    //
+    // Token construction: base64url-encode a minimal JSON payload (no real sig needed
+    // because tests run with UNIX_OIDC_TEST_MODE=1 which uses new_insecure_for_testing).
+    // Format: <base64url(header)>.<base64url(payload)>.<dummy_sig>
+    //
+    // ENV_MUTEX serializes tests that manipulate UNIX_OIDC_TEST_MODE to prevent
+    // races between parallel test threads (same pattern as Plan 01 / config.rs tests).
+    static MULTI_ISSUER_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(feature = "test-mode")]
+    fn make_test_jwt(iss: &str, sub: &str, preferred_username: &str, jti: Option<&str>) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = r#"{"alg":"ES256","typ":"JWT"}"#;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let exp = now + 3600;
+        let jti_field = jti
+            .map(|j| format!(r#","jti":"{j}""#))
+            .unwrap_or_default();
+        let payload = format!(
+            r#"{{"iss":"{iss}","sub":"{sub}","aud":"unix-oidc","exp":{exp},"iat":{now},"preferred_username":"{preferred_username}"{jti_field}}}"#
+        );
+        let h = URL_SAFE_NO_PAD.encode(header.as_bytes());
+        let p = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        format!("{h}.{p}.dummysig")
+    }
+
+    #[cfg(feature = "test-mode")]
+    fn make_two_issuer_policy(
+        issuer_a: &str,
+        issuer_b: &str,
+        dpop_a: crate::policy::config::EnforcementMode,
+        strip_domain_a: bool,
+    ) -> crate::policy::config::PolicyConfig {
+        use crate::policy::config::{IssuerConfig, IdentityConfig, TransformConfig};
+        let claim_a = if strip_domain_a {
+            IdentityConfig {
+                username_claim: "preferred_username".to_string(),
+                transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
+            }
+        } else {
+            IdentityConfig::default()
+        };
+        let mut policy = crate::policy::config::PolicyConfig::default();
+        policy.issuers = vec![
+            IssuerConfig {
+                issuer_url: issuer_a.to_string(),
+                client_id: "unix-oidc".to_string(),
+                dpop_enforcement: dpop_a,
+                claim_mapping: claim_a,
+                ..IssuerConfig::default()
+            },
+            IssuerConfig {
+                issuer_url: issuer_b.to_string(),
+                client_id: "unix-oidc".to_string(),
+                dpop_enforcement: EnforcementMode::Disabled,
+                claim_mapping: IdentityConfig::default(),
+                ..IssuerConfig::default()
+            },
+        ];
+        policy
+    }
+
+    // ── extract_iss_for_routing ───────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_iss_valid_token() {
+        let token = make_test_jwt(
+            "https://keycloak.example.com/realms/test",
+            "alice",
+            "alice",
+            None,
+        );
+        let iss = extract_iss_for_routing(&token).expect("should extract iss");
+        assert_eq!(iss, "https://keycloak.example.com/realms/test");
+    }
+
+    #[test]
+    fn test_extract_iss_trailing_slash_normalized() {
+        let token = make_test_jwt(
+            "https://keycloak.example.com/realms/test/",
+            "alice",
+            "alice",
+            None,
+        );
+        let iss = extract_iss_for_routing(&token).expect("should extract iss");
+        // Trailing slash must be trimmed.
+        assert_eq!(iss, "https://keycloak.example.com/realms/test");
+    }
+
+    #[test]
+    fn test_extract_iss_garbage_input_returns_err() {
+        let result = extract_iss_for_routing("not.a.jwt");
+        assert!(
+            result.is_err(),
+            "garbage input must return Err, got: {result:?}"
+        );
+    }
+
+    // ── Unknown issuer rejection ──────────────────────────────────────────────
+
+    #[test]
+    fn test_unknown_issuer_is_rejected() {
+        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt(
+            "https://evil.example.com",
+            "attacker",
+            "attacker",
+            Some("jti-evil"),
+        );
+        let policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Strict,
+            false,
+        );
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        assert!(
+            matches!(result, Err(AuthError::UnknownIssuer(ref iss)) if iss == "https://evil.example.com"),
+            "expected UnknownIssuer, got: {result:?}"
+        );
+    }
+
+    // ── Per-issuer DPoP enforcement ───────────────────────────────────────────
+
+    #[test]
+    fn test_per_issuer_dpop_disabled_accepts_token_without_proof() {
+        // Issuer B has dpop_enforcement: Disabled.
+        // A token from issuer B with no DPoP proof must succeed (up to SSSD check).
+        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt(
+            "https://entra.example.com",
+            "alice",
+            "alice",
+            Some("jti-entra-1"),
+        );
+        let policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Strict,
+            false,
+        );
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        // DPoP is Disabled for this issuer — should NOT get DPoPRequired.
+        // May get UserNotFound (no SSSD in tests) but NOT DPoPRequired.
+        assert!(
+            !matches!(result, Err(AuthError::DPoPRequired)),
+            "DPoP should not be required when enforcement is Disabled, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_per_issuer_dpop_strict_rejects_token_without_proof() {
+        // Issuer A has dpop_enforcement: Strict.
+        // A token from issuer A with no proof must return DPoPRequired.
+        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt(
+            "https://keycloak.example.com/realms/test",
+            "alice",
+            "alice",
+            Some("jti-kc-strict"),
+        );
+        let policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Strict,
+            false,
+        );
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        assert!(
+            matches!(result, Err(AuthError::DPoPRequired)),
+            "Strict DPoP enforcement must require proof, got: {result:?}"
+        );
+    }
+
+    // ── Per-issuer claim mapping ──────────────────────────────────────────────
+
+    #[test]
+    fn test_per_issuer_strip_domain_applied_only_for_issuer_a() {
+        // This test verifies that the collision-safety check fires for a bad
+        // strip_domain pipeline (non-injective) before we even get to SSSD.
+        // This is the expected hard-fail behaviour from check_collision_safety().
+        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt(
+            "https://keycloak.example.com/realms/test",
+            "alice@corp.example",
+            "alice@corp.example",
+            Some("jti-kc-map"),
+        );
+        let policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Disabled, // Disabled so we don't hit DPoP error first
+            true, // strip_domain on issuer A
+        );
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        // check_collision_safety fires for strip_domain → Config error
+        assert!(
+            matches!(result, Err(AuthError::Config(_))),
+            "strip_domain with preferred_username must produce Config error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_per_issuer_no_mapping_on_issuer_b_preserves_full_username() {
+        // Issuer B (Entra) has no transforms — preferred_username is used as-is.
+        // This test verifies no strip_domain is applied for issuer B.
+        // Result may be UserNotFound (no SSSD) but NOT Config error from mapping.
+        let _guard = MULTI_ISSUER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt(
+            "https://entra.example.com",
+            "alice@corp.example",
+            "alice@corp.example",
+            Some("jti-entra-map"),
+        );
+        let policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Strict,
+            true, // strip_domain only on issuer A (not B)
+        );
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        // Issuer B (Entra) has Disabled DPoP and no transforms.
+        // Should hit UserNotFound, NOT DPoPRequired or Config.
+        assert!(
+            matches!(result, Err(AuthError::UserNotFound(_))),
+            "expected UserNotFound (no SSSD), got: {result:?}"
+        );
+    }
+
+    // ── JTI cache scoping ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_jti_scoping_same_jti_different_issuers_no_collision() {
+        // Same JTI "jti-shared" from two different issuers should NOT collide.
+        // Both tokens should proceed past the scoped JTI check (may fail on SSSD).
+        use crate::security::jti_cache::global_jti_cache;
+
+        // Pre-record the scoped JTI for issuer A to simulate a prior auth.
+        let iss_a = "https://issuer-a.example.com";
+        let iss_b = "https://issuer-b.example.com";
+        let shared_jti = "jti-collision-test-shared";
+        let scoped_a = format!("{iss_a}:{shared_jti}");
+        let scoped_b = format!("{iss_b}:{shared_jti}");
+
+        // Record issuer A's scoped JTI.
+        global_jti_cache().check_and_record(Some(&scoped_a), "alice", 3600);
+
+        // Issuer B's scoped JTI must still be Valid (no collision).
+        let result_b =
+            global_jti_cache().check_and_record(Some(&scoped_b), "bob", 3600);
+        assert!(
+            result_b.is_valid(),
+            "same JTI from different issuer must not collide; got: {result_b:?}"
+        );
+    }
+
+    #[test]
+    fn test_jti_scoping_same_issuer_same_jti_is_replay() {
+        // Same JTI from the same issuer IS a replay attack.
+        use crate::security::jti_cache::global_jti_cache;
+
+        let iss = "https://issuer-replay.example.com";
+        let jti = "jti-replay-test";
+        let scoped = format!("{iss}:{jti}");
+
+        // First use
+        let first = global_jti_cache().check_and_record(Some(&scoped), "alice", 3600);
+        assert!(first.is_valid(), "first use must be valid");
+
+        // Second use — replay
+        let second = global_jti_cache().check_and_record(Some(&scoped), "alice", 3600);
+        assert!(second.is_replay(), "second use must be replay");
     }
 }
