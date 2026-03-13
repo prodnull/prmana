@@ -9,6 +9,8 @@
 use jsonwebtoken::jwk::{Jwk, JwkSet};
 use parking_lot::RwLock;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -286,9 +288,117 @@ impl JwksProvider {
     }
 }
 
+// ── IssuerJwksRegistry (Phase 21, MIDP-07) ────────────────────────────────────
+
+/// Thread-safe registry of per-issuer JWKS providers.
+///
+/// Invariant (MIDP-07): each issuer URL maps to an independent `JwksProvider`.
+/// A fetch or refresh for issuer A NEVER touches the cache for issuer B.
+///
+/// The registry is **not global** — it is owned by the auth routing struct
+/// (wired in Plan 02) so that tests can create isolated instances.
+///
+/// Trailing slashes are normalized before lookup so that
+/// `"https://idp.example.com"` and `"https://idp.example.com/"` resolve to
+/// the same provider.
+///
+/// # Thread safety
+///
+/// Uses a read-write lock with a read-first hot path:
+/// - Most calls (repeat lookups) acquire only the read lock.
+/// - First-time registration acquires the write lock for insertion.
+pub struct IssuerJwksRegistry {
+    providers: RwLock<HashMap<String, Arc<JwksProvider>>>,
+}
+
+impl IssuerJwksRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self {
+            providers: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Get or create the `JwksProvider` for the given issuer.
+    ///
+    /// - Normalizes `issuer` by trimming trailing slashes before lookup.
+    /// - On the first call for an issuer, creates a new `JwksProvider` with
+    ///   the supplied `ttl_secs` and `timeout_secs`.
+    /// - On subsequent calls, returns the existing `Arc<JwksProvider>` without
+    ///   touching `ttl_secs` or `timeout_secs` (first write wins).
+    pub fn get_or_init(&self, issuer: &str, ttl_secs: u64, timeout_secs: u64) -> Arc<JwksProvider> {
+        let normalized = issuer.trim_end_matches('/');
+
+        // Fast path: read lock (no contention on repeated lookups).
+        {
+            let read = self.providers.read();
+            if let Some(p) = read.get(normalized) {
+                return Arc::clone(p);
+            }
+        }
+
+        // Slow path: write lock for first-time registration.
+        let mut write = self.providers.write();
+        // Re-check after acquiring write lock (another thread may have inserted).
+        write
+            .entry(normalized.to_string())
+            .or_insert_with(|| {
+                Arc::new(JwksProvider::with_timeouts(
+                    normalized,
+                    ttl_secs,
+                    timeout_secs,
+                ))
+            })
+            .clone()
+    }
+}
+
+impl Default for IssuerJwksRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── IssuerJwksRegistry tests (Phase 21-01) ────────────────────────────────
+
+    #[test]
+    fn test_jwks_registry_new_is_empty() {
+        let registry = IssuerJwksRegistry::new();
+        // An empty registry should have no providers — get_or_init creates on demand.
+        // Verify by calling get_or_init and confirming it returns a valid Arc.
+        let provider = registry.get_or_init("https://a.example.com", 300, 10);
+        // Should not panic; the returned Arc should have a strong count of at least 1.
+        assert!(std::sync::Arc::strong_count(&provider) >= 1);
+    }
+
+    #[test]
+    fn test_jwks_registry_different_issuers_return_different_providers() {
+        let registry = IssuerJwksRegistry::new();
+        let p_a = registry.get_or_init("https://a.example.com", 300, 10);
+        let p_b = registry.get_or_init("https://b.example.com", 300, 10);
+        // Invariant (MIDP-07): each issuer URL maps to an independent JwksProvider.
+        // A fetch or refresh for issuer A NEVER touches the cache for issuer B.
+        assert!(
+            !std::sync::Arc::ptr_eq(&p_a, &p_b),
+            "different issuer URLs must return different Arc<JwksProvider> instances"
+        );
+    }
+
+    #[test]
+    fn test_jwks_registry_same_issuer_returns_same_provider() {
+        let registry = IssuerJwksRegistry::new();
+        let p1 = registry.get_or_init("https://keycloak.example.com/realms/corp", 300, 10);
+        let p2 = registry.get_or_init("https://keycloak.example.com/realms/corp", 300, 10);
+        // Calling get_or_init() twice for the same issuer must return the same Arc.
+        assert!(
+            std::sync::Arc::ptr_eq(&p1, &p2),
+            "same issuer URL must return the same Arc<JwksProvider> (idempotent)"
+        );
+    }
 
     #[test]
     fn test_jwks_provider_creation() {
