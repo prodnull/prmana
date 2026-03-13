@@ -668,12 +668,27 @@ async fn handle_request(
                 "DPoP proof requested"
             );
 
+            let username_str = state_read.username.as_deref().unwrap_or("unknown").to_string();
+            let signer_type_str = state_read.signer_type.as_deref().unwrap_or("unknown").to_string();
+
             let signer = match &state_read.signer {
                 Some(s) => s,
                 None => {
                     state_read
                         .metrics
                         .record_proof_request(false, start.elapsed());
+                    // OBS-1: Audit event — authentication failure (not logged in).
+                    // session_id is "n/a": GetProof occurs before a PAM session is
+                    // opened, so no session_id exists yet in the agent.
+                    tracing::info!(
+                        target: "unix_oidc_audit",
+                        event_type = "authentication",
+                        session_id = "n/a",
+                        username = %username_str,
+                        outcome = "failure",
+                        reason = "not_logged_in",
+                        "AGENT_AUTH"
+                    );
                     return (AgentResponse::error("Not logged in", "NOT_LOGGED_IN"), true);
                 }
             };
@@ -686,6 +701,16 @@ async fn handle_request(
                     state_read
                         .metrics
                         .record_proof_request(false, start.elapsed());
+                    // OBS-1: Audit event — authentication failure (no token).
+                    tracing::info!(
+                        target: "unix_oidc_audit",
+                        event_type = "authentication",
+                        session_id = "n/a",
+                        username = %username_str,
+                        outcome = "failure",
+                        reason = "no_access_token",
+                        "AGENT_AUTH"
+                    );
                     return (AgentResponse::error("No access token", "NO_TOKEN"), true);
                 }
             };
@@ -703,12 +728,36 @@ async fn handle_request(
                         })
                         .unwrap_or(0);
 
+                    // OBS-1: Audit event — authentication success (DPoP proof issued).
+                    // session_id is "n/a" at GetProof time: pam_sm_open_session runs
+                    // after auth succeeds and creates the session file, so no session_id
+                    // exists in the agent yet. The target field provides correlation context.
+                    tracing::info!(
+                        target: "unix_oidc_audit",
+                        event_type = "authentication",
+                        session_id = "n/a",
+                        username = %username_str,
+                        outcome = "success",
+                        signer_type = %signer_type_str,
+                        auth_target = %target,
+                        "AGENT_AUTH"
+                    );
                     state_read
                         .metrics
                         .record_proof_request(true, start.elapsed());
                     (AgentResponse::proof(token, proof, expires_in), false)
                 }
                 Err(e) => {
+                    // OBS-1: Audit event — authentication failure (DPoP sign error).
+                    tracing::info!(
+                        target: "unix_oidc_audit",
+                        event_type = "authentication",
+                        session_id = "n/a",
+                        username = %username_str,
+                        outcome = "failure",
+                        reason = %e,
+                        "AGENT_AUTH"
+                    );
                     state_read
                         .metrics
                         .record_proof_request(false, start.elapsed());
@@ -1131,11 +1180,37 @@ pub fn spawn_refresh_task(
                         state_write.access_token = Some(new_token);
                         state_write.token_expires = Some(new_expires);
                         state_write.refresh_failed = false;
-                        if let Some(u) = username {
-                            state_write.username = Some(u);
+                        if let Some(ref u) = username {
+                            state_write.username = Some(u.clone());
                         }
+                        let refresh_username = username
+                            .as_deref()
+                            .or(state_write.username.as_deref())
+                            .unwrap_or("unknown")
+                            .to_string();
                         current_expires = new_expires;
                         succeeded = true;
+
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        let expires_in_secs = (new_expires - now).max(0) as u64;
+
+                        // OBS-1: Audit event — token refresh succeeded.
+                        // session_id is "n/a" for background refresh: the refresh task
+                        // is not tied to a specific PAM session IPC request. The username
+                        // provides the correlation context for SIEM queries.
+                        tracing::info!(
+                            target: "unix_oidc_audit",
+                            event_type = "token_refresh",
+                            session_id = "n/a",
+                            username = %refresh_username,
+                            outcome = "success",
+                            expires_in = expires_in_secs,
+                            "AGENT_REFRESH"
+                        );
+
                         info!(
                             new_expires,
                             threshold_percent, "Auto-refresh succeeded; re-arming for next cycle"
@@ -1419,6 +1494,20 @@ async fn cleanup_session(state: Arc<RwLock<AgentState>>, session_id: String) {
             }
         }
     }
+
+    // OBS-1: Audit event — session closed. Username is read before clearing state
+    // (Step 3 has already run at this point — username is None). Emit the audit event
+    // with the session_id from the IPC request so SIEM can correlate with AGENT_AUTH.
+    // username is not available post-cleanup; use "n/a" to satisfy the required field
+    // invariant while noting that session_id provides sufficient correlation.
+    tracing::info!(
+        target: "unix_oidc_audit",
+        event_type = "session_closed",
+        session_id = %session_id,
+        username = "n/a",
+        outcome = "success",
+        "AGENT_SESSION_CLOSED"
+    );
 
     info!(
         session_id = %session_id,
