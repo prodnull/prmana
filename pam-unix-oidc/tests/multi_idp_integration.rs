@@ -20,13 +20,13 @@
 #![cfg(feature = "test-mode")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use figment::providers::Format as _;
 use pam_unix_oidc::auth::{authenticate_multi_issuer, AuthError, DPoPAuthConfig};
 use pam_unix_oidc::oidc::jwks::IssuerJwksRegistry;
 use pam_unix_oidc::policy::config::{
     AcrMappingConfig, EnforcementMode, GroupMappingConfig, GroupSource, IdentityConfig,
     IssuerConfig, PolicyConfig, TransformConfig,
 };
-use figment::providers::Format as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -52,9 +52,7 @@ fn make_test_token(iss: &str, sub: &str, preferred_username: &str, jti: Option<&
         .unwrap_or_default()
         .as_secs();
     let exp = now + 3600;
-    let jti_field = jti
-        .map(|j| format!(r#","jti":"{j}""#))
-        .unwrap_or_default();
+    let jti_field = jti.map(|j| format!(r#","jti":"{j}""#)).unwrap_or_default();
     let payload = format!(
         r#"{{"iss":"{iss}","sub":"{sub}","aud":"unix-oidc","exp":{exp},"iat":{now},"preferred_username":"{preferred_username}"{jti_field}}}"#
     );
@@ -95,8 +93,8 @@ fn test_two_issuer_policy_loads_from_yaml() {
         env!("CARGO_MANIFEST_DIR"),
         "/../test/fixtures/policy/policy-multi-idp.yaml"
     );
-    let policy = PolicyConfig::load_from(fixture)
-        .expect("multi-idp fixture must load without error");
+    let policy =
+        PolicyConfig::load_from(fixture).expect("multi-idp fixture must load without error");
     assert_eq!(
         policy.issuers.len(),
         2,
@@ -109,9 +107,7 @@ fn test_two_issuer_policy_loads_from_yaml() {
         "first issuer must be Keycloak"
     );
     assert!(
-        policy.issuers[1]
-            .issuer_url
-            .contains("microsoftonline.com"),
+        policy.issuers[1].issuer_url.contains("microsoftonline.com"),
         "second issuer must be Entra ID-like"
     );
 }
@@ -160,11 +156,8 @@ fn test_dpop_strict_rejects_bearer_only() {
 
     let iss_a = "https://kc.example.com/realms/corp";
     let token = make_test_token(iss_a, "alice", "alice", Some("jti-strict-01"));
-    let policy = make_two_issuer_policy(
-        iss_a,
-        "https://entra.example.com",
-        EnforcementMode::Strict,
-    );
+    let policy =
+        make_two_issuer_policy(iss_a, "https://entra.example.com", EnforcementMode::Strict);
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 
@@ -217,7 +210,10 @@ fn test_acr_mapping_deserialises_and_translates() {
 
     // Keycloak issuer has explicit ACR mapping.
     let kc = &policy.issuers[0];
-    let acr_map = kc.acr_mapping.as_ref().expect("Keycloak must have acr_mapping");
+    let acr_map = kc
+        .acr_mapping
+        .as_ref()
+        .expect("Keycloak must have acr_mapping");
     assert_eq!(
         acr_map.enforcement,
         EnforcementMode::Strict,
@@ -368,21 +364,24 @@ fn test_strip_domain_issuer_a_collision_safety_fires() {
     std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
 
     let iss_a = "https://kc-domain.example.com/realms/corp";
-    let token = make_test_token(iss_a, "alice@corp.example", "alice@corp.example", Some("jti-strip-05"));
+    let token = make_test_token(
+        iss_a,
+        "alice@corp.example",
+        "alice@corp.example",
+        Some("jti-strip-05"),
+    );
 
     let mut policy = PolicyConfig::default();
-    policy.issuers = vec![
-        IssuerConfig {
-            issuer_url: iss_a.to_string(),
-            client_id: "unix-oidc".to_string(),
-            dpop_enforcement: EnforcementMode::Disabled, // avoid DPoP error first
-            claim_mapping: IdentityConfig {
-                username_claim: "preferred_username".to_string(),
-                transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
-            },
-            ..IssuerConfig::default()
+    policy.issuers = vec![IssuerConfig {
+        issuer_url: iss_a.to_string(),
+        client_id: "unix-oidc".to_string(),
+        dpop_enforcement: EnforcementMode::Disabled, // avoid DPoP error first
+        claim_mapping: IdentityConfig {
+            username_claim: "preferred_username".to_string(),
+            transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
         },
-    ];
+        ..IssuerConfig::default()
+    }];
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 
@@ -403,18 +402,21 @@ fn test_no_transforms_issuer_b_preserves_raw_claim() {
     std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
 
     let iss_b = "https://entra-notransform.example.com";
-    let token = make_test_token(iss_b, "alice@corp.example", "alice@corp.example", Some("jti-raw-05"));
+    let token = make_test_token(
+        iss_b,
+        "alice@corp.example",
+        "alice@corp.example",
+        Some("jti-raw-05"),
+    );
 
     let mut policy = PolicyConfig::default();
-    policy.issuers = vec![
-        IssuerConfig {
-            issuer_url: iss_b.to_string(),
-            client_id: "unix-oidc".to_string(),
-            dpop_enforcement: EnforcementMode::Disabled,
-            claim_mapping: IdentityConfig::default(), // no transforms
-            ..IssuerConfig::default()
-        },
-    ];
+    policy.issuers = vec![IssuerConfig {
+        issuer_url: iss_b.to_string(),
+        client_id: "unix-oidc".to_string(),
+        dpop_enforcement: EnforcementMode::Disabled,
+        claim_mapping: IdentityConfig::default(), // no transforms
+        ..IssuerConfig::default()
+    }];
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 
