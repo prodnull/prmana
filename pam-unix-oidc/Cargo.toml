@@ -16,6 +16,8 @@ default = []
 # NEVER enable this feature in production builds.
 # Use only for integration testing with mock IdPs.
 test-mode = []
+# Experimental hybrid PQC DPoP verification: ML-DSA-65+ES256 composite signatures.
+pqc = ["dep:ml-dsa"]
 
 [dependencies]
 serde.workspace = true
@@ -42,6 +44,10 @@ sha2 = "0.10"
 subtle = "2.5"
 uuid = { version = "1", features = ["v4"] }
 regex = "1.10"
+
+[dependencies.ml-dsa]
+version = "0.1.0-rc.7"
+optional = true
 
 [dev-dependencies]
 tempfile = "3.0"

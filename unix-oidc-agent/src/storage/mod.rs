@@ -54,3 +54,7 @@ pub const KEY_DPOP_PRIVATE: &str = "unix-oidc-dpop-key";
 pub const KEY_ACCESS_TOKEN: &str = "unix-oidc-access-token";
 pub const KEY_REFRESH_TOKEN: &str = "unix-oidc-refresh-token";
 pub const KEY_TOKEN_METADATA: &str = "unix-oidc-token-metadata";
+/// ML-DSA-65 seed for PQC hybrid signer (32 bytes).
+/// Only used when `enable_pqc: true` and `--features pqc`.
+#[cfg(feature = "pqc")]
+pub const KEY_PQ_SEED: &str = "unix-oidc-pq-seed";

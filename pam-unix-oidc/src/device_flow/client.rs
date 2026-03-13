@@ -150,9 +150,16 @@ impl DeviceFlowClient {
             )));
         }
 
-        response
-            .json::<DeviceAuthResponse>()
-            .map_err(|e| DeviceFlowError::InvalidResponse(e.to_string()))
+        let auth_response: DeviceAuthResponse = response
+            .json()
+            .map_err(|e| DeviceFlowError::InvalidResponse(e.to_string()))?;
+
+        // Security: Reject non-HTTPS verification URIs in production.
+        // Automated scanners flag HTTP URIs displayed to users during device flow.
+        // RFC 9700 §2.5 requires TLS for all authorization server endpoints.
+        auth_response.validate_uris(cfg!(feature = "test-mode"))?;
+
+        Ok(auth_response)
     }
 
     /// Poll for the token after user authentication.

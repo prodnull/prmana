@@ -28,7 +28,7 @@ We implemented **DPoP (Demonstrating Proof-of-Possession)** per RFC 9449.
 
 ### Key aspects:
 
-1. **Client-generated key pairs**: Each unix-oidc-agent generates an ephemeral P-256 ECDSA key pair
+1. **Client-generated key pairs**: Each `unix-oidc-agent` generates an ephemeral P-256 ECDSA key pair
 2. **Proof binding**: Every token use requires a fresh DPoP proof signed by the private key
 3. **Server validation**: The PAM module validates proofs match the token's `cnf` claim
 4. **Replay protection**: JTI (JWT ID) tracking prevents proof reuse
@@ -105,5 +105,6 @@ For high-security environments requiring protection against memory dump attacks,
 ## References
 
 - [RFC 9449 - OAuth 2.0 Demonstrating Proof of Possession (DPoP)](https://www.rfc-editor.org/rfc/rfc9449)
-- [Implementation: rust-oauth-dpop crate](../../rust-oauth-dpop/)
+- [Agent DPoP signing](../../unix-oidc-agent/src/crypto/dpop.rs)
+- [PAM DPoP validation](../../pam-unix-oidc/src/oidc/dpop.rs)
 - [Security Guide: DPoP section](../security-guide.md#dpop-proof-of-possession)

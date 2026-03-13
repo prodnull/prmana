@@ -74,6 +74,9 @@ sd-notify = "0.5"
 yubikey = ["dep:cryptoki", "dep:rpassword"]
 # tpm feature is implemented in Plan 03-02; dep:tss-esapi will be added then.
 tpm = ["dep:tss-esapi", "dep:rpassword"]
+# Experimental hybrid PQC DPoP: ML-DSA-65+ES256 composite signatures
+# per draft-ietf-jose-pq-composite-sigs-01. Pre-release, unaudited crate.
+pqc = ["dep:ml-dsa", "pam-unix-oidc/pqc"]
 
 [dependencies.cryptoki]
 version = "0.7"
@@ -82,6 +85,11 @@ optional = true
 [dependencies.rpassword]
 version = "7"
 optional = true
+
+[dependencies.ml-dsa]
+version = "0.1.0-rc.7"
+optional = true
+features = ["zeroize"]
 
 # tss-esapi-sys ships pre-built FFI bindings only for Linux (x86_64, aarch64).
 # macOS requires `generate-bindings` with tpm2-tss C headers, which are not

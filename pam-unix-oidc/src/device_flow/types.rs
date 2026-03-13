@@ -67,6 +67,35 @@ pub struct DeviceAuthResponse {
     pub interval: u64,
 }
 
+impl DeviceAuthResponse {
+    /// Validate that verification URIs use the HTTPS scheme.
+    ///
+    /// RFC 9700 §2.5 requires TLS for all authorization server endpoints.
+    /// A non-HTTPS verification URI could direct users to an insecure page
+    /// where credentials are entered in the clear.
+    ///
+    /// `allow_http` should only be `true` when `test-mode` is enabled
+    /// (local Keycloak development over HTTP).
+    pub fn validate_uris(&self, allow_http: bool) -> Result<(), DeviceFlowError> {
+        if !allow_http {
+            if !self.verification_uri.starts_with("https://") {
+                return Err(DeviceFlowError::InvalidResponse(format!(
+                    "verification_uri must use HTTPS scheme, got: {}",
+                    self.verification_uri.split('/').take(3).collect::<Vec<_>>().join("/"),
+                )));
+            }
+            if let Some(ref uri) = self.verification_uri_complete {
+                if !uri.starts_with("https://") {
+                    return Err(DeviceFlowError::InvalidResponse(
+                        "verification_uri_complete must use HTTPS scheme".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 fn default_interval() -> u64 {
     5
 }
@@ -190,5 +219,65 @@ mod tests {
             error_description: None,
         };
         assert!(matches!(error.into_error(), DeviceFlowError::ExpiredToken));
+    }
+
+    // --- URI scheme validation tests ---
+
+    fn make_response(verification_uri: &str, complete: Option<&str>) -> DeviceAuthResponse {
+        DeviceAuthResponse {
+            device_code: "test-code".to_string(),
+            user_code: "ABCD-1234".to_string(),
+            verification_uri: verification_uri.to_string(),
+            verification_uri_complete: complete.map(String::from),
+            expires_in: 1800,
+            interval: 5,
+        }
+    }
+
+    #[test]
+    fn test_validate_uris_accepts_https() {
+        let resp = make_response("https://idp.example.com/device", None);
+        assert!(resp.validate_uris(false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_uris_accepts_https_with_complete() {
+        let resp = make_response(
+            "https://idp.example.com/device",
+            Some("https://idp.example.com/device?code=ABCD"),
+        );
+        assert!(resp.validate_uris(false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_uris_rejects_http() {
+        let resp = make_response("http://idp.example.com/device", None);
+        let err = resp.validate_uris(false).unwrap_err();
+        assert!(
+            matches!(err, DeviceFlowError::InvalidResponse(ref msg) if msg.contains("HTTPS")),
+            "Expected HTTPS error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_uris_rejects_http_complete() {
+        let resp = make_response(
+            "https://idp.example.com/device",
+            Some("http://idp.example.com/device?code=ABCD"),
+        );
+        let err = resp.validate_uris(false).unwrap_err();
+        assert!(matches!(err, DeviceFlowError::InvalidResponse(_)));
+    }
+
+    #[test]
+    fn test_validate_uris_rejects_custom_scheme() {
+        let resp = make_response("myapp://callback", None);
+        assert!(resp.validate_uris(false).is_err());
+    }
+
+    #[test]
+    fn test_validate_uris_allows_http_in_test_mode() {
+        let resp = make_response("http://localhost:8080/device", None);
+        assert!(resp.validate_uris(true).is_ok());
     }
 }

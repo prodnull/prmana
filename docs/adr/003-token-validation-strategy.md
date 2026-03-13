@@ -37,9 +37,9 @@ We use **local JWT validation** with cached JWKS (JSON Web Key Set).
 4. **Validate claims**:
    - `iss`: Must match configured issuer
    - `aud`: Must match configured audience
-   - `exp`: Must not be expired
-   - `iat`: Must not be in the future
-   - `nbf`: Must be valid (if present)
+   - `exp`: Must not be expired (with configurable clock skew tolerance)
+   - `nbf`: Must be valid (if present, via `jsonwebtoken`)
+   - `auth_time`: Checked against `max_auth_age` if configured
 5. **Validate DPoP binding**: If DPoP enabled, verify `cnf.jkt` matches proof thumbprint
 6. **Check JTI cache**: Detect replay attempts
 
@@ -50,18 +50,19 @@ We use **local JWT validation** with cached JWKS (JSON Web Key Set).
 │ PAM Module  │
 └──────┬──────┘
        │
-       │ 1. Check local cache
+       │ 1. Check in-memory cache
        ↓
-┌─────────────┐     Cache miss      ┌─────────────┐
-│ JWKS Cache  │ ─────────────────→  │     IdP     │
-│ (file-based)│ ←─────────────────  │ /.well-known│
-└─────────────┘     Fetch & cache   └─────────────┘
+┌──────────────┐     Cache miss      ┌─────────────┐
+│  In-memory   │ ─────────────────→  │     IdP     │
+│  JWKS cache  │ ←─────────────────  │ /.well-known│
+│ (RwLock)     │     Fetch & cache   └─────────────┘
+└──────────────┘
 ```
 
-- **Cache location**: `/var/cache/unix-oidc/jwks.json`
-- **TTL**: Configurable, default 1 hour
-- **Refresh**: Background refresh before expiry
-- **Fallback**: Use stale cache if IdP unreachable
+- **Cache location**: In-memory `RwLock<Option<CachedJwks>>` (`pam-unix-oidc/src/oidc/jwks.rs`)
+- **TTL**: Configurable via `jwks_cache_ttl_secs` (default 1 hour)
+- **Refresh**: On cache miss or TTL expiry; daemon startup can prefetch
+- **Fallback**: Use stale cache if IdP unreachable (cache survives transient failures)
 
 ## Consequences
 
@@ -109,10 +110,13 @@ We use **local JWT validation** with cached JWKS (JSON Web Key Set).
 | `iss` | Exact match | Prevent token from wrong IdP |
 | `aud` | Contains expected | Prevent token for wrong app |
 | `exp` | Not expired | Limit token lifetime |
-| `iat` | Not future | Detect clock issues |
-| `nbf` | Currently valid | Honor IdP restrictions |
+| `nbf` | Currently valid (via `jsonwebtoken`) | Honor IdP restrictions |
 | `sub` | Present | Identify user |
 | `cnf.jkt` | Matches proof | DPoP binding |
+| `auth_time` | Checked against `max_auth_age` (if configured) | Enforce re-authentication |
+
+Note: `iat` future-check is enforced on DPoP proofs (in `dpop.rs`) but not on access tokens.
+The `jsonwebtoken` library validates `exp` and `nbf` but does not validate `iat` by default.
 
 ### What we DON'T validate (and why)
 

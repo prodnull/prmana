@@ -27,18 +27,20 @@ We split functionality between two components:
 
 ### 1. PAM Module (`pam_unix_oidc.so`)
 
-Minimal, stateless library responsible for:
+Library responsible for:
 - Reading tokens from PAM conversation
-- Validating JWT signatures locally
+- Validating JWT signatures locally (JWKS fetched and cached in-memory)
 - Validating DPoP proofs
 - Communicating with agent via Unix socket
 - Audit logging
+- JWKS fetching from IdP discovery endpoint (in-memory cache with configurable TTL)
+- Optional token introspection (RFC 7662)
+- Optional webhook-based approval flows
+- CIBA step-up authentication support (OpenID CIBA Core)
 
 **Does NOT**:
-- Make network calls
-- Manage persistent state
-- Perform OAuth flows
-- Store credentials
+- Manage persistent state (all caches are in-memory)
+- Store credentials to disk
 
 ### 2. Agent Daemon (`unix-oidc-agent`)
 
@@ -57,13 +59,13 @@ Long-running user process responsible for:
 │ (in sshd/sudo)  │   JSON Protocol     │ (user process)  │
 └─────────────────┘                     └─────────────────┘
         │                                       │
-        │ JWT Validation                        │ HTTPS
-        │ (local, no network)                   │
+        │ JWT Validation + JWKS fetch           │ HTTPS
+        │ (in-memory cache, HTTPS on miss)      │
         ↓                                       ↓
-   ┌─────────┐                           ┌─────────────┐
-   │ Cached  │                           │   Identity  │
-   │  JWKS   │                           │   Provider  │
-   └─────────┘                           └─────────────┘
+   ┌─────────────┐                       ┌─────────────┐
+   │  In-memory  │  ──HTTPS on miss──→   │   Identity  │
+   │  JWKS cache │                       │   Provider  │
+   └─────────────┘                       └─────────────┘
 ```
 
 ### Why this split:
@@ -72,17 +74,17 @@ Long-running user process responsible for:
 |---------|------------|--------------|
 | Execution context | Root, in critical service | User, dedicated process |
 | Lifetime | Per-auth, short | Long-running |
-| Network access | None | Full |
-| State | Stateless | Stateful |
+| Network access | JWKS fetch, introspection, webhooks (in-memory cache) | Full (device flow, token refresh) |
+| State | In-memory caches only | Persistent (keyring/file) |
 | Crash impact | Auth failure | Token unavailable |
-| Attack surface | Minimal | Contained |
+| Attack surface | Moderate (HTTP client for JWKS/introspection) | Contained |
 
 ## Consequences
 
 ### Positive
 
-- **Security isolation**: Network code runs in user context, not root
-- **Reliability**: PAM module never blocks on network
+- **Security isolation**: Token acquisition and device flow run in user context, not root
+- **Reliability**: PAM module's network calls (JWKS, introspection) are timebound and cached; token acquisition flows run in the agent
 - **Testability**: Components can be tested independently
 - **Flexibility**: Agent can be replaced/upgraded without PAM changes
 - **User experience**: Agent handles interactive flows (device auth)
@@ -93,6 +95,21 @@ Long-running user process responsible for:
 - **IPC overhead**: Socket communication adds latency (~1ms)
 - **Agent dependency**: Auth fails if agent not running
 - **Socket security**: Must protect Unix socket permissions
+
+### IPC Protocol
+
+The agent exposes a JSON-over-Unix-socket protocol with these request types:
+
+| Request | Purpose |
+|---------|---------|
+| `GetProof` | Generate a fresh DPoP proof for a target server |
+| `Status` | Check agent health and token state |
+| `Metrics` | Retrieve Prometheus-format metrics |
+| `Refresh` | Trigger token refresh |
+| `Shutdown` | Graceful daemon shutdown |
+| `SessionClosed` | Credential cleanup on session end (MEM-03/05) |
+| `StepUp` | Initiate CIBA step-up authentication (OpenID CIBA Core) |
+| `StepUpResult` | Poll for step-up completion |
 
 ### Design decisions within this architecture
 

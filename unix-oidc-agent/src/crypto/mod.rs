@@ -21,8 +21,12 @@ pub mod yubikey_signer;
 #[cfg(feature = "tpm")]
 pub mod tpm_signer;
 
+#[cfg(feature = "pqc")]
+pub mod pqc_signer;
+
 pub use dpop::{
-    assemble_dpop_proof, build_dpop_message, generate_dpop_proof, DPoPClaims, DPoPError,
+    assemble_dpop_proof, assemble_dpop_proof_composite, build_dpop_message,
+    build_dpop_message_with_alg, generate_dpop_proof, DPoPClaims, DPoPError,
 };
 pub use protected_key::{mlock_probe, MlockStatus, ProtectedSigningKey};
 pub use signer::{DPoPSigner, SignerError, SoftwareSigner};
@@ -33,3 +37,6 @@ pub use yubikey_signer::YubiKeySigner;
 
 #[cfg(all(feature = "tpm", target_os = "linux"))]
 pub use tpm_signer::TpmSigner;
+
+#[cfg(feature = "pqc")]
+pub use pqc_signer::HybridPqcSigner;

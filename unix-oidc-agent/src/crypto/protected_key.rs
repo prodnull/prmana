@@ -4,8 +4,8 @@
 //! with the following protections:
 //!
 //! 1. **ZeroizeOnDrop** (MEM-02): The inner `SigningKey` is zeroed when the struct is dropped.
-//!    This requires `p256` to be built with the `zeroize` feature, which enables the
-//!    `ZeroizeOnDrop` derive on the upstream type.
+//!    `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.16`
+//!    — no feature flag required (see CLAUDE.md §Memory Protection Invariants).
 //!
 //! 2. **Memory locking** (MEM-04): On Linux, `mlock(2)` is called on the key bytes after
 //!    heap allocation to prevent the OS from swapping key material to disk. This is
@@ -146,16 +146,16 @@ unsafe fn try_mlock(data: &mut [u8]) -> Option<MlockGuard> {
 /// stable address that can be memory-locked via `mlock(2)`.
 ///
 /// ## Memory safety properties
-/// - `p256::ecdsa::SigningKey` is built with the `zeroize` feature, so it implements
-///   `ZeroizeOnDrop`. When `ProtectedSigningKey` is dropped, the key bytes are
-///   overwritten with zeros before deallocation (MEM-02).
+/// - `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.16`.
+///   When `ProtectedSigningKey` is dropped, the key bytes are overwritten with zeros
+///   before deallocation (MEM-02).
 /// - `mlock(2)` is attempted on the key bytes after Box allocation to prevent
 ///   the OS from paging key material to swap (MEM-04, best-effort).
 /// - `export_key()` returns `Zeroizing<Vec<u8>>`, ensuring the caller's copy of
 ///   key bytes is also wiped on drop (MEM-01).
 pub struct ProtectedSigningKey {
-    /// The inner signing key. With p256's `zeroize` feature, this type derives
-    /// `ZeroizeOnDrop`, so it is zeroed when dropped.
+    /// The inner signing key. `ecdsa-0.16` derives `ZeroizeOnDrop` unconditionally,
+    /// so key material is zeroed when dropped.
     signing_key: SigningKey,
 
     /// Pre-computed JWK thumbprint (RFC 7638) for the corresponding public key.
@@ -359,50 +359,54 @@ mod tests {
 
     /// Verify that ZeroizeOnDrop zeroes the key bytes after drop.
     ///
-    /// We verify zeroing by locating the raw heap address of the `signing_key`
-    /// field *within the Box* via a pointer-to-field offset, capturing the bytes
-    /// before drop, then reading the same address after drop.
-    ///
-    /// # Safety rationale
-    /// Reading freed memory is technically undefined behaviour. This pattern is
-    /// acceptable in a test because:
-    /// 1. We hold the raw pointer before drop — the address is known.
-    /// 2. ZeroizeOnDrop runs synchronously before deallocation in the Rust drop
-    ///    glue, so the zeroed bytes are written before the allocator reclaims
-    ///    the page.
-    /// 3. The test is single-threaded; no concurrent allocator activity.
-    /// 4. False-negatives are possible if the allocator also zeroes on free,
-    ///    but false-positives (incorrectly passing) are not.
-    ///
-    /// This pattern mirrors how the `zeroize` crate's own integration tests work.
+    /// Uses `ManuallyDrop` on the `Box` so we can trigger `ProtectedSigningKey`'s
+    /// `Drop` (which invokes `ZeroizeOnDrop` on the inner `SigningKey`) without
+    /// deallocating the heap allocation. This lets us read the zeroed bytes from
+    /// still-live memory, avoiding undefined behaviour from use-after-free.
     #[test]
     fn test_key_material_zeroed_after_drop() {
         let key = ProtectedSigningKey::generate();
         let original_bytes: Vec<u8> = key.export_key().to_vec(); // independent copy
+        assert!(
+            original_bytes.iter().any(|&b| b != 0),
+            "generated key should have non-zero bytes"
+        );
 
-        // Get a stable raw pointer to the `signing_key` field inside the Box.
-        // We use addr_of! within an unsafe block to obtain the field address.
+        // Convert to raw pointer so we control both destruction and deallocation.
+        let raw_ptr: *mut ProtectedSigningKey = Box::into_raw(key);
+
+        // Get a pointer to the signing_key field while the allocation is live.
         let key_field_ptr: *const u8 = unsafe {
             use std::ptr::addr_of;
-            addr_of!((*(&*key as *const ProtectedSigningKey)).signing_key) as *const u8
+            addr_of!((*raw_ptr).signing_key) as *const u8
         };
         let key_len = std::mem::size_of::<SigningKey>();
 
-        // Drop the key — ZeroizeOnDrop must zero the bytes synchronously.
-        drop(key);
+        // Run the ProtectedSigningKey destructor in-place. This triggers
+        // ZeroizeOnDrop on the inner SigningKey but does NOT free the heap.
+        // SAFETY: raw_ptr is valid (from Box::into_raw), and we deallocate below.
+        unsafe {
+            std::ptr::drop_in_place(raw_ptr);
+        }
 
-        // SAFETY: Intentionally reading freed heap memory to verify zeroing.
-        // The allocator may have reclaimed or re-used this memory; we only
-        // assert that the bytes differ from the original, which is true whether
-        // they were zeroed by ZeroizeOnDrop or overwritten by the allocator.
+        // Read the signing_key bytes from the still-live allocation.
+        // SAFETY: The heap allocation was not freed — only drop_in_place ran.
+        // The bytes at this address are still readable (the allocator owns the
+        // memory but has not reclaimed it).
         let bytes_after_drop: Vec<u8> =
             unsafe { std::slice::from_raw_parts(key_field_ptr, key_len).to_vec() };
 
-        // Only assert when the original was clearly non-zero.
-        if original_bytes.iter().any(|&b| b != 0) {
-            assert_ne!(
-                original_bytes, bytes_after_drop,
-                "Key bytes must be zeroed after drop (ZeroizeOnDrop or allocator zeroing expected)"
+        assert_ne!(
+            original_bytes, bytes_after_drop,
+            "Key bytes must change after ZeroizeOnDrop runs"
+        );
+
+        // Deallocate the heap memory without running destructors again.
+        // SAFETY: raw_ptr was obtained from Box::into_raw with this layout.
+        unsafe {
+            std::alloc::dealloc(
+                raw_ptr as *mut u8,
+                std::alloc::Layout::new::<ProtectedSigningKey>(),
             );
         }
     }

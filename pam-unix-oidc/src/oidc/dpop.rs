@@ -19,6 +19,18 @@ use thiserror::Error;
 /// Expected coordinate length for P-256 (32 bytes)
 const P256_COORDINATE_LEN: usize = 32;
 
+/// ML-DSA-65 signature size (FIPS 204)
+#[cfg(feature = "pqc")]
+const ML_DSA_65_SIG_SIZE: usize = 3309;
+
+/// ES256 raw r||s signature size
+#[cfg(feature = "pqc")]
+const ES256_SIG_SIZE: usize = 64;
+
+/// ML-DSA-65 verifying key size (FIPS 204)
+#[cfg(feature = "pqc")]
+const ML_DSA_65_VK_SIZE: usize = 1952;
+
 /// Maximum entries in the DPoP JTI cache before forced cleanup/rejection
 /// This prevents memory exhaustion attacks where an attacker submits many unique JTIs
 const MAX_JTI_CACHE_ENTRIES: usize = 100_000;
@@ -261,34 +273,35 @@ pub fn validate_dpop_proof(
         .and_then(|v| v.as_str())
         .ok_or_else(|| DPoPValidationError::InvalidHeader("missing alg".to_string()))?;
 
-    if alg != "ES256" {
-        return Err(DPoPValidationError::UnsupportedAlgorithm(alg.to_string()));
-    }
-
-    // Extract JWK
-    let jwk: EcJwk = header
-        .get("jwk")
-        .ok_or(DPoPValidationError::MissingJwk)
-        .and_then(|v| {
-            serde_json::from_value(v.clone())
-                .map_err(|e| DPoPValidationError::JsonError(e.to_string()))
-        })?;
-
-    // Verify signature
+    // Dispatch based on algorithm
     let message = format!("{}.{}", parts[0], parts[1]);
     let signature_bytes = URL_SAFE_NO_PAD
         .decode(parts[2])
         .map_err(|_| DPoPValidationError::Base64Error)?;
 
-    let verifying_key = jwk_to_verifying_key(&jwk)?;
+    let jwk_value = header
+        .get("jwk")
+        .ok_or(DPoPValidationError::MissingJwk)?
+        .clone();
 
-    // ES256 signatures are 64 bytes (r || s)
-    let signature = Signature::from_slice(&signature_bytes)
-        .map_err(|_| DPoPValidationError::InvalidSignature)?;
-
-    verifying_key
-        .verify(message.as_bytes(), &signature)
-        .map_err(|_| DPoPValidationError::InvalidSignature)?;
+    let thumbprint = match alg {
+        "ES256" => {
+            let jwk: EcJwk = serde_json::from_value(jwk_value)
+                .map_err(|e| DPoPValidationError::JsonError(e.to_string()))?;
+            let verifying_key = jwk_to_verifying_key(&jwk)?;
+            let signature = Signature::from_slice(&signature_bytes)
+                .map_err(|_| DPoPValidationError::InvalidSignature)?;
+            verifying_key
+                .verify(message.as_bytes(), &signature)
+                .map_err(|_| DPoPValidationError::InvalidSignature)?;
+            compute_jwk_thumbprint(&jwk)
+        }
+        #[cfg(feature = "pqc")]
+        "ML-DSA-65-ES256" => {
+            validate_composite_proof(&jwk_value, message.as_bytes(), &signature_bytes)?
+        }
+        _ => return Err(DPoPValidationError::UnsupportedAlgorithm(alg.to_string())),
+    };
 
     // Decode claims
     let claims_bytes = URL_SAFE_NO_PAD
@@ -359,10 +372,7 @@ pub fn validate_dpop_proof(
         return Err(DPoPValidationError::ReplayDetected);
     }
 
-    // Compute thumbprint and capture nonce for caller
-    let thumbprint = compute_jwk_thumbprint(&jwk);
     let nonce = claims.nonce;
-
     Ok(DPoPProofResult { thumbprint, nonce })
 }
 
@@ -426,6 +436,95 @@ fn compute_jwk_thumbprint(jwk: &EcJwk) -> String {
 
     let hash = Sha256::digest(canonical.as_bytes());
     URL_SAFE_NO_PAD.encode(hash)
+}
+
+/// Validate a composite ML-DSA-65+ES256 DPoP proof signature.
+///
+/// Verifies both the ML-DSA-65 and ES256 components of the composite signature.
+/// Returns the composite JWK thumbprint on success.
+///
+/// Composite signature format (draft-ietf-jose-pq-composite-sigs-01):
+/// `2-byte BE length of ML-DSA sig || ML-DSA-65 sig (3309 bytes) || ES256 sig (64 bytes)`
+#[cfg(feature = "pqc")]
+fn validate_composite_proof(
+    jwk_value: &serde_json::Value,
+    message: &[u8],
+    signature_bytes: &[u8],
+) -> Result<String, DPoPValidationError> {
+    // Parse composite JWK
+    let pq_jwk = jwk_value
+        .get("pq")
+        .ok_or_else(|| DPoPValidationError::InvalidHeader("missing pq component in JWK".into()))?;
+    let trad_jwk = jwk_value
+        .get("trad")
+        .ok_or_else(|| DPoPValidationError::InvalidHeader("missing trad component in JWK".into()))?;
+
+    // Validate kty
+    if jwk_value.get("kty").and_then(|v| v.as_str()) != Some("COMPOSITE") {
+        return Err(DPoPValidationError::InvalidKeyParameters);
+    }
+
+    // Extract and validate traditional EC key
+    let ec_jwk: EcJwk = serde_json::from_value(trad_jwk.clone())
+        .map_err(|e| DPoPValidationError::JsonError(e.to_string()))?;
+    let ec_vk = jwk_to_verifying_key(&ec_jwk)?;
+
+    // Extract ML-DSA-65 public key
+    let pq_pub_b64 = pq_jwk
+        .get("pub")
+        .and_then(|v| v.as_str())
+        .ok_or(DPoPValidationError::InvalidKeyParameters)?;
+    let pq_pub_bytes = URL_SAFE_NO_PAD
+        .decode(pq_pub_b64)
+        .map_err(|_| DPoPValidationError::Base64Error)?;
+    if pq_pub_bytes.len() != ML_DSA_65_VK_SIZE {
+        return Err(DPoPValidationError::InvalidKeyParameters);
+    }
+
+    let pq_vk_encoded = ml_dsa::EncodedVerifyingKey::<ml_dsa::MlDsa65>::try_from(pq_pub_bytes.as_slice())
+        .map_err(|_| DPoPValidationError::InvalidKeyParameters)?;
+    let pq_vk = ml_dsa::VerifyingKey::<ml_dsa::MlDsa65>::decode(&pq_vk_encoded);
+
+    // Parse composite signature: 2-byte BE length + ML-DSA sig + ES256 sig
+    let min_len = 2 + ML_DSA_65_SIG_SIZE + ES256_SIG_SIZE;
+    if signature_bytes.len() < min_len {
+        return Err(DPoPValidationError::InvalidSignature);
+    }
+
+    let pq_len = u16::from_be_bytes([signature_bytes[0], signature_bytes[1]]) as usize;
+    if pq_len != ML_DSA_65_SIG_SIZE {
+        return Err(DPoPValidationError::InvalidSignature);
+    }
+    if signature_bytes.len() != 2 + pq_len + ES256_SIG_SIZE {
+        return Err(DPoPValidationError::InvalidSignature);
+    }
+
+    let pq_sig_bytes = &signature_bytes[2..2 + pq_len];
+    let ec_sig_bytes = &signature_bytes[2 + pq_len..];
+
+    // Verify ML-DSA-65 signature
+    use ml_dsa::signature::Verifier as MlDsaVerifier;
+    let pq_sig = ml_dsa::Signature::<ml_dsa::MlDsa65>::try_from(pq_sig_bytes)
+        .map_err(|_| DPoPValidationError::InvalidSignature)?;
+    pq_vk
+        .verify(message, &pq_sig)
+        .map_err(|_| DPoPValidationError::InvalidSignature)?;
+
+    // Verify ES256 signature
+    let ec_sig = Signature::from_slice(ec_sig_bytes)
+        .map_err(|_| DPoPValidationError::InvalidSignature)?;
+    ec_vk
+        .verify(message, &ec_sig)
+        .map_err(|_| DPoPValidationError::InvalidSignature)?;
+
+    // Compute composite thumbprint
+    let pq_pub = URL_SAFE_NO_PAD.encode(&pq_pub_bytes);
+    let canonical = format!(
+        r#"{{"alg":"ML-DSA-65-ES256","kty":"COMPOSITE","pq":{{"alg":"ML-DSA-65","kty":"AKP","pub":"{pq_pub}"}},"trad":{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}}}"#,
+        ec_jwk.x, ec_jwk.y
+    );
+    let hash = Sha256::digest(canonical.as_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(hash))
 }
 
 #[cfg(test)]

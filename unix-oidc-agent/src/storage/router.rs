@@ -183,12 +183,15 @@ impl StorageRouter {
         }
 
         // Collect keys that exist in the file source.
-        let all_keys = [
+        #[allow(unused_mut)]
+        let mut all_keys: Vec<&str> = vec![
             KEY_DPOP_PRIVATE,
             KEY_ACCESS_TOKEN,
             KEY_REFRESH_TOKEN,
             KEY_TOKEN_METADATA,
         ];
+        #[cfg(feature = "pqc")]
+        all_keys.push(super::KEY_PQ_SEED);
 
         let present_keys: Vec<&str> = all_keys.iter().copied().filter(|k| src.exists(k)).collect();
 

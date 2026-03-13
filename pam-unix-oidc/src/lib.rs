@@ -391,7 +391,7 @@ impl PamServiceModule for PamUnixOidc {
                         PamError::USER_UNKNOWN
                     }
                     AuthError::TokenValidation(_) => {
-                        AuditEvent::token_validation_failed(Some(&pam_user), &reason, source_ip)
+                        AuditEvent::token_validation_failed(Some(&pam_user), &reason, source_ip, None)
                             .log();
                         PamError::AUTH_ERR
                     }
@@ -408,6 +408,7 @@ impl PamServiceModule for PamUnixOidc {
                             Some(&pam_user),
                             &format!("DPoP validation failed: {reason}"),
                             source_ip,
+                            None,
                         )
                         .log();
                         PamError::AUTH_ERR
@@ -417,6 +418,7 @@ impl PamServiceModule for PamUnixOidc {
                             Some(&pam_user),
                             "DPoP proof required but not provided",
                             source_ip,
+                            None,
                         )
                         .log();
                         PamError::AUTH_ERR

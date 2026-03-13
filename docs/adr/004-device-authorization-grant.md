@@ -92,9 +92,9 @@ We use IdP-provided codes, typically:
 
 ### Verification URI display
 
-We display both:
+We display:
 - Full URI: `https://idp.example.com/device`
-- QR code (when terminal supports it): Scan to open on phone
+- User code for manual entry
 
 ## Consequences
 

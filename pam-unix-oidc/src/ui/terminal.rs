@@ -22,12 +22,16 @@ impl Default for TerminalDisplay {
 
 impl StepUpDisplay for TerminalDisplay {
     fn show_device_flow_prompt(&self, verification_uri: &str, user_code: &str) {
+        // Security: Sanitize IdP-supplied values before terminal display
+        // to prevent ANSI escape sequence injection.
+        let uri = super::sanitize_for_terminal(verification_uri);
+        let code = super::sanitize_for_terminal(user_code);
         eprintln!();
         eprintln!("═══════════════════════════════════════════════════════════");
         eprintln!("  Sudo requires step-up authentication");
         eprintln!();
-        eprintln!("  Visit: {verification_uri}");
-        eprintln!("  Enter code: {user_code}");
+        eprintln!("  Visit: {uri}");
+        eprintln!("  Enter code: {code}");
         eprintln!();
         eprintln!("  Waiting for authentication...");
         eprintln!("═══════════════════════════════════════════════════════════");
@@ -46,6 +50,7 @@ impl StepUpDisplay for TerminalDisplay {
     }
 
     fn show_failure(&self, reason: &str) {
+        let reason = super::sanitize_for_terminal(reason);
         eprintln!();
         eprintln!("  Authentication failed: {reason}");
         eprintln!("═══════════════════════════════════════════════════════════");
@@ -71,13 +76,18 @@ impl<'a> StepUpDisplay for PamDisplay<'a> {
     fn show_device_flow_prompt(&self, verification_uri: &str, user_code: &str) {
         use pamsm::PamLibExt;
 
+        // Security: Sanitize IdP-supplied values before terminal display
+        // to prevent ANSI escape sequence injection.
+        let uri = super::sanitize_for_terminal(verification_uri);
+        let code = super::sanitize_for_terminal(user_code);
+
         let message = format!(
             "\n\
             ═══════════════════════════════════════════════════════════\n\
               Sudo requires step-up authentication\n\
             \n\
-              Visit: {verification_uri}\n\
-              Enter code: {user_code}\n\
+              Visit: {uri}\n\
+              Enter code: {code}\n\
             \n\
               Waiting for authentication...\n\
             ═══════════════════════════════════════════════════════════"
@@ -110,6 +120,7 @@ impl<'a> StepUpDisplay for PamDisplay<'a> {
     fn show_failure(&self, reason: &str) {
         use pamsm::PamLibExt;
 
+        let reason = super::sanitize_for_terminal(reason);
         let message = format!(
             "\n  Authentication failed: {reason}\n\
             ═══════════════════════════════════════════════════════════\n"

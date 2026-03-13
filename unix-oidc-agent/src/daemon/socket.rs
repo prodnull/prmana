@@ -1332,12 +1332,16 @@ async fn cleanup_session(state: Arc<RwLock<AgentState>>, session_id: String) {
         }
     };
 
-    for key in &[
+    #[allow(unused_mut)]
+    let mut keys_to_delete: Vec<&str> = vec![
         KEY_ACCESS_TOKEN,
         KEY_REFRESH_TOKEN,
         KEY_DPOP_PRIVATE,
         KEY_TOKEN_METADATA,
-    ] {
+    ];
+    #[cfg(feature = "pqc")]
+    keys_to_delete.push(crate::storage::KEY_PQ_SEED);
+    for key in &keys_to_delete {
         if storage.exists(key) {
             if let Err(e) = storage.delete(key) {
                 warn!(session_id = %session_id, key = %key, error = %e, "Failed to delete stored credential (continuing cleanup)");

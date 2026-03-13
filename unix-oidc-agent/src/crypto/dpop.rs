@@ -158,6 +158,56 @@ pub fn generate_dpop_proof(
     assemble_dpop_proof(&message, &signature.to_bytes())
 }
 
+/// Build the unsigned DPoP message with a specified algorithm.
+///
+/// Like `build_dpop_message` but allows overriding the `alg` header field
+/// for composite algorithms (e.g., `ML-DSA-65-ES256`).
+#[instrument(skip(public_key_jwk, nonce), fields(method, target, alg))]
+pub fn build_dpop_message_with_alg(
+    public_key_jwk: &serde_json::Value,
+    method: &str,
+    target: &str,
+    nonce: Option<&str>,
+    alg: &str,
+) -> Result<String, DPoPError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| DPoPError::ClockError)?
+        .as_secs() as i64;
+
+    let claims = DPoPClaims {
+        jti: Uuid::new_v4().to_string(),
+        htm: method.to_string(),
+        htu: target.to_string(),
+        iat: now,
+        nonce: nonce.map(String::from),
+    };
+
+    let header_json = serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": alg,
+        "jwk": public_key_jwk
+    });
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
+    let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims)?.as_bytes());
+
+    Ok(format!("{header_b64}.{claims_b64}"))
+}
+
+/// Assemble a DPoP JWT from a signed message and variable-length signature bytes.
+///
+/// Unlike `assemble_dpop_proof` (which enforces 64-byte ES256 signatures), this
+/// accepts arbitrary-length signatures for composite algorithms.
+#[instrument(skip_all)]
+pub fn assemble_dpop_proof_composite(message: &str, sig_bytes: &[u8]) -> Result<String, DPoPError> {
+    if sig_bytes.is_empty() {
+        return Err(DPoPError::InvalidSignatureLength(0));
+    }
+    let sig_b64 = URL_SAFE_NO_PAD.encode(sig_bytes);
+    Ok(format!("{message}.{sig_b64}"))
+}
+
 /// Extract the JWK from a DPoP proof header
 pub fn extract_jwk_from_proof(proof: &str) -> Result<EcPublicKeyJwk, DPoPError> {
     let parts: Vec<&str> = proof.split('.').collect();

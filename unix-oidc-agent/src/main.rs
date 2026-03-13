@@ -26,6 +26,8 @@ use unix_oidc_agent::security::disable_core_dumps;
 use unix_oidc_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
+#[cfg(feature = "pqc")]
+use unix_oidc_agent::storage::KEY_PQ_SEED;
 
 mod askpass;
 
@@ -655,14 +657,33 @@ async fn run_login(
         }
     }
 
-    // Select signer backend based on --signer flag.
-    // "software" (default) uses the existing software key path.
+    // Select signer backend based on --signer flag and crypto config.
+    // "software" (default) uses ES256 or PQC hybrid (if enable_pqc is set).
     // Hardware specs (yubikey:<slot>, tpm) use build_signer() to open the pre-provisioned device key.
     let (signer_type, signer_arc): (String, Arc<dyn DPoPSigner>) =
         if signer_spec == "software" || signer_spec.is_empty() {
-            let sw = load_or_create_signer(&storage)?;
-            let arc: Arc<dyn DPoPSigner> = Arc::new(sw);
-            ("software".to_string(), arc)
+            // Check if PQC hybrid mode is enabled in config.
+            #[cfg(feature = "pqc")]
+            {
+                let pqc_enabled = AgentConfig::load()
+                    .map(|c| c.crypto.enable_pqc)
+                    .unwrap_or(false);
+                if pqc_enabled {
+                    let pqc = load_or_create_pqc_signer(&storage)?;
+                    let arc: Arc<dyn DPoPSigner> = Arc::new(pqc);
+                    ("pqc".to_string(), arc)
+                } else {
+                    let sw = load_or_create_signer(&storage)?;
+                    let arc: Arc<dyn DPoPSigner> = Arc::new(sw);
+                    ("software".to_string(), arc)
+                }
+            }
+            #[cfg(not(feature = "pqc"))]
+            {
+                let sw = load_or_create_signer(&storage)?;
+                let arc: Arc<dyn DPoPSigner> = Arc::new(sw);
+                ("software".to_string(), arc)
+            }
         } else {
             let hw_config = SignerConfig::load();
             let arc = build_signer(&signer_spec, &hw_config)?;
@@ -1175,13 +1196,17 @@ async fn run_reset(force: bool) -> anyhow::Result<()> {
     let storage = StorageRouter::detect()?;
     let mut cleared = Vec::new();
 
-    // Delete all stored credentials
-    for key in &[
+    // Delete all stored credentials (includes PQ seed if PQC feature is compiled in)
+    #[allow(unused_mut)]
+    let mut keys_to_delete: Vec<&str> = vec![
         KEY_DPOP_PRIVATE,
         KEY_ACCESS_TOKEN,
         KEY_TOKEN_METADATA,
         "unix-oidc-refresh-token",
-    ] {
+    ];
+    #[cfg(feature = "pqc")]
+    keys_to_delete.push(KEY_PQ_SEED);
+    for key in &keys_to_delete {
         if storage.exists(key) {
             storage.delete(key)?;
             cleared.push(*key);
@@ -1244,6 +1269,17 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
                 }
             };
             (result, Some("software".to_string()))
+        }
+        #[cfg(feature = "pqc")]
+        Some("pqc") => {
+            let result = match load_or_create_pqc_signer(&storage) {
+                Ok(s) => Some(Arc::new(s) as Arc<dyn unix_oidc_agent::crypto::DPoPSigner>),
+                Err(e) => {
+                    error!("Could not load PQC hybrid signer: {}", e);
+                    None
+                }
+            };
+            (result, Some("pqc".to_string()))
         }
         Some(hw_spec) => {
             // Hardware signer: attempt to re-open from device.
@@ -1332,6 +1368,34 @@ fn load_or_create_signer(storage: &dyn SecureStorage) -> anyhow::Result<Software
         let signer = SoftwareSigner::generate();
         storage.store(KEY_DPOP_PRIVATE, &signer.export_key())?;
         Ok(signer)
+    }
+}
+
+/// Load existing PQC hybrid signer or create a new one.
+///
+/// Stores both the EC key (`KEY_DPOP_PRIVATE`) and the ML-DSA seed (`KEY_PQ_SEED`).
+/// Both are 32 bytes. The EC key is shared with `SoftwareSigner` so downgrading
+/// from PQC to classic ES256 is seamless (the same EC key is reused).
+#[cfg(feature = "pqc")]
+fn load_or_create_pqc_signer(
+    storage: &dyn SecureStorage,
+) -> anyhow::Result<unix_oidc_agent::crypto::HybridPqcSigner> {
+    let ec_bytes_opt = storage.retrieve(KEY_DPOP_PRIVATE).ok();
+    let pq_seed_opt = storage.retrieve(KEY_PQ_SEED).ok();
+
+    match (ec_bytes_opt, pq_seed_opt) {
+        (Some(ec_bytes), Some(pq_seed)) => {
+            info!("Loading existing PQC hybrid DPoP keypair");
+            unix_oidc_agent::crypto::HybridPqcSigner::from_key_bytes(&ec_bytes, &pq_seed)
+                .map_err(|e| anyhow::anyhow!("Failed to import PQC hybrid key: {e}"))
+        }
+        _ => {
+            info!("Generating new PQC hybrid DPoP keypair (ML-DSA-65 + ES256)");
+            let signer = unix_oidc_agent::crypto::HybridPqcSigner::generate();
+            storage.store(KEY_DPOP_PRIVATE, &signer.export_ec_key())?;
+            storage.store(KEY_PQ_SEED, &signer.export_pq_seed())?;
+            Ok(signer)
+        }
     }
 }
 
