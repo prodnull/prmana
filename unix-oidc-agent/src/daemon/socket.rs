@@ -167,6 +167,11 @@ pub struct PendingStepUp {
     pub username: String,
     /// Instant when the auth_req_id expires (used to compute remaining time in StepUpPending).
     pub expires_at: tokio::time::Instant,
+    /// Parent SSH session ID that triggered this sudo step-up (OBS-3).
+    ///
+    /// Forwarded from the `StepUp` IPC request. Threaded through to `StepUpOutcome::Complete`
+    /// so it can be echoed back in the `StepUpComplete` response for PAM-side audit correlation.
+    pub parent_session_id: Option<String>,
 }
 
 /// Result produced by the `poll_ciba()` async function.
@@ -176,6 +181,8 @@ pub enum StepUpOutcome {
     Complete {
         acr: Option<String>,
         session_id: String,
+        /// Parent SSH session ID threaded through from the originating StepUp request.
+        parent_session_id: Option<String>,
     },
     /// Step-up failed or timed out (reason: "denied" | "expired" | "timeout" | "acr_failed" | "error").
     TimedOut {
@@ -824,9 +831,10 @@ async fn handle_request(
             hostname,
             method,
             timeout_secs,
+            parent_session_id,
         } => {
             let response =
-                handle_step_up(state, username, command, hostname, method, timeout_secs).await;
+                handle_step_up(state, username, command, hostname, method, timeout_secs, parent_session_id).await;
             let is_err = matches!(response, AgentResponse::Error { .. });
             (response, is_err)
         }
@@ -1438,6 +1446,7 @@ async fn handle_step_up(
     hostname: String,
     method: String,
     timeout_secs: u64,
+    parent_session_id: Option<String>,
 ) -> AgentResponse {
     use pam_unix_oidc::ciba::{build_binding_message, CibaClient, ACR_PHR};
     use pam_unix_oidc::oidc::OidcDiscovery;
@@ -1643,6 +1652,7 @@ async fn handle_step_up(
         interval,
         timeout,
         acr_required,
+        parent_session_id.clone(),
     ));
 
     let expires_at = tokio::time::Instant::now() + Duration::from_secs(bc_auth.expires_in);
@@ -1653,11 +1663,26 @@ async fn handle_step_up(
             correlation_id.clone(),
             PendingStepUp {
                 handle,
-                username,
+                username: username.clone(),
                 expires_at,
+                parent_session_id: parent_session_id.clone(),
             },
         );
     }
+
+    // OBS-3: Audit event — step-up initiated. session_id uses parent_session_id when
+    // available (the originating SSH session); falls back to "n/a" when absent (e.g.,
+    // older PAM versions that do not set UNIX_OIDC_SESSION_ID before exec-ing sudo).
+    tracing::info!(
+        target: "unix_oidc_audit",
+        event_type = "step_up_initiated",
+        session_id = %parent_session_id.as_deref().unwrap_or("n/a"),
+        username = %username,
+        outcome = "pending",
+        method = %method,
+        parent_session_id = ?parent_session_id,
+        "AGENT_STEP_UP"
+    );
 
     AgentResponse::step_up_pending(correlation_id, bc_auth.expires_in, bc_auth.interval)
 }
@@ -1712,8 +1737,8 @@ async fn handle_step_up_result(
         state_write.pending_step_ups.remove(&correlation_id)
     };
 
-    let handle = match pending {
-        Some(p) => p.handle,
+    let (handle, pending_username, pending_parent_session_id) = match pending {
+        Some(p) => (p.handle, p.username, p.parent_session_id),
         None => {
             // Race: another poll already consumed it — unlikely but safe.
             return AgentResponse::error("Step-up result already consumed", "STEP_UP_NOT_FOUND");
@@ -1721,13 +1746,42 @@ async fn handle_step_up_result(
     };
 
     match handle.await {
-        Ok(StepUpOutcome::Complete { acr, session_id }) => {
-            AgentResponse::step_up_complete(acr, session_id)
+        Ok(StepUpOutcome::Complete {
+            acr,
+            session_id,
+            parent_session_id,
+        }) => {
+            // OBS-3: Audit event — step-up completed. Both sudo_session_id and
+            // parent_session_id are logged for full end-to-end SIEM correlation.
+            tracing::info!(
+                target: "unix_oidc_audit",
+                event_type = "step_up_complete",
+                session_id = %session_id,
+                username = %pending_username,
+                outcome = "success",
+                sudo_session_id = %session_id,
+                parent_session_id = ?parent_session_id,
+                acr = ?acr,
+                "AGENT_STEP_UP_COMPLETE"
+            );
+            AgentResponse::step_up_complete(acr, session_id, parent_session_id)
         }
         Ok(StepUpOutcome::TimedOut {
             reason,
             user_message,
-        }) => AgentResponse::step_up_timed_out(reason, user_message),
+        }) => {
+            // OBS-3: Audit event — step-up timed out or denied.
+            tracing::info!(
+                target: "unix_oidc_audit",
+                event_type = "step_up_timed_out",
+                session_id = %pending_parent_session_id.as_deref().unwrap_or("n/a"),
+                username = %pending_username,
+                outcome = "failure",
+                reason = %reason,
+                "AGENT_STEP_UP_TIMED_OUT"
+            );
+            AgentResponse::step_up_timed_out(reason, user_message)
+        }
         Err(e) => AgentResponse::error(
             format!("CIBA poll task panicked: {e}"),
             "STEP_UP_INTERNAL_ERROR",
@@ -1757,6 +1811,7 @@ pub(crate) async fn poll_ciba(
     mut interval: Duration,
     timeout: Duration,
     acr_required: Option<String>,
+    parent_session_id: Option<String>,
 ) -> StepUpOutcome {
     use pam_unix_oidc::ciba::{parse_ciba_error, validate_acr, CibaError, CibaTokenResponse};
 
@@ -1811,12 +1866,14 @@ pub(crate) async fn poll_ciba(
                     return StepUpOutcome::Complete {
                         acr: actual_acr,
                         session_id: uuid::Uuid::new_v4().to_string(),
+                        parent_session_id: parent_session_id.clone(),
                     };
                 }
 
                 return StepUpOutcome::Complete {
                     acr: None,
                     session_id: uuid::Uuid::new_v4().to_string(),
+                    parent_session_id: parent_session_id.clone(),
                 };
             }
 
@@ -2490,7 +2547,7 @@ mod tests {
         );
     }
 
-    /// StepUpOutcome::Complete carries acr and session_id.
+    /// StepUpOutcome::Complete carries acr, session_id, and parent_session_id.
     #[test]
     fn test_step_up_outcome_complete_fields() {
         let outcome = StepUpOutcome::Complete {
@@ -2498,9 +2555,10 @@ mod tests {
                 "http://schemas.openid.net/pape/policies/2007/06/phishing-resistant".to_string(),
             ),
             session_id: "sess-abc".to_string(),
+            parent_session_id: None,
         };
         match outcome {
-            StepUpOutcome::Complete { acr, session_id } => {
+            StepUpOutcome::Complete { acr, session_id, .. } => {
                 assert!(acr.is_some());
                 assert_eq!(session_id, "sess-abc");
             }
@@ -2550,6 +2608,7 @@ mod tests {
                 hostname: "server-01".to_string(),
                 method: "push".to_string(),
                 timeout_secs: 120,
+                parent_session_id: None,
             })
             .await
             .unwrap();
@@ -2586,6 +2645,7 @@ mod tests {
                     handle: fake_handle,
                     username: "alice".to_string(),
                     expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(120),
+                    parent_session_id: None,
                 },
             );
         }
@@ -2654,6 +2714,7 @@ mod tests {
             std::time::Duration::from_millis(10), // tiny interval for test
             std::time::Duration::from_secs(10),
             None, // no ACR required
+            None, // no parent_session_id
         )
         .await;
 
@@ -2697,6 +2758,7 @@ mod tests {
             vec![],
             std::time::Duration::from_millis(10),
             std::time::Duration::from_secs(10),
+            None,
             None,
         )
         .await;
@@ -2759,6 +2821,7 @@ mod tests {
             vec![],
             std::time::Duration::from_millis(50), // initial interval: 50ms
             std::time::Duration::from_secs(15),
+            None,
             None,
         )
         .await;
@@ -2834,6 +2897,7 @@ mod tests {
             vec![],
             std::time::Duration::from_millis(10),
             std::time::Duration::from_millis(100), // 100ms outer timeout
+            None,
             None,
         )
         .await;
@@ -3090,6 +3154,7 @@ mod tests {
             StepUpOutcome::Complete {
                 acr: Some("urn:example:acr:mfa".to_string()),
                 session_id: "sess-abc".to_string(),
+                parent_session_id: None,
             }
         });
 
@@ -3111,6 +3176,7 @@ mod tests {
                     handle: completed_handle,
                     username: "alice".to_string(),
                     expires_at: tokio::time::Instant::now() + tokio::time::Duration::from_secs(120),
+                    parent_session_id: None,
                 },
             );
         }

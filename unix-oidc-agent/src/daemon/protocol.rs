@@ -58,6 +58,13 @@ pub enum AgentRequest {
         method: String,
         /// Maximum seconds to wait before timing out; from policy, default 120
         timeout_secs: u64,
+        /// Session ID of the parent SSH session that triggered sudo.
+        ///
+        /// Read from `UNIX_OIDC_SESSION_ID` env var in the PAM sudo path.
+        /// Used for end-to-end audit correlation (OBS-3). Optional for backward
+        /// compatibility — old PAM versions without this field deserialize as None.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        parent_session_id: Option<String>,
     },
 
     /// PAM -> Agent: poll for step-up result.
@@ -172,6 +179,13 @@ pub enum AgentResponseData {
     StepUpComplete {
         acr: Option<String>,
         session_id: String,
+        /// Parent SSH session ID echoed back from the agent for audit correlation.
+        ///
+        /// Matches the `parent_session_id` sent in the `StepUp` IPC request.
+        /// Optional for backward compatibility — old agents that do not set this
+        /// field will deserialize as None.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        parent_session_id: Option<String>,
     },
     /// Step-up failed or timed out.
     ///
@@ -275,8 +289,16 @@ impl AgentResponse {
     }
 
     /// Step-up completed successfully.
-    pub fn step_up_complete(acr: Option<String>, session_id: String) -> Self {
-        Self::Success(AgentResponseData::StepUpComplete { acr, session_id })
+    pub fn step_up_complete(
+        acr: Option<String>,
+        session_id: String,
+        parent_session_id: Option<String>,
+    ) -> Self {
+        Self::Success(AgentResponseData::StepUpComplete {
+            acr,
+            session_id,
+            parent_session_id,
+        })
     }
 
     /// Step-up failed or timed out.
@@ -561,6 +583,7 @@ mod tests {
             hostname: "prod-01".to_string(),
             method: "push".to_string(),
             timeout_secs: 120,
+            parent_session_id: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(
@@ -601,6 +624,7 @@ mod tests {
                 hostname,
                 method,
                 timeout_secs,
+                ..
             } => {
                 assert_eq!(username, "alice");
                 assert_eq!(command, "systemctl restart");
@@ -677,7 +701,7 @@ mod tests {
     /// StepUpComplete response round-trips with acr=None.
     #[test]
     fn test_step_up_complete_response_round_trip_no_acr() {
-        let resp = AgentResponse::step_up_complete(None, "sess-123".to_string());
+        let resp = AgentResponse::step_up_complete(None, "sess-123".to_string(), None);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""session_id":"sess-123""#),
@@ -690,6 +714,7 @@ mod tests {
                 AgentResponse::Success(AgentResponseData::StepUpComplete {
                     acr: None,
                     ref session_id,
+                    ..
                 }) if session_id == "sess-123"
             ),
             "expected StepUpComplete with no acr, got: {parsed:?}"
@@ -702,6 +727,7 @@ mod tests {
         let resp = AgentResponse::step_up_complete(
             Some("http://schemas.openid.net/phr".to_string()),
             "sess-456".to_string(),
+            None,
         );
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -715,6 +741,7 @@ mod tests {
                 AgentResponse::Success(AgentResponseData::StepUpComplete {
                     ref acr,
                     ref session_id,
+                    ..
                 }) if acr.as_deref() == Some("http://schemas.openid.net/phr") && session_id == "sess-456"
             ),
             "expected StepUpComplete with acr, got: {parsed:?}"
@@ -744,6 +771,100 @@ mod tests {
                 }) if reason == "timeout" && user_message == "Approval window expired"
             ),
             "expected StepUpTimedOut, got: {parsed:?}"
+        );
+    }
+
+    // --- TDD RED: parent_session_id threading in StepUp IPC protocol ---
+
+    /// StepUp JSON without parent_session_id deserializes correctly — parent_session_id is None (backward compat).
+    #[test]
+    fn test_step_up_without_parent_session_id_backward_compat() {
+        let json = r#"{"action":"step_up","username":"alice","command":"/usr/bin/ls","hostname":"prod-01","method":"push","timeout_secs":120}"#;
+        let req: AgentRequest = serde_json::from_str(json).unwrap();
+        match req {
+            AgentRequest::StepUp { parent_session_id, .. } => {
+                assert!(
+                    parent_session_id.is_none(),
+                    "parent_session_id must be None when absent in JSON (backward compat)"
+                );
+            }
+            _ => panic!("Expected StepUp, got {req:?}"),
+        }
+    }
+
+    /// StepUp JSON with parent_session_id deserializes correctly — parent_session_id is Some("abc-123").
+    #[test]
+    fn test_step_up_with_parent_session_id() {
+        let json = r#"{"action":"step_up","username":"alice","command":"/usr/bin/ls","hostname":"prod-01","method":"push","timeout_secs":120,"parent_session_id":"abc-123"}"#;
+        let req: AgentRequest = serde_json::from_str(json).unwrap();
+        match req {
+            AgentRequest::StepUp { parent_session_id, .. } => {
+                assert_eq!(
+                    parent_session_id.as_deref(),
+                    Some("abc-123"),
+                    "parent_session_id must be Some('abc-123') when present in JSON"
+                );
+            }
+            _ => panic!("Expected StepUp, got {req:?}"),
+        }
+    }
+
+    /// StepUpComplete JSON with parent_session_id serializes/deserializes correctly.
+    #[test]
+    fn test_step_up_complete_with_parent_session_id_round_trip() {
+        let resp = AgentResponse::step_up_complete(
+            Some("urn:mfa".to_string()),
+            "sess-789".to_string(),
+            Some("parent-sess-001".to_string()),
+        );
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            json.contains(r#""parent_session_id":"parent-sess-001""#),
+            "expected parent_session_id in: {json}"
+        );
+        let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            AgentResponse::Success(AgentResponseData::StepUpComplete { parent_session_id, session_id, .. }) => {
+                assert_eq!(parent_session_id.as_deref(), Some("parent-sess-001"));
+                assert_eq!(session_id, "sess-789");
+            }
+            _ => panic!("Expected StepUpComplete, got {parsed:?}"),
+        }
+    }
+
+    /// StepUpComplete JSON without parent_session_id still deserializes (backward compat).
+    #[test]
+    fn test_step_up_complete_without_parent_session_id_backward_compat() {
+        let json = r#"{"status":"success","acr":null,"session_id":"sess-456"}"#;
+        let parsed: AgentResponse = serde_json::from_str(json).unwrap();
+        match parsed {
+            AgentResponse::Success(AgentResponseData::StepUpComplete { parent_session_id, session_id, .. }) => {
+                assert!(
+                    parent_session_id.is_none(),
+                    "parent_session_id must be None when absent in JSON (backward compat)"
+                );
+                assert_eq!(session_id, "sess-456");
+            }
+            _ => panic!("Expected StepUpComplete, got {parsed:?}"),
+        }
+    }
+
+    /// StepUpComplete still discriminates correctly against other untagged variants (session_id is discriminant).
+    #[test]
+    fn test_step_up_complete_still_discriminates_with_parent_session_id() {
+        // With parent_session_id present, must still deserialize as StepUpComplete (not Ok or SessionAcknowledged)
+        let resp = AgentResponse::step_up_complete(None, "sess-disc-test".to_string(), Some("parent-abc".to_string()));
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(
+                parsed,
+                AgentResponse::Success(AgentResponseData::StepUpComplete {
+                    ref session_id,
+                    ..
+                }) if session_id == "sess-disc-test"
+            ),
+            "StepUpComplete with parent_session_id must still discriminate correctly, got: {parsed:?}"
         );
     }
 

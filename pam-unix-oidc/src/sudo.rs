@@ -253,8 +253,26 @@ pub(crate) fn perform_step_up_via_ipc(
     // Resolve hostname (gethostname crate is available in pam-unix-oidc).
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
 
+    // ── Resolve parent session ID from environment (OBS-3) ───────────────────
+    //
+    // The parent SSH session ID is set by pam_sm_open_session via PAM putenv
+    // (UNIX_OIDC_SESSION_ID). In a sudo PAM context this env var may be absent
+    // (older pam-unix-oidc versions, non-SSH sudo invocations, or environments
+    // where UNIX_OIDC_SESSION_ID was not exported to the sudo session). Fall
+    // back to None with a debug log — absence never fails authentication.
+    //
+    // Reference: Phase 09 session correlation design (Phase 09 decision in STATE.md):
+    // "Session correlation via PAM putenv/getenv is best-effort: failure never fails auth"
+    let parent_session_id: Option<String> = std::env::var("UNIX_OIDC_SESSION_ID").ok().filter(|s| !s.is_empty()).map(|s| {
+        tracing::debug!(parent_session_id = %s, "Resolved parent SSH session ID for step-up audit correlation");
+        s
+    });
+    if parent_session_id.is_none() {
+        tracing::debug!("UNIX_OIDC_SESSION_ID not set in sudo PAM context; parent_session_id will be absent from step-up audit event");
+    }
+
     // ── Step 1: Send StepUp request ───────────────────────────────────────────
-    let step_up_msg = serde_json::json!({
+    let mut step_up_msg = serde_json::json!({
         "action": "step_up",
         "username": ctx.user,
         "command": ctx.command,
@@ -262,6 +280,10 @@ pub(crate) fn perform_step_up_via_ipc(
         "method": method_str,
         "timeout_secs": requirements.timeout,
     });
+    // Add parent_session_id only when present (skip_serializing_if = None semantics)
+    if let Some(ref psid) = parent_session_id {
+        step_up_msg["parent_session_id"] = serde_json::Value::String(psid.clone());
+    }
 
     let correlation_id = {
         let mut stream = connect_agent_socket(socket_path)?;
