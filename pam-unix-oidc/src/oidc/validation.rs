@@ -295,6 +295,27 @@ impl TokenValidator {
             self.jwks_provider.get_default_key()?
         };
 
+        // Security: Pin token header algorithm to JWKS-advertised algorithm.
+        // Prevents algorithm substitution attacks where an attacker changes the
+        // token header's `alg` to trick the verifier into using a weaker algorithm
+        // or a different key type. Analogous to DPoP ES256 enforcement in dpop.rs.
+        // See: docs/threat-model.md §7 Recommendation 4 (P1), closes R-8.
+        if let Some(jwk_alg) = &jwk.common.key_algorithm {
+            let jwk_alg_str = format!("{jwk_alg:?}");
+            let header_alg_str = format!("{algorithm:?}");
+            if jwk_alg_str != header_alg_str {
+                tracing::warn!(
+                    jwk_alg = %jwk_alg_str,
+                    token_alg = %header_alg_str,
+                    kid = ?header.kid,
+                    "Algorithm mismatch: token header alg does not match JWKS-advertised alg"
+                );
+                return Err(ValidationError::UnsupportedAlgorithm(format!(
+                    "Token header claims {header_alg_str} but JWKS key specifies {jwk_alg_str}"
+                )));
+            }
+        }
+
         // Convert JWK to DecodingKey
         let decoding_key = DecodingKey::from_jwk(&jwk)
             .map_err(|e| ValidationError::InvalidSignature(format!("Invalid JWK: {e}")))?;
@@ -303,9 +324,12 @@ impl TokenValidator {
         let mut validation = Validation::new(algorithm);
         validation.set_audience(&[&self.config.client_id]);
         validation.set_issuer(&[&self.config.issuer]);
-        // We'll do our own time validation with clock skew
+        // We do our own exp validation with clock skew tolerance below.
         validation.validate_exp = false;
-        validation.validate_nbf = false;
+        // Security: Validate nbf (not-before) to reject tokens issued for future use.
+        // Uses jsonwebtoken's built-in nbf check which applies a default leeway.
+        // See: docs/threat-model.md §7 Recommendation 5 (P1).
+        validation.validate_nbf = true;
 
         // Decode and verify
         let token_data = decode::<TokenClaims>(token, &decoding_key, &validation)

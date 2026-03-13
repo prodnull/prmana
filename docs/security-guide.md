@@ -207,6 +207,20 @@ dpop:
 
 ## Deployment Hardening
 
+### DPoP Enforcement (CRITICAL)
+
+> **Production deployments MUST set `dpop_required: strict` in policy.yaml.**
+
+DPoP (proof-of-possession) is the primary defense against token theft. Without it, stolen bearer tokens grant full access. The default is `strict`, but operators who set `warn` or `disabled` during migration MUST re-enable strict enforcement before production use.
+
+```yaml
+# /etc/unix-oidc/policy.yaml
+security_modes:
+  dpop_required: strict   # REQUIRED for production — rejects non-DPoP tokens
+```
+
+Running with `dpop_required: warn` or `disabled` in production is a **documented residual risk** (R-6 in the threat model) and leaves the deployment vulnerable to bearer token replay.
+
 ### File Permissions
 
 ```bash

@@ -1,6 +1,20 @@
 # unix-oidc Policy Configuration Example
 # Copy to /etc/unix-oidc/policy.yaml and customize for your environment
 
+# Security mode overrides — these control enforcement of security checks.
+# Production deployments MUST keep dpop_required at "strict" (the default).
+# See docs/security-guide.md §Deployment Hardening and docs/threat-model.md §6 R-6.
+security_modes:
+  # DPoP proof-of-possession binding. Options: strict | warn | disabled
+  # strict (default): reject tokens without valid DPoP proof
+  # warn: accept but log warning (migration only — NOT for production)
+  # disabled: skip DPoP check entirely (NOT recommended)
+  dpop_required: strict
+
+  # JTI (JWT ID) replay prevention. Options: strict | warn | disabled
+  # warn (default): log warning if JTI missing, still allow
+  jti_enforcement: warn
+
 # Host classification affects default security requirements
 # Options:
 #   - standard: Regular workstations (minimal step-up)

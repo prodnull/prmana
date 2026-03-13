@@ -26,6 +26,15 @@ use crate::storage::{
 /// Matches `TimeoutsConfig::default().ipc_idle_timeout_secs`.
 const DEFAULT_IPC_IDLE_TIMEOUT_SECS: u64 = 60;
 
+/// Maximum concurrent IPC connections.
+///
+/// Limits resource exhaustion from malicious or runaway clients opening many
+/// connections. 64 is generous for legitimate use (SSH login + sudo step-up
+/// typically needs 1-2 concurrent connections per session).
+///
+/// See: docs/threat-model.md §7 Recommendation 6 (P2), mitigates T2.4.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+
 #[cfg(test)]
 use crate::daemon::protocol::AgentResponseData;
 
@@ -243,6 +252,9 @@ pub struct AgentServer {
     /// connection is closed.  The timeout resets after each successful request,
     /// so long-lived clients that send periodic requests are not disconnected.
     idle_timeout: Duration,
+    /// Limits concurrent IPC connections to prevent resource exhaustion.
+    /// See: docs/threat-model.md §7 Recommendation 6 (P2).
+    connection_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl AgentServer {
@@ -251,6 +263,7 @@ impl AgentServer {
             socket_path,
             state,
             idle_timeout: Duration::from_secs(DEFAULT_IPC_IDLE_TIMEOUT_SECS),
+            connection_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS)),
         }
     }
 
@@ -363,11 +376,27 @@ impl AgentServer {
                                 }
                             };
 
+                            // Enforce concurrent connection limit to prevent
+                            // resource exhaustion (threat-model §7 Rec 6, T2.4).
+                            let permit = match self.connection_semaphore.clone().try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    warn!(
+                                        limit = MAX_CONCURRENT_CONNECTIONS,
+                                        "IPC connection rejected: concurrent connection limit reached"
+                                    );
+                                    drop(stream);
+                                    continue;
+                                }
+                            };
+
                             let state = Arc::clone(&self.state);
                             tokio::spawn(async move {
                                 if let Err(e) = handle_connection(stream, state, idle_timeout, accepted_peer_pid).await {
                                     error!("Connection error: {}", e);
                                 }
+                                // Permit is dropped here, releasing the semaphore slot.
+                                drop(permit);
                             });
                         }
                         Err(e) => {

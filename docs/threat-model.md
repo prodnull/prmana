@@ -201,21 +201,21 @@ Prioritized by risk reduction impact.
 
 ### P0 -- Critical (address before production deployment)
 
-1. **Enforce `dpop_required: strict` as the documented production default.** Ensure deployment guides, example configs, and quickstart documentation make Strict the explicit recommendation. Bearer-only mode should require deliberate opt-in with a written rationale. *(Mitigates R-6)*
+1. **Enforce `dpop_required: strict` as the documented production default.** Ensure deployment guides, example configs, and quickstart documentation make Strict the explicit recommendation. Bearer-only mode should require deliberate opt-in with a written rationale. *(Mitigates R-6)* **Status: IMPLEMENTED** — `docs/security-guide.md` §Deployment Hardening, `examples/policy.yaml`, and `policy/config.rs` all document and default to `strict`.
 
-2. **Add compile-time assertion that `test-mode` feature is absent in release profile.** A `#[cfg(all(feature = "test-mode", not(debug_assertions)))]` with `compile_error!` would prevent accidental release builds with signature bypass. Add a CI step that builds with `--release` and asserts the `new_insecure_for_testing` symbol is absent from the binary. *(Mitigates T4.2)*
+2. **Add compile-time assertion that `test-mode` feature is absent in release profile.** A `#[cfg(all(feature = "test-mode", not(debug_assertions)))]` with `compile_error!` would prevent accidental release builds with signature bypass. Add a CI step that builds with `--release` and asserts the `new_insecure_for_testing` symbol is absent from the binary. *(Mitigates T4.2)* **Status: IMPLEMENTED** — `pam-unix-oidc/src/lib.rs` has `compile_error!` guard at crate root.
 
 ### P1 -- High (address in next release cycle)
 
-3. **Externalize JTI/nonce replay cache for multi-process deployments.** Provide an optional shared-state backend (e.g., Unix domain socket to a local replay-cache sidecar, or a lightweight embedded database like `sled`) so that sshd prefork workers share a single replay cache. *(Closes R-1)*
+3. **Externalize JTI/nonce replay cache for multi-process deployments.** Provide an optional shared-state backend (e.g., Unix domain socket to a local replay-cache sidecar, or a lightweight embedded database like `sled`) so that sshd prefork workers share a single replay cache. *(Closes R-1)* **Status:** Deferred to v2.1 (REQUIREMENTS.md SCALE-01). Current in-process moka cache is sufficient for single-process sshd deployments. The replay window is bounded by `max_proof_age=60s` and server-issued nonce binding. Multi-process deployments should use a reverse proxy or load balancer that pins connections to a single sshd worker.
 
-4. **Pin ID token signature algorithm to the JWKS-advertised algorithm.** When a JWK is selected by `kid`, cross-check the JWK's `alg` field (if present) against the token header's `alg` before using it for verification. This prevents algorithm substitution attacks on ID tokens, analogous to the DPoP ES256 enforcement at `dpop.rs:264`. *(Closes R-8)*
+4. **Pin ID token signature algorithm to the JWKS-advertised algorithm.** When a JWK is selected by `kid`, cross-check the JWK's `alg` field (if present) against the token header's `alg` before using it for verification. This prevents algorithm substitution attacks on ID tokens, analogous to the DPoP ES256 enforcement at `dpop.rs:264`. *(Closes R-8)* **Status: IMPLEMENTED** — `validation.rs:verify_and_decode()` now cross-checks `jwk.common.key_algorithm` against the token header before decoding.
 
-5. **Implement `nbf` (not before) validation for ID tokens.** `validation.rs:308` disables `validate_nbf`. Add `nbf` validation with the same `clock_skew_tolerance_secs` applied to `exp`, preventing premature acceptance of tokens issued for future use.
+5. **Implement `nbf` (not before) validation for ID tokens.** `validation.rs:308` disables `validate_nbf`. Add `nbf` validation with the same `clock_skew_tolerance_secs` applied to `exp`, preventing premature acceptance of tokens issued for future use. **Status: IMPLEMENTED** — `validate_nbf` is now enabled in `validation.rs:verify_and_decode()`.
 
 ### P2 -- Medium (address within two release cycles)
 
-6. **Add IPC connection limits and enforce idle timeout under adversarial load** to the agent socket server. Verify `DEFAULT_IPC_IDLE_TIMEOUT_SECS` (`socket.rs:27`) is enforced and add a maximum concurrent connection limit. *(Mitigates T2.4)*
+6. **Add IPC connection limits and enforce idle timeout under adversarial load** to the agent socket server. Verify `DEFAULT_IPC_IDLE_TIMEOUT_SECS` (`socket.rs:27`) is enforced and add a maximum concurrent connection limit. *(Mitigates T2.4)* **Status: IMPLEMENTED** — `socket.rs` uses `tokio::sync::Semaphore` with `MAX_CONCURRENT_CONNECTIONS=64`; idle timeout was already enforced via `tokio::time::timeout` in `handle_connection`.
 
 7. **Implement storage backend integrity verification.** On key load from file fallback, verify a keyed MAC (e.g., HMAC-SHA256 with a machine-local secret) to detect tampering with stored key material. *(Mitigates T5.3)*
 

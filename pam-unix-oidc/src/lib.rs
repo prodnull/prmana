@@ -17,6 +17,15 @@
 
 #![deny(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
+// Security: Prevent accidental release builds with test-mode enabled.
+// test-mode bypasses ALL signature verification — a critical vulnerability if shipped.
+// See: docs/threat-model.md §7 Recommendation 1 (P0), CLAUDE.md §CRITICAL: Test Mode Security.
+#[cfg(all(feature = "test-mode", not(debug_assertions)))]
+compile_error!(
+    "test-mode feature must not be enabled in release builds — \
+     it disables JWT signature verification. \
+     Build without --features test-mode for production."
+);
 
 pub mod approval;
 pub mod audit;
