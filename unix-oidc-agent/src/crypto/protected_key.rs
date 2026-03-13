@@ -43,8 +43,8 @@ pub enum MlockStatus {
 /// # Safety
 /// The caller is responsible for ensuring `ptr` remains valid for the lifetime
 /// of this guard. This is enforced structurally: `MlockGuard` is held inside
-/// `ProtectedSigningKey` and never outlives it.
-struct MlockGuard {
+/// a Box-allocated struct and never outlives it.
+pub(crate) struct MlockGuard {
     ptr: *mut u8,
     len: usize,
 }
@@ -117,7 +117,7 @@ pub fn mlock_probe() -> MlockStatus {
 /// # Safety
 /// `data` must remain at a stable address for the lifetime of the returned guard.
 /// Callers must ensure the guard is dropped before the data is freed.
-unsafe fn try_mlock(data: &mut [u8]) -> Option<MlockGuard> {
+pub(crate) unsafe fn try_mlock(data: &mut [u8]) -> Option<MlockGuard> {
     #[cfg(unix)]
     {
         let ret = libc::mlock(data.as_ptr() as *const libc::c_void, data.len());

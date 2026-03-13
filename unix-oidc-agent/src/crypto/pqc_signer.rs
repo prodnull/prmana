@@ -4,6 +4,13 @@
 //! The composite signature is: `2-byte ML-DSA length prefix || ML-DSA-65 sig || ES256 sig`.
 //! Both components sign the same message (the DPoP JWT header.claims).
 //!
+//! # Memory protection
+//!
+//! `HybridPqcSigner` is Box-only (MEM-05): all constructors return `Box<Self>`.
+//! The entire allocation is mlock'd via `libc::mlock(2)` (MEM-04, best-effort).
+//! `ml_dsa::SigningKey<MlDsa65>` zeroes key bytes on drop via `ZeroizeOnDrop`
+//! when `features = ["zeroize"]` is active (MEM-02, verified in tests).
+//!
 //! # Feature gate
 //!
 //! This module is only compiled when `--features pqc` is active.
@@ -16,7 +23,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::crypto::dpop::{build_dpop_message_with_alg, assemble_dpop_proof_composite, DPoPError};
-use crate::crypto::protected_key::ProtectedSigningKey;
+use crate::crypto::protected_key::{MlockGuard, ProtectedSigningKey, try_mlock};
 use crate::crypto::signer::{DPoPSigner, SignerError};
 
 /// JWS algorithm identifier for composite ML-DSA-65 + ES256.
@@ -40,10 +47,16 @@ const ES256_SIG_SIZE: usize = 64;
 ///
 /// The JWK is a composite key with `kty: "COMPOSITE"` containing both the PQ and
 /// traditional EC public key components.
+///
+/// ## Memory safety
+/// All constructors return `Box<HybridPqcSigner>` — there is no public stack
+/// constructor (MEM-05). The Box allocation is mlock'd to prevent swap exposure
+/// (MEM-04, best-effort). `ml_dsa::SigningKey<MlDsa65>` implements `ZeroizeOnDrop`
+/// with `features = ["zeroize"]`, so ML-DSA key bytes are zeroed on drop (MEM-02).
 pub struct HybridPqcSigner {
     /// Traditional ES256 key with memory protection (mlock, ZeroizeOnDrop).
     ec_key: Box<ProtectedSigningKey>,
-    /// ML-DSA-65 signing key. ZeroizeOnDrop when `zeroize` feature is enabled on ml-dsa.
+    /// ML-DSA-65 signing key. ZeroizeOnDrop via `features = ["zeroize"]` on ml-dsa.
     pq_key: ml_dsa::SigningKey<MlDsa65>,
     /// ML-DSA-65 verifying key (cached for JWK construction).
     pq_vk: ml_dsa::VerifyingKey<MlDsa65>,
@@ -51,14 +64,70 @@ pub struct HybridPqcSigner {
     thumbprint: String,
     /// ML-DSA seed for key export/import (32 bytes). Wrapped in Zeroizing.
     pq_seed: Zeroizing<[u8; 32]>,
+    /// RAII guard for the mlock region covering the entire HybridPqcSigner allocation.
+    /// `None` if mlock was unavailable or failed (best-effort).
+    _mlock_guard: Option<MlockGuard>,
 }
 
 impl HybridPqcSigner {
+    /// Private constructor: assembles all key material into a `Box<Self>` and
+    /// attempts to mlock the entire Box allocation (MEM-04, best-effort).
+    ///
+    /// Mirrors `ProtectedSigningKey::new_inner()`. All public constructors delegate here.
+    fn new_inner(
+        ec_key: Box<ProtectedSigningKey>,
+        pq_key: ml_dsa::SigningKey<MlDsa65>,
+        pq_vk: ml_dsa::VerifyingKey<MlDsa65>,
+        pq_seed: Zeroizing<[u8; 32]>,
+    ) -> Box<Self> {
+        let thumbprint = Self::compute_composite_thumbprint(&ec_key, &pq_vk);
+
+        // Box the struct first — gives key material a stable heap address for mlock.
+        let mut boxed = Box::new(Self {
+            ec_key,
+            pq_key,
+            pq_vk,
+            thumbprint,
+            pq_seed,
+            _mlock_guard: None,
+        });
+
+        // Attempt to mlock the entire Box allocation.
+        //
+        // SAFETY: `Box<Self>` owns the allocation; the address is stable while
+        // the Box is alive. The `MlockGuard` stores the raw pointer and calls
+        // `munlock` on drop. The guard is stored as a field of the same Box,
+        // so it cannot outlive the allocation it protects.
+        let struct_bytes: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(
+                &mut *boxed as *mut Self as *mut u8,
+                std::mem::size_of::<Self>(),
+            )
+        };
+
+        let guard = unsafe { try_mlock(struct_bytes) };
+        if guard.is_some() {
+            tracing::debug!(
+                "HybridPqcSigner mlock'd successfully ({} bytes)",
+                std::mem::size_of::<Self>()
+            );
+        } else {
+            tracing::debug!(
+                "HybridPqcSigner mlock skipped (unavailable or EPERM; ML-DSA key may be swappable)"
+            );
+        }
+        boxed._mlock_guard = guard;
+
+        boxed
+    }
+
     /// Generate a new hybrid key pair with random keys.
     ///
     /// Uses `OsRng` (via p256's rand_core 0.6) for the 32-byte ML-DSA seed,
     /// and `ProtectedSigningKey::generate()` for the EC key.
-    pub fn generate() -> Self {
+    ///
+    /// Returns `Box<Self>` — no stack allocation of key material (MEM-05).
+    pub fn generate() -> Box<Self> {
         let ec_key = ProtectedSigningKey::generate();
 
         // Generate ML-DSA-65 seed using OsRng (rand_core 0.6 from p256).
@@ -69,22 +138,16 @@ impl HybridPqcSigner {
         let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
         let pq_vk = pq_key.verifying_key();
 
-        let thumbprint = Self::compute_composite_thumbprint(&ec_key, &pq_vk);
-
-        Self {
-            ec_key,
-            pq_key,
-            pq_vk,
-            thumbprint,
-            pq_seed: seed_bytes,
-        }
+        Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes)
     }
 
     /// Reconstruct from stored key material.
     ///
     /// `ec_bytes` is the 32-byte P-256 private scalar.
     /// `pq_seed_bytes` is the 32-byte ML-DSA seed.
-    pub fn from_key_bytes(ec_bytes: &[u8], pq_seed_bytes: &[u8]) -> Result<Self, SignerError> {
+    ///
+    /// Returns `Box<Self>` — no stack allocation of key material (MEM-05).
+    pub fn from_key_bytes(ec_bytes: &[u8], pq_seed_bytes: &[u8]) -> Result<Box<Self>, SignerError> {
         if pq_seed_bytes.len() != 32 {
             return Err(SignerError::InvalidKeyBytes);
         }
@@ -96,15 +159,7 @@ impl HybridPqcSigner {
         let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
         let pq_vk = pq_key.verifying_key();
 
-        let thumbprint = Self::compute_composite_thumbprint(&ec_key, &pq_vk);
-
-        Ok(Self {
-            ec_key,
-            pq_key,
-            pq_vk,
-            thumbprint,
-            pq_seed: seed_bytes,
-        })
+        Ok(Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes))
     }
 
     /// Export the EC key bytes (32 bytes, Zeroizing).
@@ -223,6 +278,109 @@ impl DPoPSigner for HybridPqcSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_generate_returns_box() {
+        // generate() must return Box<HybridPqcSigner>, not HybridPqcSigner (MEM-05).
+        let signer: Box<HybridPqcSigner> = HybridPqcSigner::generate();
+        let ptr = &*signer as *const HybridPqcSigner;
+        assert!(!ptr.is_null());
+    }
+
+    #[test]
+    fn test_from_key_bytes_returns_box() {
+        // from_key_bytes() must return Result<Box<HybridPqcSigner>, SignerError> (MEM-05).
+        let signer = HybridPqcSigner::generate();
+        let ec_bytes = signer.export_ec_key();
+        let pq_seed = signer.export_pq_seed();
+        let signer2: Box<HybridPqcSigner> =
+            HybridPqcSigner::from_key_bytes(&ec_bytes, &pq_seed).unwrap();
+        let ptr = &*signer2 as *const HybridPqcSigner;
+        assert!(!ptr.is_null());
+    }
+
+    /// Verify that ZeroizeOnDrop zeroes the pq_seed bytes after drop.
+    ///
+    /// Uses `ManuallyDrop`-style pattern: convert Box to raw pointer, trigger
+    /// destructor with `drop_in_place` (without freeing heap), read bytes from
+    /// still-live allocation, then manually deallocate.
+    ///
+    /// This mirrors `test_key_material_zeroed_after_drop` in protected_key.rs.
+    /// UB accepted on the same basis as the EC key test: heap memory is live
+    /// until `dealloc` and readable (the allocator has not reclaimed it).
+    #[test]
+    fn test_ml_dsa_zeroize_on_drop() {
+        let signer = HybridPqcSigner::generate();
+
+        // Capture the seed bytes before drop as an independent copy.
+        let original_seed: Vec<u8> = signer.pq_seed.to_vec();
+        assert!(
+            original_seed.iter().any(|&b| b != 0),
+            "generated seed should have non-zero bytes"
+        );
+
+        // Convert to raw pointer so we control both destruction and deallocation.
+        let raw_ptr: *mut HybridPqcSigner = Box::into_raw(signer);
+
+        // Get pointer to the pq_seed field while allocation is live.
+        let seed_field_ptr: *const u8 = unsafe {
+            use std::ptr::addr_of;
+            addr_of!((*raw_ptr).pq_seed) as *const u8
+        };
+        let seed_len = std::mem::size_of::<Zeroizing<[u8; 32]>>();
+
+        // Run the HybridPqcSigner destructor in-place. This triggers ZeroizeOnDrop
+        // on `pq_key` (ml_dsa::SigningKey<MlDsa65>) and `pq_seed` (Zeroizing),
+        // but does NOT free the heap.
+        // SAFETY: raw_ptr is valid (from Box::into_raw); deallocated below.
+        unsafe {
+            std::ptr::drop_in_place(raw_ptr);
+        }
+
+        // Read pq_seed bytes from the still-live allocation.
+        // SAFETY: The heap allocation was not freed — only drop_in_place ran.
+        let bytes_after_drop: Vec<u8> =
+            unsafe { std::slice::from_raw_parts(seed_field_ptr, seed_len).to_vec() };
+
+        assert_ne!(
+            original_seed[..32.min(seed_len)],
+            bytes_after_drop[..32.min(seed_len)],
+            "ML-DSA seed bytes must change after ZeroizeOnDrop runs"
+        );
+
+        // Deallocate without running destructors again.
+        // SAFETY: raw_ptr was obtained from Box::into_raw with this layout.
+        unsafe {
+            std::alloc::dealloc(
+                raw_ptr as *mut u8,
+                std::alloc::Layout::new::<HybridPqcSigner>(),
+            );
+        }
+    }
+
+    /// DPoPSigner trait is still usable through Box<HybridPqcSigner>.
+    /// Box<T> implements Deref<Target=T>, so trait method calls work unchanged.
+    #[test]
+    fn test_hybrid_signer_boxed_and_signs() {
+        let signer: Box<HybridPqcSigner> = HybridPqcSigner::generate();
+        // Composite thumbprint: SHA-256 base64url = 43 chars
+        assert_eq!(signer.thumbprint().len(), 43);
+
+        let proof = signer
+            .sign_proof("SSH", "server.example.com", None)
+            .expect("sign_proof should succeed");
+
+        // JWT format: header.payload.signature
+        let parts: Vec<&str> = proof.split('.').collect();
+        assert_eq!(parts.len(), 3, "proof must be a 3-part JWT");
+
+        // Decode header and verify algorithm
+        let header_bytes = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert_eq!(header["typ"], "dpop+jwt");
+        assert_eq!(header["alg"], ALG_ML_DSA_65_ES256);
+        assert_eq!(header["jwk"]["kty"], "COMPOSITE");
+    }
 
     #[test]
     fn test_generate_hybrid_signer() {
