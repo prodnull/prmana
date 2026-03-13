@@ -18,6 +18,14 @@ use syslog::{Facility, Formatter3164};
 /// Default audit log file path
 const DEFAULT_AUDIT_LOG: &str = "/var/log/unix-oidc-audit.log";
 
+/// Syslog severity for an audit event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
 /// Global syslog writer
 static SYSLOG_WRITER: Lazy<Mutex<Option<syslog::Logger<syslog::LoggerBackend, Formatter3164>>>> =
     Lazy::new(|| {
@@ -65,6 +73,7 @@ pub enum AuditEvent {
     TokenValidationFailed {
         timestamp: String,
         user: Option<String>,
+        source_ip: Option<String>,
         host: String,
         reason: String,
         oidc_issuer: Option<String>,
@@ -231,11 +240,13 @@ impl AuditEvent {
     pub fn token_validation_failed(
         user: Option<&str>,
         reason: &str,
+        source_ip: Option<&str>,
         oidc_issuer: Option<&str>,
     ) -> Self {
         Self::TokenValidationFailed {
             timestamp: iso_timestamp(),
             user: user.map(String::from),
+            source_ip: source_ip.map(String::from),
             host: get_hostname(),
             reason: reason.to_string(),
             oidc_issuer: oidc_issuer.map(String::from),
@@ -386,8 +397,8 @@ impl AuditEvent {
     /// Log this event to the configured audit destinations.
     pub fn log(&self) {
         if let Ok(json) = serde_json::to_string(self) {
-            // 1. Log to syslog (AUTH facility)
-            log_to_syslog(&json);
+            // 1. Log to syslog (AUTH facility) with appropriate severity
+            log_to_syslog(&json, self.syslog_severity());
 
             // 2. Log to audit file (default or configured path)
             let log_path = std::env::var("UNIX_OIDC_AUDIT_LOG")
@@ -414,6 +425,28 @@ impl AuditEvent {
             Self::SessionClosed { .. } => "SESSION_CLOSED",
             Self::TokenRevoked { .. } => "TOKEN_REVOKED",
             Self::IntrospectionFailed { .. } => "INTROSPECTION_FAILED",
+        }
+    }
+
+    /// Map each audit event to its appropriate syslog severity.
+    ///
+    /// - **Critical**: break-glass access (always warrants immediate alerting)
+    /// - **Warning**: authentication/validation failures
+    /// - **Info**: successful operations and routine lifecycle events
+    pub fn syslog_severity(&self) -> AuditSeverity {
+        match self {
+            Self::BreakGlassAuth { .. } => AuditSeverity::Critical,
+            Self::SshLoginFailed { .. }
+            | Self::TokenValidationFailed { .. }
+            | Self::StepUpFailed { .. }
+            | Self::IntrospectionFailed { .. }
+            | Self::UserNotFound { .. } => AuditSeverity::Warning,
+            Self::SshLoginSuccess { .. }
+            | Self::SessionOpened { .. }
+            | Self::SessionClosed { .. }
+            | Self::TokenRevoked { .. }
+            | Self::StepUpInitiated { .. }
+            | Self::StepUpSuccess { .. } => AuditSeverity::Info,
         }
     }
 }
@@ -452,12 +485,15 @@ fn append_to_file(path: &str, content: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Log a message to syslog.
-fn log_to_syslog(message: &str) {
+/// Log a message to syslog at the given severity level.
+fn log_to_syslog(message: &str, severity: AuditSeverity) {
     if let Ok(mut guard) = SYSLOG_WRITER.lock() {
         if let Some(ref mut logger) = *guard {
-            // Use info level for audit events
-            let _ = logger.info(message);
+            let _ = match severity {
+                AuditSeverity::Info => logger.info(message),
+                AuditSeverity::Warning => logger.warning(message),
+                AuditSeverity::Critical => logger.crit(message),
+            };
         }
     }
 }
@@ -515,6 +551,7 @@ mod tests {
         let event = AuditEvent::token_validation_failed(
             Some("testuser"),
             "Invalid issuer",
+            Some("10.0.0.1"),
             Some("http://wrong-issuer.com"),
         );
 
@@ -543,7 +580,7 @@ mod tests {
         let failed = AuditEvent::ssh_login_failed(None, None, "reason");
         assert_eq!(failed.event_type(), "SSH_LOGIN_FAILED");
 
-        let token_failed = AuditEvent::token_validation_failed(None, "reason", None);
+        let token_failed = AuditEvent::token_validation_failed(None, "reason", None, None);
         assert_eq!(token_failed.event_type(), "TOKEN_VALIDATION_FAILED");
 
         let not_found = AuditEvent::user_not_found("user");
@@ -749,5 +786,46 @@ mod tests {
         let h = get_hostname();
         // Both should agree (no env override in play)
         assert_eq!(h, syscall_result);
+    }
+
+    // ── Syslog severity mapping tests ───────────────────────────────────────
+
+    #[test]
+    fn test_syslog_severity_mapping() {
+        let bg = AuditEvent::break_glass_auth("emergency", None);
+        assert_eq!(bg.syslog_severity(), AuditSeverity::Critical);
+
+        let failed = AuditEvent::ssh_login_failed(None, None, "reason");
+        assert_eq!(failed.syslog_severity(), AuditSeverity::Warning);
+
+        let token_failed = AuditEvent::token_validation_failed(None, "bad", None, None);
+        assert_eq!(token_failed.syslog_severity(), AuditSeverity::Warning);
+
+        let not_found = AuditEvent::user_not_found("alice");
+        assert_eq!(not_found.syslog_severity(), AuditSeverity::Warning);
+
+        let step_failed = AuditEvent::step_up_failed("u", None, "ciba", "timeout");
+        assert_eq!(step_failed.syslog_severity(), AuditSeverity::Warning);
+
+        let intro_failed = AuditEvent::introspection_failed(None, None, "err", "strict");
+        assert_eq!(intro_failed.syslog_severity(), AuditSeverity::Warning);
+
+        let success = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None);
+        assert_eq!(success.syslog_severity(), AuditSeverity::Info);
+
+        let opened = AuditEvent::session_opened("s", "u", None, 0);
+        assert_eq!(opened.syslog_severity(), AuditSeverity::Info);
+
+        let closed = AuditEvent::session_closed("s", "u", 0);
+        assert_eq!(closed.syslog_severity(), AuditSeverity::Info);
+
+        let revoked = AuditEvent::token_revoked("s", "u", "success", None);
+        assert_eq!(revoked.syslog_severity(), AuditSeverity::Info);
+
+        let initiated = AuditEvent::step_up_initiated("u", None, "ciba", None);
+        assert_eq!(initiated.syslog_severity(), AuditSeverity::Info);
+
+        let step_ok = AuditEvent::step_up_success("u", None, "ciba", "s", None, None);
+        assert_eq!(step_ok.syslog_severity(), AuditSeverity::Info);
     }
 }
