@@ -9,6 +9,7 @@ use figment::{
     Figment,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
@@ -187,6 +188,120 @@ impl Default for IdentityConfig {
         Self {
             username_claim: "preferred_username".to_string(),
             transforms: Vec::new(),
+        }
+    }
+}
+
+// ── Multi-issuer configuration (Phase 21, MIDP-01..05, MIDP-08) ──────────────
+
+/// ACR claim mapping configuration for a specific issuer.
+///
+/// Maps IdP-specific ACR values to normalized values and specifies enforcement
+/// mode for authentication context requirements.
+///
+/// Used in `IssuerConfig.acr_mapping` (MIDP-03).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AcrMappingConfig {
+    /// Map of IdP-specific ACR value → normalized ACR value.
+    /// E.g. `{"urn:idp:mfa": "urn:unix-oidc:acr:mfa"}`.
+    pub mappings: HashMap<String, String>,
+    /// How to enforce ACR requirements. Default: `warn`.
+    pub enforcement: EnforcementMode,
+}
+
+/// Source of truth for group membership resolution (MIDP-04).
+///
+/// - `nss_only`    — resolve groups from NSS/SSSD only (default, most secure)
+/// - `token_claim` — resolve groups from an OIDC token claim (requires `GroupMappingConfig.claim`)
+///
+/// NSS-based resolution is recommended as it uses the Unix realm authority
+/// (FreeIPA/LDAP) rather than IdP-controlled claims, which avoids claim
+/// overage issues (>200 Entra groups) and GUID-vs-name inconsistencies.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupSource {
+    /// Resolve groups from NSS/SSSD only. Default.
+    #[default]
+    NssOnly,
+    /// Resolve groups from an OIDC token claim.
+    TokenClaim,
+}
+
+/// Group membership mapping configuration for a specific issuer (MIDP-04).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GroupMappingConfig {
+    /// Source for group membership. Default: `nss_only`.
+    pub source: GroupSource,
+    /// Token claim containing group names (used when `source = token_claim`).
+    /// Default: `"groups"`.
+    #[serde(default = "GroupMappingConfig::default_claim")]
+    pub claim: String,
+    /// Map of IdP group name → local NSS group name.
+    /// Allows renaming/normalizing group names from the IdP.
+    pub name_map: HashMap<String, String>,
+}
+
+impl GroupMappingConfig {
+    fn default_claim() -> String {
+        "groups".to_string()
+    }
+}
+
+/// Per-issuer configuration bundle (MIDP-01, MIDP-02, MIDP-05).
+///
+/// Each entry in `PolicyConfig.issuers` defines an independent trusted OIDC issuer
+/// with its own DPoP enforcement, claim mapping, ACR mapping, and group mapping.
+///
+/// Missing optional fields fall back to safe defaults (MIDP-08).
+///
+/// ```yaml
+/// issuers:
+///   - issuer_url: "https://keycloak.example.com/realms/corp"
+///     client_id: "unix-oidc"
+///     dpop_enforcement: strict
+///   - issuer_url: "https://login.microsoftonline.com/tenant/v2.0"
+///     client_id: "unix-oidc-entra"
+///     dpop_enforcement: disabled
+///     identity:
+///       username_claim: email
+///       transforms:
+///         - strip_domain
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IssuerConfig {
+    /// OIDC issuer URL (must match `iss` claim in tokens). Required.
+    pub issuer_url: String,
+    /// OAuth client ID for this issuer. Default: `"unix-oidc"`.
+    pub client_id: String,
+    /// OAuth client secret (confidential clients only). Optional.
+    pub client_secret: Option<String>,
+    /// DPoP (RFC 9449) token binding enforcement. Default: `strict`.
+    ///
+    /// Security: `strict` is the safe default. Only set to `disabled` for
+    /// issuers that do not support DPoP (e.g. Entra ID which uses SHR instead).
+    pub dpop_enforcement: EnforcementMode,
+    /// Username claim extraction and transform pipeline for this issuer.
+    /// Default: `IdentityConfig::default()` (uses `preferred_username`, no transforms).
+    pub claim_mapping: IdentityConfig,
+    /// ACR claim mapping for this issuer. Default: `None` (no mapping, WARN logged).
+    pub acr_mapping: Option<AcrMappingConfig>,
+    /// Group membership mapping for this issuer. Default: `None` (NSS-only, WARN logged).
+    pub group_mapping: Option<GroupMappingConfig>,
+}
+
+impl Default for IssuerConfig {
+    fn default() -> Self {
+        Self {
+            issuer_url: String::new(),
+            client_id: "unix-oidc".to_string(),
+            client_secret: None,
+            dpop_enforcement: EnforcementMode::Strict,
+            claim_mapping: IdentityConfig::default(),
+            acr_mapping: None,
+            group_mapping: None,
         }
     }
 }
@@ -659,6 +774,14 @@ pub struct PolicyConfig {
     /// Absent in v1.0 files — defaults match prior hardcoded values.
     #[serde(default)]
     pub timeouts: PamTimeoutsConfig,
+    /// Per-issuer configuration bundles (Phase 21+, MIDP-01..05).
+    ///
+    /// When non-empty, overrides the legacy single-issuer env-var path.
+    /// Use `effective_issuers()` to get the resolved list (handles legacy compat).
+    ///
+    /// Duplicate `issuer_url` values hard-fail at load time (detected by `load_from()`).
+    #[serde(default)]
+    pub issuers: Vec<IssuerConfig>,
 }
 
 impl PolicyConfig {
@@ -674,9 +797,10 @@ impl PolicyConfig {
     /// - `UNIX_OIDC_SECURITY_MODES__DPOP_REQUIRED=warn`
     /// - `UNIX_OIDC_CACHE__JTI_MAX_ENTRIES=50000`
     ///
-    /// Only `security_modes` and `cache` env keys are recognized to prevent
-    /// unrelated `UNIX_OIDC_*` vars (e.g. `UNIX_OIDC_TEST_MODE`) from causing
-    /// spurious config-parse errors.
+    /// Only `security_modes`, `cache`, `identity`, `introspection`, `session`,
+    /// `timeouts`, and `issuers` env keys are recognized to prevent unrelated
+    /// `UNIX_OIDC_*` vars (e.g. `UNIX_OIDC_TEST_MODE`) from causing spurious
+    /// config-parse errors.
     pub fn load_from<P: AsRef<Path>>(path: P) -> Result<Self, PolicyError> {
         let path = path.as_ref();
         if !path.exists() {
@@ -692,6 +816,7 @@ impl PolicyConfig {
                 "introspection",
                 "session",
                 "timeouts",
+                "issuers",
             ]))
             .extract()
             .map_err(|e| PolicyError::ParseError(e.to_string()))?;
@@ -702,6 +827,34 @@ impl PolicyConfig {
                 "Loaded policy.yaml without security_modes section \
                  — using v1.0 defaults. See docs for v2.0 configuration."
             );
+        }
+
+        // MIDP-08: Warn for issuers missing optional fields.
+        for issuer in &config.issuers {
+            if issuer.acr_mapping.is_none() {
+                tracing::warn!(
+                    issuer_url = %issuer.issuer_url,
+                    "Issuer has no acr_mapping configured — ACR requirements will not be enforced for this issuer"
+                );
+            }
+            if issuer.group_mapping.is_none() {
+                tracing::warn!(
+                    issuer_url = %issuer.issuer_url,
+                    "Issuer has no group_mapping configured — using NSS-only group resolution"
+                );
+            }
+        }
+
+        // Detect duplicate issuer_url values (hard-fail per MIDP design).
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for issuer in &config.issuers {
+            let normalized = issuer.issuer_url.trim_end_matches('/').to_string();
+            if !seen.insert(normalized.clone()) {
+                return Err(PolicyError::ConfigError(format!(
+                    "Duplicate issuer_url in issuers[]: '{normalized}'. \
+                     Each issuer must have a unique URL."
+                )));
+            }
         }
 
         Ok(config)
@@ -731,6 +884,7 @@ impl PolicyConfig {
                     "introspection",
                     "session",
                     "timeouts",
+                    "issuers",
                 ]))
                 .extract()
                 .map_err(|e| PolicyError::ParseError(e.to_string()))?;
@@ -753,6 +907,59 @@ impl PolicyConfig {
     /// returns [`SecurityModes::default()`] which exactly matches v1.0 behavior.
     pub fn effective_security_modes(&self) -> SecurityModes {
         self.security_modes.clone().unwrap_or_default()
+    }
+
+    /// Return the effective list of trusted issuers (MIDP-01, legacy compat).
+    ///
+    /// Resolution order:
+    /// 1. If `issuers` is non-empty, return it directly.
+    /// 2. If `OIDC_ISSUER` env var is set, synthesize a single `IssuerConfig`
+    ///    from `OIDC_ISSUER` and optionally `OIDC_CLIENT_ID`.  Logs WARN so
+    ///    operators know to migrate to the `issuers[]` format.
+    /// 3. Otherwise return `Err` (no issuer configured).
+    ///
+    /// Note: The synthesized legacy issuer inherits the global `identity` config
+    /// as its `claim_mapping` so that existing username-mapping setups continue
+    /// to work without changes.
+    pub fn effective_issuers(&self) -> Result<Vec<IssuerConfig>, PolicyError> {
+        if !self.issuers.is_empty() {
+            return Ok(self.issuers.clone());
+        }
+
+        // Legacy single-issuer path: synthesize from OIDC_ISSUER env var.
+        if let Ok(issuer_url) = std::env::var("OIDC_ISSUER") {
+            let client_id =
+                std::env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "unix-oidc".to_string());
+            tracing::warn!(
+                issuer_url = %issuer_url,
+                "No issuers[] configured — synthesizing from OIDC_ISSUER env var (legacy path). \
+                 Migrate to the issuers[] array in policy.yaml."
+            );
+            let issuer = IssuerConfig {
+                issuer_url,
+                client_id,
+                claim_mapping: self.identity.clone(),
+                ..IssuerConfig::default()
+            };
+            return Ok(vec![issuer]);
+        }
+
+        Err(PolicyError::ConfigError(
+            "No issuers configured: add issuers[] to policy.yaml or set OIDC_ISSUER env var"
+                .to_string(),
+        ))
+    }
+
+    /// Look up an issuer by URL, with trailing-slash normalization on both sides.
+    ///
+    /// Returns `None` if no matching issuer is found in `issuers[]`.
+    /// Does NOT fall back to the legacy `OIDC_ISSUER` env var path — call
+    /// `effective_issuers()` for the full resolution chain.
+    pub fn issuer_by_url(&self, iss: &str) -> Option<&IssuerConfig> {
+        let normalized_query = iss.trim_end_matches('/');
+        self.issuers
+            .iter()
+            .find(|issuer| issuer.issuer_url.trim_end_matches('/') == normalized_query)
     }
 
     /// Check if a command matches any pattern that requires step-up.
@@ -825,6 +1032,11 @@ fn pattern_matches(pattern: &str, text: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Module-level mutex to serialize tests that manipulate environment variables.
+    /// Rust test threads share process memory, so concurrent env-var mutations cause races.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     // ── New-type tests ──────────────────────────────────────────────────────
 
@@ -1493,5 +1705,163 @@ host:
 
         let policy = result.expect("env override for timeouts should succeed");
         assert_eq!(policy.timeouts.clock_skew_future_secs, 15);
+    }
+
+    // ── Phase 21: Multi-issuer config tests (21-01) ───────────────────────────
+
+    /// A YAML with two `issuers[]` entries must deserialize into `PolicyConfig`
+    /// with `issuers.len() == 2`.
+    #[test]
+    fn test_multi_issuer_two_entries_load() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "unix-oidc"
+  - issuer_url: "https://login.microsoftonline.com/tenant-id/v2.0"
+    client_id: "unix-oidc-entra"
+    dpop_enforcement: disabled
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("multi-issuer yaml should load");
+
+        assert_eq!(policy.issuers.len(), 2, "expected 2 issuers");
+    }
+
+    /// `effective_issuers()` returns `issuers[]` when non-empty.
+    #[test]
+    fn test_effective_issuers_returns_configured() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "unix-oidc"
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("single-issuer yaml should load");
+
+        let issuers = policy
+            .effective_issuers()
+            .expect("effective_issuers should succeed");
+        assert_eq!(issuers.len(), 1);
+        assert_eq!(
+            issuers[0].issuer_url,
+            "https://keycloak.example.com/realms/corp"
+        );
+    }
+
+    /// `effective_issuers()` synthesizes a single entry from `OIDC_ISSUER` env var
+    /// when `issuers[]` is empty (legacy path).
+    #[test]
+    fn test_legacy_oidc_issuer_env_var_synthesized() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let policy = PolicyConfig::default(); // empty issuers
+        std::env::set_var("OIDC_ISSUER", "https://legacy.example.com");
+        let result = policy.effective_issuers();
+        std::env::remove_var("OIDC_ISSUER");
+
+        let issuers = result.expect("legacy env var path must succeed");
+        assert_eq!(issuers.len(), 1);
+        assert_eq!(issuers[0].issuer_url, "https://legacy.example.com");
+    }
+
+    /// Duplicate `issuer_url` values in `issuers[]` must cause `load_from()` to
+    /// return `Err` with a `ConfigError` variant (MIDP duplicate detection).
+    #[test]
+    fn test_duplicate_issuer_urls_rejected() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "unix-oidc"
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "unix-oidc-2"
+"#;
+        // Write to a temp file so load_from() is exercised (it runs post-parse validation)
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(&path, yaml).expect("write");
+
+        let result = PolicyConfig::load_from(&path);
+        assert!(result.is_err(), "duplicate issuer_url must be rejected");
+        assert!(
+            matches!(result.unwrap_err(), PolicyError::ConfigError(_)),
+            "error must be ConfigError"
+        );
+    }
+
+    /// `issuer_by_url()` returns `Some` for a configured issuer (with trailing-slash
+    /// normalization) and `None` for an unknown URL.
+    #[test]
+    fn test_issuer_by_url_normalization() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "unix-oidc"
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("yaml should load");
+
+        // Exact match
+        assert!(policy
+            .issuer_by_url("https://keycloak.example.com/realms/corp")
+            .is_some());
+        // Trailing slash on query side should still match
+        assert!(policy
+            .issuer_by_url("https://keycloak.example.com/realms/corp/")
+            .is_some());
+        // Unknown issuer
+        assert!(policy.issuer_by_url("https://other.example.com").is_none());
+    }
+
+    /// `IssuerConfig` with all optional fields omitted must deserialize with safe defaults:
+    /// dpop_enforcement=Strict, claim_mapping=default IdentityConfig, acr/group_mapping=None.
+    #[test]
+    fn test_issuer_optional_fields_defaults() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("minimal issuer yaml should load");
+
+        let issuer = &policy.issuers[0];
+        assert_eq!(
+            issuer.dpop_enforcement,
+            EnforcementMode::Strict,
+            "dpop_enforcement must default to Strict"
+        );
+        assert_eq!(
+            issuer.claim_mapping.username_claim, "preferred_username",
+            "claim_mapping must default to IdentityConfig default"
+        );
+        assert!(
+            issuer.acr_mapping.is_none(),
+            "acr_mapping must default to None"
+        );
+        assert!(
+            issuer.group_mapping.is_none(),
+            "group_mapping must default to None"
+        );
+    }
+
+    /// Empty `issuers[]` array with no `OIDC_ISSUER` env var must return `Err`
+    /// from `effective_issuers()`.
+    #[test]
+    fn test_empty_issuers_no_env_var_errors() {
+        // Hold the env mutex to prevent concurrent tests from setting OIDC_ISSUER.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("OIDC_ISSUER");
+        let policy = PolicyConfig::default(); // issuers is empty Vec
+        let result = policy.effective_issuers();
+        assert!(
+            result.is_err(),
+            "empty issuers with no env var must return Err"
+        );
     }
 }
