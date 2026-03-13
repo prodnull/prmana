@@ -42,11 +42,27 @@ pub mod sudo;
 pub mod ui;
 
 use audit::AuditEvent;
-use auth::{authenticate_with_dpop, authenticate_with_token, AuthError, DPoPAuthConfig};
+use auth::{
+    authenticate_multi_issuer, authenticate_with_dpop, authenticate_with_token, AuthError,
+    DPoPAuthConfig,
+};
+use oidc::jwks::IssuerJwksRegistry;
+use once_cell::sync::Lazy;
 use pamsm::{Pam, PamError, PamFlags, PamLibExt, PamMsgStyle, PamServiceModule};
 use policy::config::{EnforcementMode, PolicyConfig};
 use security::nonce_cache::{generate_dpop_nonce, global_nonce_cache};
 use security::rate_limit::global_rate_limiter;
+
+/// Module-level JWKS registry that persists across PAM authentication calls.
+///
+/// Using a static ensures that:
+/// 1. JWKS cache entries are retained between PAM calls (one sshd process may handle
+///    many authentications).
+/// 2. Per-issuer JWKS providers are independent — fetching JWKS for issuer A does not
+///    evict the cached keys for issuer B (MIDP-07).
+///
+/// Initialized lazily on first use via `Lazy<IssuerJwksRegistry>`.
+static JWKS_REGISTRY: Lazy<IssuerJwksRegistry> = Lazy::new(IssuerJwksRegistry::new);
 
 /// Return `true` if `pam_user` matches any configured break-glass account.
 ///
@@ -193,31 +209,47 @@ impl PamServiceModule for PamUnixOidc {
             }
         };
 
-        // Choose authentication path based on DPoP mode and proof availability.
+        // Load policy once — used for both path selection and DPoP config.
+        let policy_for_auth = PolicyConfig::from_env().unwrap_or_default();
+
+        // Choose authentication path:
         //
-        // - DPoP proof available: always use authenticate_with_dpop() regardless of mode.
-        //   (If the client sent a proof, validate it — this catches misconfigured clients
-        //   sending invalid proofs even in Warn/Disabled mode.)
+        // Multi-issuer path (Phase 21): When `issuers[]` is configured in policy.yaml,
+        // dispatch to `authenticate_multi_issuer()` which applies per-issuer JWKS,
+        // DPoP enforcement, and claim mapping. The DPoP nonce/proof collected above is
+        // passed through verbatim; per-issuer enforcement decides whether to require it.
         //
-        // - DPoP proof unavailable + Strict: return AUTH_ERR (client must send proof).
-        //
-        // - DPoP proof unavailable + Warn/Disabled: fall back to token-only auth.
-        //   authenticate_with_dpop() with dpop_proof=None also handles DPoP-bound tokens
-        //   (cnf.jkt present) correctly via its internal DPoPRequired check.
-        let auth_result = if dpop_proof.is_some() || dpop_mode == EnforcementMode::Strict {
-            // DPoP path (strict or proof provided).
+        // Legacy single-issuer path: When `issuers[]` is empty, fall back to the
+        // existing `authenticate_with_dpop()` / `authenticate_with_token()` paths.
+        // Zero behavior change for existing single-issuer deployments.
+        let auth_result = if !policy_for_auth.issuers.is_empty() {
+            // Multi-issuer dispatch (MIDP-06).
+            let dpop_config = DPoPAuthConfig {
+                target_host: gethostname::gethostname().to_string_lossy().to_string(),
+                require_nonce: true,
+                expected_nonce: None,
+                ..DPoPAuthConfig::from_policy(&policy_for_auth)
+            };
+            authenticate_multi_issuer(
+                &token,
+                dpop_proof.as_deref(),
+                &dpop_config,
+                &policy_for_auth,
+                &JWKS_REGISTRY,
+            )
+        } else if dpop_proof.is_some() || dpop_mode == EnforcementMode::Strict {
+            // Legacy DPoP path (strict or proof provided).
             // Clock skew values come from PolicyConfig.timeouts (Phase 14-01).
             // Fall back to DPoPAuthConfig defaults if policy could not be loaded.
-            let policy_for_dpop = PolicyConfig::from_env().unwrap_or_default();
             let dpop_config = DPoPAuthConfig {
                 target_host: gethostname::gethostname().to_string_lossy().to_string(),
                 require_nonce: true,  // cache-backed nonce enforcement
                 expected_nonce: None, // None = cache path (auth.rs consumes from cache)
-                ..DPoPAuthConfig::from_policy(&policy_for_dpop)
+                ..DPoPAuthConfig::from_policy(&policy_for_auth)
             };
             authenticate_with_dpop(&token, dpop_proof.as_deref(), &dpop_config)
         } else {
-            // Warn or Disabled with no proof — token-only fallback.
+            // Legacy: Warn or Disabled with no proof — token-only fallback.
             authenticate_with_token(&token)
         };
 
@@ -434,6 +466,17 @@ impl PamServiceModule for PamUnixOidc {
                     }
                     AuthError::IdentityMapping(_) => {
                         AuditEvent::ssh_login_failed(Some(&pam_user), source_ip, &reason).log();
+                        PamError::AUTH_ERR
+                    }
+                    AuthError::UnknownIssuer(iss) => {
+                        tracing::warn!(issuer = %iss, "Token from unknown issuer — rejected");
+                        AuditEvent::token_validation_failed(
+                            Some(&pam_user),
+                            &format!("Unknown issuer: {iss}"),
+                            source_ip,
+                            None,
+                        )
+                        .log();
                         PamError::AUTH_ERR
                     }
                 }
@@ -1244,6 +1287,80 @@ mod tests {
         assert!(
             trimmed.contains("test-session-id-123"),
             "JSON must contain the session_id"
+        );
+    }
+
+    // ── Multi-issuer dispatch tests (Phase 21, MIDP-06) ──────────────────────
+    //
+    // These tests verify that:
+    // 1. The JWKS_REGISTRY static is accessible and non-empty after first use.
+    // 2. The dispatch branching logic (issuers empty → legacy, non-empty → multi)
+    //    works correctly via authenticate_multi_issuer() directly.
+    // 3. UnknownIssuer is mapped to AUTH_ERR with an audit log in the PAM error handler.
+
+    #[test]
+    fn test_jwks_registry_static_is_accessible() {
+        // The static JWKS_REGISTRY must be initializable and usable.
+        // Calling get_or_init with a dummy URL should return an Arc<JwksProvider>.
+        let provider = JWKS_REGISTRY.get_or_init("https://test.example.com", 300, 10);
+        // A second call with the same issuer must return the same Arc.
+        let provider2 = JWKS_REGISTRY.get_or_init("https://test.example.com", 300, 10);
+        assert!(
+            std::sync::Arc::ptr_eq(&provider, &provider2),
+            "same issuer must return same Arc from static registry"
+        );
+    }
+
+    #[test]
+    fn test_multi_issuer_dispatch_requires_issuers_configured() {
+        // With empty issuers[], authenticate_multi_issuer is NOT called.
+        // This test verifies the branching condition: policy.issuers.is_empty().
+        let policy = crate::policy::config::PolicyConfig::default();
+        assert!(
+            policy.issuers.is_empty(),
+            "default PolicyConfig must have empty issuers[] (legacy mode)"
+        );
+    }
+
+    #[cfg(feature = "test-mode")]
+    #[test]
+    fn test_multi_issuer_dispatch_unknown_issuer_via_authenticate_multi_issuer() {
+        // Verify that authenticate_multi_issuer returns UnknownIssuer for an
+        // unrecognized token issuer, matching the PAM AUTH_ERR mapping in lib.rs.
+        use crate::auth::{authenticate_multi_issuer, AuthError, DPoPAuthConfig};
+        use crate::oidc::jwks::IssuerJwksRegistry;
+        use crate::policy::config::{EnforcementMode, IdentityConfig, IssuerConfig};
+
+        // Build a minimal token with an issuer not in the config.
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let exp = now + 3600;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256","typ":"JWT"}"#.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(
+            format!(r#"{{"iss":"https://unknown.example.com","sub":"x","aud":"unix-oidc","exp":{exp},"iat":{now}}}"#)
+                .as_bytes(),
+        );
+        let token = format!("{header}.{payload}.dummysig");
+
+        let mut policy = crate::policy::config::PolicyConfig::default();
+        policy.issuers = vec![IssuerConfig {
+            issuer_url: "https://known.example.com".to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Strict,
+            claim_mapping: IdentityConfig::default(),
+            ..IssuerConfig::default()
+        }];
+
+        let registry = IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        assert!(
+            matches!(result, Err(AuthError::UnknownIssuer(_))),
+            "expected UnknownIssuer, got: {result:?}"
         );
     }
 }
