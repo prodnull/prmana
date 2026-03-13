@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       provider:
-        description: 'Provider to test (all, keycloak, auth0, google)'
+        description: 'Provider to test (all, keycloak, auth0, google, entra)'
         required: false
         default: 'all'
 
@@ -175,12 +175,113 @@ jobs:
           curl -sf "https://www.googleapis.com/oauth2/v3/certs" | jq '.keys[].alg'
 
   # ============================================================================
+  # Entra ID Integration (Cloud, requires secrets)
+  # ============================================================================
+  entra:
+    name: Entra ID Integration
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event.inputs.provider == 'all' || github.event.inputs.provider == 'entra' || github.event.inputs.provider == '')
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check Entra Configuration
+        id: check-entra
+        run: |
+          if [ -z "${{ secrets.ENTRA_TENANT_ID }}" ]; then
+            echo "ENTRA_TENANT_ID secret not configured - skipping Entra tests"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.check-entra.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        if: steps.check-entra.outputs.skip != 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system dependencies
+        if: steps.check-entra.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config jq
+
+      - name: Build
+        if: steps.check-entra.outputs.skip != 'true'
+        run: cargo build --release -p pam-unix-oidc
+
+      - name: Verify Entra OIDC Discovery
+        if: steps.check-entra.outputs.skip != 'true'
+        env:
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+        run: |
+          echo "=== Entra OIDC Discovery ==="
+          DISCOVERY_URL="https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0/.well-known/openid-configuration"
+          curl -sf "${DISCOVERY_URL}" | jq .
+
+          echo ""
+          echo "=== Entra JWKS ==="
+          JWKS_URI=$(curl -sf "${DISCOVERY_URL}" | jq -r '.jwks_uri')
+          curl -sf "${JWKS_URI}" | jq '.keys | length' | xargs -I {} echo "Found {} keys"
+
+          echo ""
+          echo "=== Key Algorithms ==="
+          curl -sf "${JWKS_URI}" | jq '.keys[].alg'
+
+      - name: Acquire Entra Token (ROPC)
+        if: steps.check-entra.outputs.skip != 'true'
+        env:
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
+          ENTRA_TEST_USER: ${{ secrets.ENTRA_TEST_USER }}
+          ENTRA_TEST_PASSWORD: ${{ secrets.ENTRA_TEST_PASSWORD }}
+        run: |
+          chmod +x ./test/scripts/get-entra-token.sh
+          TOKEN=$(./test/scripts/get-entra-token.sh)
+          echo "::add-mask::${TOKEN}"
+          echo "ENTRA_TOKEN=${TOKEN}" >> $GITHUB_ENV
+
+          # Decode and display claims (without signature) for debugging
+          echo ""
+          echo "=== Token Claims (header) ==="
+          echo "${TOKEN}" | cut -d. -f1 | base64 -d 2>/dev/null | jq . || true
+          echo ""
+          echo "=== Token Claims (payload) ==="
+          echo "${TOKEN}" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{iss, aud, sub, preferred_username, email, ver, iat, exp}' || true
+
+      - name: Run Entra Integration Tests
+        if: steps.check-entra.outputs.skip != 'true'
+        env:
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
+          ENTRA_TOKEN: ${{ env.ENTRA_TOKEN }}
+        run: |
+          cargo test --release -p pam-unix-oidc --test entra_integration \
+            -- --ignored --test-threads=1 2>&1
+
+      - name: Entra Test Summary
+        if: steps.check-entra.outputs.skip != 'true' && always()
+        run: |
+          echo "=== Entra Integration Test Results ==="
+          echo "All Entra integration tests completed."
+
+  # ============================================================================
   # Summary
   # ============================================================================
   provider-summary:
     name: Provider Test Summary
     runs-on: ubuntu-latest
-    needs: [keycloak, auth0, google]
+    needs: [keycloak, auth0, google, entra]
     if: always()
     steps:
       - name: Check results
@@ -190,6 +291,7 @@ jobs:
           echo "Keycloak: ${{ needs.keycloak.result }}"
           echo "Auth0: ${{ needs.auth0.result }}"
           echo "Google: ${{ needs.google.result }}"
+          echo "Entra: ${{ needs.entra.result }}"
           echo ""
 
           # Keycloak is required, others are optional
