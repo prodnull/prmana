@@ -450,6 +450,34 @@ break_glass:
 
 ---
 
+## D-Bus and Secret Service Transport Security
+
+### Advisory: D-Bus Session Bus Snooping
+
+The Linux agent uses the [Secret Service API](https://specifications.freedesktop.org/secret-service/latest/) (via the `keyring` crate and `libdbus-sys`) to store DPoP keys and OAuth tokens in GNOME Keyring or KDE Wallet.
+
+**D-Bus itself provides no wire encryption.** The session bus uses Unix domain sockets with `SCM_CREDENTIALS` (peer UID verification) for authentication, but message payloads are plaintext. Any process running as the same UID can call `dbus-monitor` or `busctl monitor` to observe all session bus traffic.
+
+**The Secret Service API mitigates this** by negotiating an encrypted session (`dh-ietf1024-sha256-aes128-cbc-pkcs7`) via `org.freedesktop.secrets.Session.OpenSession`. When an encrypted session is active, credential values are encrypted in transit over D-Bus even though D-Bus itself is unencrypted.
+
+### Residual Risks
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Same-user D-Bus snooping | Medium | Secret Service session encryption protects credential payloads |
+| Root-level bus interception | High | Root access is a complete compromise regardless; out of scope |
+| Secret Service `plain` session fallback | Medium | If the daemon negotiates `plain` instead of `dh-ietf1024-*`, credentials transit D-Bus unencrypted. The `keyring` crate delegates session negotiation to the daemon — there is no application-level control to reject `plain` sessions |
+| `libdbus-sys` supply chain | Low | Well-maintained, mirrors the C `libdbus` API; pinned in `Cargo.lock` |
+
+### Recommendations for Operators
+
+1. **Ensure a Secret Service daemon is running** (GNOME Keyring, KDE Wallet, or `keepassxc`). Without one, the agent falls back to file-based storage.
+2. **Prefer keyring backends over file storage** — the keyring provides memory protection, access control, and (with encrypted sessions) transport encryption that file storage cannot.
+3. **Restrict D-Bus monitor access** in hardened environments: remove `dbus-monitor` from production images, or apply AppArmor/SELinux policy to restrict `org.freedesktop.DBus.Monitoring` interface access.
+4. **Full-disk encryption** remains the primary defense for at-rest credential material on CoW filesystems and SSDs (NIST SP 800-88 Rev 1, §2.5).
+
+---
+
 ## Additional Resources
 
 - [NIST SP 800-63 Digital Identity Guidelines](https://pages.nist.gov/800-63-3/)
