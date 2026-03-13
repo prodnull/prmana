@@ -1,6 +1,7 @@
 //! Secure file deletion with multi-pass overwrite
 //!
-//! Implements DoD 5220.22-M style three-pass overwrite for file deletion:
+//! Implements a three-pass overwrite for file deletion following NIST SP 800-88
+//! Rev 1 "Guidelines for Media Sanitization" §2.4 (Clear method):
 //! - Pass 1: random bytes, fsync
 //! - Pass 2: complement (XOR 0xFF) of pass-1 bytes, fsync
 //! - Pass 3: new random bytes, fsync
@@ -13,13 +14,14 @@
 //!   encryption is the correct mitigation.
 //! - **SSD/flash wear leveling**: the drive firmware may redirect writes to spare
 //!   blocks, leaving the original data intact. Full-disk encryption is the
-//!   correct mitigation. (NIST SP 800-88 Rev 1, section 2.5)
+//!   correct mitigation. (NIST SP 800-88 Rev 1, §2.5)
 //! - **Root/kernel access**: mlock and zeroize cannot protect against a privileged
 //!   actor with direct memory or disk access.
 //!
 //! References:
-//! - DoD 5220.22-M (National Industrial Security Program Operating Manual)
-//! - NIST SP 800-88 Rev 1 "Guidelines for Media Sanitization"
+//! - NIST SP 800-88 Rev 1 "Guidelines for Media Sanitization" (primary)
+//! - NIST SP 800-88 Rev 1 §2.4: Clear — logical techniques applied to all
+//!   user-addressable storage locations
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;

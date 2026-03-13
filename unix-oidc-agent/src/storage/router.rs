@@ -51,7 +51,7 @@ pub enum BackendKind {
     KeyutilsUser,
     /// macOS Keychain Services (requires `apple-native` feature).
     MacOsKeychain,
-    /// Plain files, mode 0600, with DoD 5220.22-M secure delete (last resort).
+    /// Plain files, mode 0600, with NIST SP 800-88 three-pass secure delete (last resort).
     File,
 }
 

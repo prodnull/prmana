@@ -17,7 +17,7 @@ use crate::storage::{SecureStorage, StorageError};
 ///
 /// # Secure deletion (MEM-05/MEM-06)
 ///
-/// `delete()` uses a three-pass DoD 5220.22-M style overwrite before unlink.
+/// `delete()` uses a three-pass overwrite (NIST SP 800-88 Rev 1 §2.4 Clear) before unlink.
 /// A CoW/SSD advisory is logged at construction time and again per-delete.
 pub struct FileStorage {
     base_dir: PathBuf,
@@ -112,7 +112,7 @@ impl SecureStorage for FileStorage {
             );
         }
 
-        // Three-pass random overwrite (DoD 5220.22-M) + fsync + unlink.
+        // Three-pass random overwrite (NIST SP 800-88 Rev 1 §2.4) + fsync + unlink.
         // Replaces the previous single zero-overwrite (MEM-05).
         secure_delete::secure_remove(&path).map_err(|e| {
             StorageError::Io(std::io::Error::other(format!(
