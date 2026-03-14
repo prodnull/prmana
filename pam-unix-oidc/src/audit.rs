@@ -124,8 +124,9 @@ pub enum AuditEvent {
 
     /// Break-glass emergency access used.
     ///
-    /// Emitted at CRITICAL severity whenever a break-glass account authenticates.
-    /// This event must be forwarded to SIEM/alerting systems immediately.
+    /// Emitted at CRITICAL severity when `alert_on_use = true` (the default),
+    /// or at INFO severity when `alert_on_use = false`.
+    /// This event must be forwarded to SIEM/alerting systems when alert_on_use is enabled.
     /// OCSF: Authentication / Privileged Account Use (class_uid 3002).
     #[serde(rename = "BREAK_GLASS_AUTH")]
     BreakGlassAuth {
@@ -134,8 +135,12 @@ pub enum AuditEvent {
         source_ip: Option<String>,
         host: String,
         reason: String,
-        /// Constant "CRITICAL" — break-glass use is always a critical event.
-        severity: &'static str,
+        /// `"CRITICAL"` when `alert_on_use=true`; `"INFO"` when `alert_on_use=false`.
+        severity: String,
+        /// Mirrors the `alert_on_use` policy flag at the time of authentication.
+        /// When `true`, the SIEM alerting pipeline is expected to page on this event.
+        #[serde(skip)]
+        alert_on_use: bool,
     },
 
     /// Session opened by pam_sm_open_session.
@@ -314,17 +319,26 @@ impl AuditEvent {
 
     /// Create a break-glass authentication event.
     ///
-    /// This event is always CRITICAL severity. The caller must ensure it is
-    /// logged via `.log()` immediately after construction; this constructor
+    /// When `alert_on_use` is `true` (the `break_glass.alert_on_use` policy flag),
+    /// the event is emitted at **CRITICAL** severity and the `severity` field in the
+    /// JSON payload is `"CRITICAL"`. SIEM rules should page on this value.
+    ///
+    /// When `alert_on_use` is `false`, severity is downgraded to **INFO**. This is
+    /// appropriate when break-glass accounts are used routinely (e.g. CI/CD automation
+    /// that is already monitored by other means) and operators have explicitly opted out
+    /// of alerting. The `severity` field in the JSON payload is `"INFO"`.
+    ///
+    /// The caller must log via `.log()` immediately after construction; this constructor
     /// does not emit it automatically.
-    pub fn break_glass_auth(username: &str, source_ip: Option<&str>) -> Self {
+    pub fn break_glass_auth(username: &str, source_ip: Option<&str>, alert_on_use: bool) -> Self {
         Self::BreakGlassAuth {
             timestamp: iso_timestamp(),
             username: username.to_string(),
             source_ip: source_ip.map(String::from),
             host: get_hostname(),
             reason: "break-glass bypass".to_string(),
-            severity: "CRITICAL",
+            severity: if alert_on_use { "CRITICAL".to_string() } else { "INFO".to_string() },
+            alert_on_use,
         }
     }
 
@@ -430,12 +444,19 @@ impl AuditEvent {
 
     /// Map each audit event to its appropriate syslog severity.
     ///
-    /// - **Critical**: break-glass access (always warrants immediate alerting)
+    /// - **Critical**: break-glass access with `alert_on_use=true`
+    /// - **Info**: break-glass access with `alert_on_use=false` (routine / non-alerting)
     /// - **Warning**: authentication/validation failures
     /// - **Info**: successful operations and routine lifecycle events
     pub fn syslog_severity(&self) -> AuditSeverity {
         match self {
-            Self::BreakGlassAuth { .. } => AuditSeverity::Critical,
+            Self::BreakGlassAuth { alert_on_use, .. } => {
+                if *alert_on_use {
+                    AuditSeverity::Critical
+                } else {
+                    AuditSeverity::Info
+                }
+            }
             Self::SshLoginFailed { .. }
             | Self::TokenValidationFailed { .. }
             | Self::StepUpFailed { .. }
@@ -599,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_break_glass_auth_serialization() {
-        let event = AuditEvent::break_glass_auth("emergency", Some("10.0.0.1"));
+        let event = AuditEvent::break_glass_auth("emergency", Some("10.0.0.1"), true);
         let json = serde_json::to_string(&event).unwrap();
 
         // Event tag must be BREAK_GLASS_AUTH
@@ -608,7 +629,7 @@ mod tests {
         assert!(json.contains("emergency"), "json: {json}");
         // Source IP must appear
         assert!(json.contains("10.0.0.1"), "json: {json}");
-        // Severity must be CRITICAL
+        // Severity must be CRITICAL when alert_on_use=true
         assert!(json.contains("CRITICAL"), "json: {json}");
         // Reason must be present
         assert!(json.contains("break-glass bypass"), "json: {json}");
@@ -618,7 +639,7 @@ mod tests {
 
     #[test]
     fn test_break_glass_auth_serialization_no_source_ip() {
-        let event = AuditEvent::break_glass_auth("breakglass1", None);
+        let event = AuditEvent::break_glass_auth("breakglass1", None, true);
         let json = serde_json::to_string(&event).unwrap();
 
         assert!(json.contains("BREAK_GLASS_AUTH"), "json: {json}");
@@ -630,8 +651,42 @@ mod tests {
 
     #[test]
     fn test_break_glass_auth_event_type() {
-        let event = AuditEvent::break_glass_auth("emergency", None);
+        let event = AuditEvent::break_glass_auth("emergency", None, true);
         assert_eq!(event.event_type(), "BREAK_GLASS_AUTH");
+    }
+
+    // ── SBUG-02: alert_on_use wiring ─────────────────────────────────────────
+
+    #[test]
+    fn test_break_glass_auth_alert_on_use_true_is_critical() {
+        let event = AuditEvent::break_glass_auth("bguser", Some("10.1.2.3"), true);
+        assert_eq!(
+            event.syslog_severity(),
+            AuditSeverity::Critical,
+            "alert_on_use=true must produce Critical severity"
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"CRITICAL\""), "serialized severity must be CRITICAL, json: {json}");
+    }
+
+    #[test]
+    fn test_break_glass_auth_alert_on_use_false_is_info() {
+        let event = AuditEvent::break_glass_auth("bguser", Some("10.1.2.3"), false);
+        assert_eq!(
+            event.syslog_severity(),
+            AuditSeverity::Info,
+            "alert_on_use=false must produce Info severity"
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"INFO\""), "serialized severity must be INFO, json: {json}");
+    }
+
+    #[test]
+    fn test_break_glass_auth_alert_on_use_false_no_critical_in_json() {
+        let event = AuditEvent::break_glass_auth("bguser", None, false);
+        let json = serde_json::to_string(&event).unwrap();
+        // When alert_on_use=false severity is INFO, not CRITICAL
+        assert!(!json.contains("\"CRITICAL\""), "severity must NOT be CRITICAL when alert_on_use=false, json: {json}");
     }
 
     // ── Phase 9: Session / introspection audit event tests ───────────────────
@@ -736,7 +791,7 @@ mod tests {
 
     #[test]
     fn test_break_glass_auth_constructor_populates_all_fields() {
-        let event = AuditEvent::break_glass_auth("testuser", Some("192.168.1.50"));
+        let event = AuditEvent::break_glass_auth("testuser", Some("192.168.1.50"), true);
         match event {
             AuditEvent::BreakGlassAuth {
                 timestamp,
@@ -745,12 +800,14 @@ mod tests {
                 host: _,
                 reason,
                 severity,
+                alert_on_use,
             } => {
                 assert!(!timestamp.is_empty(), "timestamp must be populated");
                 assert_eq!(username, "testuser");
                 assert_eq!(source_ip, Some("192.168.1.50".to_string()));
                 assert_eq!(reason, "break-glass bypass");
                 assert_eq!(severity, "CRITICAL");
+                assert!(alert_on_use, "alert_on_use must be true");
             }
             other => panic!("Expected BreakGlassAuth, got {other:?}"),
         }
@@ -792,7 +849,7 @@ mod tests {
 
     #[test]
     fn test_syslog_severity_mapping() {
-        let bg = AuditEvent::break_glass_auth("emergency", None);
+        let bg = AuditEvent::break_glass_auth("emergency", None, true);
         assert_eq!(bg.syslog_severity(), AuditSeverity::Critical);
 
         let failed = AuditEvent::ssh_login_failed(None, None, "reason");

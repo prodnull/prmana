@@ -125,8 +125,10 @@ impl PamServiceModule for PamUnixOidc {
         // is in the configured accounts list. Disabled break-glass config = normal OIDC flow.
         if let Ok(policy) = PolicyConfig::from_env() {
             if policy.break_glass.enabled && is_break_glass_user(&pam_user, &policy) {
-                // CRITICAL audit event before returning — do not skip.
-                AuditEvent::break_glass_auth(&pam_user, source_ip).log();
+                // Audit event — severity depends on alert_on_use policy flag (SBUG-02).
+                // When alert_on_use=true (default), severity is CRITICAL so SIEM alerting fires.
+                // When alert_on_use=false, severity is INFO (routine / non-alerting use).
+                AuditEvent::break_glass_auth(&pam_user, source_ip, policy.break_glass.alert_on_use).log();
                 return PamError::IGNORE;
             }
         }
@@ -208,6 +210,16 @@ impl PamServiceModule for PamUnixOidc {
                 return PamError::AUTH_ERR;
             }
         };
+
+        // Best-effort issuer extraction for forensic audit attribution (SBUG-01).
+        //
+        // We decode the JWT payload WITHOUT signature verification here — purely to
+        // read the `iss` claim so that token_validation_failed audit events record the
+        // correct issuer URL.  Full signature verification is performed subsequently.
+        // If the token is malformed (not a valid JWT), we record None — the audit event
+        // will have null oidc_issuer, which is honest: no issuer was identifiable.
+        let token_issuer_for_audit: Option<String> =
+            crate::auth::extract_iss_for_routing(&token).ok();
 
         // Load policy once — used for both path selection and DPoP config.
         let policy_for_auth = PolicyConfig::from_env().unwrap_or_default();
@@ -423,11 +435,12 @@ impl PamServiceModule for PamUnixOidc {
                         PamError::USER_UNKNOWN
                     }
                     AuthError::TokenValidation(_) => {
+                        // SBUG-01: include the issuer extracted before the auth call.
                         AuditEvent::token_validation_failed(
                             Some(&pam_user),
                             &reason,
                             source_ip,
-                            None,
+                            token_issuer_for_audit.as_deref(),
                         )
                         .log();
                         PamError::AUTH_ERR
@@ -441,21 +454,23 @@ impl PamServiceModule for PamUnixOidc {
                         PamError::SERVICE_ERR
                     }
                     AuthError::DPoPValidation(_) => {
+                        // SBUG-01: DPoP failures also attribute to the token's issuer.
                         AuditEvent::token_validation_failed(
                             Some(&pam_user),
                             &format!("DPoP validation failed: {reason}"),
                             source_ip,
-                            None,
+                            token_issuer_for_audit.as_deref(),
                         )
                         .log();
                         PamError::AUTH_ERR
                     }
                     AuthError::DPoPRequired => {
+                        // SBUG-01: attribute DPoP-required rejections to the token's issuer.
                         AuditEvent::token_validation_failed(
                             Some(&pam_user),
                             "DPoP proof required but not provided",
                             source_ip,
-                            None,
+                            token_issuer_for_audit.as_deref(),
                         )
                         .log();
                         PamError::AUTH_ERR
@@ -469,12 +484,13 @@ impl PamServiceModule for PamUnixOidc {
                         PamError::AUTH_ERR
                     }
                     AuthError::UnknownIssuer(iss) => {
+                        // SBUG-01: UnknownIssuer always has the issuer in the variant data.
                         tracing::warn!(issuer = %iss, "Token from unknown issuer — rejected");
                         AuditEvent::token_validation_failed(
                             Some(&pam_user),
                             &format!("Unknown issuer: {iss}"),
                             source_ip,
-                            None,
+                            Some(iss.as_str()),
                         )
                         .log();
                         PamError::AUTH_ERR
@@ -1319,6 +1335,96 @@ mod tests {
         assert!(
             policy.issuers.is_empty(),
             "default PolicyConfig must have empty issuers[] (legacy mode)"
+        );
+    }
+
+    // ── SBUG-01: oidc_issuer forensic attribution ─────────────────────────────
+    //
+    // These tests verify that token_issuer_for_audit is correctly populated from
+    // the JWT payload, so that audit events carry the correct issuer URL rather
+    // than None.  We test extract_iss_for_routing() (the extraction function used
+    // by lib.rs before the auth call) and validate that TokenValidationFailed
+    // events include oidc_issuer when the issuer is parseable.
+
+    #[test]
+    fn test_extract_iss_for_routing_parses_issuer() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256","typ":"JWT"}"#.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(
+            format!(r#"{{"iss":"https://idp.example.com","sub":"alice","aud":"unix-oidc","exp":{exp},"iat":{now}}}"#,
+                exp = now + 3600)
+                .as_bytes(),
+        );
+        let token = format!("{header}.{payload}.dummysig");
+
+        let iss = crate::auth::extract_iss_for_routing(&token).unwrap();
+        assert_eq!(iss, "https://idp.example.com", "issuer must be extracted without trailing slash");
+    }
+
+    #[test]
+    fn test_extract_iss_for_routing_normalizes_trailing_slash() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256","typ":"JWT"}"#.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(
+            format!(r#"{{"iss":"https://idp.example.com/","sub":"alice","aud":"unix-oidc","exp":{exp},"iat":{now}}}"#,
+                exp = now + 3600)
+                .as_bytes(),
+        );
+        let token = format!("{header}.{payload}.dummysig");
+
+        let iss = crate::auth::extract_iss_for_routing(&token).unwrap();
+        assert_eq!(iss, "https://idp.example.com", "trailing slash must be normalized");
+    }
+
+    #[test]
+    fn test_extract_iss_for_routing_returns_err_on_malformed_token() {
+        let result = crate::auth::extract_iss_for_routing("not.a.valid-base64!token");
+        assert!(result.is_err(), "malformed token must return Err");
+    }
+
+    #[test]
+    fn test_token_validation_failed_audit_event_includes_issuer() {
+        // Verify that AuditEvent::token_validation_failed correctly stores the issuer.
+        // This is the audit constructor that lib.rs calls; SBUG-01 is that lib.rs was
+        // passing None — we test the constructor correctly stores non-None values.
+        let event = crate::audit::AuditEvent::token_validation_failed(
+            Some("alice"),
+            "Token expired",
+            Some("10.0.0.1"),
+            Some("https://idp.example.com"),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("idp.example.com"),
+            "token_validation_failed audit event must include the oidc_issuer, json: {json}"
+        );
+    }
+
+    #[test]
+    fn test_token_validation_failed_audit_event_with_none_issuer() {
+        // When issuer is genuinely unknown (malformed token), oidc_issuer must be null.
+        let event = crate::audit::AuditEvent::token_validation_failed(
+            Some("alice"),
+            "Token malformed",
+            Some("10.0.0.1"),
+            None,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("\"oidc_issuer\":null"),
+            "null oidc_issuer must be serialized as null, json: {json}"
         );
     }
 
