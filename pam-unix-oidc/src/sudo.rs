@@ -512,11 +512,21 @@ fn perform_device_flow_step_up(
 
     let claims = validator.validate(token_to_validate)?;
 
-    // Verify username matches
-    let token_user = claims.preferred_username.clone().unwrap_or_default();
-    if token_user != ctx.user {
+    // Verify username matches.
+    //
+    // SBUG-03: When preferred_username is absent (OIDC Core §5.1 makes it optional),
+    // fall back to the `sub` claim which is ALWAYS present per OIDC Core §2.
+    // This prevents empty-string comparisons ("" != "alice" → UserMismatch with confusing
+    // error message "token user '' does not match sudo user 'alice'").
+    // Using `sub` as the fallback matches common IdP practice (Google, Azure AD in some
+    // configurations) and produces a legible error message with the actual identity.
+    let token_user_str = claims
+        .preferred_username
+        .as_deref()
+        .unwrap_or(&claims.sub);
+    if token_user_str != ctx.user {
         return Err(SudoError::UserMismatch {
-            token_user,
+            token_user: token_user_str.to_string(),
             sudo_user: ctx.user.clone(),
         });
     }
