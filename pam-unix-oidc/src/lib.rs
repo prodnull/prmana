@@ -1452,14 +1452,16 @@ mod tests {
         );
         let token = format!("{header}.{payload}.dummysig");
 
-        let mut policy = crate::policy::config::PolicyConfig::default();
-        policy.issuers = vec![IssuerConfig {
-            issuer_url: "https://known.example.com".to_string(),
-            client_id: "unix-oidc".to_string(),
-            dpop_enforcement: EnforcementMode::Strict,
-            claim_mapping: IdentityConfig::default(),
-            ..IssuerConfig::default()
-        }];
+        let policy = crate::policy::config::PolicyConfig {
+            issuers: vec![IssuerConfig {
+                issuer_url: "https://known.example.com".to_string(),
+                client_id: "unix-oidc".to_string(),
+                dpop_enforcement: EnforcementMode::Strict,
+                claim_mapping: IdentityConfig::default(),
+                ..IssuerConfig::default()
+            }],
+            ..crate::policy::config::PolicyConfig::default()
+        };
 
         let registry = IssuerJwksRegistry::new();
         let dpop_config = DPoPAuthConfig::default();

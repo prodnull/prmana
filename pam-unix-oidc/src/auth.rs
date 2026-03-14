@@ -1460,24 +1460,25 @@ timeouts:
         } else {
             IdentityConfig::default()
         };
-        let mut policy = crate::policy::config::PolicyConfig::default();
-        policy.issuers = vec![
-            IssuerConfig {
-                issuer_url: issuer_a.to_string(),
-                client_id: "unix-oidc".to_string(),
-                dpop_enforcement: dpop_a,
-                claim_mapping: claim_a,
-                ..IssuerConfig::default()
-            },
-            IssuerConfig {
-                issuer_url: issuer_b.to_string(),
-                client_id: "unix-oidc".to_string(),
-                dpop_enforcement: EnforcementMode::Disabled,
-                claim_mapping: IdentityConfig::default(),
-                ..IssuerConfig::default()
-            },
-        ];
-        policy
+        crate::policy::config::PolicyConfig {
+            issuers: vec![
+                IssuerConfig {
+                    issuer_url: issuer_a.to_string(),
+                    client_id: "unix-oidc".to_string(),
+                    dpop_enforcement: dpop_a,
+                    claim_mapping: claim_a,
+                    ..IssuerConfig::default()
+                },
+                IssuerConfig {
+                    issuer_url: issuer_b.to_string(),
+                    client_id: "unix-oidc".to_string(),
+                    dpop_enforcement: EnforcementMode::Disabled,
+                    claim_mapping: IdentityConfig::default(),
+                    ..IssuerConfig::default()
+                },
+            ],
+            ..crate::policy::config::PolicyConfig::default()
+        }
     }
 
     // ── extract_iss_for_routing ───────────────────────────────────────────────
@@ -1720,6 +1721,7 @@ timeouts:
     //     error message shows the sub value instead of an empty string.
 
     #[cfg(feature = "test-mode")]
+    #[allow(dead_code)]
     fn make_test_jwt_no_preferred_username(iss: &str, sub: &str, jti: Option<&str>) -> String {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
@@ -1740,6 +1742,7 @@ timeouts:
     }
 
     #[cfg(feature = "test-mode")]
+    #[allow(dead_code)]
     fn make_test_jwt_with_email_no_preferred_username(
         iss: &str,
         sub: &str,

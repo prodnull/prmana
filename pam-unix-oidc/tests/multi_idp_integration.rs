@@ -69,22 +69,23 @@ fn make_test_token(iss: &str, sub: &str, preferred_username: &str, jti: Option<&
 /// - Issuer A: `iss_a`, dpop_enforcement per `dpop_a`, no claim transforms by default
 /// - Issuer B: `iss_b`, DPoP disabled, no claim transforms by default
 fn make_two_issuer_policy(iss_a: &str, iss_b: &str, dpop_a: EnforcementMode) -> PolicyConfig {
-    let mut policy = PolicyConfig::default();
-    policy.issuers = vec![
-        IssuerConfig {
-            issuer_url: iss_a.to_string(),
-            client_id: "unix-oidc".to_string(),
-            dpop_enforcement: dpop_a,
-            ..IssuerConfig::default()
-        },
-        IssuerConfig {
-            issuer_url: iss_b.to_string(),
-            client_id: "unix-oidc".to_string(),
-            dpop_enforcement: EnforcementMode::Disabled,
-            ..IssuerConfig::default()
-        },
-    ];
-    policy
+    PolicyConfig {
+        issuers: vec![
+            IssuerConfig {
+                issuer_url: iss_a.to_string(),
+                client_id: "unix-oidc".to_string(),
+                dpop_enforcement: dpop_a,
+                ..IssuerConfig::default()
+            },
+            IssuerConfig {
+                issuer_url: iss_b.to_string(),
+                client_id: "unix-oidc".to_string(),
+                dpop_enforcement: EnforcementMode::Disabled,
+                ..IssuerConfig::default()
+            },
+        ],
+        ..PolicyConfig::default()
+    }
 }
 
 // ── MIDP-01: Config loading ───────────────────────────────────────────────────
@@ -262,7 +263,7 @@ fn test_acr_mapping_unknown_value_returns_none() {
         enforcement: EnforcementMode::Warn,
     };
     assert!(
-        acr_cfg.mappings.get("urn:unknown:acr:value").is_none(),
+        !acr_cfg.mappings.contains_key("urn:unknown:acr:value"),
         "unknown ACR value must return None without panic"
     );
 }
@@ -374,17 +375,19 @@ fn test_strip_domain_issuer_a_collision_safety_fires() {
         Some("jti-strip-05"),
     );
 
-    let mut policy = PolicyConfig::default();
-    policy.issuers = vec![IssuerConfig {
-        issuer_url: iss_a.to_string(),
-        client_id: "unix-oidc".to_string(),
-        dpop_enforcement: EnforcementMode::Disabled, // avoid DPoP error first
-        claim_mapping: IdentityConfig {
-            username_claim: "preferred_username".to_string(),
-            transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
-        },
-        ..IssuerConfig::default()
-    }];
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss_a.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled, // avoid DPoP error first
+            claim_mapping: IdentityConfig {
+                username_claim: "preferred_username".to_string(),
+                transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
+            },
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 
@@ -412,14 +415,16 @@ fn test_no_transforms_issuer_b_preserves_raw_claim() {
         Some("jti-raw-05"),
     );
 
-    let mut policy = PolicyConfig::default();
-    policy.issuers = vec![IssuerConfig {
-        issuer_url: iss_b.to_string(),
-        client_id: "unix-oidc".to_string(),
-        dpop_enforcement: EnforcementMode::Disabled,
-        claim_mapping: IdentityConfig::default(), // no transforms
-        ..IssuerConfig::default()
-    }];
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss_b.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            claim_mapping: IdentityConfig::default(), // no transforms
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 
@@ -523,13 +528,15 @@ fn test_issuer_routing_normalizes_trailing_slash() {
     let token = make_test_token(token_iss, "dave", "dave", Some("jti-slash-06"));
 
     // Config WITH trailing slash — issuer_by_url normalises both sides.
-    let mut policy = PolicyConfig::default();
-    policy.issuers = vec![IssuerConfig {
-        issuer_url: "https://slash-norm.example.com/realms/test/".to_string(),
-        client_id: "unix-oidc".to_string(),
-        dpop_enforcement: EnforcementMode::Disabled,
-        ..IssuerConfig::default()
-    }];
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: "https://slash-norm.example.com/realms/test/".to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 
@@ -825,18 +832,20 @@ fn test_allow_unsafe_pipeline_bypasses_collision_safety() {
     // Token uses email claim (UPN-style) — strip_domain would extract "alice"
     let token = make_test_token(iss, "alice@corp.example", "alice@corp.example", Some("jti-unsafe-entr-01"));
 
-    let mut policy = PolicyConfig::default();
-    policy.issuers = vec![IssuerConfig {
-        issuer_url: iss.to_string(),
-        client_id: "unix-oidc".to_string(),
-        dpop_enforcement: EnforcementMode::Disabled,
-        allow_unsafe_identity_pipeline: true,
-        claim_mapping: IdentityConfig {
-            username_claim: "preferred_username".to_string(),
-            transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
-        },
-        ..IssuerConfig::default()
-    }];
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            allow_unsafe_identity_pipeline: true,
+            claim_mapping: IdentityConfig {
+                username_claim: "preferred_username".to_string(),
+                transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
+            },
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 
@@ -860,18 +869,20 @@ fn test_allow_unsafe_pipeline_default_false_still_blocks() {
     let iss = "https://entra-safe.example.com";
     let token = make_test_token(iss, "bob@corp.example", "bob@corp.example", Some("jti-safe-entr-02"));
 
-    let mut policy = PolicyConfig::default();
-    policy.issuers = vec![IssuerConfig {
-        issuer_url: iss.to_string(),
-        client_id: "unix-oidc".to_string(),
-        dpop_enforcement: EnforcementMode::Disabled,
-        allow_unsafe_identity_pipeline: false, // explicit false = same as default
-        claim_mapping: IdentityConfig {
-            username_claim: "preferred_username".to_string(),
-            transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
-        },
-        ..IssuerConfig::default()
-    }];
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            allow_unsafe_identity_pipeline: false, // explicit false = same as default
+            claim_mapping: IdentityConfig {
+                username_claim: "preferred_username".to_string(),
+                transforms: vec![TransformConfig::Simple("strip_domain".to_string())],
+            },
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
 

@@ -567,13 +567,15 @@ fn test_entra_unknown_issuer_rejected_by_multi_issuer() {
     let token = entra_token();
 
     // Policy with only a Keycloak issuer — Entra issuer not configured
-    let mut policy = PolicyConfig::default();
-    policy.issuers = vec![IssuerConfig {
-        issuer_url: "http://localhost:8080/realms/test".to_string(),
-        client_id: "unix-oidc".to_string(),
-        dpop_enforcement: EnforcementMode::Strict,
-        ..IssuerConfig::default()
-    }];
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: "http://localhost:8080/realms/test".to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Strict,
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
 
     let registry = IssuerJwksRegistry::new();
     let dpop_config = DPoPAuthConfig::default();
