@@ -112,6 +112,69 @@ fn entra_single_issuer_policy() -> PolicyConfig {
     policy
 }
 
+// ── Always-run tests (no secrets required) ────────────────────────────────────
+
+/// ENTR-01 (integration fix): Verify the shipped Entra policy fixture
+/// deserializes correctly through PolicyConfig::load_from().
+///
+/// This is NOT ignored — it runs in every CI build to catch YAML schema
+/// regressions without requiring Entra secrets.
+///
+/// Structural assertions match the documented intent in the fixture header
+/// (test/fixtures/policy/policy-entra.yaml).
+#[test]
+fn test_policy_entra_yaml_deserializes() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let fixture = std::path::Path::new(manifest_dir)
+        .join("../test/fixtures/policy/policy-entra.yaml");
+
+    let config = PolicyConfig::load_from(&fixture)
+        .expect("policy-entra.yaml must deserialize without error");
+
+    // Verify structural properties
+    assert_eq!(
+        config.issuers.len(),
+        1,
+        "Entra fixture must have exactly one issuer"
+    );
+
+    let issuer = &config.issuers[0];
+    assert!(
+        issuer.issuer_url.contains("ENTRA_TENANT_ID_PLACEHOLDER"),
+        "Issuer URL must contain the placeholder tenant ID, got: {}",
+        issuer.issuer_url
+    );
+    assert_eq!(
+        issuer.dpop_enforcement,
+        EnforcementMode::Disabled,
+        "Entra DPoP enforcement must be disabled (SHR, not RFC 9449)"
+    );
+    assert!(
+        issuer.allow_unsafe_identity_pipeline,
+        "Entra fixture must set allow_unsafe_identity_pipeline: true"
+    );
+    assert_eq!(
+        issuer.claim_mapping.username_claim, "email",
+        "Entra fixture must use email as username claim"
+    );
+    assert_eq!(
+        issuer.claim_mapping.transforms.len(),
+        2,
+        "Entra fixture must have 2 transforms (strip_domain + lowercase)"
+    );
+
+    // Verify global security modes
+    let sec = config
+        .security_modes
+        .as_ref()
+        .expect("security_modes must be present in Entra fixture");
+    assert_eq!(
+        sec.jti_enforcement,
+        EnforcementMode::Warn,
+        "jti_enforcement must be warn (Entra omits jti)"
+    );
+}
+
 // ── Positive tests ────────────────────────────────────────────────────────────
 
 /// ENTR-02: OIDC discovery against the Entra tenant returns a JWKS URI with RS256 keys.
