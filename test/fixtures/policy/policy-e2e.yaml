@@ -7,7 +7,11 @@ host_classification: elevated
 # Security modes — enforce real validation
 security_modes:
   jti_enforcement: warn
-  dpop_required: strict
+  # DPoP enforcement set to warn for E2E SSH chain tests.
+  # DPoP proof generation/validation is covered by dedicated unit tests,
+  # cross-language interop tests, and the token-exchange CI job.
+  # The E2E SSH chain test validates the JWKS signature verification path.
+  dpop_required: warn
   amr_enforcement: warn
   acr_enforcement: warn
   groups_enforcement: warn

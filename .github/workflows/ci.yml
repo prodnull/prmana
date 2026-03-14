@@ -313,6 +313,102 @@ jobs:
         run: docker compose -f docker-compose.ciba-integration.yaml down -v
 
   # ============================================================================
+  # Keycloak E2E: Full SSH→PAM Chain with Real JWKS (Phase 20)
+  # ============================================================================
+  keycloak-e2e:
+    name: Keycloak E2E (SSH→PAM→JWKS)
+    runs-on: ubuntu-24.04
+    needs: [build-matrix]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download release artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: unix-oidc-ubuntu-24.04
+          path: target/release-linux
+
+      - name: Make binaries executable
+        run: chmod +x target/release-linux/*
+
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y curl jq openssh-client python3
+
+      - name: Make test scripts executable
+        run: |
+          chmod +x test/tests/test_keycloak_real_sig.sh
+          chmod +x test/e2e/ssh-askpass-e2e.sh
+          chmod +x test/e2e/run-device-flow-e2e.sh
+
+      - name: Build E2E test-host container
+        run: docker compose -f docker-compose.e2e.yaml build test-host-e2e
+
+      - name: Start E2E stack (Keycloak + OpenLDAP + test-host)
+        run: |
+          docker compose -f docker-compose.e2e.yaml up -d
+          echo "Waiting for Keycloak to be healthy..."
+          for i in $(seq 1 36); do
+            if curl -sf http://localhost:9000/health/ready >/dev/null 2>&1; then
+              echo "Keycloak ready after ~$((i * 10))s"
+              break
+            fi
+            if [ $i -eq 36 ]; then
+              echo "Keycloak did not become healthy within 360s"
+              docker compose -f docker-compose.e2e.yaml logs keycloak
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Wait for test-host SSH
+        run: |
+          for i in $(seq 1 12); do
+            if docker compose -f docker-compose.e2e.yaml exec -T test-host-e2e pgrep sshd >/dev/null 2>&1; then
+              echo "SSH server ready"
+              break
+            fi
+            echo "Waiting for test-host SSH... ($i/12)"
+            sleep 5
+          done
+
+      - name: Verify TEST_MODE sentinel
+        run: |
+          if docker compose -f docker-compose.e2e.yaml exec -T test-host-e2e env | grep -q UNIX_OIDC_TEST_MODE; then
+            echo "TEST_MODE is set in E2E container — aborting"
+            exit 1
+          fi
+          echo "TEST_MODE sentinel: PASSED (not set)"
+
+      - name: Run E2E real signature tests
+        run: bash test/tests/test_keycloak_real_sig.sh
+        env:
+          COMPOSE_FILE: docker-compose.e2e.yaml
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Docker Compose Status ==="
+          docker compose -f docker-compose.e2e.yaml ps
+          echo ""
+          echo "=== Keycloak Logs (last 50 lines) ==="
+          docker compose -f docker-compose.e2e.yaml logs --tail=50 keycloak
+          echo ""
+          echo "=== Test-Host Logs (last 50 lines) ==="
+          docker compose -f docker-compose.e2e.yaml logs --tail=50 test-host-e2e
+          echo ""
+          echo "=== Test-Host Auth Log ==="
+          docker compose -f docker-compose.e2e.yaml exec -T test-host-e2e \
+            bash -c "cat /var/log/auth.log 2>/dev/null || echo 'No auth.log'" || true
+          echo ""
+          echo "=== Test-Host Audit Log ==="
+          docker compose -f docker-compose.e2e.yaml exec -T test-host-e2e \
+            bash -c "cat /var/log/unix-oidc-audit.log 2>/dev/null || echo 'No audit log'" || true
+
+      - name: Stop E2E stack
+        if: always()
+        run: docker compose -f docker-compose.e2e.yaml down -v
+
+  # ============================================================================
   # Minimum Supported Rust Version
   # ============================================================================
   msrv:

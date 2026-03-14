@@ -1,25 +1,30 @@
 #!/bin/bash
 # test/tests/test_keycloak_real_sig.sh
-# E2E-01: Full SSH auth chain with real OIDC signature verification.
-# E2E-02: Structured audit event verification.
-# E2E-03: Negative tests (wrong issuer, expired token, replayed DPoP).
+# Phase 20: Full E2E test suite for real OIDC signature verification.
 #
-# NO TEST_MODE — all validation uses Keycloak 26.4 JWKS.
+# E2E-01: SSH→PAM chain with real JWKS signature verification (no TEST_MODE).
+# E2E-02: Structured audit event verification (SSH_LOGIN_SUCCESS in audit log).
+# E2E-03: Negative security tests (tampered signature, wrong issuer).
 #
 # Prerequisites:
 #   - docker-compose.e2e.yaml stack running and healthy
-#   - Playwright browsers installed
-#   - Agent binary built (target/release/unix-oidc-agent)
+#   - Agent binary built (target/release/unix-oidc-agent in target/release-linux/)
+#   - sshpass or SSH_ASKPASS available for automated SSH login
+#
+# CI usage:
+#   COMPOSE_FILE=docker-compose.e2e.yaml ./test/tests/test_keycloak_real_sig.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-E2E_DIR="$(dirname "$SCRIPT_DIR")/e2e"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+E2E_DIR="${PROJECT_ROOT}/test/e2e"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.e2e.yaml}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
 REALM="unix-oidc"
 CLIENT_ID="unix-oidc"
 CONTAINER="test-host-e2e"
+SSH_PORT="${SSH_PORT:-2222}"
 
 PASS=0
 FAIL=0
@@ -42,26 +47,29 @@ result() {
 echo "=== E2E Real Signature Test Suite ==="
 echo "Compose: $COMPOSE_FILE"
 echo "Keycloak: $KEYCLOAK_URL"
+echo "SSH Port: $SSH_PORT"
 echo ""
 
-# --- Prerequisite checks ---
+# ═══════════════════════════════════════════════════════════════════════
+# Prerequisite Checks
+# ═══════════════════════════════════════════════════════════════════════
 echo "--- Prerequisites ---"
 
-# Sentinel check (INFR-03)
-if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" env | grep -q "UNIX_OIDC_TEST_MODE"; then
-    echo "FATAL: TEST_MODE is set. Aborting."
+# INFR-03: Sentinel — verify TEST_MODE is NOT set in the container.
+if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" env 2>/dev/null | grep -q "UNIX_OIDC_TEST_MODE"; then
+    echo "FATAL: TEST_MODE is set in E2E container. Aborting."
     exit 1
 fi
-result "PASS" "TEST_MODE sentinel"
+result "PASS" "TEST_MODE sentinel (not set in container)"
 
-# Agent binary check (BFIX-02)
+# BFIX-02: Agent binary on PATH inside the container.
 if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" which unix-oidc-agent >/dev/null 2>&1; then
-    result "PASS" "Agent binary on PATH"
+    result "PASS" "Agent binary on PATH in container"
 else
-    result "FAIL" "Agent binary on PATH"
+    result "FAIL" "Agent binary on PATH in container"
 fi
 
-# Keycloak issuer check (BFIX-01)
+# BFIX-01: Keycloak issuer URL alignment.
 DISCOVERY=$(curl -sf "${KEYCLOAK_URL}/realms/${REALM}/.well-known/openid-configuration" || echo "{}")
 DISC_ISSUER=$(echo "$DISCOVERY" | jq -r '.issuer // empty')
 if [ "$DISC_ISSUER" = "${KEYCLOAK_URL}/realms/${REALM}" ]; then
@@ -70,12 +78,22 @@ else
     result "FAIL" "Issuer URL alignment (expected ${KEYCLOAK_URL}/realms/${REALM}, got $DISC_ISSUER)"
 fi
 
+# PAM module installed in container.
+if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" test -f /lib/security/pam_unix_oidc.so 2>/dev/null; then
+    result "PASS" "PAM module installed in container"
+else
+    result "FAIL" "PAM module not found in container"
+    echo "    The PAM module is required for SSH→PAM chain tests."
+    echo "    Ensure target/release-linux/libpam_unix_oidc.so is built."
+fi
+
 echo ""
 
-# --- E2E-01: Full auth chain via device flow ---
-echo "--- E2E-01: Device Flow + Token Acquisition ---"
+# ═══════════════════════════════════════════════════════════════════════
+# E2E-01: Token Acquisition (ROPC — validates Keycloak is working)
+# ═══════════════════════════════════════════════════════════════════════
+echo "--- E2E-01: Token Acquisition ---"
 
-# Get a test token using direct access grant (for non-Playwright tests)
 TOKEN_RESPONSE=$(curl -sf -X POST \
     "${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
@@ -84,53 +102,301 @@ TOKEN_RESPONSE=$(curl -sf -X POST \
 
 ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
 
-if [ -n "$ACCESS_TOKEN" ] && [ "$ACCESS_TOKEN" != "null" ]; then
-    # Validate token claims
-    CLAIMS=$(echo "$ACCESS_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null)
-    TOKEN_ISS=$(echo "$CLAIMS" | jq -r '.iss // empty')
-    TOKEN_AUD=$(echo "$CLAIMS" | jq -r '.aud // empty')
-    TOKEN_USER=$(echo "$CLAIMS" | jq -r '.preferred_username // empty')
-
-    if [ "$TOKEN_ISS" = "${KEYCLOAK_URL}/realms/${REALM}" ]; then
-        result "PASS" "Token issuer correct ($TOKEN_ISS)"
-    else
-        result "FAIL" "Token issuer (expected ${KEYCLOAK_URL}/realms/${REALM}, got $TOKEN_ISS)"
-    fi
-
-    if [ "$TOKEN_USER" = "testuser" ]; then
-        result "PASS" "Token username claim (testuser)"
-    else
-        result "FAIL" "Token username claim (expected testuser, got $TOKEN_USER)"
-    fi
-else
-    result "FAIL" "Token acquisition"
+if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
+    result "FAIL" "Token acquisition via ROPC"
     echo "    Response: $TOKEN_RESPONSE"
+    echo ""
+    echo "FATAL: Cannot proceed without a valid token."
+    exit 1
+fi
+
+# Validate token claims
+# base64 -d with padding fix (JWT base64url may lack padding)
+CLAIMS=$(echo "$ACCESS_TOKEN" | cut -d'.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null || echo '{}')
+TOKEN_ISS=$(echo "$CLAIMS" | jq -r '.iss // empty')
+TOKEN_USER=$(echo "$CLAIMS" | jq -r '.preferred_username // empty')
+TOKEN_EXP=$(echo "$CLAIMS" | jq -r '.exp // 0')
+
+if [ "$TOKEN_ISS" = "${KEYCLOAK_URL}/realms/${REALM}" ]; then
+    result "PASS" "Token issuer correct ($TOKEN_ISS)"
+else
+    result "FAIL" "Token issuer (expected ${KEYCLOAK_URL}/realms/${REALM}, got $TOKEN_ISS)"
+fi
+
+if [ "$TOKEN_USER" = "testuser" ]; then
+    result "PASS" "Token username claim (testuser)"
+else
+    result "FAIL" "Token username claim (expected testuser, got $TOKEN_USER)"
+fi
+
+NOW=$(date +%s)
+if [ "$TOKEN_EXP" -gt "$NOW" ]; then
+    result "PASS" "Token not expired (exp=$TOKEN_EXP, now=$NOW)"
+else
+    result "FAIL" "Token expired (exp=$TOKEN_EXP, now=$NOW)"
 fi
 
 echo ""
 
-# --- E2E-03: Negative tests ---
-echo "--- E2E-03: Negative Tests ---"
+# ═══════════════════════════════════════════════════════════════════════
+# E2E-01: Full SSH→PAM Chain Test
+# ═══════════════════════════════════════════════════════════════════════
+echo "--- E2E-01: SSH→PAM Chain (keyboard-interactive + JWKS verification) ---"
 
-# Test: Wrong issuer token should be rejected by JWKS fetch
-# We test this by checking that JWKS from a non-existent realm fails
+# Clear the audit log in the container before the test.
+docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
+    bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" >/dev/null 2>&1
+
+# Write the token to a temporary file for SSH_ASKPASS.
+TOKEN_FILE=$(mktemp /tmp/unix-oidc-e2e-token-XXXXXX)
+echo -n "$ACCESS_TOKEN" > "$TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
+trap 'rm -f "$TOKEN_FILE"' EXIT
+
+# SSH_ASKPASS requires no controlling terminal.
+# SSH_ASKPASS_REQUIRE=force (OpenSSH 8.4+) bypasses tty detection.
+SSH_ASKPASS_SCRIPT="${E2E_DIR}/ssh-askpass-e2e.sh"
+if [ ! -x "$SSH_ASKPASS_SCRIPT" ]; then
+    chmod +x "$SSH_ASKPASS_SCRIPT"
+fi
+
+SSH_RESULT=""
+SSH_EXIT=0
+
+# Use keyboard-interactive authentication with our custom SSH_ASKPASS.
+# The PAM module will:
+#   1. Send DPOP_NONCE:<value> → ASKPASS returns empty (acknowledged)
+#   2. Send DPOP_PROOF: → ASKPASS returns empty (warn mode, no proof)
+#   3. Send "OIDC Token: " → ASKPASS returns the real JWT
+#   4. PAM validates JWT signature against Keycloak JWKS (real crypto, no TEST_MODE)
+SSH_RESULT=$(DISPLAY=:0 \
+    SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
+    SSH_ASKPASS_REQUIRE=force \
+    UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
+    ssh -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o PreferredAuthentications=keyboard-interactive \
+        -o NumberOfPasswordPrompts=3 \
+        -o ConnectTimeout=10 \
+        -p "$SSH_PORT" \
+        testuser@localhost \
+        "echo SSH_AUTH_OK" 2>/dev/null) || SSH_EXIT=$?
+
+if [ "$SSH_EXIT" -eq 0 ] && echo "$SSH_RESULT" | grep -q "SSH_AUTH_OK"; then
+    result "PASS" "SSH→PAM chain (keyboard-interactive, real JWKS)"
+else
+    result "FAIL" "SSH→PAM chain (exit=$SSH_EXIT)"
+    echo "    SSH output: ${SSH_RESULT:-empty}"
+    echo "    Checking container logs for diagnostics..."
+    docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
+        bash -c "tail -20 /var/log/auth.log 2>/dev/null || journalctl -u sshd -n 20 2>/dev/null || echo 'No auth logs available'" 2>/dev/null || true
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════
+# E2E-02: Structured Audit Event Verification
+# ═══════════════════════════════════════════════════════════════════════
+echo "--- E2E-02: Audit Log Verification ---"
+
+# The PAM module writes structured JSON audit events to /var/log/unix-oidc-audit.log.
+# Check for SSH_LOGIN_SUCCESS event.
+AUDIT_LOG=$(docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
+    cat /var/log/unix-oidc-audit.log 2>/dev/null || echo "")
+
+if [ -n "$AUDIT_LOG" ]; then
+    if echo "$AUDIT_LOG" | grep -q '"event":"SSH_LOGIN_SUCCESS"'; then
+        result "PASS" "Audit log contains SSH_LOGIN_SUCCESS event"
+
+        # Verify the event contains expected fields.
+        LOGIN_EVENT=$(echo "$AUDIT_LOG" | grep '"event":"SSH_LOGIN_SUCCESS"' | tail -1)
+        if echo "$LOGIN_EVENT" | jq -e '.user' >/dev/null 2>&1; then
+            AUDIT_USER=$(echo "$LOGIN_EVENT" | jq -r '.user')
+            result "PASS" "Audit event has user field ($AUDIT_USER)"
+        else
+            result "FAIL" "Audit event missing user field"
+        fi
+
+        if echo "$LOGIN_EVENT" | jq -e '.session_id' >/dev/null 2>&1; then
+            result "PASS" "Audit event has session_id field"
+        else
+            result "FAIL" "Audit event missing session_id field"
+        fi
+    else
+        result "FAIL" "Audit log missing SSH_LOGIN_SUCCESS event"
+        echo "    Audit log content: ${AUDIT_LOG:0:500}"
+    fi
+else
+    # If SSH chain test failed, audit log may be empty — skip rather than fail.
+    if [ "$SSH_EXIT" -ne 0 ]; then
+        result "SKIP" "Audit log verification (SSH chain test did not succeed)"
+    else
+        result "FAIL" "Audit log is empty (expected SSH_LOGIN_SUCCESS)"
+    fi
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════
+# E2E-03: Negative Security Tests
+# ═══════════════════════════════════════════════════════════════════════
+echo "--- E2E-03: Negative Security Tests ---"
+
+# --- Test 1: Tampered signature should be rejected ---
+# Take the valid token and change the last character of the signature.
+# This makes the ECDSA signature invalid; JWKS verification must reject it.
+TAMPERED_TOKEN=""
+if [ -n "$ACCESS_TOKEN" ]; then
+    # JWT format: header.payload.signature
+    HEADER_PAYLOAD=$(echo "$ACCESS_TOKEN" | cut -d'.' -f1-2)
+    SIGNATURE=$(echo "$ACCESS_TOKEN" | cut -d'.' -f3)
+
+    # Flip the last character: if it's 'A', make it 'B'; otherwise make it 'A'.
+    LAST_CHAR="${SIGNATURE: -1}"
+    if [ "$LAST_CHAR" = "A" ]; then
+        NEW_LAST="B"
+    else
+        NEW_LAST="A"
+    fi
+    TAMPERED_SIG="${SIGNATURE:0:$((${#SIGNATURE}-1))}${NEW_LAST}"
+    TAMPERED_TOKEN="${HEADER_PAYLOAD}.${TAMPERED_SIG}"
+fi
+
+if [ -n "$TAMPERED_TOKEN" ]; then
+    # Write tampered token and attempt SSH.
+    TAMPERED_FILE=$(mktemp /tmp/unix-oidc-e2e-tampered-XXXXXX)
+    echo -n "$TAMPERED_TOKEN" > "$TAMPERED_FILE"
+    chmod 600 "$TAMPERED_FILE"
+
+    TAMPER_RESULT=$(DISPLAY=:0 \
+        SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
+        SSH_ASKPASS_REQUIRE=force \
+        UNIX_OIDC_E2E_TOKEN_FILE="$TAMPERED_FILE" \
+        ssh -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o PreferredAuthentications=keyboard-interactive \
+            -o NumberOfPasswordPrompts=3 \
+            -o ConnectTimeout=10 \
+            -p "$SSH_PORT" \
+            testuser@localhost \
+            "echo SHOULD_NOT_REACH" 2>/dev/null) || true
+
+    rm -f "$TAMPERED_FILE"
+
+    if echo "$TAMPER_RESULT" | grep -q "SHOULD_NOT_REACH"; then
+        result "FAIL" "Tampered signature accepted (SECURITY VIOLATION)"
+    else
+        result "PASS" "Tampered signature rejected"
+    fi
+else
+    result "SKIP" "Tampered signature test (no valid token available)"
+fi
+
+# --- Test 2: Wrong issuer should be rejected ---
+# Temporarily reconfigure the PAM module to expect a different issuer.
+# Any valid Keycloak token will then have a mismatched issuer.
+WRONG_ISSUER_RESULT=""
+if [ -n "$ACCESS_TOKEN" ]; then
+    # Save original OIDC_ISSUER, change to a wrong value.
+    docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
+        bash -c 'sed -i "s|OIDC_ISSUER=.*|OIDC_ISSUER=http://wrong-issuer:9999/realms/fake|" /etc/environment' 2>/dev/null
+
+    WRONG_ISSUER_RESULT=$(DISPLAY=:0 \
+        SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
+        SSH_ASKPASS_REQUIRE=force \
+        UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
+        ssh -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o PreferredAuthentications=keyboard-interactive \
+            -o NumberOfPasswordPrompts=3 \
+            -o ConnectTimeout=10 \
+            -p "$SSH_PORT" \
+            testuser@localhost \
+            "echo SHOULD_NOT_REACH" 2>/dev/null) || true
+
+    # Restore original OIDC_ISSUER.
+    docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
+        bash -c "sed -i 's|OIDC_ISSUER=.*|OIDC_ISSUER=http://localhost:8080/realms/unix-oidc|' /etc/environment" 2>/dev/null
+
+    if echo "$WRONG_ISSUER_RESULT" | grep -q "SHOULD_NOT_REACH"; then
+        result "FAIL" "Wrong issuer token accepted (SECURITY VIOLATION)"
+    else
+        result "PASS" "Wrong issuer token rejected"
+    fi
+else
+    result "SKIP" "Wrong issuer test (no valid token available)"
+fi
+
+# --- Test 3: Wrong realm JWKS endpoint ---
+# Verify that a non-existent realm's OIDC discovery fails.
 BAD_JWKS=$(curl -sf "${KEYCLOAK_URL}/realms/nonexistent/.well-known/openid-configuration" 2>/dev/null || echo "")
 if [ -z "$BAD_JWKS" ] || echo "$BAD_JWKS" | jq -e '.error' >/dev/null 2>&1; then
-    result "PASS" "Wrong realm JWKS rejected"
+    result "PASS" "Non-existent realm JWKS discovery fails correctly"
 else
-    result "FAIL" "Wrong realm JWKS should have failed"
+    result "FAIL" "Non-existent realm JWKS should have failed"
 fi
 
-# Test: Expired token detection
-# Create a token that looks expired by checking PAM module handles exp correctly
-result "PASS" "Expired token test (validated in unit tests, PAM rejects exp < now)"
+# --- Test 4: Expired token detection ---
+# Create a JWT-like string with exp in the past.
+# We use Python to craft a proper expired token if available.
+if command -v python3 >/dev/null 2>&1; then
+    EXPIRED_TOKEN=$(python3 -c "
+import json, base64, time, hmac, hashlib
 
-# Test: Replayed DPoP proof detection
-result "PASS" "DPoP replay test (validated in unit tests, JTI cache prevents reuse)"
+# Create a token that looks like a JWT but has expired exp claim.
+# The signature will be invalid (self-signed), so this also tests
+# that expired tokens are caught before or during validation.
+header = base64.urlsafe_b64encode(json.dumps({'alg':'ES256','typ':'JWT'}).encode()).rstrip(b'=').decode()
+payload = base64.urlsafe_b64encode(json.dumps({
+    'iss': '${KEYCLOAK_URL}/realms/${REALM}',
+    'sub': 'expired-user',
+    'aud': '${CLIENT_ID}',
+    'exp': int(time.time()) - 3600,  # expired 1 hour ago
+    'iat': int(time.time()) - 7200,
+    'preferred_username': 'testuser'
+}).encode()).rstrip(b'=').decode()
+# Fake signature (will fail JWKS verification regardless)
+sig = base64.urlsafe_b64encode(b'fake-sig-32-bytes-padded-here!!').rstrip(b'=').decode()
+print(f'{header}.{payload}.{sig}')
+" 2>/dev/null || echo "")
+
+    if [ -n "$EXPIRED_TOKEN" ]; then
+        EXPIRED_FILE=$(mktemp /tmp/unix-oidc-e2e-expired-XXXXXX)
+        echo -n "$EXPIRED_TOKEN" > "$EXPIRED_FILE"
+        chmod 600 "$EXPIRED_FILE"
+
+        EXPIRED_RESULT=$(DISPLAY=:0 \
+            SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
+            SSH_ASKPASS_REQUIRE=force \
+            UNIX_OIDC_E2E_TOKEN_FILE="$EXPIRED_FILE" \
+            ssh -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o PreferredAuthentications=keyboard-interactive \
+                -o NumberOfPasswordPrompts=3 \
+                -o ConnectTimeout=10 \
+                -p "$SSH_PORT" \
+                testuser@localhost \
+                "echo SHOULD_NOT_REACH" 2>/dev/null) || true
+
+        rm -f "$EXPIRED_FILE"
+
+        if echo "$EXPIRED_RESULT" | grep -q "SHOULD_NOT_REACH"; then
+            result "FAIL" "Expired/forged token accepted (SECURITY VIOLATION)"
+        else
+            result "PASS" "Expired/forged token rejected"
+        fi
+    else
+        result "SKIP" "Expired token test (python3 token generation failed)"
+    fi
+else
+    result "SKIP" "Expired token test (python3 not available)"
+fi
 
 echo ""
 
-# --- Summary ---
+# ═══════════════════════════════════════════════════════════════════════
+# Summary
+# ═══════════════════════════════════════════════════════════════════════
 TOTAL=$((PASS + FAIL + SKIP))
 echo "=== Results ==="
 echo "  Total: $TOTAL | Pass: $PASS | Fail: $FAIL | Skip: $SKIP"
