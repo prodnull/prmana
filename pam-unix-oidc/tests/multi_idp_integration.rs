@@ -27,6 +27,9 @@ use pam_unix_oidc::policy::config::{
     AcrMappingConfig, EnforcementMode, GroupMappingConfig, GroupSource, IdentityConfig,
     IssuerConfig, PolicyConfig, TransformConfig,
 };
+use pam_unix_oidc::security::nonce_cache::{
+    generate_dpop_nonce, global_nonce_cache, NonceConsumeError,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -879,5 +882,174 @@ fn test_allow_unsafe_pipeline_default_false_still_blocks() {
     assert!(
         matches!(result, Err(AuthError::Config(_))),
         "allow_unsafe_identity_pipeline=false must preserve collision-safety hard-fail, got: {result:?}"
+    );
+}
+
+// ── MIDP-02 (integration fix): DPoP nonce consumption in multi-issuer path ───
+
+/// Build a real ES256-signed DPoP proof with the given method, target, and optional nonce.
+///
+/// Returns (proof_jwt_string, jwk_thumbprint). Uses a freshly-generated P-256 key.
+/// This helper mirrors `create_test_proof` in `oidc/dpop.rs` (private to that module).
+///
+/// # Security note
+/// The generated key is ephemeral and used only for test assertions. It is NOT the
+/// key used to sign the access token; test-mode bypasses access-token signature
+/// verification. Real production paths always require a valid JWKS-backed signature.
+fn make_test_dpop_proof(method: &str, target: &str, nonce: Option<&str>) -> (String, String) {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use p256::ecdsa::{signature::Signer, SigningKey};
+    use p256::elliptic_curve::rand_core::OsRng;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let point = verifying_key.to_encoded_point(false);
+    let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
+    let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let nonce_field = nonce
+        .map(|n| format!(r#","nonce":"{n}""#))
+        .unwrap_or_default();
+    let jti = uuid::Uuid::new_v4().to_string();
+    let claims_json = format!(
+        r#"{{"jti":"{jti}","htm":"{method}","htu":"{target}","iat":{now}{nonce_field}}}"#
+    );
+    let header_json = format!(
+        r#"{{"typ":"dpop+jwt","alg":"ES256","jwk":{{"kty":"EC","crv":"P-256","x":"{x}","y":"{y}"}}}}"#
+    );
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
+    let claims_b64 = URL_SAFE_NO_PAD.encode(claims_json.as_bytes());
+    let message = format!("{header_b64}.{claims_b64}");
+
+    let signature: p256::ecdsa::Signature = signing_key.sign(message.as_bytes());
+    let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    let proof = format!("{message}.{sig_b64}");
+
+    // Compute JWK thumbprint (RFC 7638): SHA-256 of canonical JSON crv+kty+x+y
+    let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(canonical.as_bytes());
+    let thumbprint = URL_SAFE_NO_PAD.encode(hash);
+
+    (proof, thumbprint)
+}
+
+/// MIDP-02 (integration fix): A replayed DPoP nonce in the multi-issuer path is rejected.
+///
+/// Issues a nonce to the global cache, uses it in a DPoP proof on the first call
+/// (which consumes it via `apply_per_issuer_dpop`), then attempts to reuse the same
+/// proof on a second call. The second call MUST fail with DPoPValidation because
+/// the nonce has already been consumed.
+///
+/// This is the security regression test for the gap closed in Phase 23 Plan 01.
+#[test]
+fn test_multi_issuer_dpop_nonce_replay_rejected() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    // Use an issuer with Warn enforcement (not Strict, so unbound token + proof still flows
+    // through validate_and_enforce_nonce without requiring cnf.jkt on the token).
+    let iss = "https://nonce-replay-test.example.com";
+    let token = make_test_token(iss, "alice", "alice", Some("jti-nonce-replay-01"));
+
+    let policy = make_two_issuer_policy(iss, "https://other.example.com", EnforcementMode::Warn);
+
+    // Issue a fresh nonce into the global cache.
+    let nonce = generate_dpop_nonce().expect("must generate nonce");
+    global_nonce_cache()
+        .issue(&nonce)
+        .expect("must issue nonce to cache");
+
+    // Build a DPoP proof carrying the nonce.
+    let (dpop_proof, _thumbprint) = make_test_dpop_proof("SSH", "", Some(&nonce));
+
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig {
+        require_nonce: true,
+        expected_nonce: None, // cache-backed path
+        ..DPoPAuthConfig::default()
+    };
+
+    // First call: nonce is consumed by apply_per_issuer_dpop.
+    // The call will proceed past DPoP enforcement and fail at SSSD lookup (no SSSD in tests).
+    let first = authenticate_multi_issuer(
+        &token,
+        Some(&dpop_proof),
+        &dpop_config,
+        &policy,
+        &registry,
+    );
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // First call must NOT fail with DPoPValidation — it may fail at UserNotFound.
+    assert!(
+        !matches!(first, Err(AuthError::DPoPValidation(_))),
+        "first call with valid nonce must not fail with DPoPValidation, got: {first:?}"
+    );
+
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    // Second call: same proof with the now-consumed nonce must be rejected.
+    let second = authenticate_multi_issuer(
+        &token,
+        Some(&dpop_proof),
+        &dpop_config,
+        &policy,
+        &registry,
+    );
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    assert!(
+        matches!(second, Err(AuthError::DPoPValidation(_))),
+        "second call with replayed nonce must fail with DPoPValidation, got: {second:?}"
+    );
+}
+
+/// MIDP-02 (integration fix): After a successful multi-issuer auth call, the nonce
+/// is no longer present in the global cache.
+///
+/// Calls `authenticate_multi_issuer` once with a cache-backed nonce. After the call,
+/// directly invokes `global_nonce_cache().consume()` and asserts it returns
+/// `ConsumedOrExpired` — proving nonce consumption happened inside the multi-issuer path.
+#[test]
+fn test_multi_issuer_dpop_nonce_consumed() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss = "https://nonce-consumed-test.example.com";
+    let token = make_test_token(iss, "bob", "bob", Some("jti-nonce-consumed-01"));
+    let policy = make_two_issuer_policy(iss, "https://other2.example.com", EnforcementMode::Warn);
+
+    // Issue a fresh nonce — use unique value to avoid cross-test interference.
+    let nonce = generate_dpop_nonce().expect("must generate nonce");
+    global_nonce_cache()
+        .issue(&nonce)
+        .expect("must issue nonce to cache");
+
+    let (dpop_proof, _thumbprint) = make_test_dpop_proof("SSH", "", Some(&nonce));
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig {
+        require_nonce: true,
+        expected_nonce: None,
+        ..DPoPAuthConfig::default()
+    };
+
+    // Call authenticate_multi_issuer — nonce must be consumed inside apply_per_issuer_dpop.
+    let _ = authenticate_multi_issuer(&token, Some(&dpop_proof), &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // After the call, the nonce must no longer be in the cache.
+    let consume_result = global_nonce_cache().consume(&nonce);
+    assert!(
+        matches!(consume_result, Err(NonceConsumeError::ConsumedOrExpired)),
+        "nonce must be consumed after multi-issuer auth call; got: {consume_result:?}"
     );
 }

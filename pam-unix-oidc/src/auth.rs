@@ -176,11 +176,13 @@ pub fn authenticate_multi_issuer(
 
     // Step 6: Per-issuer DPoP enforcement (MIDP-02).
     // Overrides the global dpop_required with the per-issuer dpop_enforcement setting.
+    // dpop_nonce_enforcement governs missing-nonce behavior in the cache-backed path.
     let dpop_thumbprint = apply_per_issuer_dpop(
         dpop_proof,
         dpop_config,
         &claims,
         issuer_config.dpop_enforcement,
+        policy.effective_security_modes().dpop_required,
     )?;
 
     // Step 7: Per-issuer claim mapping (MIDP-03).
@@ -340,11 +342,15 @@ pub fn authenticate_multi_issuer(
 /// - `Warn`: DPoP-bound tokens require a proof; unbound tokens proceed without proof.
 ///   Missing proof on unbound tokens produces a warning but does not fail.
 /// - `Strict`: Any token (bound or unbound) must carry a valid DPoP proof.
+///
+/// `dpop_nonce_enforcement` controls the behavior when the proof is missing a nonce
+/// in the cache-backed path (`require_nonce=true`, `expected_nonce=None`).
 fn apply_per_issuer_dpop(
     dpop_proof: Option<&str>,
     dpop_config: &DPoPAuthConfig,
     claims: &crate::oidc::token::TokenClaims,
     enforcement: EnforcementMode,
+    dpop_nonce_enforcement: EnforcementMode,
 ) -> Result<Option<String>, AuthError> {
     // Fast path: DPoP is disabled for this issuer.
     // Accept the token regardless of whether a proof was provided.
@@ -352,7 +358,12 @@ fn apply_per_issuer_dpop(
         return Ok(None);
     }
 
-    let validate_proof = |proof: &str| -> Result<DPoPProofResult, AuthError> {
+    // Validate the proof and consume the nonce from the global cache (RFC 9449 §8).
+    //
+    // The `require_nonce` flag is passed to dpop.rs only for the single-value path
+    // (expected_nonce=Some). Cache-backed enforcement (expected_nonce=None) is handled
+    // here so the consuming logic mirrors `authenticate_with_dpop`.
+    let validate_and_enforce_nonce = |proof: &str| -> Result<DPoPProofResult, AuthError> {
         let dpop_validation_config = DPoPConfig {
             max_proof_age: dpop_config.max_proof_age,
             clock_skew_future_secs: dpop_config.clock_skew_future_secs,
@@ -361,7 +372,63 @@ fn apply_per_issuer_dpop(
             expected_method: "SSH".to_string(),
             expected_target: dpop_config.target_host.clone(),
         };
-        Ok(validate_dpop_proof(proof, &dpop_validation_config)?)
+        let result = validate_dpop_proof(proof, &dpop_validation_config)?;
+
+        // Cache-backed nonce enforcement (RFC 9449 §8).
+        // The single-value path (expected_nonce.is_some()) is handled by validate_dpop_proof;
+        // this handles the cache-backed path (require_nonce=true, expected_nonce=None).
+        if dpop_config.require_nonce && dpop_config.expected_nonce.is_none() {
+            match &result.nonce {
+                Some(nonce) => {
+                    match global_nonce_cache().consume(nonce) {
+                        Ok(()) => {
+                            tracing::debug!(
+                                nonce_prefix = &nonce[..nonce.len().min(8)],
+                                "DPoP nonce consumed successfully (multi-issuer path)"
+                            );
+                        }
+                        Err(NonceConsumeError::ConsumedOrExpired) => {
+                            tracing::warn!(
+                                "DPoP nonce replay or expiry detected in multi-issuer path"
+                            );
+                            return Err(AuthError::DPoPValidation(
+                                DPoPValidationError::NonceMismatch,
+                            ));
+                        }
+                        Err(NonceConsumeError::EmptyNonce) => {
+                            tracing::warn!(
+                                "DPoP nonce in proof is empty (multi-issuer path)"
+                            );
+                            return Err(AuthError::DPoPValidation(
+                                DPoPValidationError::MissingNonce,
+                            ));
+                        }
+                    }
+                }
+                None => {
+                    match dpop_nonce_enforcement {
+                        EnforcementMode::Strict => {
+                            tracing::warn!(
+                                "DPoP nonce required (strict) but proof has no nonce \
+                                 (multi-issuer path)"
+                            );
+                            return Err(AuthError::DPoPValidation(
+                                DPoPValidationError::MissingNonce,
+                            ));
+                        }
+                        EnforcementMode::Warn => {
+                            tracing::warn!(
+                                "DPoP proof missing nonce in multi-issuer path — \
+                                 proceeding (warn mode)"
+                            );
+                        }
+                        EnforcementMode::Disabled => {}
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     };
 
     // Check if token is DPoP-bound (has cnf.jkt claim).
@@ -369,7 +436,7 @@ fn apply_per_issuer_dpop(
         if let Some(token_jkt) = &cnf.jkt {
             // Token is DPoP-bound — require proof regardless of enforcement mode.
             let proof = dpop_proof.ok_or(AuthError::DPoPRequired)?;
-            let result = validate_proof(proof)?;
+            let result = validate_and_enforce_nonce(proof)?;
             verify_dpop_binding(&result.thumbprint, token_jkt)?;
             return Ok(Some(result.thumbprint));
         }
@@ -379,7 +446,7 @@ fn apply_per_issuer_dpop(
     match (dpop_proof, enforcement) {
         (Some(proof), _) => {
             // Proof provided for unbound token — validate it anyway (audit/logging).
-            let result = validate_proof(proof)?;
+            let result = validate_and_enforce_nonce(proof)?;
             Ok(Some(result.thumbprint))
         }
         (None, EnforcementMode::Strict) => {
