@@ -222,7 +222,16 @@ impl PamServiceModule for PamUnixOidc {
             crate::auth::extract_iss_for_routing(&token).ok();
 
         // Load policy once — used for both path selection and DPoP config.
-        let policy_for_auth = PolicyConfig::from_env().unwrap_or_default();
+        //
+        // Multi-issuer path uses load_fresh() (MIDP-11 hot-reload): stats the config
+        // file on each authentication attempt and re-parses only when the mtime changes.
+        // On parse failure, the previous valid config is returned — never blocks auth.
+        //
+        // Legacy single-issuer path continues to use from_env().unwrap_or_default() for
+        // backward compatibility; that path is deprecated and will not gain hot-reload.
+        let policy_for_auth = PolicyConfig::load_fresh().unwrap_or_else(|_| {
+            PolicyConfig::from_env().unwrap_or_default()
+        });
 
         // Choose authentication path:
         //

@@ -7,7 +7,8 @@ pub mod config;
 pub mod rules;
 
 pub use config::{
-    AcrConfig, CacheConfig, EnforcementMode, PolicyConfig, PolicyError, SecurityModes,
+    AcrConfig, CacheConfig, EnforcementMode, IssuerHealthManager, IssuerHealthState, PolicyConfig,
+    PolicyError, SecurityModes,
 };
 pub use rules::{
     AuthAction, PolicyRules, SshLoginRequirements, StepUpMethod, SudoStepUpRequirements,

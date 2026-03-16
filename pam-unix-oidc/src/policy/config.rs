@@ -8,9 +8,12 @@ use figment::{
     providers::{Env, Format, Serialized, Yaml},
     Figment,
 };
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 use thiserror::Error;
 
 use super::rules::StepUpMethod;
@@ -295,6 +298,10 @@ fn default_http_timeout() -> u64 {
     10
 }
 
+fn default_recovery_interval() -> u64 {
+    300
+}
+
 /// Per-issuer configuration bundle (MIDP-01, MIDP-02, MIDP-05).
 ///
 /// Each entry in `PolicyConfig.issuers` defines an independent trusted OIDC issuer
@@ -383,6 +390,14 @@ pub struct IssuerConfig {
     /// Default: 10 seconds.
     #[serde(default = "default_http_timeout")]
     pub http_timeout_secs: u64,
+    /// Recovery interval in seconds after an issuer is marked degraded (MIDP-10).
+    ///
+    /// When an issuer has been marked degraded (3+ consecutive JWKS fetch failures),
+    /// authentication attempts skip this issuer until `recovery_interval_secs` have
+    /// elapsed since the last failure. After the interval, a retry is attempted.
+    /// A successful retry clears the degraded flag. Default: 300 (5 minutes).
+    #[serde(default = "default_recovery_interval")]
+    pub recovery_interval_secs: u64,
     /// Allow HTTP (non-TLS) issuer URLs for local testing only (SHRD-04).
     ///
     /// This field only exists in test-mode builds. When `true`, the HTTPS
@@ -411,11 +426,275 @@ impl Default for IssuerConfig {
             allowed_algorithms: None,
             jwks_cache_ttl_secs: default_jwks_cache_ttl(),
             http_timeout_secs: default_http_timeout(),
+            recovery_interval_secs: default_recovery_interval(),
             #[cfg(any(test, feature = "test-mode"))]
             allow_insecure_http_for_testing: false,
         }
     }
 }
+
+// ── Issuer health monitoring (MIDP-10) ───────────────────────────────────────
+
+/// Health state for a single OIDC issuer.
+///
+/// Persisted to disk (`/run/unix-oidc/issuer-health/<sha256-prefix>.json`) so that
+/// health state survives across forked sshd processes (no shared memory in PAM).
+///
+/// `degraded` is set when `failure_count >= 3`. `last_failure` records the Unix
+/// timestamp of the most recent failure — used to compute whether the recovery
+/// interval has elapsed.
+///
+/// Fields are public so tests can inspect them directly.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IssuerHealthState {
+    /// Number of consecutive JWKS fetch failures.
+    pub failure_count: u32,
+    /// Unix timestamp (seconds since epoch) of the last failure. `None` = no failures yet.
+    pub last_failure: Option<i64>,
+    /// `true` when `failure_count >= 3`.
+    pub degraded: bool,
+}
+
+/// Number of consecutive JWKS fetch failures before an issuer is marked degraded.
+const DEGRADATION_THRESHOLD: u32 = 3;
+
+/// Manages file-backed health state for each configured OIDC issuer.
+///
+/// All operations are best-effort: I/O failures are logged at WARN and never
+/// block authentication. This is intentional — the health tracking subsystem
+/// must not become a second point of failure during IdP outages.
+///
+/// The health directory is configurable via `UNIX_OIDC_HEALTH_DIR` for testing,
+/// defaulting to `/run/unix-oidc/issuer-health/`.
+///
+/// File naming: SHA-256 of the issuer URL, first 16 hex characters + `.json`.
+/// Using a fixed-length hash avoids path issues with URL characters (colons,
+/// slashes) while keeping filenames short and deterministic.
+pub struct IssuerHealthManager {
+    /// Directory where health state files are stored.
+    health_dir: PathBuf,
+}
+
+impl IssuerHealthManager {
+    /// Create a new `IssuerHealthManager`.
+    ///
+    /// The health directory is resolved from `UNIX_OIDC_HEALTH_DIR` env var
+    /// (for testing) or defaults to `/run/unix-oidc/issuer-health/`.
+    pub fn new() -> Self {
+        let health_dir = std::env::var("UNIX_OIDC_HEALTH_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/run/unix-oidc/issuer-health"));
+        Self { health_dir }
+    }
+
+    /// Compute the file path for a given issuer URL's health state.
+    ///
+    /// Uses SHA-256 of the URL, first 16 hex chars, to produce a short
+    /// filesystem-safe name.
+    pub fn health_file_path(&self, issuer_url: &str) -> PathBuf {
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(issuer_url.as_bytes());
+        // Format as hex, take first 16 chars (8 bytes).
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        let short = &hex[..16.min(hex.len())];
+        self.health_dir.join(format!("{short}.json"))
+    }
+
+    /// Load the health state for an issuer from disk.
+    ///
+    /// Returns a healthy default state on any I/O or parse error.
+    /// A WARN is logged when the file exists but cannot be parsed (corrupt file).
+    fn load(&self, issuer_url: &str) -> IssuerHealthState {
+        let path = self.health_file_path(issuer_url);
+        match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<IssuerHealthState>(&bytes) {
+                Ok(state) => state,
+                Err(e) => {
+                    tracing::warn!(
+                        issuer = %issuer_url,
+                        path = %path.display(),
+                        error = %e,
+                        "Corrupt issuer health state file — treating issuer as healthy"
+                    );
+                    IssuerHealthState::default()
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // No state file yet — treat as healthy.
+                IssuerHealthState::default()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    issuer = %issuer_url,
+                    path = %path.display(),
+                    error = %e,
+                    "Could not read issuer health state file — treating issuer as healthy"
+                );
+                IssuerHealthState::default()
+            }
+        }
+    }
+
+    /// Persist the health state for an issuer to disk atomically.
+    ///
+    /// Writes to a temporary file first, then renames to the target path.
+    /// On failure, logs WARN and continues — health tracking is best-effort.
+    fn save(&self, issuer_url: &str, state: &IssuerHealthState) {
+        let path = self.health_file_path(issuer_url);
+        // Ensure the directory exists.
+        if let Err(e) = std::fs::create_dir_all(&self.health_dir) {
+            tracing::warn!(
+                dir = %self.health_dir.display(),
+                error = %e,
+                "Could not create issuer health directory"
+            );
+            return;
+        }
+        // Serialize state.
+        let json = match serde_json::to_string(state) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(issuer = %issuer_url, error = %e, "Could not serialize issuer health state");
+                return;
+            }
+        };
+        // Atomic write: write to tmp file, then rename.
+        let tmp_path = path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp_path, json.as_bytes()) {
+            tracing::warn!(
+                issuer = %issuer_url,
+                path = %tmp_path.display(),
+                error = %e,
+                "Could not write issuer health state tmp file"
+            );
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &path) {
+            tracing::warn!(
+                issuer = %issuer_url,
+                path = %path.display(),
+                error = %e,
+                "Could not atomically rename issuer health state file"
+            );
+            // Best-effort: clean up the tmp file.
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+    }
+
+    /// Record a JWKS fetch failure for an issuer.
+    ///
+    /// Increments `failure_count` and sets `degraded = true` once the count
+    /// reaches `DEGRADATION_THRESHOLD` (3).
+    pub fn record_failure(&self, issuer_url: &str) {
+        let mut state = self.load(issuer_url);
+        state.failure_count = state.failure_count.saturating_add(1);
+        state.last_failure = Some(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+        );
+        let was_degraded = state.degraded;
+        if state.failure_count >= DEGRADATION_THRESHOLD {
+            state.degraded = true;
+        }
+        // Emit ISSUER_DEGRADED audit event on the first transition to degraded.
+        if state.degraded && !was_degraded {
+            tracing::warn!(
+                target: "unix_oidc_audit",
+                issuer = %issuer_url,
+                failure_count = state.failure_count,
+                event = "ISSUER_DEGRADED",
+                "Issuer marked degraded after consecutive JWKS fetch failures (MIDP-10)"
+            );
+        }
+        tracing::warn!(
+            issuer = %issuer_url,
+            failure_count = state.failure_count,
+            degraded = state.degraded,
+            "Recorded JWKS fetch failure for issuer"
+        );
+        self.save(issuer_url, &state);
+    }
+
+    /// Record a successful JWKS fetch for an issuer.
+    ///
+    /// Resets `failure_count` to 0 and clears the `degraded` flag.
+    pub fn record_success(&self, issuer_url: &str) {
+        let mut state = self.load(issuer_url);
+        let was_degraded = state.degraded;
+        state.failure_count = 0;
+        state.last_failure = None;
+        state.degraded = false;
+        // Emit ISSUER_RECOVERED audit event when transitioning from degraded.
+        if was_degraded {
+            tracing::info!(
+                target: "unix_oidc_audit",
+                issuer = %issuer_url,
+                event = "ISSUER_RECOVERED",
+                "Issuer recovered after successful JWKS fetch (MIDP-10)"
+            );
+        }
+        self.save(issuer_url, &state);
+    }
+
+    /// Check whether an issuer is currently degraded and within its recovery interval.
+    ///
+    /// Returns `true` (degraded, skip this issuer) only when BOTH conditions hold:
+    /// 1. `state.degraded == true`
+    /// 2. Less than `recovery_interval_secs` have elapsed since `last_failure`
+    ///
+    /// When the recovery interval has elapsed, returns `false` so the issuer is
+    /// retried — a successful retry will call `record_success()` which clears the
+    /// degraded state.
+    pub fn is_degraded(&self, issuer_url: &str, recovery_interval_secs: u64) -> bool {
+        let state = self.load(issuer_url);
+        if !state.degraded {
+            return false;
+        }
+        // If recovery_interval_secs == 0, always allow retry.
+        if recovery_interval_secs == 0 {
+            return false;
+        }
+        match state.last_failure {
+            None => false, // degraded but no timestamp — allow retry
+            Some(last_failure_ts) => {
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let elapsed = (now - last_failure_ts).max(0) as u64;
+                elapsed < recovery_interval_secs
+            }
+        }
+    }
+}
+
+impl Default for IssuerHealthManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Config hot-reload (MIDP-11) ──────────────────────────────────────────────
+
+/// Cached policy configuration with the file mtime used for staleness detection.
+struct ConfigCache {
+    config: PolicyConfig,
+    mtime: SystemTime,
+    path: PathBuf,
+}
+
+/// Module-level config cache for hot-reload support (MIDP-11).
+///
+/// Each forked sshd process holds its own cache. On each `pam_sm_authenticate`
+/// call, `load_fresh()` stats the config file and re-parses only when the mtime
+/// changed. This avoids repeated YAML parses while detecting operator edits
+/// without a daemon restart.
+///
+/// Protected by a `Mutex` because PAM modules can be called from multiple
+/// threads within a single process (some SSH implementations use threading).
+static CONFIG_CACHE: Lazy<Mutex<Option<ConfigCache>>> = Lazy::new(|| Mutex::new(None));
 
 // ── Security modes ────────────────────────────────────────────────────────────
 
@@ -1030,6 +1309,92 @@ impl PolicyConfig {
 
         // Try loading from default location
         Self::load()
+    }
+
+    /// Load policy with hot-reload support (MIDP-11).
+    ///
+    /// On each call, stats the policy file. If the file mtime has changed since
+    /// the last successful load, the file is re-parsed and the cache updated.
+    ///
+    /// On re-parse failure (bad YAML, missing file), logs a WARNING and returns
+    /// the previous valid config from the cache. If no cache exists yet and the
+    /// initial load fails, returns the error.
+    ///
+    /// The config file path is resolved from `UNIX_OIDC_POLICY` env var or
+    /// `/etc/unix-oidc/policy.yaml` (same as `from_env()`). The `UNIX_OIDC_POLICY`
+    /// var is used (not `UNIX_OIDC_POLICY_FILE`) so tests can set a unique path
+    /// per test without conflicting with `from_env()`.
+    pub fn load_fresh() -> Result<Self, PolicyError> {
+        let config_path: PathBuf = std::env::var("UNIX_OIDC_POLICY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/etc/unix-oidc/policy.yaml"));
+
+        // Acquire the global cache lock. Best-effort: if lock is poisoned, log WARN
+        // and fall through to a fresh load.
+        let mut cache_guard = match CONFIG_CACHE.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Config cache mutex poisoned — performing fresh load"
+                );
+                // Return a fresh load without caching.
+                return Self::load_from(&config_path);
+            }
+        };
+
+        // Stat the config file to detect mtime changes.
+        let current_mtime = match std::fs::metadata(&config_path) {
+            Ok(meta) => meta
+                .modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+            Err(e) => {
+                // File is missing or unreadable.
+                if let Some(ref cached) = *cache_guard {
+                    tracing::warn!(
+                        path = %config_path.display(),
+                        error = %e,
+                        "Config file unavailable on reload — using cached config"
+                    );
+                    return Ok(cached.config.clone());
+                }
+                // No cache and file unavailable — hard fail.
+                return Err(PolicyError::ReadError(e));
+            }
+        };
+
+        // If the cached path matches and mtime is unchanged, return cache.
+        if let Some(ref cached) = *cache_guard {
+            if cached.path == config_path && cached.mtime == current_mtime {
+                return Ok(cached.config.clone());
+            }
+        }
+
+        // mtime changed (or no cache) — attempt to re-parse.
+        match Self::load_from(&config_path) {
+            Ok(new_config) => {
+                *cache_guard = Some(ConfigCache {
+                    config: new_config.clone(),
+                    mtime: current_mtime,
+                    path: config_path,
+                });
+                Ok(new_config)
+            }
+            Err(e) => {
+                // Parse failure — return cached config if available.
+                if let Some(ref cached) = *cache_guard {
+                    tracing::warn!(
+                        path = %config_path.display(),
+                        error = %e,
+                        "Config reload failed — keeping previous valid config"
+                    );
+                    Ok(cached.config.clone())
+                } else {
+                    // No cached config and parse failed — propagate error.
+                    Err(e)
+                }
+            }
+        }
     }
 
     /// Return the effective [`SecurityModes`] for this policy.
