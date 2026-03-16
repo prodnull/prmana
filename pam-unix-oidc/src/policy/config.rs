@@ -15,6 +15,38 @@ use thiserror::Error;
 
 use super::rules::StepUpMethod;
 
+// ── HTTPS URL validation (SHRD-04) ─────────────────────────────────────────
+
+/// Validate that a URL uses the HTTPS scheme.
+///
+/// Security: All OIDC issuer URLs and device flow verification URIs must use
+/// HTTPS to prevent credential interception. HTTP URLs are only permitted
+/// in test-mode builds when `allow_insecure_http_for_testing` is true.
+///
+/// `field_name` is included in the error message for operator clarity.
+///
+/// Returns `Ok(())` if the URL starts with `https://` and is non-empty.
+/// Returns `Err(String)` with a descriptive message otherwise.
+pub fn validate_https_url(url: &str, field_name: &str) -> Result<(), String> {
+    if url.is_empty() {
+        return Err(format!("{field_name}: URL must not be empty"));
+    }
+    if url.starts_with("https://") {
+        Ok(())
+    } else if url.starts_with("http://") {
+        Err(format!(
+            "{field_name}: HTTPS required but got HTTP URL (scheme 'http://'). \
+             All OIDC endpoints must use TLS. URL: {url}"
+        ))
+    } else {
+        // Extract the scheme portion for the error message (up to "://")
+        let scheme = url.split("://").next().unwrap_or("unknown");
+        Err(format!(
+            "{field_name}: HTTPS required but got unsupported scheme '{scheme}://'. URL: {url}"
+        ))
+    }
+}
+
 /// Check if test mode is explicitly enabled.
 /// Security: Only accepts explicit "true" or "1" values, not just presence of the variable.
 fn is_test_mode_enabled() -> bool {
@@ -328,6 +360,17 @@ pub struct IssuerConfig {
     /// ```
     #[serde(default)]
     pub allowed_algorithms: Option<Vec<String>>,
+    /// Allow HTTP (non-TLS) issuer URLs for local testing only (SHRD-04).
+    ///
+    /// This field only exists in test-mode builds. When `true`, the HTTPS
+    /// check in `load_from()` is skipped for this issuer and a CRITICAL-severity
+    /// audit warning is emitted.
+    ///
+    /// Production binaries (built without `--features test-mode`) cannot parse
+    /// this field — it does not exist in the struct.
+    #[cfg(any(test, feature = "test-mode"))]
+    #[serde(default)]
+    pub allow_insecure_http_for_testing: bool,
 }
 
 impl Default for IssuerConfig {
@@ -343,6 +386,8 @@ impl Default for IssuerConfig {
             expected_audience: None,
             allow_unsafe_identity_pipeline: false,
             allowed_algorithms: None,
+            #[cfg(any(test, feature = "test-mode"))]
+            allow_insecure_http_for_testing: false,
         }
     }
 }
@@ -895,6 +940,26 @@ impl PolicyConfig {
                     "Duplicate issuer_url in issuers[]: '{normalized}'. \
                      Each issuer must have a unique URL."
                 )));
+            }
+        }
+
+        // SHRD-04: Enforce HTTPS for all issuer URLs at config load time.
+        // HTTP URLs are a critical misconfiguration: tokens, client credentials, and
+        // user codes would be transmitted in the clear.
+        for issuer in &config.issuers {
+            // In test-mode builds, allow_insecure_http_for_testing bypasses the check.
+            #[cfg(any(test, feature = "test-mode"))]
+            if issuer.allow_insecure_http_for_testing {
+                tracing::error!(
+                    issuer_url = %issuer.issuer_url,
+                    "INSECURE: HTTP issuer URLs permitted — test mode active. \
+                     NEVER use this in production."
+                );
+                continue;
+            }
+
+            if let Err(msg) = validate_https_url(&issuer.issuer_url, "issuer_url") {
+                return Err(PolicyError::ParseError(msg));
             }
         }
 
@@ -1946,6 +2011,110 @@ issuers:
         assert!(
             policy.issuers[0].allowed_algorithms.is_none(),
             "allowed_algorithms must default to None (backward compat)"
+        );
+    }
+
+    // ── SHRD-04: HTTPS enforcement tests ──────────────────────────────────
+
+    #[test]
+    fn test_validate_https_url_accepts_https() {
+        assert!(validate_https_url("https://idp.example.com/realms/test", "issuer_url").is_ok());
+    }
+
+    #[test]
+    fn test_validate_https_url_rejects_http() {
+        let result = validate_https_url("http://idp.example.com/realms/test", "issuer_url");
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("HTTPS required"), "msg: {msg}");
+        assert!(msg.contains("issuer_url"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_validate_https_url_rejects_ftp() {
+        let result = validate_https_url("ftp://idp.example.com", "issuer_url");
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("ftp"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_validate_https_url_rejects_empty() {
+        let result = validate_https_url("", "issuer_url");
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("empty"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_validate_https_url_rejects_no_scheme() {
+        let result = validate_https_url("not-a-url", "issuer_url");
+        assert!(result.is_err());
+    }
+
+    /// PolicyConfig::load_from with http:// issuer URL must fail at load time.
+    #[test]
+    fn test_load_from_rejects_http_issuer_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(
+            &path,
+            r#"
+issuers:
+  - issuer_url: "http://insecure.example.com/realms/test"
+    client_id: "unix-oidc"
+"#,
+        )
+        .unwrap();
+
+        let result = PolicyConfig::load_from(&path);
+        assert!(result.is_err(), "HTTP issuer URL must be rejected at load time");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("HTTPS"),
+            "Error must mention HTTPS, got: {err_msg}"
+        );
+    }
+
+    /// PolicyConfig::load_from with https:// issuer URL must succeed.
+    #[test]
+    fn test_load_from_accepts_https_issuer_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(
+            &path,
+            r#"
+issuers:
+  - issuer_url: "https://secure.example.com/realms/test"
+    client_id: "unix-oidc"
+"#,
+        )
+        .unwrap();
+
+        let result = PolicyConfig::load_from(&path);
+        assert!(result.is_ok(), "HTTPS issuer URL must be accepted: {result:?}");
+    }
+
+    /// Test-mode: allow_insecure_http_for_testing=true permits HTTP issuer URLs.
+    #[test]
+    fn test_load_from_allows_http_with_test_mode_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(
+            &path,
+            r#"
+issuers:
+  - issuer_url: "http://localhost:8080/realms/test"
+    client_id: "unix-oidc"
+    allow_insecure_http_for_testing: true
+"#,
+        )
+        .unwrap();
+
+        let result = PolicyConfig::load_from(&path);
+        assert!(
+            result.is_ok(),
+            "HTTP issuer URL with allow_insecure_http_for_testing must be accepted: {result:?}"
         );
     }
 }

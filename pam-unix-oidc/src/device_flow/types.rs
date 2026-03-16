@@ -78,22 +78,17 @@ impl DeviceAuthResponse {
     /// (local Keycloak development over HTTP).
     pub fn validate_uris(&self, allow_http: bool) -> Result<(), DeviceFlowError> {
         if !allow_http {
-            if !self.verification_uri.starts_with("https://") {
-                return Err(DeviceFlowError::InvalidResponse(format!(
-                    "verification_uri must use HTTPS scheme, got: {}",
-                    self.verification_uri
-                        .split('/')
-                        .take(3)
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                )));
-            }
+            // SHRD-04: Reuse shared HTTPS validator from policy::config.
+            use crate::policy::config::validate_https_url;
+
+            validate_https_url(&self.verification_uri, "verification_uri").map_err(|msg| {
+                DeviceFlowError::InvalidResponse(msg)
+            })?;
+
             if let Some(ref uri) = self.verification_uri_complete {
-                if !uri.starts_with("https://") {
-                    return Err(DeviceFlowError::InvalidResponse(
-                        "verification_uri_complete must use HTTPS scheme".to_string(),
-                    ));
-                }
+                validate_https_url(uri, "verification_uri_complete").map_err(|msg| {
+                    DeviceFlowError::InvalidResponse(msg)
+                })?;
             }
         }
         Ok(())
