@@ -280,6 +280,80 @@ impl DPoPSigner for HybridPqcSigner {
 mod tests {
     use super::*;
 
+    // -------------------------------------------------------------------------
+    // PQC key lifecycle audit event tests (27-02)
+    // -------------------------------------------------------------------------
+
+    /// KEY_GENERATED: HybridPqcSigner::generate() must emit a structured audit event
+    /// with target "unix_oidc_audit", event_type "KEY_GENERATED", and key_type "ML-DSA-65+ES256".
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_pqc_lifecycle_generate_emits_audit_event() {
+        let _signer = HybridPqcSigner::generate();
+        assert!(
+            logs_contain("KEY_GENERATED"),
+            "generate() must emit KEY_GENERATED audit event"
+        );
+        assert!(
+            logs_contain("ML-DSA-65+ES256"),
+            "KEY_GENERATED event must include key_type ML-DSA-65+ES256"
+        );
+    }
+
+    /// KEY_DESTROYED: dropping a HybridPqcSigner must emit a structured audit event
+    /// with event_type "KEY_DESTROYED" and key_type "ML-DSA-65+ES256".
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_pqc_lifecycle_drop_emits_key_destroyed() {
+        {
+            let _signer = HybridPqcSigner::generate();
+            // signer drops at end of inner scope
+        }
+        assert!(
+            logs_contain("KEY_DESTROYED"),
+            "drop must emit KEY_DESTROYED audit event"
+        );
+        assert!(
+            logs_contain("ML-DSA-65+ES256"),
+            "KEY_DESTROYED event must include key_type ML-DSA-65+ES256"
+        );
+    }
+
+    /// Negative test: audit events for PQC keys must NOT leak ML-DSA key bytes.
+    /// Only a key_id prefix (≤ 8 chars) may appear, not raw key material.
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_pqc_lifecycle_events_do_not_leak_key_material() {
+        let signer = HybridPqcSigner::generate();
+
+        // Capture the seed bytes before dropping.
+        let pq_seed_bytes = signer.export_pq_seed();
+        let seed_hex: String = pq_seed_bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+        // Get the full thumbprint to verify only prefix appears in logs.
+        let full_thumbprint = signer.thumbprint();
+        let thumb_suffix = if full_thumbprint.len() > 8 {
+            full_thumbprint[8..].to_string()
+        } else {
+            String::new()
+        };
+
+        drop(signer);
+
+        // Raw ML-DSA seed bytes (hex) must not appear in audit logs.
+        assert!(
+            !logs_contain(&seed_hex),
+            "Audit event must not contain raw ML-DSA seed material"
+        );
+        // Full thumbprint suffix must not appear — only the 8-char prefix.
+        if !thumb_suffix.is_empty() {
+            assert!(
+                !logs_contain(&thumb_suffix),
+                "Audit event must not contain full thumbprint (only 8-char prefix allowed)"
+            );
+        }
+    }
+
     #[test]
     fn test_generate_returns_box() {
         // generate() must return Box<HybridPqcSigner>, not HybridPqcSigner (MEM-05).
