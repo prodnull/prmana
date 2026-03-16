@@ -217,9 +217,21 @@ impl ProtectedSigningKey {
     ///
     /// Uses the OS random number generator (`OsRng`) via `p256::ecdsa::SigningKey::random`.
     /// The returned key is heap-allocated and memory-locked where supported.
+    ///
+    /// Emits a structured audit event with `target: "unix_oidc_audit"` so that
+    /// SIEM pipelines can trace the complete lifecycle of DPoP key material.
     pub fn generate() -> Box<Self> {
         let signing_key = SigningKey::random(&mut OsRng);
-        Self::new_inner(signing_key)
+        let key = Self::new_inner(signing_key);
+        let key_id = &key.thumbprint[..key.thumbprint.len().min(8)];
+        tracing::info!(
+            target: "unix_oidc_audit",
+            event_type = "KEY_GENERATED",
+            key_type = "DPoP",
+            key_id = %key_id,
+            "DPoP signing key generated"
+        );
+        key
     }
 
     /// Construct a `ProtectedSigningKey` from raw key bytes.
@@ -230,10 +242,23 @@ impl ProtectedSigningKey {
     ///
     /// Returns `Err(SignerError::InvalidKeyBytes)` if the bytes are not a valid P-256
     /// private scalar.
+    ///
+    /// Emits a `KEY_LOADED` audit event when the key is successfully imported from
+    /// storage, so that SIEM pipelines can distinguish freshly-generated keys from
+    /// keys loaded from persistent storage (e.g., at daemon startup).
     pub fn from_bytes(bytes: &[u8]) -> Result<Box<Self>, SignerError> {
         let signing_key =
             SigningKey::from_slice(bytes).map_err(|_| SignerError::InvalidKeyBytes)?;
-        Ok(Self::new_inner(signing_key))
+        let key = Self::new_inner(signing_key);
+        let key_id = &key.thumbprint[..key.thumbprint.len().min(8)];
+        tracing::info!(
+            target: "unix_oidc_audit",
+            event_type = "KEY_LOADED",
+            key_type = "DPoP",
+            key_id = %key_id,
+            "DPoP signing key loaded from storage"
+        );
+        Ok(key)
     }
 
     /// Export the signing key bytes in a `Zeroizing` wrapper (MEM-01).
@@ -260,6 +285,40 @@ impl ProtectedSigningKey {
     /// Borrow the corresponding verifying (public) key.
     pub fn verifying_key(&self) -> &p256::ecdsa::VerifyingKey {
         self.signing_key.verifying_key()
+    }
+}
+
+/// Emit `KEY_DESTROYED` audit event before the key material is zeroed.
+///
+/// `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in
+/// `ecdsa-0.16` and runs automatically via the compiler-generated drop glue.
+/// We emit the audit event here — before the struct fields are dropped — so
+/// the thumbprint is still accessible when we log it.
+///
+/// **Drop order invariant:** Rust drops struct fields in declaration order
+/// after the `Drop::drop()` body completes. The body runs first, so
+/// `self.thumbprint` is still live when we read it. The `signing_key` field
+/// is zeroed by its own `ZeroizeOnDrop` implementation, which runs when
+/// that field is dropped after this body returns.
+///
+/// **No-panic contract:** If thumbprint access somehow fails (it cannot in
+/// practice since `thumbprint` is a `String` field), we fall back to
+/// `"unknown"`. Drop impls must never panic (RFC: panicking in Drop is
+/// undefined behaviour in the presence of another panic).
+impl Drop for ProtectedSigningKey {
+    fn drop(&mut self) {
+        let key_id = if self.thumbprint.len() >= 8 {
+            self.thumbprint[..8].to_string()
+        } else {
+            self.thumbprint.clone()
+        };
+        tracing::info!(
+            target: "unix_oidc_audit",
+            event_type = "KEY_DESTROYED",
+            key_type = "DPoP",
+            key_id = %key_id,
+            "DPoP signing key destroyed"
+        );
     }
 }
 

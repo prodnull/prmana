@@ -113,5 +113,8 @@ version = "0.3"
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
-tracing-test = "0.2"
+# no-env-filter: allows tracing-test to capture events from all targets, including
+# unix_oidc_audit (the structured SIEM audit target). Without this feature, tracing-test
+# filters to the crate name only and misses cross-target audit events.
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
 wiremock = "0.6"
