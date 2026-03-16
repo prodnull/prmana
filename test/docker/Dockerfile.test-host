@@ -30,6 +30,16 @@ RUN sed -i 's/KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/'
 # Create test user (will be overridden by SSSD in real tests)
 RUN useradd -m -s /bin/bash testuser
 
+# Create unix_oidc_users group for login_groups policy enforcement.
+# testuser is a member (can authenticate via OIDC).
+# testuser2 is a local system user but NOT a member (denied by login_groups policy in E2ET-02 Test 2).
+RUN groupadd unix_oidc_users && \
+    usermod -aG unix_oidc_users testuser && \
+    useradd -m -s /bin/bash -G "" testuser2
+# Note: testuser2 is created with no supplemental groups. It is explicitly
+# NOT added to unix_oidc_users. This ensures NSS getgrouplist(testuser2)
+# returns only the private group testuser2, never unix_oidc_users.
+
 # Copy SSSD configuration template
 COPY test/fixtures/sssd/sssd.conf /etc/sssd/sssd.conf
 RUN chmod 600 /etc/sssd/sssd.conf
