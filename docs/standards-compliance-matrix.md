@@ -4,7 +4,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 **Scope:** Only standards actually referenced in implementation code (`*.rs`), documentation (`*.md`), configuration (`*.yaml`, `*.toml`), or test files are listed. Hypothetical or aspirational references are excluded.
 
-**Last updated:** 2026-03-13
+**Last updated:** 2026-03-16
 
 ---
 
@@ -23,7 +23,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 | RFC 7009 | OAuth 2.0 Token Revocation | SS2.1 (revocation request) | `unix-oidc-agent/src/daemon/socket.rs:1154-1287`, `unix-oidc-agent/src/daemon/protocol.rs:44` | Full | Best-effort revocation on session close (5s timeout) |
 | RFC 7662 | OAuth 2.0 Token Introspection | SS2.1 (authentication), SS4 | `pam-unix-oidc/src/policy/config.rs:271-305`, `pam-unix-oidc/src/oidc/introspection.rs` | Full | Opt-in with TTL-bounded caching; fail-open/fail-closed configurable |
 | RFC 8414 | OAuth 2.0 Authorization Server Metadata | -- | `pam-unix-oidc/src/oidc/discovery.rs` | Full | OIDC discovery; issuer validation post-fetch |
-| RFC 9700 | OAuth 2.0 Security Best Current Practice | SS2.2 (iat validation), SS2.4 (algorithm), SS2.5 (TLS), SS4.15.2 (replay) | `pam-unix-oidc/src/device_flow/client.rs:159`, `pam-unix-oidc/src/device_flow/types.rs:73`, `pam-unix-oidc/src/oidc/validation.rs` | Partial | HTTPS enforcement for issuer/verification URI in progress |
+| RFC 9700 | OAuth 2.0 Security Best Current Practice | SS2.2 (iat validation), SS2.4 (algorithm), SS2.5 (TLS), SS4.15.2 (replay) | `pam-unix-oidc/src/device_flow/client.rs:159`, `pam-unix-oidc/src/device_flow/types.rs:73`, `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/config.rs` | Full | HTTPS enforcement enforced at config load time (Phase 25 SHRD-04); algorithm validation uses explicit enum match (SHRD-01) |
 | RFC 7515 | JSON Web Signature (JWS) | SS4.1.1 (alg), SS4.1.4 (kid) | `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/oidc/dpop.rs` | Full | Algorithm validation, kid matching |
 | RFC 7518 | JSON Web Algorithms (JWA) | SS3.4 (ES256 signature format), SS6.2.1.2 (EC key validation) | `go-oauth-dpop/dpop.go:410`, `unix-oidc-agent/src/crypto/dpop.rs:157` | Full | Raw r||s 64-byte signature format for P-256 |
 | RFC 5424 | Syslog Protocol | PRIORITY codes | `unix-oidc-agent/src/main.rs:55` | Full | Tracing levels mapped to syslog priorities for journald |
@@ -73,13 +73,13 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | Publication | Title | Sections Referenced | Implementation Files | Normative/Informative | Status | Notes |
 |-------------|-------|---------------------|----------------------|----------------------|--------|-------|
-| SP 800-63B Rev 3 | Digital Identity Guidelines: Authentication | SS4.3.3 (session lifetime), SS5.1.9 (trusted OS), SS7.1 (replay) | `pam-unix-oidc/src/oidc/validation.rs`, `docs/security-guide.md`, `docs/threat-model.md` | Normative | Partial | AAL enforcement via ACR claims; clock skew tolerance exceeds recommended limits (finding F-01) |
+| SP 800-63B Rev 3 | Digital Identity Guidelines: Authentication | SS4.3.3 (session lifetime), SS5.1.9 (trusted OS), SS7.1 (replay) | `pam-unix-oidc/src/oidc/validation.rs`, `docs/security-guide.md`, `docs/threat-model.md` | Normative | Partial | AAL enforcement via ACR claims (Phase 26 DEBT-02 wired); clock skew finding F-01 still open. AAL mapping: AAL1=urn:\*:acr:1, AAL2=urn:\*:acr:loa2, AAL3=phr/phrh (OpenID EAP ACR Values 1.0); see docs/security-guide.md §Authentication Assurance Levels |
 | SP 800-88 Rev 1 | Guidelines for Media Sanitization | SS2.4 (Clear), SS2.5 (CoW/FDE), SS4.7 | `unix-oidc-agent/src/storage/secure_delete.rs`, `unix-oidc-agent/src/storage/file_store.rs:20` | Normative | Full | Three-pass overwrite with documented CoW/SSD limitations; FDE advisory |
-| SP 800-53 Rev 5 | Security and Privacy Controls | AC-2 (account mgmt), AU-2/3/9/10/11 (audit), IA-2(12) (replay-resistant), IA-7/8 (crypto), SC-8/12/13 (comms/keys) | `pam-unix-oidc/src/audit.rs`, `pam-unix-oidc/src/oidc/dpop.rs` | Informative | Partial | Break-glass (AC-2), audit events (AU-*), replay protection (IA-2(12)); tamper-evidence gap (AU-9) |
-| SP 800-131A Rev 2 | Transitioning Cryptographic Algorithms | SS3 (time-validity), Table 1/2 (approved algorithms, key lengths) | `pam-unix-oidc/src/oidc/validation.rs` | Informative | Partial | Algorithm allowlist added; RSA minimum key length check gap noted |
-| SP 800-57 Part 1 Rev 5 | Recommendation for Key Management | SS5.3 (cryptoperiod), SS5.3.6 (expiration), SS6.2 Table 1 (key lifetime), SS8.2 (key lifecycle audit) | `unix-oidc-agent/src/crypto/protected_key.rs` | Informative | Partial | Key rotation lifecycle not yet codified; key lifecycle audit events planned |
+| SP 800-53 Rev 5 | Security and Privacy Controls | AC-2 (account mgmt), AU-2/3/9/10/11 (audit), IA-2(12) (replay-resistant), IA-7/8 (crypto), SC-8/12/13 (comms/keys) | `pam-unix-oidc/src/audit.rs`, `pam-unix-oidc/src/oidc/dpop.rs` | Informative | Partial | Break-glass (AC-2), audit events (AU-\*), replay protection (IA-2(12)); (AU-9) tamper-evidence **CLOSED Phase 27 OBS-06**: HMAC chain + audit_verify tool. Break-glass CRITICAL severity **CLOSED Phase 24 SBUG-02** |
+| SP 800-131A Rev 2 | Transitioning Cryptographic Algorithms | SS3 (time-validity), Table 1/2 (approved algorithms, key lengths) | `pam-unix-oidc/src/oidc/validation.rs` | Informative | Partial | Algorithm allowlist added; RSA minimum key length check gap noted. Per-issuer algorithm allowlist added Phase 25 (SHRD-01, SHRD-02). F-06 CLOSED |
+| SP 800-57 Part 1 Rev 5 | Recommendation for Key Management | SS5.3 (cryptoperiod), SS5.3.6 (expiration), SS6.2 Table 1 (key lifetime), SS8.2 (key lifecycle audit) | `unix-oidc-agent/src/crypto/protected_key.rs` | Informative | Partial | Key lifecycle audit events shipped Phase 27 (OBS-04). OBS-4 gap CLOSED. Key rotation policy still open (F-05) |
 | SP 800-123 | Guide to General Server Security | Least-privilege baseline | `deploy/systemd/unix-oidc-agent.service` | Normative | Full | systemd hardening directives (NoNewPrivileges, ProtectSystem, etc.) |
-| SP 800-115 | Technical Guide to Information Security Testing | -- | `docs/security-testing-roadmap.md:178` | Informative | Referenced-Only | Testing methodology reference |
+| SP 800-115 | Technical Guide to Information Security Testing | §4 (test design), §5 (network discovery), §6.3 (password cracking) | `docs/security-testing-roadmap.md` | Informative | Partial | Security testing methodology reference; pentest automation planned v3.0 CAP-05 |
 
 ### FIPS Standards
 
@@ -108,22 +108,22 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 | CC6.2 | Authentication mechanisms | MFA via OIDC + DPoP | `pam-unix-oidc/src/oidc/` |
 | CC6.3 | Access removal | Token expiration, IdP revocation | `unix-oidc-agent/src/daemon/socket.rs` |
 | CC6.7 | Anomalous activity detection | Lockout events | `pam-unix-oidc/src/audit.rs` |
-| CC7.1 | Log integrity | Gap: no tamper-evidence (hash chain/HMAC) | -- |
+| CC7.1 | Log integrity | CLOSED (Phase 27 OBS-06): HMAC chain over OCSF-enriched JSON; audit_verify utility ships in pam-unix-oidc/src/bin/audit_verify.rs | `pam-unix-oidc/src/audit.rs`, `pam-unix-oidc/src/bin/audit_verify.rs` |
 | CC7.2 | System monitoring | Structured audit logs with session correlation | `pam-unix-oidc/src/audit.rs` |
-| CC7.3 | Severity classification | Break-glass severity gap noted | `pam-unix-oidc/src/audit.rs` |
+| CC7.3 | Severity classification | CLOSED (Phase 24 SBUG-02): BREAK_GLASS_AUTH events at syslog CRITICAL when alert_on_use=true | `pam-unix-oidc/src/audit.rs` |
 | CC7.4 | Security event response | Gap: alerting not yet automated | -- |
-| A1.2 | Log retention | Gap: no retention policy controls | -- |
+| A1.2 | Log retention | CLOSED (Phase 27 OBS-05): logrotate config shipped, log retention docs at docs/log-retention.md, GDPR erasure guide at docs/gdpr-erasure-guide.md | `deploy/logrotate/unix-oidc`, `docs/log-retention.md`, `docs/gdpr-erasure-guide.md` |
 
 ### PCI DSS v4.0
 
 | Requirement | Description | Status | Notes |
 |-------------|-------------|--------|-------|
-| 10.2.1 | Log all authentication events | Partial | PAM audit events structured; agent daemon audit events gap |
-| 10.2.1.3 | Log privilege escalations | Partial | Sudo step-up logged; session linkage gap |
+| 10.2.1 | Log all authentication events | Full | PAM audit events + agent daemon audit events both structured (Phase 17 OBS-1, Phase 27 OBS-02/08) |
+| 10.2.1.3 | Log privilege escalations | Full | Sudo step-up logged; sudo-to-SSH session linkage via parent_session_id (Phase 17 OBS-3) |
 | 10.2.1.6 | Log lockout status changes | Partial | -- |
-| 10.3.3 | Audit log integrity | Gap | No file integrity mechanism |
-| 10.5.1 | 12-month retention | Gap | No logrotate config shipped |
-| 3.7.6 | Key lifecycle audit trails | Gap | Key events are tracing-only |
+| 10.3.3 | Audit log integrity | Full | HMAC chain tamper-evidence ships Phase 27 OBS-06; audit_verify tool verifies integrity |
+| 10.5.1 | 12-month retention | Full | Logrotate config ships Phase 27 OBS-05; 12-month retention default (rotate 52 weekly). docs/log-retention.md |
+| 3.7.6 | Key lifecycle audit trails | Full | Key lifecycle audit events (KEY_GENERATED, KEY_LOADED, KEY_DESTROYED) ship Phase 27 OBS-04. pam-unix-oidc/src/audit.rs |
 
 ### ISO/IEC Standards
 
@@ -144,7 +144,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | Control Family | Controls Referenced | Status | Notes |
 |----------------|---------------------|--------|-------|
-| AU (Audit) | AU-2, AU-3, AU-6, AU-9, AU-10, AU-11, AU-14 | Partial | Audit events present; tamper-evidence and retention gaps |
+| AU (Audit) | AU-2, AU-3, AU-6, AU-9, AU-10, AU-11, AU-14 | Partial | Tamper-evidence CLOSED (OBS-06), retention CLOSED (OBS-05). Open: AU-14 session recording not applicable to SSH model |
 | AC (Access Control) | AC-17 | Partial | Privileged access logging needs auth-strength field |
 | IA (Identification) | IA-2(12), IA-7, IA-8(1) | Partial | Replay protection via JTI; timing enforcement gap |
 | SC (System/Comms) | SC-8, SC-12, SC-13 | Partial | TLS enforced; key management audit gap |
@@ -215,10 +215,11 @@ Referenced in `docs/THREAT_MODEL.md` (Appendix A) and `docs/threat-model.md` (Se
 | IETF Drafts | 0 | 1 | 1 | 2 |
 | NIST SP | 2 | 4 | 1 | 7 |
 | FIPS | 2 | 0 | 2 | 4 |
-| SOC 2 Controls | 4 | 1 | 0 | 5 mapped (4 gaps) |
-| PCI DSS Requirements | 0 | 3 | 0 | 3 mapped (3 gaps) |
+| SOC 2 Controls | 7 | 1 | 0 | 8 mapped (1 gap) |
+| PCI DSS Requirements | 5 | 1 | 0 | 6 mapped (0 gaps) |
+| OCSF Schema | 7 audit event types with category_uid/class_uid/severity_id | Phase 27 OBS-07 | `pam-unix-oidc/src/audit.rs` |
 | MITRE ATT&CK Techniques | 18 mapped | -- | -- | 18 |
-| **Totals** | **44** | **10** | **7** | **61** |
+| **Totals** | **49** | **10** | **7** | **66** |
 
 ---
 
@@ -232,7 +233,8 @@ For each source file that references standards, the standards it cites.
 |------|---------------------|
 | `pam-unix-oidc/src/oidc/dpop.rs` | RFC 9449, RFC 7638, RFC 7518, FIPS 186-5, draft-ietf-jose-pq-composite-sigs-01 |
 | `pam-unix-oidc/src/oidc/validation.rs` | RFC 7519, RFC 7517, RFC 7515, RFC 9700, SP 800-63B, SP 800-131A |
-| `pam-unix-oidc/src/audit.rs` | RFC 3339, SP 800-53 (AU-*) |
+| `pam-unix-oidc/src/audit.rs` | RFC 3339, RFC 5424, SP 800-53 (AU-2/3/9/10), SOC 2 CC7.1/CC7.2, PCI 10.2.1, OCSF schema, GDPR Art 17(3)(b) |
+| `pam-unix-oidc/src/bin/audit_verify.rs` | SP 800-53 AU-9/10, SOC 2 CC7.1, PCI 10.3.3, FedRAMP AU-9 |
 | `pam-unix-oidc/src/policy/config.rs` | RFC 7662, RFC 9449 SS8 |
 | `pam-unix-oidc/src/ciba/client.rs` | CIBA Core 1.0 SS7.1/SS10.1, OpenID EAP ACR Values 1.0 |
 | `pam-unix-oidc/src/ciba/types.rs` | RFC 6749 SS5.1, CIBA Core 1.0 SS10.2 |
@@ -317,13 +319,13 @@ Standards referenced in audit reports where compliance is incomplete.
 | F-01 | SP 800-63B SS4.3.3 | Session lifetime | Configurable clock skew exceeds recommended tolerances | HIGH |
 | F-02 | SP 800-53 IA-2(12) | Replay protection | JTI cache is process-local; cross-instance replay window | HIGH |
 | F-03 | SP 800-131A Table 1 | Algorithm validation | No RSA minimum key length check on JWKS keys | MEDIUM |
-| F-04 | SP 800-88 Rev 1 SS2.4 | Media sanitization | DoD 5220.22-M citation should be SP 800-88 | MEDIUM |
+| ~~F-04~~ | ~~SP 800-88 Rev 1 SS2.4~~ | ~~Media sanitization~~ | ~~DoD 5220.22-M citation should be SP 800-88~~ | CLOSED (Phase 26 DEBT-08): `secure_delete.rs` primary citation is NIST SP 800-88 Rev 1 §2.4; DoD 5220.22-M historical note only |
 | F-05 | SP 800-57 SS5.3 | Key management | DPoP key rotation lifecycle not codified | LOW |
-| F-06 | SP 800-131A | Algorithm agility | Config does not enforce approved algorithm set | LOW |
+| ~~F-06~~ | ~~SP 800-131A~~ | ~~Algorithm agility~~ | ~~Config does not enforce approved algorithm set~~ | CLOSED (Phase 25 SHRD-01/SHRD-02): Per-issuer algorithm allowlist enforced; HS256-with-RSA-key attack blocked |
 | ~~F-07~~ | ~~FIPS 204 SS3.2~~ | ~~Key protection~~ | ~~ML-DSA signing key lacks `mlock` equivalent~~ | ~~CLOSED (Phase 17, MEM-07)~~ |
-| F-08 | SP 800-53 AU-9/10 | Audit integrity | No tamper-evidence on audit logs | INFORMATIONAL |
+| ~~F-08~~ | ~~SP 800-53 AU-9/10~~ | ~~Audit integrity~~ | ~~No tamper-evidence on audit logs~~ | CLOSED (Phase 27 OBS-06): HMAC chain covers OCSF-enriched JSON events; audit_verify validates chain |
 | ~~OBS-1~~ | ~~SOC 2 CC7.2, PCI 10.2.1~~ | ~~Agent audit events~~ | ~~Agent daemon lacks structured audit events~~ | ~~CLOSED (Phase 17, OBS-1)~~ |
 | ~~OBS-3~~ | ~~SOC 2 CC7.2~~ | ~~Session linkage~~ | ~~Sudo step-up not linked to parent SSH session~~ | ~~CLOSED (Phase 17, OBS-3)~~ |
-| OBS-4 | PCI 3.7.6 | Key lifecycle | Key events are tracing-only, not audit events | P2 |
-| F-09 | RFC 9700 SS2.5 | URI scheme | Device flow verification URI scheme not validated | MEDIUM |
-| F-12 | RFC 9700 SS2.5 | Issuer HTTPS | Issuer URL HTTPS scheme not enforced in code | MEDIUM |
+| ~~OBS-4~~ | ~~PCI 3.7.6~~ | ~~Key lifecycle~~ | ~~Key events are tracing-only, not audit events~~ | CLOSED (Phase 27 OBS-04): KEY_GENERATED, KEY_LOADED, KEY_DESTROYED are structured audit events |
+| ~~F-09~~ | ~~RFC 9700 SS2.5~~ | ~~URI scheme~~ | ~~Device flow verification URI scheme not validated~~ | CLOSED (Phase 25 SHRD-04): device flow verification_uri scheme validated at config load |
+| ~~F-12~~ | ~~RFC 9700 SS2.5~~ | ~~Issuer HTTPS~~ | ~~Issuer URL HTTPS scheme not enforced in code~~ | CLOSED (Phase 25 SHRD-04): issuer URL HTTPS enforced via validate_https_url() at config load |
