@@ -1,0 +1,70 @@
+# test/docker/Dockerfile.test-host-systemd
+#
+# E2ET-05: systemd-enabled test host for systemd socket activation and
+# JSON log format validation under journald.
+#
+# Base image: jrei/systemd-ubuntu:22.04 — an Ubuntu 22.04 image that ships
+# systemd as PID 1 and is designed for container-based systemd integration tests.
+# See: https://github.com/j8r/dockerfiles/tree/master/systemd
+#
+# Usage:
+#   docker build -f test/docker/Dockerfile.test-host-systemd -t test-host-systemd .
+#
+# Required Docker run flags for systemd inside a container:
+#   --privileged  (or --cap-add SYS_ADMIN)
+#   --cgroup-ns=host (or cgroupv2 via cgroup-parent)
+#   -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+#
+# The systemd-e2e compose file (docker-compose.systemd-e2e.yaml) supplies these.
+
+FROM jrei/systemd-ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libpam0g \
+    libssl3 \
+    openssh-server \
+    curl \
+    jq \
+    sudo \
+    libdbus-1-3 \
+    dbus-user-session \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create testuser with a home directory (systemd user units require a real home)
+RUN useradd -m -s /bin/bash testuser && \
+    echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Enable lingering for testuser so user systemd units persist without an active session
+# (required for systemctl --user to work inside the container test)
+RUN mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/testuser
+
+# Copy the unix-oidc-agent binary (built by CI before docker build)
+# ARG allows CI to specify the built binary path relative to the build context (repo root)
+ARG AGENT_BINARY=target/release/unix-oidc-agent
+COPY ${AGENT_BINARY} /usr/local/bin/unix-oidc-agent
+RUN chmod +x /usr/local/bin/unix-oidc-agent
+
+# Copy systemd user unit files to the system-wide user unit directory.
+# The test user's instance of systemd will discover them here.
+COPY contrib/systemd/unix-oidc-agent.service /etc/systemd/user/unix-oidc-agent.service
+COPY contrib/systemd/unix-oidc-agent.socket /etc/systemd/user/unix-oidc-agent.socket
+
+# Adjust ExecStart to use the PATH-installed binary rather than ~/.cargo/bin
+# (which does not exist in this container)
+RUN sed -i 's|ExecStart=%h/.cargo/bin/unix-oidc-agent|ExecStart=/usr/local/bin/unix-oidc-agent|' \
+    /etc/systemd/user/unix-oidc-agent.service
+
+# Provide a minimal agent configuration so the daemon can start without error
+RUN mkdir -p /home/testuser/.config/unix-oidc && \
+    cat > /home/testuser/.config/unix-oidc/agent.toml << 'TOML'
+# Minimal agent config for E2E testing — no real IdP required for socket activation test
+[agent]
+socket_path = ""
+TOML
+RUN chown -R testuser:testuser /home/testuser/.config
+
+# systemd is PID 1 in this image — it starts the user session manager on login
+CMD ["/lib/systemd/systemd"]
