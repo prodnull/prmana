@@ -19,11 +19,16 @@ test-mode = []
 # Experimental hybrid PQC DPoP verification: ML-DSA-65+ES256 composite signatures.
 pqc = ["dep:ml-dsa"]
 
+[[bin]]
+name = "unix-oidc-audit-verify"
+path = "src/bin/audit_verify.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 pamsm = { version = "0.5", features = ["libpam"] }
 jsonwebtoken = "9.0"
@@ -41,6 +46,8 @@ getrandom = "0.3"
 parking_lot = "0.12"
 p256 = { version = "0.13", features = ["ecdsa"] }
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 subtle = "2.5"
 uuid = { version = "1", features = ["v4"] }
 regex = "1.10"

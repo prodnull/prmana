@@ -25,7 +25,7 @@
 
 use hmac::{Hmac, Mac};
 use once_cell::sync::Lazy;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -37,6 +37,62 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Default audit log file path
 const DEFAULT_AUDIT_LOG: &str = "/var/log/unix-oidc-audit.log";
+
+/// OCSF (Open Cybersecurity Schema Framework) version emitted in all audit events.
+///
+/// Version 1.3.0 maps to the December 2024 OCSF release.
+/// Reference: https://schema.ocsf.io/1.3.0/
+const OCSF_VERSION: &str = "1.3.0";
+
+/// OCSF metadata embedded in every enriched audit event.
+///
+/// The `version` field identifies the OCSF schema version used, enabling SIEM
+/// connectors to select the correct field mapping without runtime negotiation.
+#[derive(Debug, Clone, Serialize)]
+pub struct OcsfMetadata {
+    /// OCSF schema version string (e.g. "1.3.0").
+    pub version: &'static str,
+}
+
+/// OCSF field set produced by `AuditEvent::ocsf_fields()`.
+///
+/// All values follow OCSF 1.3.0 Authentication class (class_uid 3002) under
+/// the Identity & Access Management category (category_uid 3).
+///
+/// Reference: https://schema.ocsf.io/1.3.0/classes/authentication
+#[derive(Debug, Clone, Serialize)]
+pub struct OcsfFields {
+    /// OCSF category: 3 = Identity & Access Management.
+    pub category_uid: u32,
+    /// OCSF class: 3002 = Authentication.
+    pub class_uid: u32,
+    /// OCSF activity: 1 = Logon, 2 = Logoff, 3 = Authentication Challenge, 99 = Other.
+    pub activity_id: u32,
+    /// OCSF severity: 1 = Info, 2 = Low, 3 = Medium, 4 = High, 5 = Critical.
+    pub severity_id: u32,
+    /// Composite type UID: `class_uid * 100 + activity_id`.
+    pub type_uid: u32,
+    /// OCSF schema metadata.
+    pub metadata: OcsfMetadata,
+}
+
+/// Wrapper struct for emitting an `AuditEvent` enriched with OCSF fields.
+///
+/// Uses `#[serde(flatten)]` so all existing event fields are serialised
+/// alongside the new OCSF fields without renaming or removing any existing key.
+/// This guarantees backward compatibility: any SIEM pipeline consuming the
+/// existing fields continues to work unchanged.
+#[derive(Serialize)]
+struct EnrichedAuditEvent<'a> {
+    #[serde(flatten)]
+    event: &'a AuditEvent,
+    category_uid: u32,
+    class_uid: u32,
+    activity_id: u32,
+    severity_id: u32,
+    type_uid: u32,
+    metadata: OcsfMetadata,
+}
 
 /// Syslog severity for an audit event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,7 +210,7 @@ static SYSLOG_WRITER: Lazy<Mutex<Option<syslog::Logger<syslog::LoggerBackend, Fo
     });
 
 /// Audit events for SSH/PAM authentication.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event")]
 pub enum AuditEvent {
     /// Successful SSH login via OIDC
@@ -594,18 +650,17 @@ impl AuditEvent {
     ///
     /// When `UNIX_OIDC_AUDIT_HMAC_KEY` is set, the output JSON is augmented with
     /// `prev_hash` and `chain_hash` fields providing a tamper-evident audit chain.
-    /// The HMAC is computed over the base event JSON (including any OCSF enrichment
-    /// fields from Plan 27-04 when they are present).
+    /// The HMAC is computed over the OCSF-enriched event JSON — so the chain
+    /// covers all fields including OCSF metadata (OBS-07 + Plan 27-03 chain).
     pub fn log(&self) {
-        // Step 1: Serialize the base event (bare or OCSF-enriched, depending on
-        // whether Plan 27-04 has been applied). This is the verifiable payload.
-        let base_json = match serde_json::to_string(self) {
-            Ok(j) => j,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize audit event");
-                return;
-            }
-        };
+        // Step 1: Serialize with OCSF enrichment (category_uid, class_uid, severity_id,
+        // activity_id, type_uid, metadata.version added alongside existing fields).
+        // Existing field names are unchanged — OCSF fields are purely additive.
+        let base_json = self.enriched_log_json();
+        if base_json.is_empty() {
+            tracing::error!("Failed to serialize audit event; skipping log");
+            return;
+        }
 
         // Step 2: Attempt to advance the HMAC chain. The mutex guard is held for the
         // duration so that concurrent PAM calls cannot interleave their chain steps.
@@ -693,6 +748,98 @@ impl AuditEvent {
             | Self::StepUpInitiated { .. }
             | Self::StepUpSuccess { .. } => AuditSeverity::Info,
         }
+    }
+
+    /// Return OCSF field values for this event (OBS-07).
+    ///
+    /// All events map to OCSF 1.3.0 Authentication class (class_uid 3002) under
+    /// Identity & Access Management (category_uid 3). Activity and severity IDs
+    /// are assigned per-event-type following the OCSF taxonomy:
+    ///
+    /// | activity_id | Meaning          |
+    /// |-------------|------------------|
+    /// | 1           | Logon            |
+    /// | 2           | Logoff           |
+    /// | 3           | Authentication Challenge |
+    /// | 99          | Other            |
+    ///
+    /// | severity_id | Meaning  |
+    /// |-------------|----------|
+    /// | 1           | Info     |
+    /// | 2           | Low      |
+    /// | 3           | Medium   |
+    /// | 4           | High     |
+    /// | 5           | Critical |
+    ///
+    /// This is a public method so external consumers can inspect OCSF values
+    /// without parsing JSON.
+    pub fn ocsf_fields(&self) -> OcsfFields {
+        let (activity_id, severity_id) = match self {
+            // Logon attempts — activity_id 1
+            Self::SshLoginSuccess { .. }  => (1, 1), // Info: success
+            Self::SshLoginFailed { .. }   => (1, 3), // Medium: failed logon
+            Self::TokenValidationFailed { .. } => (1, 3),
+            Self::AuthNoToken { .. }      => (1, 3), // Medium: no token provided
+            Self::UserNotFound { .. }     => (1, 3),
+            Self::SessionOpened { .. }    => (1, 1), // Info: session start
+
+            // Logoff / session close — activity_id 2
+            Self::SessionClosed { .. }   => (2, 1), // Info: normal close
+            Self::SessionCloseFailed { .. } => (2, 3), // Medium: cleanup failure
+            Self::TokenRevoked { .. }    => (2, 1), // Info: revocation
+
+            // Authentication challenge — activity_id 3
+            Self::StepUpInitiated { .. } => (3, 1), // Info: challenge started
+            Self::StepUpSuccess { .. }   => (3, 1), // Info: challenge passed
+            Self::StepUpFailed { .. }    => (3, 3), // Medium: challenge denied
+
+            // Break-glass — activity_id 1, severity depends on alert_on_use
+            Self::BreakGlassAuth { alert_on_use, .. } => {
+                let sev = if *alert_on_use { 5 } else { 1 }; // Critical or Info
+                (1, sev)
+            }
+
+            // Other / infrastructure events — activity_id 99
+            Self::IntrospectionFailed { .. } => (99, 3), // Medium: token check failure
+        };
+
+        let class_uid: u32 = 3002;
+        OcsfFields {
+            category_uid: 3,
+            class_uid,
+            activity_id,
+            severity_id,
+            type_uid: class_uid * 100 + activity_id,
+            metadata: OcsfMetadata { version: OCSF_VERSION },
+        }
+    }
+
+    /// Serialize this event as a JSON string enriched with OCSF fields.
+    ///
+    /// Uses `EnrichedAuditEvent` with `#[serde(flatten)]` to add OCSF fields
+    /// alongside all existing event fields.  Existing field names are unchanged
+    /// — OCSF fields are purely additive new top-level keys.
+    ///
+    /// This is the payload written to syslog, the audit file, and stderr by
+    /// `log()`.  It is exposed as a public method for testing.
+    pub fn enriched_log_json(&self) -> String {
+        let fields = self.ocsf_fields();
+        let enriched = EnrichedAuditEvent {
+            event: self,
+            category_uid: fields.category_uid,
+            class_uid: fields.class_uid,
+            activity_id: fields.activity_id,
+            severity_id: fields.severity_id,
+            type_uid: fields.type_uid,
+            metadata: fields.metadata,
+        };
+        serde_json::to_string(&enriched).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to serialize enriched audit event; using bare event");
+            // Fallback: serialize the bare event without OCSF fields.
+            // This cannot fail (the bare event serializes without OCSF enrichment succeeding)
+            // since AuditEvent only contains serializable primitives.
+            serde_json::to_string(self).unwrap_or_else(|_| String::new())
+        })
     }
 }
 
@@ -1365,5 +1512,149 @@ mod tests {
 
         let step_ok = AuditEvent::step_up_success("u", None, "ciba", "s", None, None);
         assert_eq!(step_ok.syslog_severity(), AuditSeverity::Info);
+
+        // OBS-07: new variants must also be Warning
+        let no_token = AuditEvent::auth_no_token("u", None);
+        assert_eq!(no_token.syslog_severity(), AuditSeverity::Warning);
+
+        let close_failed = AuditEvent::session_close_failed("s", "u", "err");
+        assert_eq!(close_failed.syslog_severity(), AuditSeverity::Warning);
+    }
+
+    // ── OBS-07: OCSF schema field tests ──────────────────────────────────────
+
+    /// Helper: serialise an AuditEvent enriched with OCSF fields.
+    ///
+    /// This calls `ocsf_fields()` directly to produce a JSON-serialisable
+    /// `OcsfFields` struct, then checks that the expected fields are present.
+    fn ocsf_json(event: &AuditEvent) -> String {
+        let fields = event.ocsf_fields();
+        // We test via serde_json::to_string of the AuditEvent alongside the OcsfFields
+        // to verify that log() would emit them together.  The actual combined emission
+        // is tested end-to-end via the log() calls; here we validate the field values.
+        serde_json::to_string(&fields).unwrap()
+    }
+
+    #[test]
+    fn test_ocsf_ssh_login_success_fields() {
+        // OBS-07 Test 1: SshLoginSuccess has correct OCSF fields
+        let event = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None);
+        let fields = event.ocsf_fields();
+
+        assert_eq!(fields.category_uid, 3, "IAM category_uid must be 3");
+        assert_eq!(fields.class_uid, 3002, "Authentication class_uid must be 3002");
+        assert_eq!(fields.activity_id, 1, "Logon activity_id must be 1");
+        assert_eq!(fields.severity_id, 1, "Success severity_id must be 1 (Info)");
+        assert_eq!(fields.type_uid, 300201, "type_uid must be class_uid * 100 + activity_id");
+        assert_eq!(fields.metadata.version, "1.3.0", "metadata.version must be 1.3.0");
+    }
+
+    #[test]
+    fn test_ocsf_ssh_login_failed_fields() {
+        // OBS-07 Test 2: SshLoginFailed has severity_id 3 (Medium) and activity_id 1
+        let event = AuditEvent::ssh_login_failed(None, None, "bad token");
+        let fields = event.ocsf_fields();
+
+        assert_eq!(fields.severity_id, 3, "Failed auth severity_id must be 3 (Medium)");
+        assert_eq!(fields.activity_id, 1, "Logon activity_id must be 1");
+        assert_eq!(fields.class_uid, 3002);
+        assert_eq!(fields.type_uid, 300201);
+    }
+
+    #[test]
+    fn test_ocsf_break_glass_critical_fields() {
+        // OBS-07 Test 3: BreakGlassAuth with alert_on_use=true has severity_id 5 (Critical)
+        let event = AuditEvent::break_glass_auth("emergency", None, true);
+        let fields = event.ocsf_fields();
+
+        assert_eq!(fields.severity_id, 5, "BreakGlass+alert severity_id must be 5 (Critical)");
+        assert_eq!(fields.activity_id, 1, "Logon activity_id must be 1");
+    }
+
+    #[test]
+    fn test_ocsf_auth_no_token_fields() {
+        // OBS-07 Test 4: AuthNoToken has activity_id 1 (Logon), severity_id 3
+        let event = AuditEvent::auth_no_token("user", None);
+        let fields = event.ocsf_fields();
+
+        assert_eq!(fields.activity_id, 1, "No-token auth activity_id must be 1 (Logon attempt)");
+        assert_eq!(fields.severity_id, 3, "No-token auth severity_id must be 3 (Medium)");
+        assert_eq!(fields.class_uid, 3002);
+    }
+
+    #[test]
+    fn test_ocsf_session_closed_fields() {
+        // OBS-07 Test 5: SessionClosed has activity_id 2 (Logoff), severity_id 1
+        let event = AuditEvent::session_closed("s", "u", 60);
+        let fields = event.ocsf_fields();
+
+        assert_eq!(fields.activity_id, 2, "Logoff activity_id must be 2");
+        assert_eq!(fields.severity_id, 1, "Session closed severity_id must be 1 (Info)");
+        assert_eq!(fields.type_uid, 300202, "type_uid = 3002 * 100 + 2");
+    }
+
+    #[test]
+    fn test_ocsf_existing_fields_unchanged() {
+        // OBS-07 Test 6 (negative): Existing fields not renamed or removed
+        // Verify that enriched_log_json() preserves the base event fields
+        let event = AuditEvent::ssh_login_success("sid-abc", "alice", Some(1001),
+            Some("10.0.0.1"), Some("jti-1"), Some("mfa"), Some(1705400000));
+        let json = event.enriched_log_json();
+
+        // Original event fields must be present
+        assert!(json.contains("SSH_LOGIN_SUCCESS"), "event tag preserved, json: {json}");
+        assert!(json.contains("sid-abc"), "session_id preserved, json: {json}");
+        assert!(json.contains("alice"), "user preserved, json: {json}");
+        assert!(json.contains("10.0.0.1"), "source_ip preserved, json: {json}");
+        assert!(json.contains("jti-1"), "oidc_jti preserved, json: {json}");
+        assert!(json.contains("mfa"), "oidc_acr preserved, json: {json}");
+        // OCSF fields must also be present
+        assert!(json.contains("category_uid"), "category_uid added, json: {json}");
+        assert!(json.contains("class_uid"), "class_uid added, json: {json}");
+        assert!(json.contains("severity_id"), "severity_id added, json: {json}");
+        assert!(json.contains("activity_id"), "activity_id added, json: {json}");
+        assert!(json.contains("type_uid"), "type_uid added, json: {json}");
+        assert!(json.contains("1.3.0"), "metadata.version added, json: {json}");
+    }
+
+    #[test]
+    fn test_ocsf_all_14_variants_have_fields() {
+        // OBS-07 Test 7: All 14 event variants have OCSF fields in enriched_log_json
+        let events: Vec<AuditEvent> = vec![
+            AuditEvent::ssh_login_success("s", "u", None, None, None, None, None),
+            AuditEvent::ssh_login_failed(None, None, "reason"),
+            AuditEvent::token_validation_failed(None, "reason", None, None),
+            AuditEvent::user_not_found("user"),
+            AuditEvent::step_up_initiated("u", None, "ciba", None),
+            AuditEvent::step_up_success("u", None, "ciba", "s", None, None),
+            AuditEvent::step_up_failed("u", None, "ciba", "timeout"),
+            AuditEvent::break_glass_auth("u", None, true),
+            AuditEvent::session_opened("s", "u", None, 0),
+            AuditEvent::session_closed("s", "u", 0),
+            AuditEvent::token_revoked("s", "u", "success", None),
+            AuditEvent::introspection_failed(None, None, "err", "warn"),
+            AuditEvent::auth_no_token("u", None),
+            AuditEvent::session_close_failed("s", "u", "err"),
+        ];
+
+        for event in &events {
+            let json = event.enriched_log_json();
+            assert!(json.contains("category_uid"), "Missing category_uid for {}, json: {json}", event.event_type());
+            assert!(json.contains("class_uid"), "Missing class_uid for {}, json: {json}", event.event_type());
+            assert!(json.contains("severity_id"), "Missing severity_id for {}, json: {json}", event.event_type());
+            assert!(json.contains("activity_id"), "Missing activity_id for {}, json: {json}", event.event_type());
+            assert!(json.contains("type_uid"), "Missing type_uid for {}, json: {json}", event.event_type());
+            assert!(json.contains("1.3.0"), "Missing metadata.version for {}, json: {json}", event.event_type());
+        }
+    }
+
+    #[test]
+    fn test_ocsf_backward_compat_deserialization() {
+        // OBS-07 Test 8 (negative): Old-format JSON without OCSF fields still deserializes
+        // via serde default — consumers reading old logs are not broken
+        let old_json = r#"{"event":"SSH_LOGIN_SUCCESS","timestamp":"2024-01-01T00:00:00Z","session_id":"s","user":"u","uid":null,"source_ip":null,"host":"localhost","oidc_jti":null,"oidc_acr":null,"oidc_auth_time":null}"#;
+        // AuditEvent deserialization should succeed (old format, no OCSF fields)
+        let result: Result<AuditEvent, _> = serde_json::from_str(old_json);
+        assert!(result.is_ok(), "Old-format JSON must still deserialize: {:?}", result.err());
     }
 }
