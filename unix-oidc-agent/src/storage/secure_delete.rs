@@ -22,6 +22,9 @@
 //! - NIST SP 800-88 Rev 1 "Guidelines for Media Sanitization" (primary)
 //! - NIST SP 800-88 Rev 1 §2.4: Clear — logical techniques applied to all
 //!   user-addressable storage locations
+//!
+//! Historical note: Originally inspired by DoD 5220.22-M, retired by DoD in 2006.
+//! NIST SP 800-88 Rev 1 is the current authoritative reference for media sanitization.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
