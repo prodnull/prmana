@@ -157,36 +157,162 @@ pub fn evaluate_dbus_encryption(
             }
         }
         DbusSessionEncryption::Unknown => {
-            // Cannot determine status — allow with a note
-            info!(
-                backend = "secret-service",
-                "D-Bus session encryption status could not be determined"
-            );
-            DbusEnforcementAction::Allow
+            // Cannot determine encryption status. The enforcement decision depends
+            // on the policy: strict mode warns explicitly (we can't verify the
+            // security property the operator asked for), other modes note and allow.
+            match policy {
+                DbusEncryptionPolicy::Strict => {
+                    warn!(
+                        backend = "secret-service",
+                        "D-Bus session encryption status could not be determined — \
+                         strict policy requested but cannot verify encryption. \
+                         Ensure dbus-send is installed and org.freedesktop.secrets is running. \
+                         Allowing this session; set UNIX_OIDC_REJECT_PLAIN_DBUS=disabled to suppress."
+                    );
+                    // Allow despite strict — we don't have evidence the session is
+                    // *plain*, just that we can't verify it's encrypted. Blocking
+                    // on Unknown would break all non-D-Bus environments and
+                    // container setups where dbus-send isn't available.
+                    DbusEnforcementAction::Allow
+                }
+                _ => {
+                    info!(
+                        backend = "secret-service",
+                        "D-Bus session encryption status could not be determined"
+                    );
+                    DbusEnforcementAction::Allow
+                }
+            }
         }
     }
 }
 
 /// Probe D-Bus Secret Service session encryption status.
 ///
-/// On Linux, attempts to open a session with the `dh-ietf1024-sha256-aes128-cbc-pkcs7`
-/// algorithm. If the server agrees, the session is encrypted; if it falls back to
-/// `plain`, the session is unencrypted.
+/// On Linux, calls `dbus-send` to attempt a `plain`-algorithm OpenSession against
+/// `org.freedesktop.secrets`. The result tells us whether the Secret Service daemon
+/// accepts unencrypted sessions:
+///
+/// - **`plain` rejected** → server requires DH encryption → `Encrypted`
+/// - **`plain` accepted** → server allows unencrypted sessions → `Plain`
+///   (Even though `oo7`/keyring prefers DH, the server's willingness to accept
+///   plain sessions means a D-Bus attacker could downgrade the negotiation.
+///   Strict mode should reject this configuration.)
+/// - **Probe fails** (no D-Bus, no `dbus-send`, service not registered) → `Unknown`
+///
+/// # Security rationale
+///
+/// The probe checks the server's *capability*, not the current session's state.
+/// This is the correct security question: if the server supports plain sessions,
+/// a man-in-the-middle on the D-Bus bus could force a downgrade from DH to plain,
+/// exposing credentials in transit. Strict mode rejects servers that support plain
+/// to close this downgrade vector entirely.
+///
+/// # Dependencies
+///
+/// Uses `dbus-send` (part of `dbus` package, available on all D-Bus-capable systems).
+/// No Rust crate dependency — avoids pulling `zbus` or `oo7` as direct deps.
 ///
 /// On non-Linux platforms, returns `Unknown`.
+///
+/// # References
+///
+/// - freedesktop Secret Service API: `org.freedesktop.secrets.Service.OpenSession`
+/// - Session algorithms: `plain` (no encryption), `dh-ietf1024-sha256-aes128-cbc-pkcs7`
 #[cfg(target_os = "linux")]
 pub fn probe_dbus_session_encryption() -> DbusSessionEncryption {
-    // The keyring crate's Secret Service backend uses the oo7 crate internally.
-    // We cannot directly inspect the session algorithm through the keyring abstraction.
-    // Instead, we attempt a D-Bus call to org.freedesktop.secrets OpenSession.
+    use std::process::Command;
+
+    // Step 1: Check if org.freedesktop.secrets is registered on the session bus.
+    // If not, no Secret Service daemon is running — return Unknown.
+    let name_check = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.GetNameOwner",
+            "string:org.freedesktop.secrets",
+        ])
+        .output();
+
+    match &name_check {
+        Ok(output) if output.status.success() => {
+            // Service is registered — proceed to probe
+        }
+        Ok(_) => {
+            info!(
+                "org.freedesktop.secrets not registered on session bus — \
+                 D-Bus encryption check not applicable"
+            );
+            return DbusSessionEncryption::Unknown;
+        }
+        Err(e) => {
+            info!(
+                error = %e,
+                "dbus-send not available — cannot probe D-Bus session encryption"
+            );
+            return DbusSessionEncryption::Unknown;
+        }
+    }
+
+    // Step 2: Attempt OpenSession with "plain" algorithm.
     //
-    // For now, return Unknown — the enforcement logic still works (Unknown -> Allow),
-    // and a future implementation can wire in the actual D-Bus probe via zbus/oo7.
+    // Method signature: OpenSession(String algorithm, Variant input) → (Variant output, ObjectPath result)
+    // For "plain" algorithm, input is an empty string variant.
     //
-    // TODO(SHRD-06): Implement actual D-Bus session encryption probe via zbus/oo7 crate.
-    // This requires adding zbus as a dependency, which is an architectural decision
-    // deferred to avoid scope creep in this plan.
-    DbusSessionEncryption::Unknown
+    // If the server accepts "plain", it returns success with a session path.
+    // If the server rejects "plain" (requires DH), it returns an error
+    // (typically org.freedesktop.DBus.Error.NotSupported).
+    let plain_probe = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.secrets",
+            "/org/freedesktop/secrets",
+            "org.freedesktop.secrets.Service.OpenSession",
+            "string:plain",
+            "variant:string:",
+        ])
+        .output();
+
+    match plain_probe {
+        Ok(output) if output.status.success() => {
+            // Server accepted "plain" session — it allows unencrypted transport.
+            // Even though oo7/keyring prefers DH, the server's willingness to
+            // accept plain sessions means a D-Bus attacker could force a downgrade.
+            //
+            // Best-effort: try to close the probe session to avoid orphaning it.
+            // The session path is in the reply, but parsing dbus-send output is
+            // fragile. The session will be cleaned up when the daemon restarts or
+            // the D-Bus connection drops, so this is acceptable.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            info!(
+                stdout = %stdout.trim(),
+                stderr = %stderr.trim(),
+                "D-Bus Secret Service accepted plain session — server allows unencrypted transport"
+            );
+            DbusSessionEncryption::Plain
+        }
+        Ok(output) => {
+            // Server rejected "plain" — it requires DH encryption.
+            // This is the secure configuration: all sessions must be encrypted.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            info!(
+                stderr = %stderr.trim(),
+                "D-Bus Secret Service rejected plain session — server requires encrypted transport"
+            );
+            DbusSessionEncryption::Encrypted
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to probe D-Bus Secret Service session encryption"
+            );
+            DbusSessionEncryption::Unknown
+        }
+    }
 }
 
 /// On non-Linux platforms, D-Bus Secret Service is not available.
