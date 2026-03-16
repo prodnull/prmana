@@ -1,4 +1,4 @@
-//! Multi-IdP integration tests (Phase 21, MIDP-01..08).
+//! Multi-IdP integration tests (Phase 21, MIDP-01..08; Phase 27, MIDP-09..11).
 //!
 //! Exercises the full multi-issuer authentication path end-to-end:
 //! - MIDP-01: Two-issuer policy loads; issuer_by_url() resolves correct config
@@ -9,6 +9,9 @@
 //! - MIDP-06: Issuer routing (known / unknown / trailing-slash normalization)
 //! - MIDP-07: JWKS providers independent per issuer; JTI cross-issuer no collision
 //! - MIDP-08: Optional fields fall back to safe defaults with WARN
+//! - MIDP-09: Priority-ordered issuer selection with structured audit logging
+//! - MIDP-10: Issuer health monitoring — degradation after 3 failures, recovery
+//! - MIDP-11: Config hot-reload via mtime stat check
 //!
 //! All tests run under `--features test-mode` which enables
 //! `TokenValidator::new_insecure_for_testing()` (signature verification bypassed).
@@ -25,7 +28,7 @@ use pam_unix_oidc::auth::{authenticate_multi_issuer, AuthError, DPoPAuthConfig};
 use pam_unix_oidc::oidc::jwks::IssuerJwksRegistry;
 use pam_unix_oidc::policy::config::{
     AcrMappingConfig, EnforcementMode, GroupMappingConfig, GroupSource, IdentityConfig,
-    IssuerConfig, PolicyConfig, TransformConfig,
+    IssuerConfig, IssuerHealthManager, PolicyConfig, TransformConfig,
 };
 use pam_unix_oidc::security::nonce_cache::{
     generate_dpop_nonce, global_nonce_cache, NonceConsumeError,
@@ -1298,6 +1301,449 @@ issuers:
         policy.issuers[0].jwks_cache_ttl_secs, 0,
         "jwks_cache_ttl_secs=0 must be valid"
     );
+}
+
+// ── MIDP-09: Priority ordering ────────────────────────────────────────────────
+
+/// MIDP-09: Token from issuer A (position 0) resolves to position 0 in priority list.
+///
+/// Verifies that `authenticate_multi_issuer` succeeds in routing the token to issuer A
+/// (not UnknownIssuer, not position confusion). Position is implicitly tested: with
+/// issuers [A, B], a token from A must route to the first issuer.
+#[test]
+fn test_priority_ordering_issuer_a_at_position_0() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss_a = "https://priority-a.example.com";
+    let iss_b = "https://priority-b.example.com";
+    let token = make_test_token(iss_a, "alice", "alice", Some("jti-priority-a-01"));
+    // issuers[0]=A, issuers[1]=B — token from A must route to index 0
+    let policy = make_two_issuer_policy(iss_a, iss_b, EnforcementMode::Disabled);
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // Must not be UnknownIssuer — routing found issuer A at position 0.
+    // Will fail at UserNotFound (no SSSD).
+    assert!(
+        !matches!(result, Err(AuthError::UnknownIssuer(_))),
+        "token from issuer A (position 0) must route correctly, got: {result:?}"
+    );
+}
+
+/// MIDP-09: Token from issuer B (position 1) resolves to position 1 in priority list.
+#[test]
+fn test_priority_ordering_issuer_b_at_position_1() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss_a = "https://priority-a2.example.com";
+    let iss_b = "https://priority-b2.example.com";
+    let token = make_test_token(iss_b, "bob", "bob", Some("jti-priority-b-01"));
+    // issuers[0]=A, issuers[1]=B — token from B must route to index 1
+    let policy = make_two_issuer_policy(iss_a, iss_b, EnforcementMode::Disabled);
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // Must not be UnknownIssuer — routing found issuer B at position 1.
+    assert!(
+        !matches!(result, Err(AuthError::UnknownIssuer(_))),
+        "token from issuer B (position 1) must route correctly, got: {result:?}"
+    );
+}
+
+/// MIDP-09: Token from unknown issuer C is rejected regardless of priority ordering.
+#[test]
+fn test_priority_ordering_unknown_issuer_rejected() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss_c = "https://priority-unknown.example.com";
+    let token = make_test_token(iss_c, "eve", "eve", Some("jti-priority-c-01"));
+    let policy = make_two_issuer_policy(
+        "https://priority-a3.example.com",
+        "https://priority-b3.example.com",
+        EnforcementMode::Disabled,
+    );
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    assert!(
+        matches!(result, Err(AuthError::UnknownIssuer(_))),
+        "token from unknown issuer must produce UnknownIssuer error, got: {result:?}"
+    );
+}
+
+/// MIDP-09 (negative): Priority ordering does not bypass signature verification.
+///
+/// A token whose `iss` claim is a configured issuer but whose signature would fail
+/// real JWKS validation must still be rejected. Under test-mode the validator skips
+/// signatures, so we verify at the structural level: issuer_by_url() must still
+/// return the correct issuer (no bypass of routing security boundary).
+#[test]
+fn test_priority_ordering_does_not_affect_issuer_lookup_security() {
+    // This is a config-level security test: ensure the priority field does not change
+    // what `issuer_by_url` returns. The order-0 issuer must always be returned for its URL.
+    let iss_a = "https://priority-sec-a.example.com";
+    let iss_b = "https://priority-sec-b.example.com";
+    let policy = make_two_issuer_policy(iss_a, iss_b, EnforcementMode::Disabled);
+
+    // issuer_by_url must return the first match by URL, not affected by any priority reordering.
+    let found_a = policy.issuer_by_url(iss_a);
+    let found_b = policy.issuer_by_url(iss_b);
+    let found_none = policy.issuer_by_url("https://not-configured.example.com");
+
+    assert!(found_a.is_some(), "issuer A must be found by URL");
+    assert_eq!(
+        found_a.unwrap().issuer_url,
+        iss_a,
+        "issuer_by_url for A must return issuer A config"
+    );
+    assert!(found_b.is_some(), "issuer B must be found by URL");
+    assert_eq!(
+        found_b.unwrap().issuer_url,
+        iss_b,
+        "issuer_by_url for B must return issuer B config"
+    );
+    assert!(
+        found_none.is_none(),
+        "unknown issuer URL must return None — no forged access via unknown issuer"
+    );
+}
+
+// ── MIDP-10: Issuer health monitoring ────────────────────────────────────────
+
+/// MIDP-10: After 3 consecutive failures, issuer health state is degraded.
+#[test]
+fn test_health_state_degraded_after_three_failures() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    std::env::set_var("UNIX_OIDC_HEALTH_DIR", dir.path().to_str().unwrap());
+
+    let issuer_url = "https://health-degrade.example.com";
+    let manager = IssuerHealthManager::new();
+
+    // Two failures — not yet degraded
+    manager.record_failure(issuer_url);
+    manager.record_failure(issuer_url);
+    assert!(
+        !manager.is_degraded(issuer_url, 300),
+        "two failures must not mark issuer as degraded"
+    );
+
+    // Third failure — crosses the threshold
+    manager.record_failure(issuer_url);
+    assert!(
+        manager.is_degraded(issuer_url, 300),
+        "three consecutive failures must mark issuer as degraded"
+    );
+
+    std::env::remove_var("UNIX_OIDC_HEALTH_DIR");
+}
+
+/// MIDP-10: A successful JWKS fetch clears degraded state (failure count reset to 0).
+#[test]
+fn test_health_state_cleared_on_success() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    std::env::set_var("UNIX_OIDC_HEALTH_DIR", dir.path().to_str().unwrap());
+
+    let issuer_url = "https://health-recover.example.com";
+    let manager = IssuerHealthManager::new();
+
+    // Degrade the issuer
+    manager.record_failure(issuer_url);
+    manager.record_failure(issuer_url);
+    manager.record_failure(issuer_url);
+    assert!(
+        manager.is_degraded(issuer_url, 300),
+        "issuer must be degraded after 3 failures"
+    );
+
+    // Record success — must clear degraded state
+    manager.record_success(issuer_url);
+    assert!(
+        !manager.is_degraded(issuer_url, 300),
+        "success must clear degraded state"
+    );
+
+    std::env::remove_var("UNIX_OIDC_HEALTH_DIR");
+}
+
+/// MIDP-10 (negative): A single JWKS failure does NOT mark the issuer as degraded.
+#[test]
+fn test_health_state_single_failure_not_degraded() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    std::env::set_var("UNIX_OIDC_HEALTH_DIR", dir.path().to_str().unwrap());
+
+    let issuer_url = "https://health-single.example.com";
+    let manager = IssuerHealthManager::new();
+
+    manager.record_failure(issuer_url);
+    assert!(
+        !manager.is_degraded(issuer_url, 300),
+        "single failure must not mark issuer as degraded"
+    );
+
+    std::env::remove_var("UNIX_OIDC_HEALTH_DIR");
+}
+
+/// MIDP-10: A degraded issuer with elapsed recovery interval is treated as healthy (retry).
+#[test]
+fn test_health_state_degraded_recovery_interval_elapsed() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    std::env::set_var("UNIX_OIDC_HEALTH_DIR", dir.path().to_str().unwrap());
+
+    let issuer_url = "https://health-elapsed.example.com";
+    let manager = IssuerHealthManager::new();
+
+    // Degrade the issuer
+    manager.record_failure(issuer_url);
+    manager.record_failure(issuer_url);
+    manager.record_failure(issuer_url);
+    assert!(
+        manager.is_degraded(issuer_url, 300),
+        "issuer must be degraded after 3 failures"
+    );
+
+    // With recovery_interval=0, the interval has "elapsed" immediately
+    assert!(
+        !manager.is_degraded(issuer_url, 0),
+        "with recovery_interval=0, degraded issuer should be retried (interval elapsed)"
+    );
+
+    std::env::remove_var("UNIX_OIDC_HEALTH_DIR");
+}
+
+/// MIDP-10 (negative): A degraded issuer within its recovery interval remains degraded.
+#[test]
+fn test_health_state_degraded_within_recovery_interval() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    std::env::set_var("UNIX_OIDC_HEALTH_DIR", dir.path().to_str().unwrap());
+
+    let issuer_url = "https://health-within.example.com";
+    let manager = IssuerHealthManager::new();
+
+    // Degrade the issuer
+    manager.record_failure(issuer_url);
+    manager.record_failure(issuer_url);
+    manager.record_failure(issuer_url);
+
+    // With a very large recovery interval, the issuer stays degraded
+    assert!(
+        manager.is_degraded(issuer_url, 86400), // 24 hours
+        "degraded issuer within large recovery interval must remain degraded"
+    );
+
+    std::env::remove_var("UNIX_OIDC_HEALTH_DIR");
+}
+
+/// MIDP-10: Health state persistence — write state to file, read it back, values match.
+#[test]
+fn test_health_state_persists_across_manager_instances() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    std::env::set_var("UNIX_OIDC_HEALTH_DIR", dir.path().to_str().unwrap());
+
+    let issuer_url = "https://health-persist.example.com";
+
+    // First manager instance: degrade the issuer
+    {
+        let manager = IssuerHealthManager::new();
+        manager.record_failure(issuer_url);
+        manager.record_failure(issuer_url);
+        manager.record_failure(issuer_url);
+        assert!(
+            manager.is_degraded(issuer_url, 300),
+            "issuer must be degraded in first manager"
+        );
+    }
+
+    // Second manager instance (fresh): must read persisted state
+    {
+        let manager2 = IssuerHealthManager::new();
+        assert!(
+            manager2.is_degraded(issuer_url, 300),
+            "degraded state must persist to a new manager instance (file-backed)"
+        );
+    }
+
+    std::env::remove_var("UNIX_OIDC_HEALTH_DIR");
+}
+
+/// MIDP-10: Corrupt health state file is handled gracefully (treated as healthy, WARN logged).
+#[test]
+fn test_health_state_corrupt_file_treated_as_healthy() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    std::env::set_var("UNIX_OIDC_HEALTH_DIR", dir.path().to_str().unwrap());
+
+    let issuer_url = "https://health-corrupt.example.com";
+    let manager = IssuerHealthManager::new();
+
+    // Write a corrupt JSON file for this issuer's health key
+    let health_path = manager.health_file_path(issuer_url);
+    std::fs::create_dir_all(health_path.parent().unwrap()).expect("must create health dir");
+    std::fs::write(&health_path, b"{{corrupt: json}}}").expect("must write corrupt file");
+
+    // Loading the corrupt file must return healthy (not panic or return error)
+    assert!(
+        !manager.is_degraded(issuer_url, 300),
+        "corrupt health file must be treated as healthy (graceful degradation)"
+    );
+
+    std::env::remove_var("UNIX_OIDC_HEALTH_DIR");
+}
+
+// ── MIDP-11: Config hot-reload ────────────────────────────────────────────────
+
+/// MIDP-11: Config freshness check detects changed mtime and reloads config.
+#[test]
+fn test_config_fresh_detects_changed_mtime() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    let config_path = dir.path().join("policy.yaml");
+
+    // Write initial config
+    std::fs::write(
+        &config_path,
+        b"issuers:\n  - issuer_url: \"https://hot-reload-v1.example.com\"\n    client_id: \"unix-oidc\"\n",
+    )
+    .expect("must write initial config");
+    std::env::set_var("UNIX_OIDC_POLICY", config_path.to_str().unwrap());
+
+    // Load config — populates the cache
+    let config1 = PolicyConfig::load_fresh().expect("must load initial config");
+    assert_eq!(
+        config1.issuers[0].issuer_url, "https://hot-reload-v1.example.com",
+        "first load must return v1 issuer"
+    );
+
+    // Modify config (change mtime)
+    std::thread::sleep(std::time::Duration::from_millis(10)); // ensure mtime differs
+    std::fs::write(
+        &config_path,
+        b"issuers:\n  - issuer_url: \"https://hot-reload-v2.example.com\"\n    client_id: \"unix-oidc\"\n",
+    )
+    .expect("must write updated config");
+
+    // Re-load — must detect mtime change and return new config
+    let config2 = PolicyConfig::load_fresh().expect("must load updated config");
+    assert_eq!(
+        config2.issuers[0].issuer_url, "https://hot-reload-v2.example.com",
+        "after mtime change, load_fresh must return updated issuer"
+    );
+
+    std::env::remove_var("UNIX_OIDC_POLICY");
+}
+
+/// MIDP-11: Config freshness check with unchanged mtime returns cached config.
+#[test]
+fn test_config_fresh_unchanged_mtime_returns_cached() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    let config_path = dir.path().join("policy-cached.yaml");
+
+    std::fs::write(
+        &config_path,
+        b"issuers:\n  - issuer_url: \"https://hot-reload-cached.example.com\"\n    client_id: \"unix-oidc\"\n",
+    )
+    .expect("must write config");
+    std::env::set_var("UNIX_OIDC_POLICY", config_path.to_str().unwrap());
+
+    // First load — populates cache
+    let config1 = PolicyConfig::load_fresh().expect("must load config");
+
+    // Second load without modifying file — must return cached result (same issuer URL)
+    let config2 = PolicyConfig::load_fresh().expect("must re-load config");
+    assert_eq!(
+        config1.issuers[0].issuer_url, config2.issuers[0].issuer_url,
+        "unchanged mtime must return cached config"
+    );
+
+    std::env::remove_var("UNIX_OIDC_POLICY");
+}
+
+/// MIDP-11 (negative): A bad YAML file on reload keeps the previous valid config.
+#[test]
+fn test_config_fresh_bad_yaml_keeps_previous() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    let config_path = dir.path().join("policy-bad-reload.yaml");
+
+    // Write a valid config first
+    std::fs::write(
+        &config_path,
+        b"issuers:\n  - issuer_url: \"https://hot-reload-good.example.com\"\n    client_id: \"unix-oidc\"\n",
+    )
+    .expect("must write valid config");
+    std::env::set_var("UNIX_OIDC_POLICY", config_path.to_str().unwrap());
+
+    let config1 = PolicyConfig::load_fresh().expect("must load valid config");
+    assert_eq!(
+        config1.issuers[0].issuer_url, "https://hot-reload-good.example.com",
+        "first load must return valid issuer"
+    );
+
+    // Overwrite with bad YAML
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(&config_path, b"{{invalid: yaml: {{content}}}}")
+        .expect("must write bad config");
+
+    // Reload must return the previous valid config (not fail or return empty)
+    let config2 = PolicyConfig::load_fresh().expect("bad YAML reload must return previous valid config, not Err");
+    assert_eq!(
+        config2.issuers[0].issuer_url, "https://hot-reload-good.example.com",
+        "bad YAML reload must preserve previous valid config"
+    );
+
+    std::env::remove_var("UNIX_OIDC_POLICY");
+}
+
+/// MIDP-11 (negative): A missing config file on reload keeps the previous valid config.
+#[test]
+fn test_config_fresh_missing_file_keeps_previous() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("must create temp dir");
+    let config_path = dir.path().join("policy-missing.yaml");
+
+    // Write a valid config first
+    std::fs::write(
+        &config_path,
+        b"issuers:\n  - issuer_url: \"https://hot-reload-present.example.com\"\n    client_id: \"unix-oidc\"\n",
+    )
+    .expect("must write valid config");
+    std::env::set_var("UNIX_OIDC_POLICY", config_path.to_str().unwrap());
+
+    let config1 = PolicyConfig::load_fresh().expect("must load valid config");
+    assert_eq!(
+        config1.issuers[0].issuer_url, "https://hot-reload-present.example.com"
+    );
+
+    // Delete the config file
+    std::fs::remove_file(&config_path).expect("must delete config");
+
+    // Reload must return the previous valid config
+    let config2 = PolicyConfig::load_fresh()
+        .expect("missing file reload must return previous valid config, not Err");
+    assert_eq!(
+        config2.issuers[0].issuer_url, "https://hot-reload-present.example.com",
+        "missing config file on reload must preserve previous valid config"
+    );
+
+    std::env::remove_var("UNIX_OIDC_POLICY");
 }
 
 /// DEBT-02: AcrMappingConfig with required_acr deserialises from YAML.

@@ -7,7 +7,7 @@ use crate::oidc::{
     validate_dpop_proof, verify_dpop_binding, DPoPConfig, DPoPProofResult, DPoPValidationError,
     TokenValidator, ValidationConfig, ValidationError,
 };
-use crate::policy::config::{EnforcementMode, IssuerConfig, PolicyConfig};
+use crate::policy::config::{EnforcementMode, IssuerConfig, IssuerHealthManager, PolicyConfig};
 use crate::security::jti_cache::global_jti_cache;
 use crate::security::nonce_cache::{global_nonce_cache, NonceConsumeError};
 use crate::security::session::generate_ssh_session_id;
@@ -77,7 +77,7 @@ pub fn extract_iss_for_routing(token: &str) -> Result<String, AuthError> {
     Ok(claims.iss.trim_end_matches('/').to_string())
 }
 
-/// Multi-issuer authentication dispatch (MIDP-06, MIDP-07).
+/// Multi-issuer authentication dispatch (MIDP-06, MIDP-07, MIDP-09).
 ///
 /// Extracts the `iss` claim from the token, looks up the matching `IssuerConfig`
 /// in `policy`, validates the token with the per-issuer JWKS provider, applies
@@ -87,6 +87,11 @@ pub fn extract_iss_for_routing(token: &str) -> Result<String, AuthError> {
 /// JTI cache keys are issuer-scoped (format: `"{iss}:{jti}"`) to prevent
 /// cross-issuer replay false positives — a token from issuer A with JTI "x" does
 /// not collide with a token from issuer B with JTI "x" (MIDP-07).
+///
+/// Issuer selection is priority-ordered: `policy.issuers[0]` is the highest priority.
+/// The first issuer whose URL matches the token `iss` claim is selected (MIDP-09).
+/// The selection position is emitted as a structured audit log field so operators can
+/// observe which issuer was chosen and in what array position.
 ///
 /// # Errors
 ///
@@ -114,6 +119,25 @@ pub fn authenticate_multi_issuer(
         tracing::warn!(issuer = %iss, "Token from unknown issuer — rejected");
         AuthError::UnknownIssuer(iss.clone())
     })?;
+
+    // Step 2b: Emit priority selection audit log (MIDP-09).
+    //
+    // The `issuers[]` array order IS the priority because `issuer_by_url()` returns
+    // the first match. We log the position so operators can verify selection order via
+    // their SIEM. Target `unix_oidc_audit` ensures this appears in the audit stream.
+    let normalized_iss = iss.trim_end_matches('/');
+    let issuer_position = policy
+        .issuers
+        .iter()
+        .position(|i| i.issuer_url.trim_end_matches('/') == normalized_iss);
+    let total_issuers = policy.issuers.len();
+    tracing::info!(
+        target: "unix_oidc_audit",
+        issuer = %iss,
+        position = issuer_position.unwrap_or(0),
+        total_issuers = total_issuers,
+        "Issuer selected for authentication (MIDP-09 priority ordering)"
+    );
 
     // Step 3: Build ValidationConfig from IssuerConfig.
     //
@@ -161,7 +185,34 @@ pub fn authenticate_multi_issuer(
         },
     };
 
-    // Step 4: Get or create the per-issuer JWKS provider from the registry.
+    // Step 4: Issuer health gate (MIDP-10).
+    //
+    // Check whether this issuer is currently marked degraded. A degraded issuer has
+    // had 3+ consecutive JWKS fetch failures and is within its recovery interval.
+    // Skipping it prevents cascading failures when the IdP is unreachable.
+    //
+    // The health manager is stateless (reads from disk on each call) because each
+    // forked sshd process is ephemeral — file-based state is the only shared medium.
+    // All I/O is best-effort: failures in the health check never block authentication.
+    let health_manager = IssuerHealthManager::new();
+    if health_manager.is_degraded(
+        &issuer_config.issuer_url,
+        issuer_config.recovery_interval_secs,
+    ) {
+        tracing::warn!(
+            target: "unix_oidc_audit",
+            issuer = %issuer_config.issuer_url,
+            recovery_interval_secs = issuer_config.recovery_interval_secs,
+            "Issuer is degraded — skipping JWKS validation (MIDP-10)"
+        );
+        return Err(AuthError::Config(format!(
+            "Issuer '{}' is degraded (too many consecutive JWKS failures). \
+             Will retry after recovery interval ({} s).",
+            issuer_config.issuer_url, issuer_config.recovery_interval_secs
+        )));
+    }
+
+    // Step 5: Get or create the per-issuer JWKS provider from the registry.
     // The registry keeps independent caches per issuer (MIDP-07).
     // DEBT-05: JWKS TTL and HTTP timeout are now per-issuer configurable via
     // IssuerConfig fields, with defaults of 300s and 10s respectively.
@@ -179,7 +230,7 @@ pub fn authenticate_multi_issuer(
         issuer_config.http_timeout_secs,
     );
 
-    // Step 5: Validate the token with the per-issuer JWKS provider.
+    // Step 6: Validate the token with the per-issuer JWKS provider.
     #[cfg(feature = "test-mode")]
     let validator = {
         if is_test_mode_enabled() {
@@ -193,9 +244,33 @@ pub fn authenticate_multi_issuer(
     #[cfg(not(feature = "test-mode"))]
     let validator = TokenValidator::with_jwks_provider(validation_config, jwks_provider);
 
-    let claims = validator.validate(token)?;
+    // Step 6b: Validate with health tracking (MIDP-10).
+    //
+    // On JWKS fetch errors (network failures, HTTP errors, parse failures), record
+    // a failure against this issuer's health state. This advances the failure counter
+    // toward the degradation threshold (3 consecutive failures).
+    //
+    // On successful validation, record a success to clear any previous failure state.
+    // This handles the recovery path: a degraded issuer that gets a retry attempt
+    // succeeds and is restored to healthy.
+    //
+    // Only JWKS fetch errors count as health failures. Token validation errors
+    // (expired token, wrong audience, invalid signature against fetched keys) do NOT
+    // count — those are expected errors due to bad tokens, not IdP unavailability.
+    let claims = match validator.validate(token) {
+        Ok(c) => {
+            health_manager.record_success(&issuer_config.issuer_url);
+            c
+        }
+        Err(e @ ValidationError::JwksFetchError(_)) => {
+            // JWKS fetch error: record against issuer health (MIDP-10).
+            health_manager.record_failure(&issuer_config.issuer_url);
+            return Err(AuthError::TokenValidation(e));
+        }
+        Err(e) => return Err(AuthError::TokenValidation(e)),
+    };
 
-    // Step 6: Per-issuer DPoP enforcement (MIDP-02).
+    // Step 7: Per-issuer DPoP enforcement (MIDP-02).
     // Overrides the global dpop_required with the per-issuer dpop_enforcement setting.
     // dpop_nonce_enforcement governs missing-nonce behavior in the cache-backed path.
     let dpop_thumbprint = apply_per_issuer_dpop(
