@@ -143,6 +143,16 @@ pub fn authenticate_multi_issuer(
         // Scoped enforcement happens at Step 8 below (MIDP-07).
         jti_enforcement: EnforcementMode::Disabled,
         clock_skew_tolerance_secs: clock_skew,
+        // SHRD-01/02: Thread per-issuer algorithm allowlist into the validator.
+        // When set, only these algorithms are accepted from tokens for this issuer.
+        allowed_algorithms: match issuer_config.allowed_algorithms.as_ref() {
+            Some(names) => Some(
+                crate::oidc::validation::parse_algorithm_names(names).map_err(|e| {
+                    AuthError::Config(format!("invalid allowed_algorithms: {e}"))
+                })?,
+            ),
+            None => None,
+        },
     };
 
     // Step 4: Get or create the per-issuer JWKS provider from the registry.

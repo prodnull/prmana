@@ -71,6 +71,7 @@ fn entra_validation_config() -> ValidationConfig {
         max_auth_age: None,
         jti_enforcement: EnforcementMode::Warn,
         clock_skew_tolerance_secs: 60,
+        allowed_algorithms: None,
     }
 }
 
@@ -506,6 +507,7 @@ fn test_entra_wrong_tenant_rejected() {
         max_auth_age: None,
         jti_enforcement: EnforcementMode::Warn,
         clock_skew_tolerance_secs: 60,
+        allowed_algorithms: None,
     };
 
     let jwks_provider = Arc::new(JwksProvider::new(&wrong_issuer));

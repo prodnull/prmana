@@ -4,9 +4,103 @@ use crate::oidc::jwks::{JwksError, JwksProvider};
 use crate::oidc::token::TokenClaims;
 use crate::policy::config::EnforcementMode;
 use crate::security::jti_cache::{global_jti_cache, JtiCheckResult};
-use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
+use jsonwebtoken::jwk::KeyAlgorithm;
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use std::sync::Arc;
 use thiserror::Error;
+
+// ── Algorithm conversion and allowlist ────────────────────────────────────────
+
+/// Default allowed signing algorithms for JWT validation.
+///
+/// Only asymmetric algorithms are permitted. Symmetric algorithms (HS256, HS384,
+/// HS512) are excluded because accepting them when the JWKS key omits `alg`
+/// enables algorithm confusion attacks: an attacker can forge a token using
+/// the RSA public key as an HMAC secret (CVE-2016-5431 class).
+///
+/// This list is used when the per-issuer `allowed_algorithms` config is absent.
+pub const DEFAULT_ALLOWED_ALGORITHMS: &[Algorithm] = &[
+    Algorithm::RS256,
+    Algorithm::RS384,
+    Algorithm::RS512,
+    Algorithm::ES256,
+    Algorithm::ES384,
+    Algorithm::PS256,
+    Algorithm::PS384,
+    Algorithm::PS512,
+    Algorithm::EdDSA,
+];
+
+/// Error returned when a `KeyAlgorithm` cannot be mapped to a signing `Algorithm`.
+///
+/// This occurs for encryption-only algorithms (RSA1_5, RSA-OAEP, RSA-OAEP-256)
+/// and symmetric algorithms (HS256, HS384, HS512) which must never be accepted
+/// from JWKS keys in an asymmetric-key context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedKeyAlgorithm(pub KeyAlgorithm);
+
+impl std::fmt::Display for UnsupportedKeyAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unsupported key algorithm: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for UnsupportedKeyAlgorithm {}
+
+/// Convert a JWKS `KeyAlgorithm` to a JWT `Algorithm` via exhaustive enum match.
+///
+/// Security: This uses direct enum matching rather than serde serialization
+/// or Debug formatting, which is fragile across crate updates (SHRD-01).
+/// Only asymmetric signing algorithms are accepted. Symmetric (HS*) and
+/// encryption-only (RSA1_5, RSA-OAEP*) algorithms return Err.
+///
+/// Note: This is a standalone function rather than `TryFrom` because both
+/// `KeyAlgorithm` and `Algorithm` are external types (orphan rule).
+pub fn key_algorithm_to_algorithm(
+    ka: &KeyAlgorithm,
+) -> Result<Algorithm, UnsupportedKeyAlgorithm> {
+    match ka {
+        KeyAlgorithm::RS256 => Ok(Algorithm::RS256),
+        KeyAlgorithm::RS384 => Ok(Algorithm::RS384),
+        KeyAlgorithm::RS512 => Ok(Algorithm::RS512),
+        KeyAlgorithm::ES256 => Ok(Algorithm::ES256),
+        KeyAlgorithm::ES384 => Ok(Algorithm::ES384),
+        KeyAlgorithm::PS256 => Ok(Algorithm::PS256),
+        KeyAlgorithm::PS384 => Ok(Algorithm::PS384),
+        KeyAlgorithm::PS512 => Ok(Algorithm::PS512),
+        KeyAlgorithm::EdDSA => Ok(Algorithm::EdDSA),
+        // Symmetric algorithms — reject (algorithm confusion attack vector)
+        KeyAlgorithm::HS256 | KeyAlgorithm::HS384 | KeyAlgorithm::HS512 => {
+            Err(UnsupportedKeyAlgorithm(*ka))
+        }
+        // Encryption-only algorithms — not signing algorithms
+        KeyAlgorithm::RSA1_5 | KeyAlgorithm::RSA_OAEP | KeyAlgorithm::RSA_OAEP_256 => {
+            Err(UnsupportedKeyAlgorithm(*ka))
+        }
+    }
+}
+
+/// Parse a list of algorithm name strings into `Algorithm` values.
+///
+/// Returns an error string if any name is unrecognized. Used to validate
+/// the per-issuer `allowed_algorithms` config field at load time.
+pub fn parse_algorithm_names(names: &[String]) -> Result<Vec<Algorithm>, String> {
+    names
+        .iter()
+        .map(|name| match name.as_str() {
+            "RS256" => Ok(Algorithm::RS256),
+            "RS384" => Ok(Algorithm::RS384),
+            "RS512" => Ok(Algorithm::RS512),
+            "ES256" => Ok(Algorithm::ES256),
+            "ES384" => Ok(Algorithm::ES384),
+            "PS256" => Ok(Algorithm::PS256),
+            "PS384" => Ok(Algorithm::PS384),
+            "PS512" => Ok(Algorithm::PS512),
+            "EdDSA" => Ok(Algorithm::EdDSA),
+            other => Err(format!("unsupported algorithm in allowed_algorithms: '{other}'")),
+        })
+        .collect()
+}
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -76,6 +170,12 @@ pub struct ValidationConfig {
     /// Maps to `AgentConfig.timeouts.clock_skew_staleness_secs`.
     /// Default: 60 (matches the previous CLOCK_SKEW_TOLERANCE constant).
     pub clock_skew_tolerance_secs: i64,
+    /// Per-issuer algorithm allowlist. When `None`, uses `DEFAULT_ALLOWED_ALGORITHMS`.
+    ///
+    /// Security: Only algorithms in this list are accepted when the JWKS key
+    /// omits its `alg` field. This prevents algorithm confusion attacks where
+    /// an attacker forces symmetric validation with an asymmetric key.
+    pub allowed_algorithms: Option<Vec<Algorithm>>,
 }
 
 impl ValidationConfig {
@@ -104,6 +204,8 @@ impl ValidationConfig {
             // Default matches the previous CLOCK_SKEW_TOLERANCE constant (60s).
             // Callers wiring AgentConfig should pass clock_skew_staleness_secs.
             clock_skew_tolerance_secs: 60,
+            // Default: use DEFAULT_ALLOWED_ALGORITHMS
+            allowed_algorithms: None,
         })
     }
 }
@@ -301,53 +403,54 @@ impl TokenValidator {
         // or a different key type. Analogous to DPoP ES256 enforcement in dpop.rs.
         // See: docs/threat-model.md §7 Recommendation 4 (P1), closes R-8.
         //
-        // Uses serde serialization for canonical string comparison rather than
-        // Debug formatting, which is fragile across crate updates (HARDEN-1).
+        // SHRD-01: Uses TryFrom enum match (not serde serialization or Debug formatting)
+        // for algorithm comparison, which is robust across crate updates.
         if let Some(jwk_alg) = &jwk.common.key_algorithm {
-            // Serialize both to their canonical JOSE algorithm name (e.g. "RS256").
-            // KeyAlgorithm and Algorithm share identical variant names for signing
-            // algorithms; serde Serialize produces matching strings.
-            let jwk_alg_name = serde_json::to_value(jwk_alg)
-                .ok()
-                .and_then(|v| v.as_str().map(String::from))
-                .unwrap_or_else(|| format!("{jwk_alg:?}"));
-            let header_alg_name = serde_json::to_value(algorithm)
-                .ok()
-                .and_then(|v| v.as_str().map(String::from))
-                .unwrap_or_else(|| format!("{algorithm:?}"));
-
-            if jwk_alg_name != header_alg_name {
+            // Convert JWKS KeyAlgorithm to JWT Algorithm via exhaustive enum match.
+            // TryFrom rejects encryption-only and symmetric algorithms immediately.
+            let jwk_signing_alg = key_algorithm_to_algorithm(jwk_alg).map_err(|e| {
                 tracing::warn!(
-                    jwk_alg = %jwk_alg_name,
-                    token_alg = %header_alg_name,
+                    jwk_alg = ?jwk_alg,
+                    kid = ?header.kid,
+                    "JWKS key specifies non-signing algorithm"
+                );
+                ValidationError::UnsupportedAlgorithm(e.to_string())
+            })?;
+
+            if jwk_signing_alg != algorithm {
+                tracing::warn!(
+                    jwk_alg = ?jwk_signing_alg,
+                    token_alg = ?algorithm,
                     kid = ?header.kid,
                     "Algorithm mismatch: token header alg does not match JWKS-advertised alg"
                 );
                 return Err(ValidationError::UnsupportedAlgorithm(format!(
-                    "Token header claims {header_alg_name} but JWKS key specifies {jwk_alg_name}"
+                    "Token header claims {algorithm:?} but JWKS key specifies {jwk_signing_alg:?}"
                 )));
             }
         } else {
-            // HARDEN-2: No algorithm specified in JWKS key. Apply allowlist to prevent
+            // SHRD-02: No algorithm specified in JWKS key. Apply allowlist to prevent
             // algorithm confusion attacks (e.g. HS256 with RSA public key as secret).
-            // Only asymmetric signing algorithms are permitted; symmetric (HS*) and
-            // "none" are always rejected when the key doesn't declare its algorithm.
+            // Uses the per-issuer allowed_algorithms list, falling back to
+            // DEFAULT_ALLOWED_ALGORITHMS which includes only asymmetric signing algorithms.
             //
             // The `Algorithm` enum in jsonwebtoken does not have a `None` variant,
             // so `alg: "none"` tokens fail at header decode. This guard catches HS*.
-            const BLOCKED_ALGS: &[jsonwebtoken::Algorithm] = &[
-                jsonwebtoken::Algorithm::HS256,
-                jsonwebtoken::Algorithm::HS384,
-                jsonwebtoken::Algorithm::HS512,
-            ];
-            if BLOCKED_ALGS.contains(&algorithm) {
+            let allowed = self
+                .config
+                .allowed_algorithms
+                .as_deref()
+                .unwrap_or(DEFAULT_ALLOWED_ALGORITHMS);
+
+            if !allowed.contains(&algorithm) {
                 tracing::warn!(
                     token_alg = ?algorithm,
                     kid = ?header.kid,
-                    "Symmetric algorithm in token header rejected — JWKS key has no alg field"
+                    "Algorithm not in allowlist — JWKS key has no alg field"
                 );
                 return Err(ValidationError::UnsupportedAlgorithm(format!(
-                    "Symmetric algorithm {algorithm:?} not permitted when JWKS key omits alg"
+                    "Algorithm {algorithm:?} not permitted when JWKS key omits alg \
+                     (not in configured allowlist)"
                 )));
             }
         }
@@ -405,6 +508,7 @@ mod tests {
             max_auth_age: None,
             jti_enforcement: EnforcementMode::Disabled,
             clock_skew_tolerance_secs: 60,
+            allowed_algorithms: None,
         }
     }
 
@@ -701,20 +805,94 @@ mod tests {
         ));
     }
 
-    /// HARDEN-2: Symmetric algorithms must be blocked when JWKS key omits alg.
+    // ── SHRD-01/02: Algorithm conversion and allowlist tests ───────────────
+
+    /// key_algorithm_to_algorithm converts RS256 correctly.
     #[test]
-    fn test_blocked_symmetric_algorithms() {
-        const BLOCKED: &[jsonwebtoken::Algorithm] = &[
-            jsonwebtoken::Algorithm::HS256,
-            jsonwebtoken::Algorithm::HS384,
-            jsonwebtoken::Algorithm::HS512,
+    fn test_algorithm_convert_rs256() {
+        let result = key_algorithm_to_algorithm(&KeyAlgorithm::RS256);
+        assert_eq!(result.unwrap(), Algorithm::RS256);
+    }
+
+    /// key_algorithm_to_algorithm converts ES256 correctly.
+    #[test]
+    fn test_algorithm_convert_es256() {
+        let result = key_algorithm_to_algorithm(&KeyAlgorithm::ES256);
+        assert_eq!(result.unwrap(), Algorithm::ES256);
+    }
+
+    /// key_algorithm_to_algorithm converts all supported asymmetric algorithms.
+    #[test]
+    fn test_algorithm_convert_all_asymmetric() {
+        let cases = [
+            (KeyAlgorithm::RS256, Algorithm::RS256),
+            (KeyAlgorithm::RS384, Algorithm::RS384),
+            (KeyAlgorithm::RS512, Algorithm::RS512),
+            (KeyAlgorithm::ES256, Algorithm::ES256),
+            (KeyAlgorithm::ES384, Algorithm::ES384),
+            (KeyAlgorithm::PS256, Algorithm::PS256),
+            (KeyAlgorithm::PS384, Algorithm::PS384),
+            (KeyAlgorithm::PS512, Algorithm::PS512),
+            (KeyAlgorithm::EdDSA, Algorithm::EdDSA),
         ];
-        assert!(BLOCKED.contains(&jsonwebtoken::Algorithm::HS256));
-        assert!(BLOCKED.contains(&jsonwebtoken::Algorithm::HS384));
-        assert!(BLOCKED.contains(&jsonwebtoken::Algorithm::HS512));
-        assert!(!BLOCKED.contains(&jsonwebtoken::Algorithm::RS256));
-        assert!(!BLOCKED.contains(&jsonwebtoken::Algorithm::ES256));
-        assert!(!BLOCKED.contains(&jsonwebtoken::Algorithm::EdDSA));
+        for (ka, expected) in &cases {
+            let result = key_algorithm_to_algorithm(ka);
+            assert_eq!(result.unwrap(), *expected, "Failed for {ka:?}");
+        }
+    }
+
+    /// key_algorithm_to_algorithm rejects encryption-only algorithms.
+    #[test]
+    fn test_algorithm_convert_rejects_encryption() {
+        assert!(key_algorithm_to_algorithm(&KeyAlgorithm::RSA1_5).is_err());
+        assert!(key_algorithm_to_algorithm(&KeyAlgorithm::RSA_OAEP).is_err());
+        assert!(key_algorithm_to_algorithm(&KeyAlgorithm::RSA_OAEP_256).is_err());
+    }
+
+    /// key_algorithm_to_algorithm rejects symmetric algorithms (HS*).
+    #[test]
+    fn test_algorithm_convert_rejects_symmetric() {
+        assert!(key_algorithm_to_algorithm(&KeyAlgorithm::HS256).is_err());
+        assert!(key_algorithm_to_algorithm(&KeyAlgorithm::HS384).is_err());
+        assert!(key_algorithm_to_algorithm(&KeyAlgorithm::HS512).is_err());
+    }
+
+    /// Default allowlist contains only asymmetric signing algorithms.
+    #[test]
+    fn test_default_allowlist_no_symmetric() {
+        assert!(!DEFAULT_ALLOWED_ALGORITHMS.contains(&Algorithm::HS256));
+        assert!(!DEFAULT_ALLOWED_ALGORITHMS.contains(&Algorithm::HS384));
+        assert!(!DEFAULT_ALLOWED_ALGORITHMS.contains(&Algorithm::HS512));
+        assert!(DEFAULT_ALLOWED_ALGORITHMS.contains(&Algorithm::RS256));
+        assert!(DEFAULT_ALLOWED_ALGORITHMS.contains(&Algorithm::ES256));
+        assert!(DEFAULT_ALLOWED_ALGORITHMS.contains(&Algorithm::EdDSA));
+    }
+
+    /// parse_algorithm_names correctly parses valid algorithm names.
+    #[test]
+    fn test_parse_algorithm_names_valid() {
+        let names = vec!["ES256".to_string(), "RS256".to_string()];
+        let result = parse_algorithm_names(&names);
+        assert!(result.is_ok());
+        let algs = result.unwrap();
+        assert_eq!(algs, vec![Algorithm::ES256, Algorithm::RS256]);
+    }
+
+    /// parse_algorithm_names rejects unknown algorithm names.
+    #[test]
+    fn test_parse_algorithm_names_rejects_unknown() {
+        let names = vec!["ES256".to_string(), "INVALID".to_string()];
+        let result = parse_algorithm_names(&names);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("INVALID"));
+    }
+
+    /// Per-issuer allowed_algorithms restricts accepted algorithms.
+    #[test]
+    fn test_allowlist_restricts_algorithms() {
+        let custom_allowlist = vec![Algorithm::ES256];
+        assert!(!custom_allowlist.contains(&Algorithm::RS256));
+        assert!(custom_allowlist.contains(&Algorithm::ES256));
     }
 
     #[test]

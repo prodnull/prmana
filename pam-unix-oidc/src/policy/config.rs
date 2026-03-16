@@ -309,6 +309,25 @@ pub struct IssuerConfig {
     /// the IdP's domain constraint fully compensates for it.
     #[serde(default)]
     pub allow_unsafe_identity_pipeline: bool,
+    /// Per-issuer algorithm allowlist for JWT validation (SHRD-01/02).
+    ///
+    /// When present, only these algorithms are accepted from tokens validated
+    /// against this issuer's JWKS keys. When absent (`None`), the global
+    /// `DEFAULT_ALLOWED_ALGORITHMS` list is used (all asymmetric signing algorithms).
+    ///
+    /// Values are JOSE algorithm name strings: "RS256", "ES256", "EdDSA", etc.
+    /// Symmetric algorithms (HS256/384/512) are never permitted regardless of this setting.
+    ///
+    /// Example YAML:
+    /// ```yaml
+    /// issuers:
+    ///   - issuer_url: "https://idp.example.com/realms/corp"
+    ///     allowed_algorithms:
+    ///       - ES256
+    ///       - RS256
+    /// ```
+    #[serde(default)]
+    pub allowed_algorithms: Option<Vec<String>>,
 }
 
 impl Default for IssuerConfig {
@@ -323,6 +342,7 @@ impl Default for IssuerConfig {
             group_mapping: None,
             expected_audience: None,
             allow_unsafe_identity_pipeline: false,
+            allowed_algorithms: None,
         }
     }
 }
@@ -1883,6 +1903,49 @@ issuers:
         assert!(
             result.is_err(),
             "empty issuers with no env var must return Err"
+        );
+    }
+
+    // ── SHRD-01/02: Per-issuer allowed_algorithms tests ───────────────────
+
+    /// IssuerConfig with allowed_algorithms field deserializes from YAML correctly.
+    #[test]
+    fn test_issuer_config_allowed_algorithms_yaml() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://idp.example.com/realms/test"
+    client_id: "unix-oidc"
+    allowed_algorithms:
+      - ES256
+      - RS256
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("allowed_algorithms yaml should load");
+
+        assert_eq!(policy.issuers.len(), 1);
+        let algs = policy.issuers[0].allowed_algorithms.as_ref().unwrap();
+        assert_eq!(algs, &["ES256", "RS256"]);
+    }
+
+    /// IssuerConfig without allowed_algorithms field uses default (None = global allowlist).
+    #[test]
+    fn test_issuer_config_no_allowed_algorithms_defaults_to_none() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://idp.example.com/realms/test"
+    client_id: "unix-oidc"
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("issuer without allowed_algorithms should load");
+
+        assert_eq!(policy.issuers.len(), 1);
+        assert!(
+            policy.issuers[0].allowed_algorithms.is_none(),
+            "allowed_algorithms must default to None (backward compat)"
         );
     }
 }
