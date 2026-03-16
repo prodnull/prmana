@@ -127,6 +127,10 @@ impl HybridPqcSigner {
     /// and `ProtectedSigningKey::generate()` for the EC key.
     ///
     /// Returns `Box<Self>` — no stack allocation of key material (MEM-05).
+    ///
+    /// Emits a `KEY_GENERATED` audit event with `target: "unix_oidc_audit"` and
+    /// `key_type: "ML-DSA-65+ES256"` so that SIEM pipelines can distinguish hybrid
+    /// PQC key generation from classic ES256-only key generation.
     pub fn generate() -> Box<Self> {
         let ec_key = ProtectedSigningKey::generate();
 
@@ -138,7 +142,16 @@ impl HybridPqcSigner {
         let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
         let pq_vk = pq_key.verifying_key();
 
-        Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes)
+        let signer = Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes);
+        let key_id = &signer.thumbprint[..signer.thumbprint.len().min(8)];
+        tracing::info!(
+            target: "unix_oidc_audit",
+            event_type = "KEY_GENERATED",
+            key_type = "ML-DSA-65+ES256",
+            key_id = %key_id,
+            "Hybrid PQC signing key generated"
+        );
+        signer
     }
 
     /// Reconstruct from stored key material.
@@ -273,6 +286,37 @@ impl DPoPSigner for HybridPqcSigner {
 
     fn public_key_jwk(&self) -> serde_json::Value {
         self.composite_jwk()
+    }
+}
+
+/// Emit `KEY_DESTROYED` audit event before the hybrid key material is zeroed.
+///
+/// `ml_dsa::SigningKey<MlDsa65>` implements `ZeroizeOnDrop` via `features = ["zeroize"]`
+/// and zeroes its bytes when the field is dropped after this body returns.
+/// We emit the audit event here while `self.thumbprint` is still accessible.
+///
+/// **No-panic contract:** Drop impls must never panic. If the thumbprint is
+/// shorter than 8 chars (cannot happen in practice — SHA-256 base64url is always
+/// 43 chars), we use the full string. Both branches produce valid identifiers.
+///
+/// **Ordering note:** The `ec_key: Box<ProtectedSigningKey>` field will also
+/// emit its own `KEY_DESTROYED` event when it is dropped (as part of the field
+/// drop sequence after this body). The two events together trace both the PQC
+/// layer and the EC component, providing full lifecycle visibility.
+impl Drop for HybridPqcSigner {
+    fn drop(&mut self) {
+        let key_id = if self.thumbprint.len() >= 8 {
+            self.thumbprint[..8].to_string()
+        } else {
+            self.thumbprint.clone()
+        };
+        tracing::info!(
+            target: "unix_oidc_audit",
+            event_type = "KEY_DESTROYED",
+            key_type = "ML-DSA-65+ES256",
+            key_id = %key_id,
+            "Hybrid PQC signing key destroyed"
+        );
     }
 }
 
