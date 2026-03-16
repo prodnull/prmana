@@ -17,6 +17,7 @@ use std::time::SystemTime;
 use thiserror::Error;
 
 use super::rules::StepUpMethod;
+use crate::audit::AuditEvent;
 
 // ── HTTPS URL validation (SHRD-04) ─────────────────────────────────────────
 
@@ -599,14 +600,12 @@ impl IssuerHealthManager {
             state.degraded = true;
         }
         // Emit ISSUER_DEGRADED audit event on the first transition to degraded.
+        // Route through AuditEvent::log() so the event receives OCSF enrichment
+        // and is included in the HMAC tamper-evidence chain (OBS-06, OBS-07).
+        // failure_count is cast to u8; DEGRADATION_THRESHOLD is 3, well within range.
         if state.degraded && !was_degraded {
-            tracing::warn!(
-                target: "unix_oidc_audit",
-                issuer = %issuer_url,
-                failure_count = state.failure_count,
-                event = "ISSUER_DEGRADED",
-                "Issuer marked degraded after consecutive JWKS fetch failures (MIDP-10)"
-            );
+            #[allow(clippy::cast_possible_truncation)]
+            AuditEvent::issuer_degraded(issuer_url, state.failure_count as u8).log();
         }
         tracing::warn!(
             issuer = %issuer_url,
@@ -627,13 +626,10 @@ impl IssuerHealthManager {
         state.last_failure = None;
         state.degraded = false;
         // Emit ISSUER_RECOVERED audit event when transitioning from degraded.
+        // Route through AuditEvent::log() for OCSF enrichment and HMAC chain
+        // coverage (OBS-06, OBS-07). This matches all other 14 audit event types.
         if was_degraded {
-            tracing::info!(
-                target: "unix_oidc_audit",
-                issuer = %issuer_url,
-                event = "ISSUER_RECOVERED",
-                "Issuer recovered after successful JWKS fetch (MIDP-10)"
-            );
+            AuditEvent::issuer_recovered(issuer_url).log();
         }
         self.save(issuer_url, &state);
     }
