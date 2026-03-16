@@ -240,6 +240,11 @@ pub struct AcrMappingConfig {
     pub mappings: HashMap<String, String>,
     /// How to enforce ACR requirements. Default: `warn`.
     pub enforcement: EnforcementMode,
+    /// The ACR value the operator requires tokens to have (after mapping).
+    /// When set, tokens must carry an `acr` claim matching this value
+    /// (or an IdP-specific value that maps to it via `mappings`).
+    /// Tokens without a matching `acr` claim are rejected when enforcement is strict/warn.
+    pub required_acr: Option<String>,
 }
 
 /// Source of truth for group membership resolution (MIDP-04).
@@ -279,6 +284,14 @@ impl GroupMappingConfig {
     fn default_claim() -> String {
         "groups".to_string()
     }
+}
+
+fn default_jwks_cache_ttl() -> u64 {
+    300
+}
+
+fn default_http_timeout() -> u64 {
+    10
 }
 
 /// Per-issuer configuration bundle (MIDP-01, MIDP-02, MIDP-05).
@@ -360,6 +373,15 @@ pub struct IssuerConfig {
     /// ```
     #[serde(default)]
     pub allowed_algorithms: Option<Vec<String>>,
+    /// JWKS cache TTL in seconds for this issuer (DEBT-05).
+    /// Controls how long cached JWKS keys are considered valid before re-fetching.
+    /// Default: 300 (5 minutes).
+    #[serde(default = "default_jwks_cache_ttl")]
+    pub jwks_cache_ttl_secs: u64,
+    /// HTTP timeout in seconds for JWKS endpoint requests for this issuer (DEBT-05).
+    /// Default: 10 seconds.
+    #[serde(default = "default_http_timeout")]
+    pub http_timeout_secs: u64,
     /// Allow HTTP (non-TLS) issuer URLs for local testing only (SHRD-04).
     ///
     /// This field only exists in test-mode builds. When `true`, the HTTPS
@@ -386,6 +408,8 @@ impl Default for IssuerConfig {
             expected_audience: None,
             allow_unsafe_identity_pipeline: false,
             allowed_algorithms: None,
+            jwks_cache_ttl_secs: default_jwks_cache_ttl(),
+            http_timeout_secs: default_http_timeout(),
             #[cfg(any(test, feature = "test-mode"))]
             allow_insecure_http_for_testing: false,
         }

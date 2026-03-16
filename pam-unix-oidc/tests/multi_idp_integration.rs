@@ -64,6 +64,34 @@ fn make_test_token(iss: &str, sub: &str, preferred_username: &str, jti: Option<&
     format!("{h}.{p}.dummysig")
 }
 
+/// Build a minimal unsigned JWT with the given claims, including optional ACR.
+///
+/// Same as `make_test_token` but with an additional `acr` claim field.
+fn make_test_token_with_acr(
+    iss: &str,
+    sub: &str,
+    preferred_username: &str,
+    jti: Option<&str>,
+    acr: Option<&str>,
+) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let header = r#"{"alg":"ES256","typ":"JWT"}"#;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let exp = now + 3600;
+    let jti_field = jti.map(|j| format!(r#","jti":"{j}""#)).unwrap_or_default();
+    let acr_field = acr.map(|a| format!(r#","acr":"{a}""#)).unwrap_or_default();
+    let payload = format!(
+        r#"{{"iss":"{iss}","sub":"{sub}","aud":"unix-oidc","exp":{exp},"iat":{now},"preferred_username":"{preferred_username}"{jti_field}{acr_field}}}"#
+    );
+    let h = URL_SAFE_NO_PAD.encode(header.as_bytes());
+    let p = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+    format!("{h}.{p}.dummysig")
+}
+
 /// Build a two-issuer PolicyConfig with configurable settings.
 ///
 /// - Issuer A: `iss_a`, dpop_enforcement per `dpop_a`, no claim transforms by default
@@ -244,6 +272,7 @@ fn test_acr_mapping_lookup_translates_keycloak_loa2() {
     let acr_cfg = AcrMappingConfig {
         mappings,
         enforcement: EnforcementMode::Strict,
+        ..AcrMappingConfig::default()
     };
 
     let canonical = acr_cfg.mappings.get("urn:keycloak:acr:loa2");
@@ -261,6 +290,7 @@ fn test_acr_mapping_unknown_value_returns_none() {
     let acr_cfg = AcrMappingConfig {
         mappings: HashMap::new(),
         enforcement: EnforcementMode::Warn,
+        ..AcrMappingConfig::default()
     };
     assert!(
         !acr_cfg.mappings.contains_key("urn:unknown:acr:value"),
@@ -1062,5 +1092,264 @@ fn test_multi_issuer_dpop_nonce_consumed() {
     assert!(
         matches!(consume_result, Err(NonceConsumeError::ConsumedOrExpired)),
         "nonce must be consumed after multi-issuer auth call; got: {consume_result:?}"
+    );
+}
+
+// ── DEBT-02: ACR enforcement wired from IssuerConfig ─────────────────────────
+
+/// DEBT-02: Issuer with required_acr set and token with matching acr claim passes
+/// validation (reaches UserNotFound, not TokenValidation).
+#[test]
+fn test_acr_enforcement_matching_acr_passes() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss = "https://acr-match.example.com";
+    let token = make_test_token_with_acr(iss, "alice", "alice", Some("jti-acr-match-01"), Some("urn:mfa"));
+
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            acr_mapping: Some(AcrMappingConfig {
+                mappings: HashMap::new(),
+                enforcement: EnforcementMode::Strict,
+                required_acr: Some("urn:mfa".to_string()),
+            }),
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // Should pass ACR check and reach UserNotFound (no SSSD in tests)
+    assert!(
+        !matches!(result, Err(AuthError::TokenValidation(_))),
+        "matching ACR must not produce TokenValidation error, got: {result:?}"
+    );
+}
+
+/// DEBT-02: Issuer with required_acr set and token with NON-matching acr is rejected.
+#[test]
+fn test_acr_enforcement_wrong_acr_rejected() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss = "https://acr-wrong.example.com";
+    let token = make_test_token_with_acr(iss, "alice", "alice", Some("jti-acr-wrong-01"), Some("urn:low"));
+
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            acr_mapping: Some(AcrMappingConfig {
+                mappings: HashMap::new(),
+                enforcement: EnforcementMode::Strict,
+                required_acr: Some("urn:high".to_string()),
+            }),
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // Should fail with TokenValidation error containing "ACR" or "acr"
+    assert!(
+        matches!(result, Err(AuthError::TokenValidation(_))),
+        "non-matching ACR must produce TokenValidation error, got: {result:?}"
+    );
+    let err_msg = format!("{result:?}");
+    assert!(
+        err_msg.to_lowercase().contains("acr"),
+        "error must mention ACR, got: {err_msg}"
+    );
+}
+
+/// DEBT-02: Issuer with required_acr set and token with NO acr claim is rejected.
+#[test]
+fn test_acr_enforcement_missing_acr_rejected() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss = "https://acr-missing.example.com";
+    // Token has no acr claim
+    let token = make_test_token(iss, "alice", "alice", Some("jti-acr-missing-01"));
+
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            acr_mapping: Some(AcrMappingConfig {
+                mappings: HashMap::new(),
+                enforcement: EnforcementMode::Strict,
+                required_acr: Some("urn:high".to_string()),
+            }),
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // Should fail with TokenValidation error containing "ACR" or "acr"
+    assert!(
+        matches!(result, Err(AuthError::TokenValidation(_))),
+        "missing ACR must produce TokenValidation error, got: {result:?}"
+    );
+}
+
+/// DEBT-02: Issuer without acr_mapping passes tokens regardless of acr claim (backward compat).
+#[test]
+fn test_acr_no_mapping_backward_compat() {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+
+    let iss = "https://acr-nomap.example.com";
+    let token = make_test_token(iss, "alice", "alice", Some("jti-acr-nomap-01"));
+
+    let policy = PolicyConfig {
+        issuers: vec![IssuerConfig {
+            issuer_url: iss.to_string(),
+            client_id: "unix-oidc".to_string(),
+            dpop_enforcement: EnforcementMode::Disabled,
+            acr_mapping: None, // No ACR mapping
+            ..IssuerConfig::default()
+        }],
+        ..PolicyConfig::default()
+    };
+    let registry = IssuerJwksRegistry::new();
+    let dpop_config = DPoPAuthConfig::default();
+
+    let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+    std::env::remove_var("UNIX_OIDC_TEST_MODE");
+
+    // No ACR enforcement — should NOT fail with TokenValidation
+    assert!(
+        !matches!(result, Err(AuthError::TokenValidation(_))),
+        "no acr_mapping must not produce TokenValidation error, got: {result:?}"
+    );
+}
+
+// ── DEBT-05: Per-issuer JWKS cache TTL and HTTP timeout ──────────────────────
+
+/// DEBT-05: IssuerConfig with custom jwks_cache_ttl_secs deserializes correctly.
+#[test]
+fn test_issuer_config_custom_jwks_cache_ttl() {
+    let yaml = r#"
+issuers:
+  - issuer_url: "https://jwks-custom.example.com"
+    client_id: "unix-oidc"
+    jwks_cache_ttl_secs: 600
+"#;
+    let policy: PolicyConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        PolicyConfig::default(),
+    ))
+    .merge(figment::providers::Yaml::string(yaml))
+    .extract()
+    .expect("custom jwks_cache_ttl_secs must deserialise");
+
+    assert_eq!(
+        policy.issuers[0].jwks_cache_ttl_secs, 600,
+        "jwks_cache_ttl_secs must be 600"
+    );
+}
+
+/// DEBT-05: IssuerConfig with custom http_timeout_secs deserializes correctly.
+#[test]
+fn test_issuer_config_custom_http_timeout() {
+    let yaml = r#"
+issuers:
+  - issuer_url: "https://timeout-custom.example.com"
+    client_id: "unix-oidc"
+    http_timeout_secs: 30
+"#;
+    let policy: PolicyConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        PolicyConfig::default(),
+    ))
+    .merge(figment::providers::Yaml::string(yaml))
+    .extract()
+    .expect("custom http_timeout_secs must deserialise");
+
+    assert_eq!(
+        policy.issuers[0].http_timeout_secs, 30,
+        "http_timeout_secs must be 30"
+    );
+}
+
+/// DEBT-05: IssuerConfig defaults to jwks_cache_ttl_secs=300, http_timeout_secs=10.
+#[test]
+fn test_issuer_config_default_jwks_values() {
+    let issuer = IssuerConfig::default();
+    assert_eq!(
+        issuer.jwks_cache_ttl_secs, 300,
+        "jwks_cache_ttl_secs must default to 300"
+    );
+    assert_eq!(
+        issuer.http_timeout_secs, 10,
+        "http_timeout_secs must default to 10"
+    );
+}
+
+/// DEBT-05: IssuerConfig with jwks_cache_ttl_secs=0 deserializes (operator's choice).
+#[test]
+fn test_issuer_config_zero_jwks_ttl_valid() {
+    let yaml = r#"
+issuers:
+  - issuer_url: "https://zero-ttl.example.com"
+    client_id: "unix-oidc"
+    jwks_cache_ttl_secs: 0
+"#;
+    let policy: PolicyConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        PolicyConfig::default(),
+    ))
+    .merge(figment::providers::Yaml::string(yaml))
+    .extract()
+    .expect("jwks_cache_ttl_secs=0 must deserialise");
+
+    assert_eq!(
+        policy.issuers[0].jwks_cache_ttl_secs, 0,
+        "jwks_cache_ttl_secs=0 must be valid"
+    );
+}
+
+/// DEBT-02: AcrMappingConfig with required_acr deserialises from YAML.
+#[test]
+fn test_acr_mapping_with_required_acr_deserialises() {
+    let yaml = r#"
+issuers:
+  - issuer_url: "https://acr-req.example.com"
+    client_id: "unix-oidc"
+    acr_mapping:
+      enforcement: strict
+      required_acr: "urn:mfa"
+      mappings:
+        "urn:idp:mfa": "urn:mfa"
+"#;
+    let policy: PolicyConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        PolicyConfig::default(),
+    ))
+    .merge(figment::providers::Yaml::string(yaml))
+    .extract()
+    .expect("required_acr must deserialise from YAML");
+
+    let acr = policy.issuers[0].acr_mapping.as_ref().expect("acr_mapping must be present");
+    assert_eq!(
+        acr.required_acr,
+        Some("urn:mfa".to_string()),
+        "required_acr must deserialise as Some(\"urn:mfa\")"
     );
 }
