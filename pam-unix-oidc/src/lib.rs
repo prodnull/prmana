@@ -205,6 +205,9 @@ impl PamServiceModule for PamUnixOidc {
         let token = match get_auth_token(&pamh, test_mode) {
             Some(t) => t,
             None => {
+                // OBS-02: Emit AUTH_NO_TOKEN audit event — distinguishes "no token provided"
+                // from "token present but invalid" in SIEM queries.
+                AuditEvent::auth_no_token(&pam_user, source_ip).log();
                 // Record as a failure for rate limiting purposes
                 global_rate_limiter().record_failure(&pam_user, source_ip);
                 return PamError::AUTH_ERR;
@@ -734,6 +737,10 @@ fn notify_agent_session_closed(session_id: &str) {
                 session_id = %session_id,
                 "Agent socket not reachable; session-closed IPC skipped"
             );
+            // OBS-08: Emit SESSION_CLOSE_FAILED — missed revocations must not be silently dropped.
+            // Username is empty: notify_agent_session_closed only receives session_id.
+            // Correlate with the preceding SESSION_CLOSED event via session_id in SIEM.
+            AuditEvent::session_close_failed(session_id, "", &format!("{e}")).log();
             return;
         }
     };
@@ -755,6 +762,8 @@ fn notify_agent_session_closed(session_id: &str) {
             session_id = %session_id,
             "Failed to send session_closed IPC to agent"
         );
+        // OBS-08: IPC write failure — revocation not delivered to agent.
+        AuditEvent::session_close_failed(session_id, "", &format!("{e}")).log();
         return;
     }
     // Append newline so the agent's BufReader::read_line() returns immediately
@@ -765,6 +774,8 @@ fn notify_agent_session_closed(session_id: &str) {
             session_id = %session_id,
             "Failed to send session_closed IPC newline to agent"
         );
+        // OBS-08: Newline write failure — agent BufReader will not return; revocation unconfirmed.
+        AuditEvent::session_close_failed(session_id, "", &format!("{e}")).log();
         return;
     }
 

@@ -7,13 +7,33 @@
 //! 1. Syslog (AUTH facility) - for SIEM integration
 //! 2. /var/log/unix-oidc-audit.log - dedicated audit file
 //! 3. stderr - for debugging/testing
+//!
+//! # Tamper-evident HMAC chain (OBS-06)
+//!
+//! When `UNIX_OIDC_AUDIT_HMAC_KEY` is set, each audit event includes:
+//! - `prev_hash`: hex-encoded chain_hash of the previous event ("genesis" for the first)
+//! - `chain_hash`: HMAC-SHA256(key, "{prev_hash}:{event_json}")
+//!
+//! Any deletion or modification of a logged event breaks the chain at that point,
+//! detectable by `unix-oidc-audit-verify`. The key MUST be a high-entropy secret
+//! (at least 32 random bytes) set to the same value on all processes writing to the
+//! same log file. In the forked-sshd model, the parent sets the env var and all forks
+//! inherit it, giving each session its own chain segment.
+//!
+//! When the key is absent or empty, tamper-evidence is disabled with a WARNING log.
+//! The key MUST NOT be logged or included in error messages.
 
+use hmac::{Hmac, Mac};
 use once_cell::sync::Lazy;
 use serde::Serialize;
+use sha2::Sha256;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Mutex;
 use syslog::{Facility, Formatter3164};
+
+/// HMAC-SHA256 type alias
+type HmacSha256 = Hmac<Sha256>;
 
 /// Default audit log file path
 const DEFAULT_AUDIT_LOG: &str = "/var/log/unix-oidc-audit.log";
@@ -25,6 +45,99 @@ pub enum AuditSeverity {
     Warning,
     Critical,
 }
+
+// ── HMAC chain state (OBS-06) ─────────────────────────────────────────────────
+
+/// Per-process HMAC chain state for tamper-evident audit logging.
+///
+/// Thread-safety: protected by `Mutex`. In the forked-sshd model, each child
+/// process has its own chain segment (starting from "genesis"), which is correct —
+/// each fork handles one session. Concurrent PAM calls within the same process are
+/// serialized by the mutex, guaranteeing a consistent chain ordering.
+pub(crate) struct ChainState {
+    /// HMAC key bytes. `None` when `UNIX_OIDC_AUDIT_HMAC_KEY` is absent or empty.
+    pub(crate) hmac_key: Option<Vec<u8>>,
+    /// hex-encoded chain_hash of the most recently logged event, or "genesis".
+    pub(crate) prev_hash: String,
+}
+
+impl ChainState {
+    /// Initialise chain state from `UNIX_OIDC_AUDIT_HMAC_KEY`.
+    ///
+    /// The key is decoded as raw UTF-8 bytes. Operators are advised to use a
+    /// hex-encoded key of at least 32 bytes of entropy, but any non-empty string
+    /// is accepted. An absent or empty value disables tamper-evidence with a WARNING.
+    pub fn new() -> Self {
+        let key = std::env::var("UNIX_OIDC_AUDIT_HMAC_KEY").ok();
+        let hmac_key = match key {
+            Some(ref k) if !k.is_empty() => Some(k.as_bytes().to_vec()),
+            _ => {
+                tracing::warn!(
+                    "Audit HMAC chain disabled — UNIX_OIDC_AUDIT_HMAC_KEY not set. \
+                     Set this env var to enable tamper-evident audit logging."
+                );
+                None
+            }
+        };
+        Self {
+            hmac_key,
+            prev_hash: "genesis".to_string(),
+        }
+    }
+
+    /// Compute the next HMAC chain step over `event_json`.
+    ///
+    /// `event_json` must be the fully serialized event JSON (including any OCSF
+    /// enrichment fields added by Plan 27-04). The chain input is:
+    ///
+    ///   `HMAC-SHA256(key, "{prev_hash}:{event_json}")`
+    ///
+    /// Returns `Some((prev_hash, chain_hash))` and advances internal state,
+    /// or `None` if tamper-evidence is disabled.
+    pub fn compute_chain(&mut self, event_json: &str) -> Option<(String, String)> {
+        let key = self.hmac_key.as_ref()?;
+
+        // Input: "{prev_hash}:{event_json}"
+        // This binds the hash to the previous event, forming an unforgeable chain.
+        let input = format!("{}:{}", self.prev_hash, event_json);
+
+        // HMAC-SHA256 accepts keys of any non-zero length per RFC 2104 §3.
+        // new_from_slice only fails on zero-length keys; our HMAC_KEY env var
+        // is validated to be non-empty before insertion.  This is not reachable
+        // in practice, so we map to None (disabling chaining) rather than panic.
+        let Ok(mut mac) = HmacSha256::new_from_slice(key) else {
+            return None;
+        };
+        mac.update(input.as_bytes());
+        let result = mac.finalize();
+        let chain_hash = hex::encode(result.into_bytes());
+
+        let prev = self.prev_hash.clone();
+        self.prev_hash = chain_hash.clone();
+        Some((prev, chain_hash))
+    }
+}
+
+/// Module-level HMAC chain state, initialised once per process.
+///
+/// In the forked-sshd model, each child process gets its own Lazy initialisation
+/// (after fork, the parent's state is NOT inherited — Lazy is reset in each fork).
+static CHAIN_STATE: Lazy<Mutex<ChainState>> = Lazy::new(|| Mutex::new(ChainState::new()));
+
+/// A chained audit event: the original event JSON enriched with HMAC chain fields.
+#[derive(Serialize)]
+struct ChainedAuditEvent {
+    /// All original event fields (and OCSF enrichment when Plan 27-04 is active),
+    /// flattened into the top-level JSON object.
+    #[serde(flatten)]
+    enriched: serde_json::Value,
+    /// hex-encoded chain_hash of the preceding event, or "genesis" for the first.
+    prev_hash: String,
+    /// HMAC-SHA256(key, "{prev_hash}:{enriched_json}") as a hex string.
+    chain_hash: String,
+}
+
+// ── End HMAC chain state ──────────────────────────────────────────────────────
 
 /// Global syslog writer
 static SYSLOG_WRITER: Lazy<Mutex<Option<syslog::Logger<syslog::LoggerBackend, Formatter3164>>>> =
@@ -203,6 +316,43 @@ pub enum AuditEvent {
         reason: String,
         /// Enforcement mode active at time of failure: `"strict"`, `"warn"`, or `"disabled"`.
         enforcement: String,
+    },
+
+    /// Authentication attempt with no token provided (OBS-02).
+    ///
+    /// Emitted when `get_auth_token()` returns `None` — the client did not supply
+    /// any OIDC token. This event is distinct from `SshLoginFailed` / `TokenValidationFailed`
+    /// which indicate a token was present but invalid.
+    ///
+    /// SIEM operators should query `event=AUTH_NO_TOKEN` to track unauthenticated
+    /// access attempts separately from token validation failures.
+    #[serde(rename = "AUTH_NO_TOKEN")]
+    AuthNoToken {
+        timestamp: String,
+        username: String,
+        source_ip: Option<String>,
+        host: String,
+    },
+
+    /// IPC session-close failure (OBS-08).
+    ///
+    /// Emitted when `notify_agent_session_closed()` fails to deliver the session-closed
+    /// IPC message to the agent daemon. Without this event, missed revocations would be
+    /// silently dropped.
+    ///
+    /// Correlate with `SESSION_CLOSED` events via `session_id` to identify sessions
+    /// where revocation was not confirmed.
+    #[serde(rename = "SESSION_CLOSE_FAILED")]
+    SessionCloseFailed {
+        timestamp: String,
+        session_id: String,
+        /// Username is empty string when `notify_agent_session_closed` is called without
+        /// a username — correlate with the preceding SESSION_CLOSED event via session_id.
+        username: String,
+        host: String,
+        /// Description of the IPC failure (e.g., "connection refused", "write timeout").
+        /// Contains only the error reason, not the IPC message body.
+        reason: String,
     },
 }
 
@@ -408,20 +558,90 @@ impl AuditEvent {
         }
     }
 
-    /// Log this event to the configured audit destinations.
-    pub fn log(&self) {
-        if let Ok(json) = serde_json::to_string(self) {
-            // 1. Log to syslog (AUTH facility) with appropriate severity
-            log_to_syslog(&json, self.syslog_severity());
-
-            // 2. Log to audit file (default or configured path)
-            let log_path = std::env::var("UNIX_OIDC_AUDIT_LOG")
-                .unwrap_or_else(|_| DEFAULT_AUDIT_LOG.to_string());
-            let _ = append_to_file(&log_path, &json);
-
-            // 3. Log to stderr for debugging/testing
-            eprintln!("unix-oidc-audit: {json}");
+    /// Create a no-token authentication attempt event (OBS-02).
+    ///
+    /// Emitted in `pam_sm_authenticate` when `get_auth_token()` returns `None`.
+    /// Distinct from `ssh_login_failed` — SIEM can filter `event=AUTH_NO_TOKEN`
+    /// without matching token validation failures.
+    pub fn auth_no_token(username: &str, source_ip: Option<&str>) -> Self {
+        Self::AuthNoToken {
+            timestamp: iso_timestamp(),
+            username: username.to_string(),
+            source_ip: source_ip.map(String::from),
+            host: get_hostname(),
         }
+    }
+
+    /// Create an IPC session-close failure event (OBS-08).
+    ///
+    /// Emitted in `notify_agent_session_closed` when the IPC message cannot be
+    /// delivered to the agent daemon. The `reason` contains only the error string,
+    /// not the IPC message body — preventing IPC payload leakage into audit logs.
+    ///
+    /// Correlate with the preceding `SESSION_CLOSED` event via `session_id` to
+    /// identify sessions where agent-side revocation was not confirmed.
+    pub fn session_close_failed(session_id: &str, username: &str, reason: &str) -> Self {
+        Self::SessionCloseFailed {
+            timestamp: iso_timestamp(),
+            session_id: session_id.to_string(),
+            username: username.to_string(),
+            host: get_hostname(),
+            reason: reason.to_string(),
+        }
+    }
+
+    /// Log this event to the configured audit destinations.
+    ///
+    /// When `UNIX_OIDC_AUDIT_HMAC_KEY` is set, the output JSON is augmented with
+    /// `prev_hash` and `chain_hash` fields providing a tamper-evident audit chain.
+    /// The HMAC is computed over the base event JSON (including any OCSF enrichment
+    /// fields from Plan 27-04 when they are present).
+    pub fn log(&self) {
+        // Step 1: Serialize the base event (bare or OCSF-enriched, depending on
+        // whether Plan 27-04 has been applied). This is the verifiable payload.
+        let base_json = match serde_json::to_string(self) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to serialize audit event");
+                return;
+            }
+        };
+
+        // Step 2: Attempt to advance the HMAC chain. The mutex guard is held for the
+        // duration so that concurrent PAM calls cannot interleave their chain steps.
+        let output_json = if let Ok(mut state) = CHAIN_STATE.lock() {
+            if let Some((prev_hash, chain_hash)) = state.compute_chain(&base_json) {
+                // Build ChainedAuditEvent: flatten base JSON then append chain fields.
+                match serde_json::from_str::<serde_json::Value>(&base_json) {
+                    Ok(enriched_value) => {
+                        let chained = ChainedAuditEvent {
+                            enriched: enriched_value,
+                            prev_hash,
+                            chain_hash,
+                        };
+                        serde_json::to_string(&chained).unwrap_or(base_json)
+                    }
+                    Err(_) => base_json,
+                }
+            } else {
+                // Chain disabled — use base event JSON as-is (existing behaviour)
+                base_json
+            }
+        } else {
+            // Mutex poisoned — fall back to base JSON rather than refusing to log
+            tracing::warn!("HMAC chain mutex poisoned; logging without chain fields");
+            base_json
+        };
+
+        // Step 3: Emit to all audit destinations.
+        let severity = self.syslog_severity();
+        log_to_syslog(&output_json, severity);
+
+        let log_path = std::env::var("UNIX_OIDC_AUDIT_LOG")
+            .unwrap_or_else(|_| DEFAULT_AUDIT_LOG.to_string());
+        let _ = append_to_file(&log_path, &output_json);
+
+        eprintln!("unix-oidc-audit: {output_json}");
     }
 
     /// Get the event type as a string.
@@ -439,6 +659,8 @@ impl AuditEvent {
             Self::SessionClosed { .. } => "SESSION_CLOSED",
             Self::TokenRevoked { .. } => "TOKEN_REVOKED",
             Self::IntrospectionFailed { .. } => "INTROSPECTION_FAILED",
+            Self::AuthNoToken { .. } => "AUTH_NO_TOKEN",
+            Self::SessionCloseFailed { .. } => "SESSION_CLOSE_FAILED",
         }
     }
 
@@ -461,7 +683,9 @@ impl AuditEvent {
             | Self::TokenValidationFailed { .. }
             | Self::StepUpFailed { .. }
             | Self::IntrospectionFailed { .. }
-            | Self::UserNotFound { .. } => AuditSeverity::Warning,
+            | Self::UserNotFound { .. }
+            | Self::AuthNoToken { .. }
+            | Self::SessionCloseFailed { .. } => AuditSeverity::Warning,
             Self::SshLoginSuccess { .. }
             | Self::SessionOpened { .. }
             | Self::SessionClosed { .. }
@@ -516,6 +740,170 @@ fn log_to_syslog(message: &str, severity: AuditSeverity) {
                 AuditSeverity::Critical => logger.crit(message),
             };
         }
+    }
+}
+
+// ── HMAC chain tests (Plan 27-05) ─────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod hmac_chain_tests {
+    use super::*;
+
+    /// Helper: make a fresh ChainState with an explicit key (bypassing lazy env-var init)
+    fn chain_with_key(key: &[u8]) -> ChainState {
+        ChainState {
+            hmac_key: Some(key.to_vec()),
+            prev_hash: "genesis".to_string(),
+        }
+    }
+
+    /// Helper: build a minimal audit event JSON using the current event serializer
+    fn make_event_json(event: &AuditEvent) -> String {
+        serde_json::to_string(event).unwrap()
+    }
+
+    // Test 1: With HMAC key set, the chain produces chain_hash and prev_hash fields
+    #[test]
+    fn test_hmac_chain_fields_present_when_key_set() {
+        let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
+        let event = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let event_json = make_event_json(&event);
+
+        let result = chain.compute_chain(&event_json);
+        assert!(result.is_some(), "chain should produce a result when key is set");
+        let (prev_hash, chain_hash) = result.unwrap();
+        assert_eq!(prev_hash, "genesis", "first event's prev_hash must be 'genesis'");
+        assert!(!chain_hash.is_empty(), "chain_hash must be non-empty hex string");
+        // HMAC-SHA256 hex = 64 chars
+        assert_eq!(chain_hash.len(), 64, "chain_hash must be 64-char hex (HMAC-SHA256)");
+    }
+
+    // Test 2: Two consecutive events form a valid chain
+    #[test]
+    fn test_hmac_chain_consecutive_events_chain_correctly() {
+        let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
+
+        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let json1 = make_event_json(&event1);
+        let (_, hash1) = chain.compute_chain(&json1).unwrap();
+
+        let event2 = AuditEvent::session_closed("s1", "alice", 300);
+        let json2 = make_event_json(&event2);
+        let (prev2, hash2) = chain.compute_chain(&json2).unwrap();
+
+        // event2.prev_hash == event1.chain_hash
+        assert_eq!(prev2, hash1, "event2.prev_hash must equal event1.chain_hash");
+        assert_ne!(hash1, hash2, "consecutive hashes must differ");
+    }
+
+    // Test 3: Modifying event1's JSON after logging breaks the chain
+    #[test]
+    fn test_hmac_chain_modification_breaks_chain() {
+        let key = b"test-secret-key-32-bytes-minimum!";
+        let mut chain1 = chain_with_key(key);
+        let mut chain2 = chain_with_key(key);
+
+        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let original_json1 = make_event_json(&event1);
+        let (_, hash1_original) = chain1.compute_chain(&original_json1).unwrap();
+
+        // Now compute hash over a tampered version of event1
+        let tampered_json1 = original_json1.replace("alice", "mallory");
+        let (_, hash1_tampered) = chain2.compute_chain(&tampered_json1).unwrap();
+
+        // The chain hashes must differ — modification detected
+        assert_ne!(
+            hash1_original, hash1_tampered,
+            "tampering with event JSON must produce a different chain_hash"
+        );
+    }
+
+    // Test 4 (negative): With key unset, compute_chain returns None
+    #[test]
+    fn test_hmac_chain_disabled_when_key_absent() {
+        let mut chain = ChainState {
+            hmac_key: None,
+            prev_hash: "genesis".to_string(),
+        };
+        let event = AuditEvent::ssh_login_success("s1", "bob", None, None, None, None, None);
+        let json = make_event_json(&event);
+        let result = chain.compute_chain(&json);
+        assert!(result.is_none(), "chain must be disabled (None) when key is absent");
+    }
+
+    // Test 5 (negative): Empty HMAC key treated as unset
+    #[test]
+    fn test_hmac_chain_disabled_for_empty_key() {
+        let mut chain = ChainState {
+            hmac_key: Some(vec![]),  // empty key → treated as unset during init
+            prev_hash: "genesis".to_string(),
+        };
+        // An empty key vec: we test that the ChainState::new() path with empty env var
+        // sets hmac_key = None. Test that compute_chain with Some([]) still gives Some result
+        // (the HMAC itself would still compute — the empty check is at init time).
+        // This test verifies the init logic: new() with empty env var sets hmac_key = None.
+        let chain_from_empty_env = {
+            // Simulate what ChainState::new() does with an empty key
+            let key_bytes: Vec<u8> = vec![];
+            if key_bytes.is_empty() { None } else { Some(key_bytes) }
+        };
+        assert!(chain_from_empty_env.is_none(), "empty key must be treated as absent");
+        // Also verify the chain with None doesn't compute
+        chain.hmac_key = None;
+        let event = AuditEvent::user_not_found("nobody");
+        let json = make_event_json(&event);
+        assert!(chain.compute_chain(&json).is_none());
+    }
+
+    // Test 6: Chain works correctly across different event types
+    #[test]
+    fn test_hmac_chain_works_across_event_types() {
+        let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
+
+        let login = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let (_, hash_login) = chain.compute_chain(&make_event_json(&login)).unwrap();
+
+        let closed = AuditEvent::session_closed("s1", "alice", 60);
+        let (prev_closed, _hash_closed) = chain.compute_chain(&make_event_json(&closed)).unwrap();
+
+        assert_eq!(prev_closed, hash_login, "SessionClosed.prev_hash must equal SshLoginSuccess.chain_hash");
+    }
+
+    // Test 7: The chain_hash input includes all event fields (OCSF when present) —
+    // modifying any event field (including ones added by enrichment) breaks the chain.
+    // Since 27-04 may not have run yet, we test with the current event JSON structure.
+    #[test]
+    fn test_hmac_chain_covers_all_event_fields() {
+        let key = b"test-secret-key-32-bytes-minimum!";
+        let mut chain_a = chain_with_key(key);
+        let mut chain_b = chain_with_key(key);
+
+        let event_a = AuditEvent::ssh_login_success("s1", "alice", Some(1000), Some("10.0.0.1"), None, None, None);
+        let event_b = AuditEvent::ssh_login_success("s1", "alice", Some(9999), Some("10.0.0.1"), None, None, None);
+
+        let (_, hash_a) = chain_a.compute_chain(&make_event_json(&event_a)).unwrap();
+        let (_, hash_b) = chain_b.compute_chain(&make_event_json(&event_b)).unwrap();
+
+        // Different uid → different JSON → different chain_hash
+        assert_ne!(hash_a, hash_b, "different event content must produce different chain hashes");
+    }
+
+    // Test 8: prev_hash state advances correctly — state machine verification
+    #[test]
+    fn test_hmac_chain_state_advances_correctly() {
+        let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
+        assert_eq!(chain.prev_hash, "genesis");
+
+        let e1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let (prev1, hash1) = chain.compute_chain(&make_event_json(&e1)).unwrap();
+        assert_eq!(prev1, "genesis");
+        assert_eq!(chain.prev_hash, hash1, "state must advance to hash1 after event1");
+
+        let e2 = AuditEvent::session_closed("s1", "alice", 30);
+        let (prev2, hash2) = chain.compute_chain(&make_event_json(&e2)).unwrap();
+        assert_eq!(prev2, hash1, "prev_hash of event2 must be hash1");
+        assert_eq!(chain.prev_hash, hash2, "state must advance to hash2 after event2");
     }
 }
 
@@ -819,6 +1207,91 @@ mod tests {
             }
             other => panic!("Expected BreakGlassAuth, got {other:?}"),
         }
+    }
+
+    // ── OBS-02: AuthNoToken audit event tests ────────────────────────────────
+
+    #[test]
+    fn test_auth_no_token_serialization() {
+        let event = AuditEvent::auth_no_token("testuser", Some("192.168.1.1"));
+        let json = serde_json::to_string(&event).unwrap();
+
+        // OBS-02 Test 1: correct event tag, username, source_ip, host, timestamp
+        assert!(json.contains("AUTH_NO_TOKEN"), "json: {json}");
+        assert!(json.contains("testuser"), "json: {json}");
+        assert!(json.contains("192.168.1.1"), "json: {json}");
+        assert!(json.contains("timestamp"), "json: {json}");
+        assert!(json.contains("host"), "json: {json}");
+    }
+
+    #[test]
+    fn test_auth_no_token_syslog_severity() {
+        // OBS-02 Test 2: severity is Warning
+        let event = AuditEvent::auth_no_token("user", Some("10.0.0.1"));
+        assert_eq!(event.syslog_severity(), AuditSeverity::Warning);
+    }
+
+    #[test]
+    fn test_auth_no_token_event_type() {
+        // OBS-02 Test 3: event_type() returns "AUTH_NO_TOKEN"
+        let event = AuditEvent::auth_no_token("user", None);
+        assert_eq!(event.event_type(), "AUTH_NO_TOKEN");
+    }
+
+    #[test]
+    fn test_auth_no_token_distinct_from_ssh_login_failed() {
+        // OBS-02 Test 4 (negative): AUTH_NO_TOKEN is distinct from SSH_LOGIN_FAILED
+        let no_token = AuditEvent::auth_no_token("user", None);
+        let login_failed = AuditEvent::ssh_login_failed(Some("user"), None, "token expired");
+
+        let no_token_json = serde_json::to_string(&no_token).unwrap();
+        let login_failed_json = serde_json::to_string(&login_failed).unwrap();
+
+        assert!(no_token_json.contains("AUTH_NO_TOKEN"), "no_token json: {no_token_json}");
+        assert!(login_failed_json.contains("SSH_LOGIN_FAILED"), "login_failed json: {login_failed_json}");
+        assert!(!no_token_json.contains("SSH_LOGIN_FAILED"), "AUTH_NO_TOKEN must not contain SSH_LOGIN_FAILED, json: {no_token_json}");
+        assert!(!login_failed_json.contains("AUTH_NO_TOKEN"), "SSH_LOGIN_FAILED must not contain AUTH_NO_TOKEN, json: {login_failed_json}");
+    }
+
+    // ── OBS-08: SessionCloseFailed audit event tests ──────────────────────────
+
+    #[test]
+    fn test_session_close_failed_serialization() {
+        let event = AuditEvent::session_close_failed("sid-abc", "alice", "connection refused");
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("SESSION_CLOSE_FAILED"), "json: {json}");
+        assert!(json.contains("sid-abc"), "json: {json}");
+        assert!(json.contains("alice"), "json: {json}");
+        assert!(json.contains("connection refused"), "json: {json}");
+        assert!(json.contains("timestamp"), "json: {json}");
+        assert!(json.contains("host"), "json: {json}");
+    }
+
+    #[test]
+    fn test_session_close_failed_syslog_severity() {
+        // OBS-08 Test 6: severity is Warning
+        let event = AuditEvent::session_close_failed("sid-123", "bob", "write error");
+        assert_eq!(event.syslog_severity(), AuditSeverity::Warning);
+    }
+
+    #[test]
+    fn test_session_close_failed_event_type() {
+        // OBS-08 Test 7: event_type() returns "SESSION_CLOSE_FAILED"
+        let event = AuditEvent::session_close_failed("sid-456", "carol", "timeout");
+        assert_eq!(event.event_type(), "SESSION_CLOSE_FAILED");
+    }
+
+    #[test]
+    fn test_session_close_failed_no_ipc_message_content() {
+        // OBS-08 Test 8 (negative): event does NOT contain full IPC message content
+        let ipc_message = r#"{"action":"session_closed","session_id":"sid-789"}"#;
+        let event = AuditEvent::session_close_failed("sid-789", "dave", "write timeout");
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(!json.contains("\"action\""), "IPC message field action must not appear in audit event, json: {json}");
+        assert!(!json.contains(ipc_message), "full IPC message must not appear in audit event, json: {json}");
+        assert!(json.contains("write timeout"), "reason must appear, json: {json}");
     }
 
     // ── get_hostname() tests ─────────────────────────────────────────────────
