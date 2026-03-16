@@ -22,6 +22,7 @@ use unix_oidc_agent::daemon::{
     AgentServer, AgentState,
 };
 use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
+use unix_oidc_agent::sanitize::sanitize_terminal_output;
 use unix_oidc_agent::security::disable_core_dumps;
 #[cfg(feature = "pqc")]
 use unix_oidc_agent::storage::KEY_PQ_SEED;
@@ -784,11 +785,41 @@ async fn run_login(
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("No user_code in response"))?;
 
-        let verification_uri = device_response["verification_uri"]
+        let verification_uri_raw = device_response["verification_uri"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("No verification_uri in response"))?;
 
-        let verification_uri_complete = device_response["verification_uri_complete"].as_str();
+        // SHRD-05: Sanitize terminal escape sequences from IdP-supplied URIs.
+        // A compromised IdP could inject ANSI escape sequences to attack the terminal.
+        let (verification_uri, uri_was_sanitized) =
+            sanitize_terminal_output(verification_uri_raw);
+        if uri_was_sanitized {
+            let removed =
+                unix_oidc_agent::sanitize::format_removed_bytes(verification_uri_raw, &verification_uri);
+            warn!(
+                raw_uri_len = verification_uri_raw.len(),
+                sanitized_uri_len = verification_uri.len(),
+                removed_bytes = %removed,
+                "Sanitized terminal escape sequences from verification_uri"
+            );
+        }
+
+        let verification_uri_complete_raw =
+            device_response["verification_uri_complete"].as_str();
+        let verification_uri_complete = verification_uri_complete_raw.map(|raw| {
+            let (sanitized, was_modified) = sanitize_terminal_output(raw);
+            if was_modified {
+                let removed =
+                    unix_oidc_agent::sanitize::format_removed_bytes(raw, &sanitized);
+                warn!(
+                    raw_uri_len = raw.len(),
+                    sanitized_uri_len = sanitized.len(),
+                    removed_bytes = %removed,
+                    "Sanitized terminal escape sequences from verification_uri_complete"
+                );
+            }
+            sanitized
+        });
 
         let expires_in = device_response["expires_in"].as_u64().unwrap_or(600);
         let interval = device_response["interval"].as_u64().unwrap_or(5);
@@ -811,12 +842,12 @@ async fn run_login(
             " ".repeat(35 - user_code.len().min(35))
         );
         println!("│                                                          │");
-        if let Some(complete_uri) = verification_uri_complete {
+        if let Some(ref complete_uri) = verification_uri_complete {
             println!("│  Or visit directly:                                      │");
             let uri_display = if complete_uri.len() > 50 {
                 format!("{}...", &complete_uri[..47])
             } else {
-                complete_uri.to_string()
+                complete_uri.clone()
             };
             println!(
                 "│     {}{}│",

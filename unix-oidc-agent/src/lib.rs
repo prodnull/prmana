@@ -7,5 +7,6 @@ pub mod crypto;
 pub mod daemon;
 pub mod hardware;
 pub mod metrics;
+pub mod sanitize;
 pub mod security;
 pub mod storage;
