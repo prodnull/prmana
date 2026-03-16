@@ -410,6 +410,33 @@ pub enum AuditEvent {
         /// Contains only the error reason, not the IPC message body.
         reason: String,
     },
+
+    /// Issuer marked degraded after consecutive JWKS fetch failures (MIDP-10, OBS-06, OBS-07).
+    ///
+    /// Emitted on the FIRST transition to the degraded state (i.e., when failure_count
+    /// reaches DEGRADATION_THRESHOLD). Subsequent failures while already degraded do not
+    /// re-emit this event.
+    ///
+    /// OCSF: Authentication / Other (activity_id 99, severity_id 4 = High).
+    #[serde(rename = "ISSUER_DEGRADED")]
+    IssuerDegraded {
+        timestamp: String,
+        issuer_url: String,
+        failure_count: u8,
+        host: String,
+    },
+
+    /// Issuer recovered after a successful JWKS fetch following a degraded state (MIDP-10, OBS-06, OBS-07).
+    ///
+    /// Emitted exactly once per recovery transition — not on every successful fetch.
+    ///
+    /// OCSF: Authentication / Other (activity_id 99, severity_id 1 = Info).
+    #[serde(rename = "ISSUER_RECOVERED")]
+    IssuerRecovered {
+        timestamp: String,
+        issuer_url: String,
+        host: String,
+    },
 }
 
 impl AuditEvent {
@@ -646,6 +673,32 @@ impl AuditEvent {
         }
     }
 
+    /// Create an issuer-degraded audit event (MIDP-10).
+    ///
+    /// Call when `IssuerHealthManager::record_failure()` transitions an issuer
+    /// to degraded state for the first time (failure_count reaches threshold).
+    /// The `failure_count` is the count at the time of degradation.
+    pub fn issuer_degraded(issuer_url: &str, failure_count: u8) -> Self {
+        Self::IssuerDegraded {
+            timestamp: iso_timestamp(),
+            issuer_url: issuer_url.to_string(),
+            failure_count,
+            host: get_hostname(),
+        }
+    }
+
+    /// Create an issuer-recovered audit event (MIDP-10).
+    ///
+    /// Call when `IssuerHealthManager::record_success()` transitions an issuer
+    /// out of degraded state after a successful JWKS fetch.
+    pub fn issuer_recovered(issuer_url: &str) -> Self {
+        Self::IssuerRecovered {
+            timestamp: iso_timestamp(),
+            issuer_url: issuer_url.to_string(),
+            host: get_hostname(),
+        }
+    }
+
     /// Log this event to the configured audit destinations.
     ///
     /// When `UNIX_OIDC_AUDIT_HMAC_KEY` is set, the output JSON is augmented with
@@ -716,6 +769,8 @@ impl AuditEvent {
             Self::IntrospectionFailed { .. } => "INTROSPECTION_FAILED",
             Self::AuthNoToken { .. } => "AUTH_NO_TOKEN",
             Self::SessionCloseFailed { .. } => "SESSION_CLOSE_FAILED",
+            Self::IssuerDegraded { .. } => "ISSUER_DEGRADED",
+            Self::IssuerRecovered { .. } => "ISSUER_RECOVERED",
         }
     }
 
@@ -740,13 +795,15 @@ impl AuditEvent {
             | Self::IntrospectionFailed { .. }
             | Self::UserNotFound { .. }
             | Self::AuthNoToken { .. }
-            | Self::SessionCloseFailed { .. } => AuditSeverity::Warning,
+            | Self::SessionCloseFailed { .. }
+            | Self::IssuerDegraded { .. } => AuditSeverity::Warning,
             Self::SshLoginSuccess { .. }
             | Self::SessionOpened { .. }
             | Self::SessionClosed { .. }
             | Self::TokenRevoked { .. }
             | Self::StepUpInitiated { .. }
-            | Self::StepUpSuccess { .. } => AuditSeverity::Info,
+            | Self::StepUpSuccess { .. }
+            | Self::IssuerRecovered { .. } => AuditSeverity::Info,
         }
     }
 
@@ -801,6 +858,10 @@ impl AuditEvent {
 
             // Other / infrastructure events — activity_id 99
             Self::IntrospectionFailed { .. } => (99, 3), // Medium: token check failure
+
+            // Issuer health transitions — activity_id 99 (Other)
+            Self::IssuerDegraded { .. }  => (99, 4), // High: issuer degraded
+            Self::IssuerRecovered { .. } => (99, 1), // Info: issuer recovered
         };
 
         let class_uid: u32 = 3002;
@@ -1618,8 +1679,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ocsf_all_14_variants_have_fields() {
-        // OBS-07 Test 7: All 14 event variants have OCSF fields in enriched_log_json
+    fn test_ocsf_all_16_variants_have_fields() {
+        // OBS-07 Test 7: All 16 event variants have OCSF fields in enriched_log_json
         let events: Vec<AuditEvent> = vec![
             AuditEvent::ssh_login_success("s", "u", None, None, None, None, None),
             AuditEvent::ssh_login_failed(None, None, "reason"),
@@ -1635,6 +1696,8 @@ mod tests {
             AuditEvent::introspection_failed(None, None, "err", "warn"),
             AuditEvent::auth_no_token("u", None),
             AuditEvent::session_close_failed("s", "u", "err"),
+            AuditEvent::issuer_degraded("https://idp.example.com/realm", 3),
+            AuditEvent::issuer_recovered("https://idp.example.com/realm"),
         ];
 
         for event in &events {
