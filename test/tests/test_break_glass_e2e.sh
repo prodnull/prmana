@@ -49,10 +49,10 @@ BREAK_GLASS_PASS="${BREAK_GLASS_PASS:-breakglass-secret}"
 NORMAL_USER_IN_GROUP="${NORMAL_USER_IN_GROUP:-testuser}"
 NORMAL_USER_PASS="${NORMAL_USER_PASS:-testpass}"
 
-# testuser2 is expected to be configured as a valid system user but NOT a member
-# of the login_groups configured in policy.yaml.
-# TODO: configure testuser2 as non-member of login_groups in docker-compose.test.yaml
-#       and policy.yaml to enable Test 2 as a real assertion rather than SKIP.
+# testuser2 is a system user NOT in unix_oidc_users (the configured login_group).
+# Created in Dockerfile.test-host; excluded from unix_oidc_users group.
+# Policy fixture: test/fixtures/policy/policy-break-glass-e2e.yaml
+# Mounted into container via docker-compose.test.yaml volume override.
 NORMAL_USER_NOT_IN_GROUP="${NORMAL_USER_NOT_IN_GROUP:-testuser2}"
 
 ASKPASS_SCRIPT="${PROJECT_ROOT}/test/e2e/ssh-askpass-e2e.sh"
@@ -238,11 +238,7 @@ docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \
     id "$NORMAL_USER_NOT_IN_GROUP" >/dev/null 2>&1 && TESTUSER2_EXISTS=true || true
 
 if [ "$TESTUSER2_EXISTS" = false ]; then
-    skip "User $NORMAL_USER_NOT_IN_GROUP not found in container"
-    echo "    # TODO: configure $NORMAL_USER_NOT_IN_GROUP as non-member of login_groups"
-    echo "    #   in docker-compose.test.yaml, policy.yaml (login_groups), and"
-    echo "    #   SSSD/NSS (add user with no unix_oidc group membership)."
-    echo "    #   Once configured, re-run this test to validate NSS group policy denial."
+    fail "User $NORMAL_USER_NOT_IN_GROUP not found in container — Dockerfile.test-host must create this user (see E2ET-02 gap closure plan 28-06)"
 else
     # Clear auth log before the test.
     docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \

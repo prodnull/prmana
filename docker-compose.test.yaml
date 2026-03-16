@@ -61,6 +61,7 @@ services:
       LDAP_BASE: "dc=test,dc=local"
     volumes:
       - ./target/release:/opt/unix-oidc:ro
+      - ./test/fixtures/policy/policy-break-glass-e2e.yaml:/etc/unix-oidc/policy.yaml:ro
     healthcheck:
       test: ["CMD", "pgrep", "sshd"]
       interval: 5s
