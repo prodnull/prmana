@@ -357,6 +357,100 @@ mod tests {
         assert_eq!(key.thumbprint(), expected_thumb);
     }
 
+    // -------------------------------------------------------------------------
+    // Key lifecycle audit event tests (27-02)
+    // -------------------------------------------------------------------------
+
+    /// KEY_GENERATED: generate() must emit a structured audit event with
+    /// target "unix_oidc_audit", event_type "KEY_GENERATED", key_type "DPoP",
+    /// and a non-empty key_id (thumbprint prefix, first 8 chars).
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_key_lifecycle_generate_emits_audit_event() {
+        let _key = ProtectedSigningKey::generate();
+        assert!(
+            logs_contain("KEY_GENERATED"),
+            "generate() must emit KEY_GENERATED audit event"
+        );
+        assert!(
+            logs_contain("DPoP"),
+            "KEY_GENERATED event must include key_type DPoP"
+        );
+    }
+
+    /// KEY_LOADED: from_bytes() must emit a structured audit event with
+    /// event_type "KEY_LOADED", key_type "DPoP", and a non-empty key_id.
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_key_lifecycle_from_bytes_emits_key_loaded() {
+        // Generate a key to get valid bytes.
+        let key1 = ProtectedSigningKey::generate();
+        let exported = key1.export_key();
+
+        // Clear the log before testing from_bytes import.
+        let _key2 = ProtectedSigningKey::from_bytes(&exported).unwrap();
+        assert!(
+            logs_contain("KEY_LOADED"),
+            "from_bytes() must emit KEY_LOADED audit event"
+        );
+        assert!(
+            logs_contain("DPoP"),
+            "KEY_LOADED event must include key_type DPoP"
+        );
+    }
+
+    /// KEY_DESTROYED: dropping a ProtectedSigningKey must emit a structured
+    /// audit event with event_type "KEY_DESTROYED" and key_type "DPoP".
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_key_lifecycle_drop_emits_key_destroyed() {
+        {
+            let _key = ProtectedSigningKey::generate();
+            // key drops here at end of inner scope
+        }
+        assert!(
+            logs_contain("KEY_DESTROYED"),
+            "drop must emit KEY_DESTROYED audit event"
+        );
+        assert!(
+            logs_contain("DPoP"),
+            "KEY_DESTROYED event must include key_type DPoP"
+        );
+    }
+
+    /// Negative test: audit events must NOT leak full key material.
+    /// Only the 8-char thumbprint prefix (alphanumeric/base64url chars) must appear,
+    /// not the raw private key bytes.
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_key_lifecycle_events_do_not_leak_key_material() {
+        let key = ProtectedSigningKey::generate();
+        let raw_bytes = key.export_key();
+
+        // Encode key material as hex to check it doesn't appear in logs.
+        let hex_key: String = raw_bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+        // key_id must be ≤ 8 chars (thumbprint prefix), not the full 43-char thumbprint.
+        // The full thumbprint should not appear in the log either.
+        let full_thumbprint = key.thumbprint().to_string();
+
+        drop(key);
+
+        // The hex representation of raw key bytes must not appear in audit logs.
+        assert!(
+            !logs_contain(&hex_key),
+            "Audit event must not contain raw key material"
+        );
+        // The full 43-char thumbprint should not appear — only the 8-char prefix.
+        // We verify by checking that no log line contains the FULL thumbprint suffix
+        // (last 35 chars), which would only be present if the full thumbprint was logged.
+        let thumb_suffix = &full_thumbprint[8..]; // chars 9-43
+        assert!(
+            !logs_contain(thumb_suffix),
+            "Audit event must not contain full thumbprint (only 8-char prefix)"
+        );
+    }
+
     /// Verify that ZeroizeOnDrop zeroes the key bytes after drop.
     ///
     /// Uses `ManuallyDrop` on the `Box` so we can trigger `ProtectedSigningKey`'s
