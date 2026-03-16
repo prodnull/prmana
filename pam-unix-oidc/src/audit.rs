@@ -655,7 +655,15 @@ mod tests {
         assert_eq!(event.event_type(), "BREAK_GLASS_AUTH");
     }
 
-    // ── SBUG-02: alert_on_use wiring ─────────────────────────────────────────
+    // ── SBUG-02 / SHRD-03: alert_on_use wiring and syslog severity ──────────
+    //
+    // These tests serve as regression guards for SHRD-03:
+    // "BREAK_GLASS_AUTH events appear at syslog CRITICAL severity when alert_on_use=true."
+    // Existing tests from Phase 24 SBUG-02 already cover:
+    // - syslog_severity() -> Critical for alert_on_use=true
+    // - syslog_severity() -> Info for alert_on_use=false
+    // - JSON payload contains "severity":"CRITICAL" / "severity":"INFO"
+    // - event_type() returns "BREAK_GLASS_AUTH"
 
     #[test]
     fn test_break_glass_auth_alert_on_use_true_is_critical() {
