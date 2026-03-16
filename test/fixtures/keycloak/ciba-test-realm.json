@@ -11,6 +11,13 @@
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
+  "attributes": {
+    "acr.loa.map": "{\"phr\":\"3\",\"phrh\":\"4\",\"mfa\":\"2\",\"default\":\"1\"}",
+    "cibaBackchannelTokenDeliveryMode": "poll",
+    "cibaAuthRequestedUserHint": "login_hint",
+    "cibaInterval": "5",
+    "cibaExpiresIn": "120"
+  },
   "clients": [
     {
       "clientId": "unix-oidc-ciba",
