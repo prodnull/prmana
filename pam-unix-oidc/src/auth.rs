@@ -137,7 +137,13 @@ pub fn authenticate_multi_issuer(
             .as_deref()
             .unwrap_or(&issuer_config.client_id)
             .to_string(),
-        required_acr: None, // ACR check via acr_mapping is future work (MIDP-03 extension)
+        // DEBT-02: Wire ACR enforcement from per-issuer acr_mapping config.
+        // When the operator sets required_acr in acr_mapping, the validator rejects
+        // tokens whose acr claim does not match the required value.
+        required_acr: issuer_config
+            .acr_mapping
+            .as_ref()
+            .and_then(|m| m.required_acr.clone()),
         max_auth_age: None,
         // Disabled: inner validator must NOT record unscoped JTI keys.
         // Scoped enforcement happens at Step 8 below (MIDP-07).
@@ -157,15 +163,20 @@ pub fn authenticate_multi_issuer(
 
     // Step 4: Get or create the per-issuer JWKS provider from the registry.
     // The registry keeps independent caches per issuer (MIDP-07).
-    // JWKS TTL defaults to 300s (5 min); HTTP timeout defaults to 10s.
-    // These are reasonable operational defaults; future work can add
-    // per-issuer cache_ttl to PolicyConfig if needed.
-    const JWKS_CACHE_TTL_SECS: u64 = 300;
-    const JWKS_HTTP_TIMEOUT_SECS: u64 = 10;
+    // DEBT-05: JWKS TTL and HTTP timeout are now per-issuer configurable via
+    // IssuerConfig fields, with defaults of 300s and 10s respectively.
+    if issuer_config.jwks_cache_ttl_secs != 300 || issuer_config.http_timeout_secs != 10 {
+        tracing::info!(
+            issuer = %issuer_config.issuer_url,
+            jwks_cache_ttl_secs = issuer_config.jwks_cache_ttl_secs,
+            http_timeout_secs = issuer_config.http_timeout_secs,
+            "Using per-issuer JWKS cache configuration"
+        );
+    }
     let jwks_provider = jwks_registry.get_or_init(
         &issuer_config.issuer_url,
-        JWKS_CACHE_TTL_SECS,
-        JWKS_HTTP_TIMEOUT_SECS,
+        issuer_config.jwks_cache_ttl_secs,
+        issuer_config.http_timeout_secs,
     );
 
     // Step 5: Validate the token with the per-issuer JWKS provider.
