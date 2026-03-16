@@ -255,14 +255,15 @@ pub struct AcrMappingConfig {
 /// NSS-based resolution is recommended as it uses the Unix realm authority
 /// (FreeIPA/LDAP) rather than IdP-controlled claims, which avoids claim
 /// overage issues (>200 Entra groups) and GUID-vs-name inconsistencies.
+///
+/// Previously included a `TokenClaim` variant, removed in DEBT-03 (Phase 26):
+/// groups are always resolved from SSSD/NSS, never from token claims.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupSource {
-    /// Resolve groups from NSS/SSSD only. Default.
+    /// Resolve groups from NSS/SSSD only. Default and only supported source.
     #[default]
     NssOnly,
-    /// Resolve groups from an OIDC token claim.
-    TokenClaim,
 }
 
 /// Group membership mapping configuration for a specific issuer (MIDP-04).
@@ -271,8 +272,8 @@ pub enum GroupSource {
 pub struct GroupMappingConfig {
     /// Source for group membership. Default: `nss_only`.
     pub source: GroupSource,
-    /// Token claim containing group names (used when `source = token_claim`).
-    /// Default: `"groups"`.
+    /// Token claim containing group names. Reserved for future use;
+    /// currently only `NssOnly` source is supported. Default: `"groups"`.
     #[serde(default = "GroupMappingConfig::default_claim")]
     pub claim: String,
     /// Map of IdP group name → local NSS group name.
@@ -887,7 +888,7 @@ pub struct PolicyConfig {
     /// Per-issuer configuration bundles (Phase 21+, MIDP-01..05).
     ///
     /// When non-empty, overrides the legacy single-issuer env-var path.
-    /// Use `effective_issuers()` to get the resolved list (handles legacy compat).
+    /// Use `issuer_by_url()` to look up issuers by their URL.
     ///
     /// Duplicate `issuer_url` values hard-fail at load time (detected by `load_from()`).
     #[serde(default)]
@@ -1042,49 +1043,9 @@ impl PolicyConfig {
     /// Return the effective list of trusted issuers (MIDP-01, legacy compat).
     ///
     /// Resolution order:
-    /// 1. If `issuers` is non-empty, return it directly.
-    /// 2. If `OIDC_ISSUER` env var is set, synthesize a single `IssuerConfig`
-    ///    from `OIDC_ISSUER` and optionally `OIDC_CLIENT_ID`.  Logs WARN so
-    ///    operators know to migrate to the `issuers[]` format.
-    /// 3. Otherwise return `Err` (no issuer configured).
-    ///
-    /// Note: The synthesized legacy issuer inherits the global `identity` config
-    /// as its `claim_mapping` so that existing username-mapping setups continue
-    /// to work without changes.
-    pub fn effective_issuers(&self) -> Result<Vec<IssuerConfig>, PolicyError> {
-        if !self.issuers.is_empty() {
-            return Ok(self.issuers.clone());
-        }
-
-        // Legacy single-issuer path: synthesize from OIDC_ISSUER env var.
-        if let Ok(issuer_url) = std::env::var("OIDC_ISSUER") {
-            let client_id =
-                std::env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "unix-oidc".to_string());
-            tracing::warn!(
-                issuer_url = %issuer_url,
-                "No issuers[] configured — synthesizing from OIDC_ISSUER env var (legacy path). \
-                 Migrate to the issuers[] array in policy.yaml."
-            );
-            let issuer = IssuerConfig {
-                issuer_url,
-                client_id,
-                claim_mapping: self.identity.clone(),
-                ..IssuerConfig::default()
-            };
-            return Ok(vec![issuer]);
-        }
-
-        Err(PolicyError::ConfigError(
-            "No issuers configured: add issuers[] to policy.yaml or set OIDC_ISSUER env var"
-                .to_string(),
-        ))
-    }
-
     /// Look up an issuer by URL, with trailing-slash normalization on both sides.
     ///
     /// Returns `None` if no matching issuer is found in `issuers[]`.
-    /// Does NOT fall back to the legacy `OIDC_ISSUER` env var path — call
-    /// `effective_issuers()` for the full resolution chain.
     pub fn issuer_by_url(&self, iss: &str) -> Option<&IssuerConfig> {
         let normalized_query = iss.trim_end_matches('/');
         self.issuers
@@ -1859,44 +1820,6 @@ issuers:
         assert_eq!(policy.issuers.len(), 2, "expected 2 issuers");
     }
 
-    /// `effective_issuers()` returns `issuers[]` when non-empty.
-    #[test]
-    fn test_effective_issuers_returns_configured() {
-        let yaml = r#"
-issuers:
-  - issuer_url: "https://keycloak.example.com/realms/corp"
-    client_id: "unix-oidc"
-"#;
-        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
-            .merge(Yaml::string(yaml))
-            .extract()
-            .expect("single-issuer yaml should load");
-
-        let issuers = policy
-            .effective_issuers()
-            .expect("effective_issuers should succeed");
-        assert_eq!(issuers.len(), 1);
-        assert_eq!(
-            issuers[0].issuer_url,
-            "https://keycloak.example.com/realms/corp"
-        );
-    }
-
-    /// `effective_issuers()` synthesizes a single entry from `OIDC_ISSUER` env var
-    /// when `issuers[]` is empty (legacy path).
-    #[test]
-    fn test_legacy_oidc_issuer_env_var_synthesized() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let policy = PolicyConfig::default(); // empty issuers
-        std::env::set_var("OIDC_ISSUER", "https://legacy.example.com");
-        let result = policy.effective_issuers();
-        std::env::remove_var("OIDC_ISSUER");
-
-        let issuers = result.expect("legacy env var path must succeed");
-        assert_eq!(issuers.len(), 1);
-        assert_eq!(issuers[0].issuer_url, "https://legacy.example.com");
-    }
-
     /// Duplicate `issuer_url` values in `issuers[]` must cause `load_from()` to
     /// return `Err` with a `ConfigError` variant (MIDP duplicate detection).
     #[test]
@@ -1977,21 +1900,6 @@ issuers:
         assert!(
             issuer.group_mapping.is_none(),
             "group_mapping must default to None"
-        );
-    }
-
-    /// Empty `issuers[]` array with no `OIDC_ISSUER` env var must return `Err`
-    /// from `effective_issuers()`.
-    #[test]
-    fn test_empty_issuers_no_env_var_errors() {
-        // Hold the env mutex to prevent concurrent tests from setting OIDC_ISSUER.
-        let _guard = ENV_MUTEX.lock().unwrap();
-        std::env::remove_var("OIDC_ISSUER");
-        let policy = PolicyConfig::default(); // issuers is empty Vec
-        let result = policy.effective_issuers();
-        assert!(
-            result.is_err(),
-            "empty issuers with no env var must return Err"
         );
     }
 
@@ -2140,5 +2048,93 @@ issuers:
             result.is_ok(),
             "HTTP issuer URL with allow_insecure_http_for_testing must be accepted: {result:?}"
         );
+    }
+
+    // ── DEBT-03/04: Dead code removal regression tests ────────────────────
+
+    /// GroupSource::NssOnly serde round-trip: serialize to YAML and deserialize back.
+    /// Guards against regressions after TokenClaim variant removal (DEBT-03).
+    #[test]
+    fn test_group_source_nss_only_serde_round_trip() {
+        // Explicit "nss_only" string deserializes correctly.
+        let source: GroupSource =
+            serde_yaml::from_str("nss_only").expect("nss_only must deserialize");
+        assert_eq!(source, GroupSource::NssOnly);
+
+        // Serialize and round-trip.
+        let serialized = serde_yaml::to_string(&source).expect("must serialize");
+        let deserialized: GroupSource =
+            serde_yaml::from_str(&serialized).expect("round-trip must succeed");
+        assert_eq!(deserialized, GroupSource::NssOnly);
+
+        // Default deserialization yields NssOnly.
+        assert_eq!(GroupSource::default(), GroupSource::NssOnly);
+    }
+
+    /// Deserializing "token_claim" as GroupSource must fail after DEBT-03 removal.
+    #[test]
+    fn test_group_source_token_claim_rejected() {
+        let result: Result<GroupSource, _> = serde_yaml::from_str("token_claim");
+        assert!(
+            result.is_err(),
+            "token_claim must be rejected after variant removal"
+        );
+    }
+
+    /// issuer_by_url() resolves the correct IssuerConfig from a two-issuer policy.
+    /// Guards against regressions after effective_issuers() removal (DEBT-04).
+    #[test]
+    fn test_issuer_by_url_resolves_correct_config() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://issuer-a.example.com"
+    client_id: "client-a"
+  - issuer_url: "https://issuer-b.example.com"
+    client_id: "client-b"
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("two-issuer yaml must load");
+
+        let a = policy
+            .issuer_by_url("https://issuer-a.example.com")
+            .expect("issuer-a must be found");
+        assert_eq!(a.client_id, "client-a");
+
+        let b = policy
+            .issuer_by_url("https://issuer-b.example.com")
+            .expect("issuer-b must be found");
+        assert_eq!(b.client_id, "client-b");
+
+        assert!(
+            policy.issuer_by_url("https://unknown.example.com").is_none(),
+            "unknown issuer must return None"
+        );
+    }
+
+    /// GroupMappingConfig with source=NssOnly deserializes correctly from YAML.
+    /// Confirms SSSD group resolution path is intact after DEBT-03 removal.
+    #[test]
+    fn test_group_mapping_nss_only_deserializes() {
+        let yaml = r#"
+issuers:
+  - issuer_url: "https://gm-test.example.com"
+    client_id: "unix-oidc"
+    group_mapping:
+      source: nss_only
+      claim: "groups"
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("group_mapping yaml must load");
+
+        let gm = policy.issuers[0]
+            .group_mapping
+            .as_ref()
+            .expect("group_mapping must be present");
+        assert_eq!(gm.source, GroupSource::NssOnly);
+        assert_eq!(gm.claim, "groups");
     }
 }

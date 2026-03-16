@@ -1,10 +1,10 @@
 //! Multi-IdP integration tests (Phase 21, MIDP-01..08).
 //!
 //! Exercises the full multi-issuer authentication path end-to-end:
-//! - MIDP-01: Two-issuer policy loads; backward-compat via effective_issuers()
+//! - MIDP-01: Two-issuer policy loads; issuer_by_url() resolves correct config
 //! - MIDP-02: Per-issuer DPoP enforcement (strict vs disabled)
 //! - MIDP-03: Per-issuer ACR mapping config deserialises and lookups work
-//! - MIDP-04: Per-issuer group mapping (NSS-only default vs TokenClaim)
+//! - MIDP-04: Per-issuer group mapping (NSS-only default)
 //! - MIDP-05: Per-issuer claim mapping (strip_domain vs raw)
 //! - MIDP-06: Issuer routing (known / unknown / trailing-slash normalization)
 //! - MIDP-07: JWKS providers independent per issuer; JTI cross-issuer no collision
@@ -162,20 +162,6 @@ fn test_two_issuer_policy_dpop_enforcement_from_yaml() {
         EnforcementMode::Disabled,
         "Entra issuer must have disabled DPoP"
     );
-}
-
-/// MIDP-01: effective_issuers() returns issuers[] when non-empty.
-#[test]
-fn test_effective_issuers_returns_configured() {
-    let policy = make_two_issuer_policy(
-        "https://kc.example.com/realms/a",
-        "https://entra.example.com",
-        EnforcementMode::Strict,
-    );
-    let effective = policy
-        .effective_issuers()
-        .expect("effective_issuers must succeed");
-    assert_eq!(effective.len(), 2, "must return both configured issuers");
 }
 
 // ── MIDP-02: Per-issuer DPoP enforcement ─────────────────────────────────────
@@ -336,18 +322,6 @@ issuers:
         gm.claim, "groups",
         "serde-deserialised claim must default to 'groups'"
     );
-}
-
-/// MIDP-04: GroupMappingConfig with source=TokenClaim carries claim name.
-#[test]
-fn test_group_mapping_token_claim_mode() {
-    let cfg = GroupMappingConfig {
-        source: GroupSource::TokenClaim,
-        claim: "roles".to_string(),
-        name_map: HashMap::new(),
-    };
-    assert_eq!(cfg.source, GroupSource::TokenClaim);
-    assert_eq!(cfg.claim, "roles");
 }
 
 /// MIDP-04: IssuerConfig without group_mapping has None (defaults logged as WARN).
