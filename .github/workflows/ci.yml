@@ -362,6 +362,7 @@ jobs:
       - name: Make test scripts executable
         run: |
           chmod +x test/tests/test_keycloak_real_sig.sh
+          chmod +x test/tests/test_dpop_binding.sh
           chmod +x test/e2e/ssh-askpass-e2e.sh
           chmod +x test/e2e/run-device-flow-e2e.sh
 
@@ -408,6 +409,16 @@ jobs:
         run: bash test/tests/test_keycloak_real_sig.sh
         env:
           COMPOSE_FILE: docker-compose.e2e.yaml
+
+      - name: Assert DPoP cnf.jkt binding (KCDPOP-01)
+        run: bash test/tests/test_dpop_binding.sh
+        env:
+          KEYCLOAK_URL: http://localhost:8080
+          REALM: unix-oidc
+          CLIENT_ID: unix-oidc
+          CLIENT_SECRET: unix-oidc-test-secret
+          TEST_USERNAME: testuser
+          TEST_PASSWORD: testpass
 
       - name: Collect logs on failure
         if: failure()
