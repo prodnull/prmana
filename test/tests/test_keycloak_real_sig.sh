@@ -96,7 +96,7 @@ echo "--- E2E-01: Token Acquisition ---"
 
 # Keycloak client has dpop.bound.access.tokens=true, so all token requests
 # require a DPoP proof header. Generate a minimal proof for ROPC.
-E2E_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-key-XXXXXX.pem)
+E2E_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-key-XXXXXX)
 openssl ecparam -name prime256v1 -genkey -noout -out "$E2E_KEY_FILE" 2>/dev/null
 
 E2E_X_B64=$(openssl ec -in "$E2E_KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 64 | head -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
@@ -143,8 +143,14 @@ if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
 fi
 
 # Validate token claims
-# base64 -d with padding fix (JWT base64url may lack padding)
-CLAIMS=$(echo "$ACCESS_TOKEN" | cut -d'.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null || echo '{}')
+# JWT base64url payloads lack padding; macOS base64 -d silently truncates without it.
+base64url_decode() {
+    local input="$1"
+    local pad=$((4 - ${#input} % 4))
+    [ "$pad" -ne 4 ] && input="${input}$(printf '%*s' "$pad" '' | tr ' ' '=')"
+    echo -n "$input" | tr '_-' '/+' | base64 -d 2>/dev/null || echo -n "$input" | tr '_-' '/+' | base64 -D 2>/dev/null
+}
+CLAIMS=$(base64url_decode "$(echo "$ACCESS_TOKEN" | cut -d'.' -f2)")
 TOKEN_ISS=$(echo "$CLAIMS" | jq -r '.iss // empty')
 TOKEN_USER=$(echo "$CLAIMS" | jq -r '.preferred_username // empty')
 TOKEN_EXP=$(echo "$CLAIMS" | jq -r '.exp // 0')
@@ -275,7 +281,7 @@ echo ""
 echo "--- E2E-02b: DPoP Binding SSH→PAM→Audit Chain (KCDPOP-02) ---"
 
 # Generate ephemeral EC P-256 key for DPoP proof.
-DPOP_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-dpop-XXXXXX.pem)
+DPOP_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-dpop-XXXXXX)
 trap 'rm -f "$TOKEN_FILE" "$DPOP_KEY_FILE"' EXIT
 openssl ecparam -name prime256v1 -genkey -noout -out "$DPOP_KEY_FILE" 2>/dev/null
 
@@ -331,7 +337,7 @@ else
     result "PASS" "DPoP token acquired (type: $DPOP_TOKEN_TYPE)"
 
     # Verify cnf.jkt in token matches computed thumbprint.
-    DPOP_CLAIMS=$(echo "$DPOP_ACCESS_TOKEN" | cut -d'.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null || echo '{}')
+    DPOP_CLAIMS=$(base64url_decode "$(echo "$DPOP_ACCESS_TOKEN" | cut -d'.' -f2)")
     DPOP_CNF_JKT=$(echo "$DPOP_CLAIMS" | jq -r '.cnf.jkt // empty')
     if [ "$DPOP_CNF_JKT" = "$DPOP_THUMBPRINT" ]; then
         result "PASS" "cnf.jkt matches computed thumbprint ($DPOP_THUMBPRINT)"

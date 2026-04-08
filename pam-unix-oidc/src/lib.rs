@@ -90,6 +90,84 @@ fn is_test_mode_enabled() -> bool {
 
 impl PamServiceModule for PamUnixOidc {
     fn authenticate(pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+        // Bridge environment config to process env for downstream ValidationConfig::from_env().
+        //
+        // OpenSSH sshd sanitizes the forked child's process environment, stripping all
+        // vars including OIDC_ISSUER. The PAM module's config readers use std::env::var()
+        // (process env), so we must restore the vars from available sources.
+        //
+        // Source priority:
+        //   1. Process env (already set) — highest, never overridden
+        //   2. PAM env (set by pam_env.so readenv=1 from /etc/environment)
+        //   3. /etc/environment direct parse — fallback if PAM env unavailable
+        //
+        // Security:
+        //   - /etc/environment is root-owned (0644). An attacker who can modify it has root.
+        //   - We only set vars NOT already in process env (explicit config wins).
+        //   - Each sshd child is a separate fork; single-threaded during PAM auth.
+        //   - Only OIDC-specific var names are bridged (allowlist, not passthrough).
+        {
+            let bridge_vars = [
+                "OIDC_ISSUER",
+                "OIDC_CLIENT_ID",
+                "OIDC_REQUIRED_ACR",
+                "OIDC_MAX_AUTH_AGE",
+                "UNIX_OIDC_POLICY_PATH",
+            ];
+
+            // Try PAM env first (set by pam_env.so), then /etc/environment fallback.
+            let mut etc_env_cache: Option<Vec<(String, String)>> = None;
+
+            for var_name in &bridge_vars {
+                if std::env::var(var_name).is_ok() {
+                    continue; // Already in process env — don't override.
+                }
+
+                // Source 2: PAM environment
+                let pam_val = pamh
+                    .getenv(var_name)
+                    .ok()
+                    .flatten()
+                    .map(|v| v.to_string_lossy().to_string())
+                    .filter(|v| !v.is_empty());
+
+                if let Some(val) = pam_val {
+                    #[allow(unsafe_code)]
+                    // SAFETY: sshd forks per connection; single-threaded during PAM auth.
+                    unsafe { std::env::set_var(var_name, &val) };
+                    continue;
+                }
+
+                // Source 3: Parse /etc/environment (lazy, read once)
+                if etc_env_cache.is_none() {
+                    etc_env_cache = Some(
+                        std::fs::read_to_string("/etc/environment")
+                            .unwrap_or_default()
+                            .lines()
+                            .filter_map(|line| {
+                                let line = line.trim();
+                                if line.is_empty() || line.starts_with('#') {
+                                    return None;
+                                }
+                                let (k, v) = line.split_once('=')?;
+                                // Strip optional quotes from value
+                                let v = v.trim_matches('"').trim_matches('\'');
+                                Some((k.to_string(), v.to_string()))
+                            })
+                            .collect(),
+                    );
+                }
+
+                if let Some(ref entries) = etc_env_cache {
+                    if let Some((_, val)) = entries.iter().find(|(k, _)| k == *var_name) {
+                        #[allow(unsafe_code)]
+                        // SAFETY: sshd forks per connection; single-threaded during PAM auth.
+                        unsafe { std::env::set_var(var_name, val) };
+                    }
+                }
+            }
+        }
+
         // Check if we're in test mode (token from environment)
         // Security: Requires explicit "true" or "1", not just any value
         let test_mode = is_test_mode_enabled();
