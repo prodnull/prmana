@@ -44,3 +44,6 @@ docs/marketing/linkedin-*
 docs/session-notes/
 docs/plans/
 docs/outreach/
+
+# GSD planning (local only)
+.planning/
