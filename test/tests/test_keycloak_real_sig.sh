@@ -90,12 +90,44 @@ fi
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════
-# E2E-01: Token Acquisition (ROPC — validates Keycloak is working)
+# E2E-01: Token Acquisition (ROPC + DPoP — validates Keycloak is working)
 # ═══════════════════════════════════════════════════════════════════════
 echo "--- E2E-01: Token Acquisition ---"
 
-TOKEN_RESPONSE=$(curl -sf -X POST \
-    "${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token" \
+# Keycloak client has dpop.bound.access.tokens=true, so all token requests
+# require a DPoP proof header. Generate a minimal proof for ROPC.
+E2E_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-key-XXXXXX.pem)
+openssl ecparam -name prime256v1 -genkey -noout -out "$E2E_KEY_FILE" 2>/dev/null
+
+E2E_X_B64=$(openssl ec -in "$E2E_KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 64 | head -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+E2E_Y_B64=$(openssl ec -in "$E2E_KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+
+E2E_JWK="{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"$E2E_X_B64\",\"y\":\"$E2E_Y_B64\"}"
+E2E_JTI=$(openssl rand -hex 16)
+E2E_IAT=$(date +%s)
+E2E_TOKEN_ENDPOINT="${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token"
+
+e2e_b64url() { base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='; }
+
+E2E_HDR=$(echo -n "{\"typ\":\"dpop+jwt\",\"alg\":\"ES256\",\"jwk\":$E2E_JWK}" | e2e_b64url)
+E2E_PLD=$(echo -n "{\"jti\":\"$E2E_JTI\",\"htm\":\"POST\",\"htu\":\"$E2E_TOKEN_ENDPOINT\",\"iat\":$E2E_IAT}" | e2e_b64url)
+E2E_SI="${E2E_HDR}.${E2E_PLD}"
+
+E2E_DER=$(echo -n "$E2E_SI" | openssl dgst -sha256 -sign "$E2E_KEY_FILE" | xxd -p | tr -d '\n')
+E2E_OFF=6
+E2E_RL=$((16#${E2E_DER:$E2E_OFF:2})); E2E_OFF=$((E2E_OFF + 2))
+E2E_RH="${E2E_DER:$E2E_OFF:$((E2E_RL * 2))}"; E2E_OFF=$((E2E_OFF + E2E_RL * 2 + 2))
+E2E_SL=$((16#${E2E_DER:$E2E_OFF:2})); E2E_OFF=$((E2E_OFF + 2))
+E2E_SH="${E2E_DER:$E2E_OFF:$((E2E_SL * 2))}"
+E2E_RH=$(printf '%064s' "$E2E_RH" | tr ' ' '0' | tail -c 64)
+E2E_SH=$(printf '%064s' "$E2E_SH" | tr ' ' '0' | tail -c 64)
+E2E_SIG=$(echo -n "${E2E_RH}${E2E_SH}" | xxd -r -p | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+E2E_DPOP_PROOF="${E2E_SI}.${E2E_SIG}"
+
+rm -f "$E2E_KEY_FILE"
+
+TOKEN_RESPONSE=$(curl -sf -X POST "$E2E_TOKEN_ENDPOINT" \
+    -H "DPoP: $E2E_DPOP_PROOF" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "grant_type=password&client_id=${CLIENT_ID}&username=testuser&password=testpass&scope=openid" \
     2>/dev/null || echo '{"error":"request_failed"}')
