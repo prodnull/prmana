@@ -16,8 +16,9 @@
 PROMPT="${1:-}"
 TOKEN_FILE="${UNIX_OIDC_E2E_TOKEN_FILE:-}"
 
-if [[ "$PROMPT" == DPOP_NONCE:* ]]; then
+if [[ "$PROMPT" == *DPOP_NONCE:* ]]; then
     # Round 1: Acknowledge nonce delivery. PAM discards this response.
+    # Note: SSH prepends "(user@host) " to prompts, so use *contains* match.
     echo ""
 elif [[ "$PROMPT" == *DPOP_PROOF* ]]; then
     # Round 2: No DPoP proof (dpop_required=warn accepts bearer tokens).
