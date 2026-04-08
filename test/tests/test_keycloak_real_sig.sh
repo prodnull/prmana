@@ -126,17 +126,17 @@ E2E_DPOP_PROOF="${E2E_SI}.${E2E_SIG}"
 
 rm -f "$E2E_KEY_FILE"
 
-TOKEN_RESPONSE=$(curl -sf -X POST "$E2E_TOKEN_ENDPOINT" \
+TOKEN_RESPONSE=$(curl -s -X POST "$E2E_TOKEN_ENDPOINT" \
     -H "DPoP: $E2E_DPOP_PROOF" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "grant_type=password&client_id=${CLIENT_ID}&username=testuser&password=testpass&scope=openid" \
     2>/dev/null || echo '{"error":"request_failed"}')
 
-ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
+ACCESS_TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
 
 if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
-    result "FAIL" "Token acquisition via ROPC"
-    echo "    Response: $TOKEN_RESPONSE"
+    result "FAIL" "Token acquisition via ROPC+DPoP"
+    echo "    Response: ${TOKEN_RESPONSE:0:200}"
     echo ""
     echo "FATAL: Cannot proceed without a valid token."
     exit 1
