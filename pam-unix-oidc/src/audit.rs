@@ -225,6 +225,8 @@ pub enum AuditEvent {
         oidc_jti: Option<String>,
         oidc_acr: Option<String>,
         oidc_auth_time: Option<i64>,
+        /// DPoP JWK thumbprint (RFC 9449 cnf.jkt) — confirms proof-of-possession binding
+        dpop_thumbprint: Option<String>,
     },
 
     /// Failed SSH login attempt
@@ -441,6 +443,7 @@ pub enum AuditEvent {
 
 impl AuditEvent {
     /// Create a successful SSH login event.
+    #[allow(clippy::too_many_arguments)]
     pub fn ssh_login_success(
         session_id: &str,
         user: &str,
@@ -449,6 +452,7 @@ impl AuditEvent {
         oidc_jti: Option<&str>,
         oidc_acr: Option<&str>,
         oidc_auth_time: Option<i64>,
+        dpop_thumbprint: Option<&str>,
     ) -> Self {
         Self::SshLoginSuccess {
             timestamp: iso_timestamp(),
@@ -460,6 +464,7 @@ impl AuditEvent {
             oidc_jti: oidc_jti.map(String::from),
             oidc_acr: oidc_acr.map(String::from),
             oidc_auth_time,
+            dpop_thumbprint: dpop_thumbprint.map(String::from),
         }
     }
 
@@ -975,7 +980,7 @@ mod hmac_chain_tests {
     #[test]
     fn test_hmac_chain_fields_present_when_key_set() {
         let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
-        let event = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let event = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let event_json = make_event_json(&event);
 
         let result = chain.compute_chain(&event_json);
@@ -992,7 +997,7 @@ mod hmac_chain_tests {
     fn test_hmac_chain_consecutive_events_chain_correctly() {
         let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
 
-        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let json1 = make_event_json(&event1);
         let (_, hash1) = chain.compute_chain(&json1).unwrap();
 
@@ -1012,7 +1017,7 @@ mod hmac_chain_tests {
         let mut chain1 = chain_with_key(key);
         let mut chain2 = chain_with_key(key);
 
-        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let original_json1 = make_event_json(&event1);
         let (_, hash1_original) = chain1.compute_chain(&original_json1).unwrap();
 
@@ -1034,7 +1039,7 @@ mod hmac_chain_tests {
             hmac_key: None,
             prev_hash: "genesis".to_string(),
         };
-        let event = AuditEvent::ssh_login_success("s1", "bob", None, None, None, None, None);
+        let event = AuditEvent::ssh_login_success("s1", "bob", None, None, None, None, None, None);
         let json = make_event_json(&event);
         let result = chain.compute_chain(&json);
         assert!(result.is_none(), "chain must be disabled (None) when key is absent");
@@ -1069,7 +1074,7 @@ mod hmac_chain_tests {
     fn test_hmac_chain_works_across_event_types() {
         let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
 
-        let login = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let login = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let (_, hash_login) = chain.compute_chain(&make_event_json(&login)).unwrap();
 
         let closed = AuditEvent::session_closed("s1", "alice", 60);
@@ -1087,8 +1092,8 @@ mod hmac_chain_tests {
         let mut chain_a = chain_with_key(key);
         let mut chain_b = chain_with_key(key);
 
-        let event_a = AuditEvent::ssh_login_success("s1", "alice", Some(1000), Some("10.0.0.1"), None, None, None);
-        let event_b = AuditEvent::ssh_login_success("s1", "alice", Some(9999), Some("10.0.0.1"), None, None, None);
+        let event_a = AuditEvent::ssh_login_success("s1", "alice", Some(1000), Some("10.0.0.1"), None, None, None, None);
+        let event_b = AuditEvent::ssh_login_success("s1", "alice", Some(9999), Some("10.0.0.1"), None, None, None, None);
 
         let (_, hash_a) = chain_a.compute_chain(&make_event_json(&event_a)).unwrap();
         let (_, hash_b) = chain_b.compute_chain(&make_event_json(&event_b)).unwrap();
@@ -1103,7 +1108,7 @@ mod hmac_chain_tests {
         let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
         assert_eq!(chain.prev_hash, "genesis");
 
-        let e1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None);
+        let e1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let (prev1, hash1) = chain.compute_chain(&make_event_json(&e1)).unwrap();
         assert_eq!(prev1, "genesis");
         assert_eq!(chain.prev_hash, hash1, "state must advance to hash1 after event1");
@@ -1136,6 +1141,7 @@ mod tests {
             Some("token-jti-456"),
             Some("urn:example:acr:mfa"),
             Some(1705400000),
+            None,
         );
 
         let json = serde_json::to_string(&event).unwrap();
@@ -1146,6 +1152,32 @@ mod tests {
         assert!(json.contains("192.168.1.1"));
         assert!(json.contains("token-jti-456"));
         assert!(json.contains("urn:example:acr:mfa"));
+    }
+
+    #[test]
+    fn test_ssh_login_success_dpop_thumbprint() {
+        // KCDPOP-02: Verify dpop_thumbprint appears in serialized audit event
+        let event = AuditEvent::ssh_login_success(
+            "session-dpop-1", "dpopuser", Some(1002), Some("10.0.0.5"),
+            Some("jti-dpop"), Some("urn:example:mfa"), Some(1705400000),
+            Some("abc123-thumbprint"),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"dpop_thumbprint\":\"abc123-thumbprint\""),
+            "dpop_thumbprint must appear in JSON, got: {json}");
+
+        // Without DPoP (backward compat)
+        let event_no_dpop = AuditEvent::ssh_login_success(
+            "session-no-dpop", "regularuser", None, None, None, None, None, None,
+        );
+        let json_no_dpop = serde_json::to_string(&event_no_dpop).unwrap();
+        assert!(json_no_dpop.contains("\"dpop_thumbprint\":null"),
+            "dpop_thumbprint must be null when absent, got: {json_no_dpop}");
+
+        // Verify enriched_log_json also includes dpop_thumbprint
+        let enriched = event.enriched_log_json();
+        assert!(enriched.contains("abc123-thumbprint"),
+            "enriched_log_json must include dpop_thumbprint, got: {enriched}");
     }
 
     #[test]
@@ -1191,7 +1223,7 @@ mod tests {
 
     #[test]
     fn test_event_type() {
-        let success = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None);
+        let success = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None, None);
         assert_eq!(success.event_type(), "SSH_LOGIN_SUCCESS");
 
         let failed = AuditEvent::ssh_login_failed(None, None, "reason");
@@ -1556,7 +1588,7 @@ mod tests {
         let intro_failed = AuditEvent::introspection_failed(None, None, "err", "strict");
         assert_eq!(intro_failed.syslog_severity(), AuditSeverity::Warning);
 
-        let success = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None);
+        let success = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None, None);
         assert_eq!(success.syslog_severity(), AuditSeverity::Info);
 
         let opened = AuditEvent::session_opened("s", "u", None, 0);
@@ -1599,7 +1631,7 @@ mod tests {
     #[test]
     fn test_ocsf_ssh_login_success_fields() {
         // OBS-07 Test 1: SshLoginSuccess has correct OCSF fields
-        let event = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None);
+        let event = AuditEvent::ssh_login_success("s", "u", None, None, None, None, None, None);
         let fields = event.ocsf_fields();
 
         assert_eq!(fields.category_uid, 3, "IAM category_uid must be 3");
@@ -1659,7 +1691,7 @@ mod tests {
         // OBS-07 Test 6 (negative): Existing fields not renamed or removed
         // Verify that enriched_log_json() preserves the base event fields
         let event = AuditEvent::ssh_login_success("sid-abc", "alice", Some(1001),
-            Some("10.0.0.1"), Some("jti-1"), Some("mfa"), Some(1705400000));
+            Some("10.0.0.1"), Some("jti-1"), Some("mfa"), Some(1705400000), None);
         let json = event.enriched_log_json();
 
         // Original event fields must be present
@@ -1682,7 +1714,7 @@ mod tests {
     fn test_ocsf_all_16_variants_have_fields() {
         // OBS-07 Test 7: All 16 event variants have OCSF fields in enriched_log_json
         let events: Vec<AuditEvent> = vec![
-            AuditEvent::ssh_login_success("s", "u", None, None, None, None, None),
+            AuditEvent::ssh_login_success("s", "u", None, None, None, None, None, None),
             AuditEvent::ssh_login_failed(None, None, "reason"),
             AuditEvent::token_validation_failed(None, "reason", None, None),
             AuditEvent::user_not_found("user"),

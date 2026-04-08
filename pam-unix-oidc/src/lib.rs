@@ -404,6 +404,7 @@ impl PamServiceModule for PamUnixOidc {
                     result.token_jti.as_deref(),
                     result.token_acr.as_deref(),
                     result.token_auth_time,
+                    result.dpop_thumbprint.as_deref(),
                 )
                 .log();
 
