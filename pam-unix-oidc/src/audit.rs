@@ -575,7 +575,11 @@ impl AuditEvent {
             source_ip: source_ip.map(String::from),
             host: get_hostname(),
             reason: "break-glass bypass".to_string(),
-            severity: if alert_on_use { "CRITICAL".to_string() } else { "INFO".to_string() },
+            severity: if alert_on_use {
+                "CRITICAL".to_string()
+            } else {
+                "INFO".to_string()
+            },
             alert_on_use,
         }
     }
@@ -750,8 +754,8 @@ impl AuditEvent {
         let severity = self.syslog_severity();
         log_to_syslog(&output_json, severity);
 
-        let log_path = std::env::var("UNIX_OIDC_AUDIT_LOG")
-            .unwrap_or_else(|_| DEFAULT_AUDIT_LOG.to_string());
+        let log_path =
+            std::env::var("UNIX_OIDC_AUDIT_LOG").unwrap_or_else(|_| DEFAULT_AUDIT_LOG.to_string());
         let _ = append_to_file(&log_path, &output_json);
 
         eprintln!("unix-oidc-audit: {output_json}");
@@ -838,22 +842,22 @@ impl AuditEvent {
     pub fn ocsf_fields(&self) -> OcsfFields {
         let (activity_id, severity_id) = match self {
             // Logon attempts — activity_id 1
-            Self::SshLoginSuccess { .. }  => (1, 1), // Info: success
-            Self::SshLoginFailed { .. }   => (1, 3), // Medium: failed logon
+            Self::SshLoginSuccess { .. } => (1, 1), // Info: success
+            Self::SshLoginFailed { .. } => (1, 3),  // Medium: failed logon
             Self::TokenValidationFailed { .. } => (1, 3),
-            Self::AuthNoToken { .. }      => (1, 3), // Medium: no token provided
-            Self::UserNotFound { .. }     => (1, 3),
-            Self::SessionOpened { .. }    => (1, 1), // Info: session start
+            Self::AuthNoToken { .. } => (1, 3), // Medium: no token provided
+            Self::UserNotFound { .. } => (1, 3),
+            Self::SessionOpened { .. } => (1, 1), // Info: session start
 
             // Logoff / session close — activity_id 2
-            Self::SessionClosed { .. }   => (2, 1), // Info: normal close
+            Self::SessionClosed { .. } => (2, 1), // Info: normal close
             Self::SessionCloseFailed { .. } => (2, 3), // Medium: cleanup failure
-            Self::TokenRevoked { .. }    => (2, 1), // Info: revocation
+            Self::TokenRevoked { .. } => (2, 1),  // Info: revocation
 
             // Authentication challenge — activity_id 3
             Self::StepUpInitiated { .. } => (3, 1), // Info: challenge started
-            Self::StepUpSuccess { .. }   => (3, 1), // Info: challenge passed
-            Self::StepUpFailed { .. }    => (3, 3), // Medium: challenge denied
+            Self::StepUpSuccess { .. } => (3, 1),   // Info: challenge passed
+            Self::StepUpFailed { .. } => (3, 3),    // Medium: challenge denied
 
             // Break-glass — activity_id 1, severity depends on alert_on_use
             Self::BreakGlassAuth { alert_on_use, .. } => {
@@ -865,7 +869,7 @@ impl AuditEvent {
             Self::IntrospectionFailed { .. } => (99, 3), // Medium: token check failure
 
             // Issuer health transitions — activity_id 99 (Other)
-            Self::IssuerDegraded { .. }  => (99, 4), // High: issuer degraded
+            Self::IssuerDegraded { .. } => (99, 4), // High: issuer degraded
             Self::IssuerRecovered { .. } => (99, 1), // Info: issuer recovered
         };
 
@@ -876,7 +880,9 @@ impl AuditEvent {
             activity_id,
             severity_id,
             type_uid: class_uid * 100 + activity_id,
-            metadata: OcsfMetadata { version: OCSF_VERSION },
+            metadata: OcsfMetadata {
+                version: OCSF_VERSION,
+            },
         }
     }
 
@@ -980,16 +986,30 @@ mod hmac_chain_tests {
     #[test]
     fn test_hmac_chain_fields_present_when_key_set() {
         let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
-        let event = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
+        let event =
+            AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let event_json = make_event_json(&event);
 
         let result = chain.compute_chain(&event_json);
-        assert!(result.is_some(), "chain should produce a result when key is set");
+        assert!(
+            result.is_some(),
+            "chain should produce a result when key is set"
+        );
         let (prev_hash, chain_hash) = result.unwrap();
-        assert_eq!(prev_hash, "genesis", "first event's prev_hash must be 'genesis'");
-        assert!(!chain_hash.is_empty(), "chain_hash must be non-empty hex string");
+        assert_eq!(
+            prev_hash, "genesis",
+            "first event's prev_hash must be 'genesis'"
+        );
+        assert!(
+            !chain_hash.is_empty(),
+            "chain_hash must be non-empty hex string"
+        );
         // HMAC-SHA256 hex = 64 chars
-        assert_eq!(chain_hash.len(), 64, "chain_hash must be 64-char hex (HMAC-SHA256)");
+        assert_eq!(
+            chain_hash.len(),
+            64,
+            "chain_hash must be 64-char hex (HMAC-SHA256)"
+        );
     }
 
     // Test 2: Two consecutive events form a valid chain
@@ -997,7 +1017,8 @@ mod hmac_chain_tests {
     fn test_hmac_chain_consecutive_events_chain_correctly() {
         let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
 
-        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
+        let event1 =
+            AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let json1 = make_event_json(&event1);
         let (_, hash1) = chain.compute_chain(&json1).unwrap();
 
@@ -1006,7 +1027,10 @@ mod hmac_chain_tests {
         let (prev2, hash2) = chain.compute_chain(&json2).unwrap();
 
         // event2.prev_hash == event1.chain_hash
-        assert_eq!(prev2, hash1, "event2.prev_hash must equal event1.chain_hash");
+        assert_eq!(
+            prev2, hash1,
+            "event2.prev_hash must equal event1.chain_hash"
+        );
         assert_ne!(hash1, hash2, "consecutive hashes must differ");
     }
 
@@ -1017,7 +1041,8 @@ mod hmac_chain_tests {
         let mut chain1 = chain_with_key(key);
         let mut chain2 = chain_with_key(key);
 
-        let event1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
+        let event1 =
+            AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let original_json1 = make_event_json(&event1);
         let (_, hash1_original) = chain1.compute_chain(&original_json1).unwrap();
 
@@ -1042,14 +1067,17 @@ mod hmac_chain_tests {
         let event = AuditEvent::ssh_login_success("s1", "bob", None, None, None, None, None, None);
         let json = make_event_json(&event);
         let result = chain.compute_chain(&json);
-        assert!(result.is_none(), "chain must be disabled (None) when key is absent");
+        assert!(
+            result.is_none(),
+            "chain must be disabled (None) when key is absent"
+        );
     }
 
     // Test 5 (negative): Empty HMAC key treated as unset
     #[test]
     fn test_hmac_chain_disabled_for_empty_key() {
         let mut chain = ChainState {
-            hmac_key: Some(vec![]),  // empty key → treated as unset during init
+            hmac_key: Some(vec![]), // empty key → treated as unset during init
             prev_hash: "genesis".to_string(),
         };
         // An empty key vec: we test that the ChainState::new() path with empty env var
@@ -1059,9 +1087,16 @@ mod hmac_chain_tests {
         let chain_from_empty_env = {
             // Simulate what ChainState::new() does with an empty key
             let key_bytes: Vec<u8> = vec![];
-            if key_bytes.is_empty() { None } else { Some(key_bytes) }
+            if key_bytes.is_empty() {
+                None
+            } else {
+                Some(key_bytes)
+            }
         };
-        assert!(chain_from_empty_env.is_none(), "empty key must be treated as absent");
+        assert!(
+            chain_from_empty_env.is_none(),
+            "empty key must be treated as absent"
+        );
         // Also verify the chain with None doesn't compute
         chain.hmac_key = None;
         let event = AuditEvent::user_not_found("nobody");
@@ -1074,13 +1109,17 @@ mod hmac_chain_tests {
     fn test_hmac_chain_works_across_event_types() {
         let mut chain = chain_with_key(b"test-secret-key-32-bytes-minimum!");
 
-        let login = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
+        let login =
+            AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let (_, hash_login) = chain.compute_chain(&make_event_json(&login)).unwrap();
 
         let closed = AuditEvent::session_closed("s1", "alice", 60);
         let (prev_closed, _hash_closed) = chain.compute_chain(&make_event_json(&closed)).unwrap();
 
-        assert_eq!(prev_closed, hash_login, "SessionClosed.prev_hash must equal SshLoginSuccess.chain_hash");
+        assert_eq!(
+            prev_closed, hash_login,
+            "SessionClosed.prev_hash must equal SshLoginSuccess.chain_hash"
+        );
     }
 
     // Test 7: The chain_hash input includes all event fields (OCSF when present) —
@@ -1092,14 +1131,35 @@ mod hmac_chain_tests {
         let mut chain_a = chain_with_key(key);
         let mut chain_b = chain_with_key(key);
 
-        let event_a = AuditEvent::ssh_login_success("s1", "alice", Some(1000), Some("10.0.0.1"), None, None, None, None);
-        let event_b = AuditEvent::ssh_login_success("s1", "alice", Some(9999), Some("10.0.0.1"), None, None, None, None);
+        let event_a = AuditEvent::ssh_login_success(
+            "s1",
+            "alice",
+            Some(1000),
+            Some("10.0.0.1"),
+            None,
+            None,
+            None,
+            None,
+        );
+        let event_b = AuditEvent::ssh_login_success(
+            "s1",
+            "alice",
+            Some(9999),
+            Some("10.0.0.1"),
+            None,
+            None,
+            None,
+            None,
+        );
 
         let (_, hash_a) = chain_a.compute_chain(&make_event_json(&event_a)).unwrap();
         let (_, hash_b) = chain_b.compute_chain(&make_event_json(&event_b)).unwrap();
 
         // Different uid → different JSON → different chain_hash
-        assert_ne!(hash_a, hash_b, "different event content must produce different chain hashes");
+        assert_ne!(
+            hash_a, hash_b,
+            "different event content must produce different chain hashes"
+        );
     }
 
     // Test 8: prev_hash state advances correctly — state machine verification
@@ -1111,12 +1171,18 @@ mod hmac_chain_tests {
         let e1 = AuditEvent::ssh_login_success("s1", "alice", None, None, None, None, None, None);
         let (prev1, hash1) = chain.compute_chain(&make_event_json(&e1)).unwrap();
         assert_eq!(prev1, "genesis");
-        assert_eq!(chain.prev_hash, hash1, "state must advance to hash1 after event1");
+        assert_eq!(
+            chain.prev_hash, hash1,
+            "state must advance to hash1 after event1"
+        );
 
         let e2 = AuditEvent::session_closed("s1", "alice", 30);
         let (prev2, hash2) = chain.compute_chain(&make_event_json(&e2)).unwrap();
         assert_eq!(prev2, hash1, "prev_hash of event2 must be hash1");
-        assert_eq!(chain.prev_hash, hash2, "state must advance to hash2 after event2");
+        assert_eq!(
+            chain.prev_hash, hash2,
+            "state must advance to hash2 after event2"
+        );
     }
 }
 
@@ -1158,26 +1224,44 @@ mod tests {
     fn test_ssh_login_success_dpop_thumbprint() {
         // KCDPOP-02: Verify dpop_thumbprint appears in serialized audit event
         let event = AuditEvent::ssh_login_success(
-            "session-dpop-1", "dpopuser", Some(1002), Some("10.0.0.5"),
-            Some("jti-dpop"), Some("urn:example:mfa"), Some(1705400000),
+            "session-dpop-1",
+            "dpopuser",
+            Some(1002),
+            Some("10.0.0.5"),
+            Some("jti-dpop"),
+            Some("urn:example:mfa"),
+            Some(1705400000),
             Some("abc123-thumbprint"),
         );
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"dpop_thumbprint\":\"abc123-thumbprint\""),
-            "dpop_thumbprint must appear in JSON, got: {json}");
+        assert!(
+            json.contains("\"dpop_thumbprint\":\"abc123-thumbprint\""),
+            "dpop_thumbprint must appear in JSON, got: {json}"
+        );
 
         // Without DPoP (backward compat)
         let event_no_dpop = AuditEvent::ssh_login_success(
-            "session-no-dpop", "regularuser", None, None, None, None, None, None,
+            "session-no-dpop",
+            "regularuser",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let json_no_dpop = serde_json::to_string(&event_no_dpop).unwrap();
-        assert!(json_no_dpop.contains("\"dpop_thumbprint\":null"),
-            "dpop_thumbprint must be null when absent, got: {json_no_dpop}");
+        assert!(
+            json_no_dpop.contains("\"dpop_thumbprint\":null"),
+            "dpop_thumbprint must be null when absent, got: {json_no_dpop}"
+        );
 
         // Verify enriched_log_json also includes dpop_thumbprint
         let enriched = event.enriched_log_json();
-        assert!(enriched.contains("abc123-thumbprint"),
-            "enriched_log_json must include dpop_thumbprint, got: {enriched}");
+        assert!(
+            enriched.contains("abc123-thumbprint"),
+            "enriched_log_json must include dpop_thumbprint, got: {enriched}"
+        );
     }
 
     #[test]
@@ -1302,7 +1386,10 @@ mod tests {
             "alert_on_use=true must produce Critical severity"
         );
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"CRITICAL\""), "serialized severity must be CRITICAL, json: {json}");
+        assert!(
+            json.contains("\"CRITICAL\""),
+            "serialized severity must be CRITICAL, json: {json}"
+        );
     }
 
     #[test]
@@ -1314,7 +1401,10 @@ mod tests {
             "alert_on_use=false must produce Info severity"
         );
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"INFO\""), "serialized severity must be INFO, json: {json}");
+        assert!(
+            json.contains("\"INFO\""),
+            "serialized severity must be INFO, json: {json}"
+        );
     }
 
     #[test]
@@ -1322,7 +1412,10 @@ mod tests {
         let event = AuditEvent::break_glass_auth("bguser", None, false);
         let json = serde_json::to_string(&event).unwrap();
         // When alert_on_use=false severity is INFO, not CRITICAL
-        assert!(!json.contains("\"CRITICAL\""), "severity must NOT be CRITICAL when alert_on_use=false, json: {json}");
+        assert!(
+            !json.contains("\"CRITICAL\""),
+            "severity must NOT be CRITICAL when alert_on_use=false, json: {json}"
+        );
     }
 
     // ── Phase 9: Session / introspection audit event tests ───────────────────
@@ -1487,10 +1580,22 @@ mod tests {
         let no_token_json = serde_json::to_string(&no_token).unwrap();
         let login_failed_json = serde_json::to_string(&login_failed).unwrap();
 
-        assert!(no_token_json.contains("AUTH_NO_TOKEN"), "no_token json: {no_token_json}");
-        assert!(login_failed_json.contains("SSH_LOGIN_FAILED"), "login_failed json: {login_failed_json}");
-        assert!(!no_token_json.contains("SSH_LOGIN_FAILED"), "AUTH_NO_TOKEN must not contain SSH_LOGIN_FAILED, json: {no_token_json}");
-        assert!(!login_failed_json.contains("AUTH_NO_TOKEN"), "SSH_LOGIN_FAILED must not contain AUTH_NO_TOKEN, json: {login_failed_json}");
+        assert!(
+            no_token_json.contains("AUTH_NO_TOKEN"),
+            "no_token json: {no_token_json}"
+        );
+        assert!(
+            login_failed_json.contains("SSH_LOGIN_FAILED"),
+            "login_failed json: {login_failed_json}"
+        );
+        assert!(
+            !no_token_json.contains("SSH_LOGIN_FAILED"),
+            "AUTH_NO_TOKEN must not contain SSH_LOGIN_FAILED, json: {no_token_json}"
+        );
+        assert!(
+            !login_failed_json.contains("AUTH_NO_TOKEN"),
+            "SSH_LOGIN_FAILED must not contain AUTH_NO_TOKEN, json: {login_failed_json}"
+        );
     }
 
     // ── OBS-08: SessionCloseFailed audit event tests ──────────────────────────
@@ -1529,9 +1634,18 @@ mod tests {
         let event = AuditEvent::session_close_failed("sid-789", "dave", "write timeout");
         let json = serde_json::to_string(&event).unwrap();
 
-        assert!(!json.contains("\"action\""), "IPC message field action must not appear in audit event, json: {json}");
-        assert!(!json.contains(ipc_message), "full IPC message must not appear in audit event, json: {json}");
-        assert!(json.contains("write timeout"), "reason must appear, json: {json}");
+        assert!(
+            !json.contains("\"action\""),
+            "IPC message field action must not appear in audit event, json: {json}"
+        );
+        assert!(
+            !json.contains(ipc_message),
+            "full IPC message must not appear in audit event, json: {json}"
+        );
+        assert!(
+            json.contains("write timeout"),
+            "reason must appear, json: {json}"
+        );
     }
 
     // ── get_hostname() tests ─────────────────────────────────────────────────
@@ -1635,11 +1749,23 @@ mod tests {
         let fields = event.ocsf_fields();
 
         assert_eq!(fields.category_uid, 3, "IAM category_uid must be 3");
-        assert_eq!(fields.class_uid, 3002, "Authentication class_uid must be 3002");
+        assert_eq!(
+            fields.class_uid, 3002,
+            "Authentication class_uid must be 3002"
+        );
         assert_eq!(fields.activity_id, 1, "Logon activity_id must be 1");
-        assert_eq!(fields.severity_id, 1, "Success severity_id must be 1 (Info)");
-        assert_eq!(fields.type_uid, 300201, "type_uid must be class_uid * 100 + activity_id");
-        assert_eq!(fields.metadata.version, "1.3.0", "metadata.version must be 1.3.0");
+        assert_eq!(
+            fields.severity_id, 1,
+            "Success severity_id must be 1 (Info)"
+        );
+        assert_eq!(
+            fields.type_uid, 300201,
+            "type_uid must be class_uid * 100 + activity_id"
+        );
+        assert_eq!(
+            fields.metadata.version, "1.3.0",
+            "metadata.version must be 1.3.0"
+        );
     }
 
     #[test]
@@ -1648,7 +1774,10 @@ mod tests {
         let event = AuditEvent::ssh_login_failed(None, None, "bad token");
         let fields = event.ocsf_fields();
 
-        assert_eq!(fields.severity_id, 3, "Failed auth severity_id must be 3 (Medium)");
+        assert_eq!(
+            fields.severity_id, 3,
+            "Failed auth severity_id must be 3 (Medium)"
+        );
         assert_eq!(fields.activity_id, 1, "Logon activity_id must be 1");
         assert_eq!(fields.class_uid, 3002);
         assert_eq!(fields.type_uid, 300201);
@@ -1660,7 +1789,10 @@ mod tests {
         let event = AuditEvent::break_glass_auth("emergency", None, true);
         let fields = event.ocsf_fields();
 
-        assert_eq!(fields.severity_id, 5, "BreakGlass+alert severity_id must be 5 (Critical)");
+        assert_eq!(
+            fields.severity_id, 5,
+            "BreakGlass+alert severity_id must be 5 (Critical)"
+        );
         assert_eq!(fields.activity_id, 1, "Logon activity_id must be 1");
     }
 
@@ -1670,8 +1802,14 @@ mod tests {
         let event = AuditEvent::auth_no_token("user", None);
         let fields = event.ocsf_fields();
 
-        assert_eq!(fields.activity_id, 1, "No-token auth activity_id must be 1 (Logon attempt)");
-        assert_eq!(fields.severity_id, 3, "No-token auth severity_id must be 3 (Medium)");
+        assert_eq!(
+            fields.activity_id, 1,
+            "No-token auth activity_id must be 1 (Logon attempt)"
+        );
+        assert_eq!(
+            fields.severity_id, 3,
+            "No-token auth severity_id must be 3 (Medium)"
+        );
         assert_eq!(fields.class_uid, 3002);
     }
 
@@ -1682,7 +1820,10 @@ mod tests {
         let fields = event.ocsf_fields();
 
         assert_eq!(fields.activity_id, 2, "Logoff activity_id must be 2");
-        assert_eq!(fields.severity_id, 1, "Session closed severity_id must be 1 (Info)");
+        assert_eq!(
+            fields.severity_id, 1,
+            "Session closed severity_id must be 1 (Info)"
+        );
         assert_eq!(fields.type_uid, 300202, "type_uid = 3002 * 100 + 2");
     }
 
@@ -1690,24 +1831,53 @@ mod tests {
     fn test_ocsf_existing_fields_unchanged() {
         // OBS-07 Test 6 (negative): Existing fields not renamed or removed
         // Verify that enriched_log_json() preserves the base event fields
-        let event = AuditEvent::ssh_login_success("sid-abc", "alice", Some(1001),
-            Some("10.0.0.1"), Some("jti-1"), Some("mfa"), Some(1705400000), None);
+        let event = AuditEvent::ssh_login_success(
+            "sid-abc",
+            "alice",
+            Some(1001),
+            Some("10.0.0.1"),
+            Some("jti-1"),
+            Some("mfa"),
+            Some(1705400000),
+            None,
+        );
         let json = event.enriched_log_json();
 
         // Original event fields must be present
-        assert!(json.contains("SSH_LOGIN_SUCCESS"), "event tag preserved, json: {json}");
-        assert!(json.contains("sid-abc"), "session_id preserved, json: {json}");
+        assert!(
+            json.contains("SSH_LOGIN_SUCCESS"),
+            "event tag preserved, json: {json}"
+        );
+        assert!(
+            json.contains("sid-abc"),
+            "session_id preserved, json: {json}"
+        );
         assert!(json.contains("alice"), "user preserved, json: {json}");
-        assert!(json.contains("10.0.0.1"), "source_ip preserved, json: {json}");
+        assert!(
+            json.contains("10.0.0.1"),
+            "source_ip preserved, json: {json}"
+        );
         assert!(json.contains("jti-1"), "oidc_jti preserved, json: {json}");
         assert!(json.contains("mfa"), "oidc_acr preserved, json: {json}");
         // OCSF fields must also be present
-        assert!(json.contains("category_uid"), "category_uid added, json: {json}");
+        assert!(
+            json.contains("category_uid"),
+            "category_uid added, json: {json}"
+        );
         assert!(json.contains("class_uid"), "class_uid added, json: {json}");
-        assert!(json.contains("severity_id"), "severity_id added, json: {json}");
-        assert!(json.contains("activity_id"), "activity_id added, json: {json}");
+        assert!(
+            json.contains("severity_id"),
+            "severity_id added, json: {json}"
+        );
+        assert!(
+            json.contains("activity_id"),
+            "activity_id added, json: {json}"
+        );
         assert!(json.contains("type_uid"), "type_uid added, json: {json}");
-        assert!(json.contains("1.3.0"), "metadata.version added, json: {json}");
+        assert!(
+            json.contains("1.3.0"),
+            "metadata.version added, json: {json}"
+        );
     }
 
     #[test]
@@ -1734,12 +1904,36 @@ mod tests {
 
         for event in &events {
             let json = event.enriched_log_json();
-            assert!(json.contains("category_uid"), "Missing category_uid for {}, json: {json}", event.event_type());
-            assert!(json.contains("class_uid"), "Missing class_uid for {}, json: {json}", event.event_type());
-            assert!(json.contains("severity_id"), "Missing severity_id for {}, json: {json}", event.event_type());
-            assert!(json.contains("activity_id"), "Missing activity_id for {}, json: {json}", event.event_type());
-            assert!(json.contains("type_uid"), "Missing type_uid for {}, json: {json}", event.event_type());
-            assert!(json.contains("1.3.0"), "Missing metadata.version for {}, json: {json}", event.event_type());
+            assert!(
+                json.contains("category_uid"),
+                "Missing category_uid for {}, json: {json}",
+                event.event_type()
+            );
+            assert!(
+                json.contains("class_uid"),
+                "Missing class_uid for {}, json: {json}",
+                event.event_type()
+            );
+            assert!(
+                json.contains("severity_id"),
+                "Missing severity_id for {}, json: {json}",
+                event.event_type()
+            );
+            assert!(
+                json.contains("activity_id"),
+                "Missing activity_id for {}, json: {json}",
+                event.event_type()
+            );
+            assert!(
+                json.contains("type_uid"),
+                "Missing type_uid for {}, json: {json}",
+                event.event_type()
+            );
+            assert!(
+                json.contains("1.3.0"),
+                "Missing metadata.version for {}, json: {json}",
+                event.event_type()
+            );
         }
     }
 
@@ -1750,6 +1944,10 @@ mod tests {
         let old_json = r#"{"event":"SSH_LOGIN_SUCCESS","timestamp":"2024-01-01T00:00:00Z","session_id":"s","user":"u","uid":null,"source_ip":null,"host":"localhost","oidc_jti":null,"oidc_acr":null,"oidc_auth_time":null}"#;
         // AuditEvent deserialization should succeed (old format, no OCSF fields)
         let result: Result<AuditEvent, _> = serde_json::from_str(old_json);
-        assert!(result.is_ok(), "Old-format JSON must still deserialize: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Old-format JSON must still deserialize: {:?}",
+            result.err()
+        );
     }
 }

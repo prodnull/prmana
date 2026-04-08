@@ -1355,10 +1355,8 @@ mod tests {
 
     #[test]
     fn dbus_policy_warn_allows_plain_session() {
-        let action = evaluate_dbus_encryption(
-            DbusEncryptionPolicy::Warn,
-            DbusSessionEncryption::Plain,
-        );
+        let action =
+            evaluate_dbus_encryption(DbusEncryptionPolicy::Warn, DbusSessionEncryption::Plain);
         assert_eq!(
             action,
             DbusEnforcementAction::Allow,
@@ -1368,10 +1366,8 @@ mod tests {
 
     #[test]
     fn dbus_policy_strict_rejects_plain_session() {
-        let action = evaluate_dbus_encryption(
-            DbusEncryptionPolicy::Strict,
-            DbusSessionEncryption::Plain,
-        );
+        let action =
+            evaluate_dbus_encryption(DbusEncryptionPolicy::Strict, DbusSessionEncryption::Plain);
         assert_eq!(
             action,
             DbusEnforcementAction::Reject,
@@ -1381,10 +1377,8 @@ mod tests {
 
     #[test]
     fn dbus_policy_disabled_skips_check() {
-        let action = evaluate_dbus_encryption(
-            DbusEncryptionPolicy::Disabled,
-            DbusSessionEncryption::Plain,
-        );
+        let action =
+            evaluate_dbus_encryption(DbusEncryptionPolicy::Disabled, DbusSessionEncryption::Plain);
         assert_eq!(
             action,
             DbusEnforcementAction::Skipped,
@@ -1402,7 +1396,10 @@ mod tests {
             let action = evaluate_dbus_encryption(policy, DbusSessionEncryption::Encrypted);
             // Disabled -> Skipped; Strict/Warn -> Allow (encrypted is always fine)
             assert!(
-                matches!(action, DbusEnforcementAction::Allow | DbusEnforcementAction::Skipped),
+                matches!(
+                    action,
+                    DbusEnforcementAction::Allow | DbusEnforcementAction::Skipped
+                ),
                 "encrypted session should be allowed in {policy:?} mode, got {action:?}"
             );
         }
@@ -1459,10 +1456,8 @@ mod tests {
 
     #[test]
     fn dbus_unknown_session_allowed() {
-        let action = evaluate_dbus_encryption(
-            DbusEncryptionPolicy::Strict,
-            DbusSessionEncryption::Unknown,
-        );
+        let action =
+            evaluate_dbus_encryption(DbusEncryptionPolicy::Strict, DbusSessionEncryption::Unknown);
         assert_eq!(
             action,
             DbusEnforcementAction::Allow,

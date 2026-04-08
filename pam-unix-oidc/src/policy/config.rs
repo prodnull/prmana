@@ -1341,9 +1341,7 @@ impl PolicyConfig {
 
         // Stat the config file to detect mtime changes.
         let current_mtime = match std::fs::metadata(&config_path) {
-            Ok(meta) => meta
-                .modified()
-                .unwrap_or(SystemTime::UNIX_EPOCH),
+            Ok(meta) => meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             Err(e) => {
                 // File is missing or unreadable.
                 if let Some(ref cached) = *cache_guard {
@@ -2361,7 +2359,10 @@ issuers:
         .unwrap();
 
         let result = PolicyConfig::load_from(&path);
-        assert!(result.is_err(), "HTTP issuer URL must be rejected at load time");
+        assert!(
+            result.is_err(),
+            "HTTP issuer URL must be rejected at load time"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("HTTPS"),
@@ -2385,7 +2386,10 @@ issuers:
         .unwrap();
 
         let result = PolicyConfig::load_from(&path);
-        assert!(result.is_ok(), "HTTPS issuer URL must be accepted: {result:?}");
+        assert!(
+            result.is_ok(),
+            "HTTPS issuer URL must be accepted: {result:?}"
+        );
     }
 
     /// Test-mode: allow_insecure_http_for_testing=true permits HTTP issuer URLs.
@@ -2469,7 +2473,9 @@ issuers:
         assert_eq!(b.client_id, "client-b");
 
         assert!(
-            policy.issuer_by_url("https://unknown.example.com").is_none(),
+            policy
+                .issuer_by_url("https://unknown.example.com")
+                .is_none(),
             "unknown issuer must return None"
         );
     }

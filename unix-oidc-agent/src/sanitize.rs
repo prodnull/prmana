@@ -62,8 +62,10 @@ pub fn sanitize_terminal_output(input: &str) -> (String, bool) {
                 }
                 // 8-bit OSC (0x9D), DCS (0x90), APC (0x9F), PM (0x9E), SOS (0x98)
                 // all consume until ST (0x9C or ESC \)
-                else if matches!(ch, '\u{009D}' | '\u{0090}' | '\u{009F}' | '\u{009E}' | '\u{0098}')
-                {
+                else if matches!(
+                    ch,
+                    '\u{009D}' | '\u{0090}' | '\u{009F}' | '\u{009E}' | '\u{0098}'
+                ) {
                     consume_until_st(&mut chars);
                 }
                 // Other C1 controls: just skip the character
@@ -171,15 +173,10 @@ fn consume_until_st(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 ///
 /// Compares the original input with the sanitized output to identify removed bytes.
 pub fn format_removed_bytes(original: &str, sanitized: &str) -> String {
-    let orig_bytes: std::collections::HashSet<u8> =
-        original.bytes().collect();
-    let sanitized_bytes: std::collections::HashSet<u8> =
-        sanitized.bytes().collect();
+    let orig_bytes: std::collections::HashSet<u8> = original.bytes().collect();
+    let sanitized_bytes: std::collections::HashSet<u8> = sanitized.bytes().collect();
 
-    let mut removed: Vec<u8> = orig_bytes
-        .difference(&sanitized_bytes)
-        .copied()
-        .collect();
+    let mut removed: Vec<u8> = orig_bytes.difference(&sanitized_bytes).copied().collect();
     removed.sort();
 
     removed
@@ -195,8 +192,7 @@ mod tests {
 
     #[test]
     fn sanitize_clean_url_unchanged() {
-        let (result, modified) =
-            sanitize_terminal_output("https://login.example.com");
+        let (result, modified) = sanitize_terminal_output("https://login.example.com");
         assert_eq!(result, "https://login.example.com");
         assert!(!modified);
     }
@@ -204,8 +200,7 @@ mod tests {
     #[test]
     fn sanitize_strips_csi_clear_screen_and_cursor_home() {
         // ESC[2J = clear screen, ESC[H = cursor home
-        let (result, modified) =
-            sanitize_terminal_output("https://evil.com\x1b[2J\x1b[H");
+        let (result, modified) = sanitize_terminal_output("https://evil.com\x1b[2J\x1b[H");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }
@@ -213,8 +208,7 @@ mod tests {
     #[test]
     fn sanitize_strips_osc_title_set() {
         // ESC]0;pwned BEL
-        let (result, modified) =
-            sanitize_terminal_output("https://evil.com\x1b]0;pwned\x07");
+        let (result, modified) = sanitize_terminal_output("https://evil.com\x1b]0;pwned\x07");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }
@@ -222,8 +216,7 @@ mod tests {
     #[test]
     fn sanitize_strips_dcs_sequence() {
         // ESC P malicious ESC \
-        let (result, modified) =
-            sanitize_terminal_output("https://evil.com\x1bPmalicious\x1b\\");
+        let (result, modified) = sanitize_terminal_output("https://evil.com\x1bPmalicious\x1b\\");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }
@@ -231,16 +224,14 @@ mod tests {
     #[test]
     fn sanitize_strips_apc_sequence() {
         // ESC _ malicious ESC \
-        let (result, modified) =
-            sanitize_terminal_output("https://evil.com\x1b_malicious\x1b\\");
+        let (result, modified) = sanitize_terminal_output("https://evil.com\x1b_malicious\x1b\\");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }
 
     #[test]
     fn sanitize_strips_control_characters() {
-        let (result, modified) =
-            sanitize_terminal_output("https://evil.com\x00\x01\x02");
+        let (result, modified) = sanitize_terminal_output("https://evil.com\x00\x01\x02");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }
@@ -256,8 +247,7 @@ mod tests {
     #[test]
     fn sanitize_preserves_valid_unicode() {
         // U+00E9 (e-acute) is valid Unicode >= U+00A0
-        let (result, modified) =
-            sanitize_terminal_output("https://login.example.com/idp/\u{00E9}");
+        let (result, modified) = sanitize_terminal_output("https://login.example.com/idp/\u{00E9}");
         assert_eq!(result, "https://login.example.com/idp/\u{00E9}");
         assert!(!modified);
     }
@@ -293,8 +283,7 @@ mod tests {
     #[test]
     fn sanitize_strips_pm_sequence() {
         // ESC ^ ... ESC \ (Privacy Message)
-        let (result, modified) =
-            sanitize_terminal_output("https://evil.com\x1b^secret\x1b\\");
+        let (result, modified) = sanitize_terminal_output("https://evil.com\x1b^secret\x1b\\");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }
@@ -302,17 +291,15 @@ mod tests {
     #[test]
     fn sanitize_strips_sos_sequence() {
         // ESC X ... ESC \ (Start of String)
-        let (result, modified) =
-            sanitize_terminal_output("https://evil.com\x1bXdata\x1b\\");
+        let (result, modified) = sanitize_terminal_output("https://evil.com\x1bXdata\x1b\\");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }
 
     #[test]
     fn sanitize_handles_multiple_escape_sequences() {
-        let (result, modified) = sanitize_terminal_output(
-            "\x1b[2Jhttps://evil.com\x1b]0;pwned\x07\x1bPdcs\x1b\\\x00",
-        );
+        let (result, modified) =
+            sanitize_terminal_output("\x1b[2Jhttps://evil.com\x1b]0;pwned\x07\x1bPdcs\x1b\\\x00");
         assert_eq!(result, "https://evil.com");
         assert!(modified);
     }

@@ -26,6 +26,13 @@ use crate::storage::{
 /// Matches `TimeoutsConfig::default().ipc_idle_timeout_secs`.
 const DEFAULT_IPC_IDLE_TIMEOUT_SECS: u64 = 60;
 
+/// Maximum IPC message size: 64 KiB.
+///
+/// Legitimate IPC messages (GetProof, Status, Login, etc.) are well under 4 KiB.
+/// This limit prevents a malicious or misbehaving client from consuming unbounded
+/// memory via `read_line()`, which grows the String until it finds a newline.
+const MAX_IPC_MESSAGE_SIZE: usize = 64 * 1024;
+
 /// Maximum concurrent IPC connections.
 ///
 /// Limits resource exhaustion from malicious or runaway clients opening many
@@ -575,6 +582,28 @@ async fn handle_connection(
 
         if n == 0 {
             break;
+        }
+
+        // Security: reject oversized messages to prevent unbounded memory consumption.
+        // Legitimate IPC messages are well under 4 KiB; 64 KiB is generous headroom.
+        if line.len() > MAX_IPC_MESSAGE_SIZE {
+            warn!(
+                size = line.len(),
+                max = MAX_IPC_MESSAGE_SIZE,
+                "IPC message exceeds size limit"
+            );
+            let response = AgentResponse::error(
+                format!(
+                    "Message too large: {} bytes (max {})",
+                    line.len(),
+                    MAX_IPC_MESSAGE_SIZE
+                ),
+                "MESSAGE_TOO_LARGE",
+            );
+            let response_json = serde_json::to_string(&response)? + "\n";
+            writer.write_all(response_json.as_bytes()).await?;
+            line.clear();
+            continue;
         }
 
         let request: AgentRequest = match serde_json::from_str(&line) {
@@ -3296,6 +3325,95 @@ mod tests {
                 // Correct — completed task produces StepUpComplete response.
             }
             other => panic!("Expected StepUpComplete response for finished task, got: {other:?}"),
+        }
+    }
+
+    // ── F-11: IPC message size limit ──────────────────────────────────────────
+
+    /// F-11 positive: normal-sized messages (< 64 KiB) are processed normally.
+    #[tokio::test]
+    async fn test_normal_sized_ipc_message_processed() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("test_msg_size_ok.sock");
+
+        let state = Arc::new(RwLock::new(AgentState::new()));
+        let server = AgentServer::new(socket_path.clone(), Arc::clone(&state));
+        let _server_handle = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let client = AgentClient::new(socket_path);
+        let response = client.status().await.unwrap();
+
+        // A normal Status request should succeed (not be rejected as too large).
+        assert!(
+            matches!(
+                response,
+                AgentResponse::Success(AgentResponseData::Status { .. })
+            ),
+            "Normal-sized message should be processed, got: {response:?}"
+        );
+    }
+
+    /// F-11 negative: oversized messages (> 64 KiB) return MESSAGE_TOO_LARGE error.
+    #[tokio::test]
+    async fn test_oversized_ipc_message_rejected() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("test_msg_size_reject.sock");
+
+        let state = Arc::new(RwLock::new(AgentState::new()));
+        let server = AgentServer::new(socket_path.clone(), Arc::clone(&state));
+        let _server_handle = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Connect directly and send a message larger than MAX_IPC_MESSAGE_SIZE.
+        let stream = tokio::net::UnixStream::connect(&socket_path)
+            .await
+            .expect("connect failed");
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // Build a message that exceeds 64 KiB (padding with spaces inside a JSON string).
+        let padding = "x".repeat(MAX_IPC_MESSAGE_SIZE + 1);
+        let oversized_msg = format!("{{\"command\":\"Status\",\"data\":\"{padding}\"}}\n");
+        assert!(
+            oversized_msg.len() > MAX_IPC_MESSAGE_SIZE,
+            "Test message must exceed MAX_IPC_MESSAGE_SIZE"
+        );
+
+        writer.write_all(oversized_msg.as_bytes()).await.unwrap();
+
+        // Read the response.
+        let mut response_line = String::new();
+        let n = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut response_line))
+            .await
+            .expect("timeout waiting for response")
+            .expect("read error");
+
+        assert!(n > 0, "Expected a response, got EOF");
+
+        let response: AgentResponse =
+            serde_json::from_str(&response_line).expect("Failed to parse response JSON");
+
+        match response {
+            AgentResponse::Error { code, message, .. } => {
+                assert_eq!(
+                    code, "MESSAGE_TOO_LARGE",
+                    "Expected MESSAGE_TOO_LARGE error code, got: {code}"
+                );
+                assert!(
+                    message.contains("too large"),
+                    "Error message should mention 'too large', got: {message}"
+                );
+            }
+            other => panic!("Expected error response for oversized message, got: {other:?}"),
         }
     }
 }

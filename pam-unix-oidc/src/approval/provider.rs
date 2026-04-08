@@ -42,17 +42,21 @@ pub struct ApprovalRequest {
 
 impl ApprovalRequest {
     /// Create a new approval request.
-    pub fn new(username: &str, command: Option<&str>, timeout_seconds: u64) -> Self {
+    pub fn new(
+        username: &str,
+        command: Option<&str>,
+        timeout_seconds: u64,
+    ) -> Result<Self, ApprovalError> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let request_id = generate_request_id();
+        let request_id = generate_request_id()?;
         let hostname = gethostname::gethostname().to_string_lossy().to_string();
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
 
-        Self {
+        Ok(Self {
             request_id,
             username: username.to_string(),
             command: command.map(|s| s.to_string()),
@@ -60,7 +64,7 @@ impl ApprovalRequest {
             timestamp,
             timeout_seconds,
             metadata: std::collections::HashMap::new(),
-        }
+        })
     }
 
     /// Add metadata to the request.
@@ -221,14 +225,24 @@ pub trait ApprovalProvider: Send + Sync {
     fn description(&self) -> &str;
 }
 
-/// Generate a unique request ID.
-fn generate_request_id() -> String {
+/// Generate a unique request ID with CSPRNG randomness.
+///
+/// Format: `apr-{timestamp_hex}-{random_hex}` where random_hex is 16 hex chars
+/// (8 bytes / 64 bits of cryptographic randomness via getrandom).
+fn generate_request_id() -> Result<String, ApprovalError> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("apr-{timestamp:x}")
+
+    let mut random_bytes = [0u8; 8];
+    getrandom::fill(&mut random_bytes).map_err(|e| {
+        ApprovalError::ConfigError(format!("CSPRNG unavailable for request ID: {e}"))
+    })?;
+    let random_hex: String = random_bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+    Ok(format!("apr-{timestamp:x}-{random_hex}"))
 }
 
 #[cfg(test)]
@@ -238,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_approval_request_creation() {
-        let req = ApprovalRequest::new("testuser", Some("sudo rm -rf"), 300);
+        let req = ApprovalRequest::new("testuser", Some("sudo rm -rf"), 300).unwrap();
         assert!(req.request_id.starts_with("apr-"));
         assert_eq!(req.username, "testuser");
         assert_eq!(req.command, Some("sudo rm -rf".to_string()));
@@ -248,6 +262,7 @@ mod tests {
     #[test]
     fn test_approval_request_with_metadata() {
         let req = ApprovalRequest::new("testuser", None, 300)
+            .unwrap()
             .with_metadata("source_ip", "192.168.1.1")
             .with_metadata("tty", "/dev/pts/0");
 
@@ -256,6 +271,51 @@ mod tests {
             Some(&"192.168.1.1".to_string())
         );
         assert_eq!(req.metadata.get("tty"), Some(&"/dev/pts/0".to_string()));
+    }
+
+    /// F-05 positive: generated request ID has CSPRNG randomness in expected format.
+    #[test]
+    fn test_request_id_format_with_csprng() {
+        let id = generate_request_id().unwrap();
+        assert!(id.starts_with("apr-"), "must start with apr- prefix");
+
+        // Format: apr-{timestamp_hex}-{16_hex_chars}
+        let parts: Vec<&str> = id.split('-').collect();
+        assert!(
+            parts.len() >= 3,
+            "expected at least 3 dash-separated parts, got: {id}"
+        );
+        assert_eq!(parts[0], "apr");
+
+        let random_part = parts.last().unwrap();
+        assert_eq!(
+            random_part.len(),
+            16,
+            "random part must be 16 hex chars, got: {random_part}"
+        );
+        assert!(
+            random_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "random part must be valid hex, got: {random_part}"
+        );
+    }
+
+    /// F-05 negative: two request IDs generated in quick succession differ (CSPRNG).
+    #[test]
+    fn test_request_id_uniqueness_from_csprng() {
+        let id1 = generate_request_id().unwrap();
+        let id2 = generate_request_id().unwrap();
+
+        assert_ne!(
+            id1, id2,
+            "two request IDs must differ due to CSPRNG randomness"
+        );
+
+        let random1 = id1.split('-').last().unwrap();
+        let random2 = id2.split('-').last().unwrap();
+        assert_ne!(
+            random1, random2,
+            "random components must differ with 64 bits of entropy"
+        );
     }
 
     #[test]

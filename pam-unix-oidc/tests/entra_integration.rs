@@ -126,8 +126,8 @@ fn entra_single_issuer_policy() -> PolicyConfig {
 #[test]
 fn test_policy_entra_yaml_deserializes() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let fixture = std::path::Path::new(manifest_dir)
-        .join("../test/fixtures/policy/policy-entra.yaml");
+    let fixture =
+        std::path::Path::new(manifest_dir).join("../test/fixtures/policy/policy-entra.yaml");
 
     let config = PolicyConfig::load_from(&fixture)
         .expect("policy-entra.yaml must deserialize without error");
@@ -235,9 +235,7 @@ fn test_entra_discovery_returns_valid_jwks_uri() {
         jwks_resp.status()
     );
 
-    let jwks: serde_json::Value = jwks_resp
-        .json()
-        .expect("JWKS must parse as JSON");
+    let jwks: serde_json::Value = jwks_resp.json().expect("JWKS must parse as JSON");
 
     let keys = jwks["keys"]
         .as_array()
@@ -318,10 +316,7 @@ fn test_entra_token_has_expected_claims() {
     );
 
     // sub — opaque user identifier; always present per OIDC Core 1.0 §2
-    assert!(
-        !claims.sub.is_empty(),
-        "sub must be present and non-empty"
-    );
+    assert!(!claims.sub.is_empty(), "sub must be present and non-empty");
 
     // email — required for the UPN strip_domain mapping pipeline
     // Must be present when email scope was requested (see entra-setup-guide.md)
@@ -363,8 +358,8 @@ fn test_entra_upn_strip_domain_maps_to_bare_username() {
             TransformConfig::Simple("lowercase".to_string()),
         ],
     };
-    let mapper = UsernameMapper::from_config(&identity_config)
-        .expect("Mapper must build from valid config");
+    let mapper =
+        UsernameMapper::from_config(&identity_config).expect("Mapper must build from valid config");
 
     let username = mapper
         .map(&claims)
@@ -379,10 +374,7 @@ fn test_entra_upn_strip_domain_maps_to_bare_username() {
         username.to_lowercase(),
         "lowercase transform must produce all-lowercase username, got: {username}"
     );
-    assert!(
-        !username.is_empty(),
-        "Resulting username must not be empty"
-    );
+    assert!(!username.is_empty(), "Resulting username must not be empty");
 }
 
 /// ENTR-04: raw preferred_username preserves the UPN domain.
@@ -406,8 +398,8 @@ fn test_entra_raw_preferred_username_preserves_domain() {
         username_claim: "preferred_username".to_string(),
         transforms: vec![],
     };
-    let mapper = UsernameMapper::from_config(&identity_config)
-        .expect("Mapper must build from valid config");
+    let mapper =
+        UsernameMapper::from_config(&identity_config).expect("Mapper must build from valid config");
 
     let username = mapper
         .map(&claims)

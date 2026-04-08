@@ -134,7 +134,9 @@ impl PamServiceModule for PamUnixOidc {
                 if let Some(val) = pam_val {
                     #[allow(unsafe_code)]
                     // SAFETY: sshd forks per connection; single-threaded during PAM auth.
-                    unsafe { std::env::set_var(var_name, &val) };
+                    unsafe {
+                        std::env::set_var(var_name, &val)
+                    };
                     continue;
                 }
 
@@ -162,7 +164,9 @@ impl PamServiceModule for PamUnixOidc {
                     if let Some((_, val)) = entries.iter().find(|(k, _)| k == *var_name) {
                         #[allow(unsafe_code)]
                         // SAFETY: sshd forks per connection; single-threaded during PAM auth.
-                        unsafe { std::env::set_var(var_name, val) };
+                        unsafe {
+                            std::env::set_var(var_name, val)
+                        };
                     }
                 }
             }
@@ -206,7 +210,8 @@ impl PamServiceModule for PamUnixOidc {
                 // Audit event — severity depends on alert_on_use policy flag (SBUG-02).
                 // When alert_on_use=true (default), severity is CRITICAL so SIEM alerting fires.
                 // When alert_on_use=false, severity is INFO (routine / non-alerting use).
-                AuditEvent::break_glass_auth(&pam_user, source_ip, policy.break_glass.alert_on_use).log();
+                AuditEvent::break_glass_auth(&pam_user, source_ip, policy.break_glass.alert_on_use)
+                    .log();
                 return PamError::IGNORE;
             }
         }
@@ -310,9 +315,8 @@ impl PamServiceModule for PamUnixOidc {
         //
         // Legacy single-issuer path continues to use from_env().unwrap_or_default() for
         // backward compatibility; that path is deprecated and will not gain hot-reload.
-        let policy_for_auth = PolicyConfig::load_fresh().unwrap_or_else(|_| {
-            PolicyConfig::from_env().unwrap_or_default()
-        });
+        let policy_for_auth = PolicyConfig::load_fresh()
+            .unwrap_or_else(|_| PolicyConfig::from_env().unwrap_or_default());
 
         // Choose authentication path:
         //
@@ -832,7 +836,11 @@ fn notify_agent_session_closed(session_id: &str) {
         tracing::warn!(error = %e, "Failed to set write timeout on agent socket");
     }
 
-    let msg = format!(r#"{{"action":"session_closed","session_id":"{session_id}"}}"#);
+    let msg = serde_json::json!({
+        "action": "session_closed",
+        "session_id": session_id
+    })
+    .to_string();
 
     let mut stream = stream;
     if let Err(e) = stream.write_all(msg.as_bytes()) {
@@ -1463,7 +1471,10 @@ mod tests {
         let token = format!("{header}.{payload}.dummysig");
 
         let iss = crate::auth::extract_iss_for_routing(&token).unwrap();
-        assert_eq!(iss, "https://idp.example.com", "issuer must be extracted without trailing slash");
+        assert_eq!(
+            iss, "https://idp.example.com",
+            "issuer must be extracted without trailing slash"
+        );
     }
 
     #[test]
@@ -1484,7 +1495,10 @@ mod tests {
         let token = format!("{header}.{payload}.dummysig");
 
         let iss = crate::auth::extract_iss_for_routing(&token).unwrap();
-        assert_eq!(iss, "https://idp.example.com", "trailing slash must be normalized");
+        assert_eq!(
+            iss, "https://idp.example.com",
+            "trailing slash must be normalized"
+        );
     }
 
     #[test]
@@ -1569,5 +1583,45 @@ mod tests {
             matches!(result, Err(AuthError::UnknownIssuer(_))),
             "expected UnknownIssuer, got: {result:?}"
         );
+    }
+
+    /// F-08 positive: normal hex session_id produces valid JSON.
+    #[test]
+    fn test_session_closed_json_normal_id() {
+        let session_id = "sudo-18d4f2a3b4c-a7f3e2d1c0b9a8f7";
+        let msg = serde_json::json!({
+            "action": "session_closed",
+            "session_id": session_id
+        })
+        .to_string();
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["action"], "session_closed");
+        assert_eq!(parsed["session_id"], session_id);
+    }
+
+    /// F-08 negative: session_id containing quotes/backslashes produces properly
+    /// escaped JSON (no injection), not a broken JSON structure.
+    #[test]
+    fn test_session_closed_json_injection_prevented() {
+        // An attacker-controlled session_id with JSON-breaking characters.
+        let malicious_id = r#"evil","admin":true,"x":"#;
+        let msg = serde_json::json!({
+            "action": "session_closed",
+            "session_id": malicious_id
+        })
+        .to_string();
+
+        // Must parse as valid JSON with exactly 2 keys.
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(
+            parsed.as_object().unwrap().len(),
+            2,
+            "JSON must have exactly 2 keys (no injected fields), got: {msg}"
+        );
+        // The malicious string must be the literal value, not parsed as JSON structure.
+        assert_eq!(parsed["session_id"], malicious_id);
+        // Verify no "admin" key was injected.
+        assert!(parsed.get("admin").is_none(), "injected key must not exist");
     }
 }

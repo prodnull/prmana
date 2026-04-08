@@ -162,6 +162,12 @@ pub fn generate_dpop_proof(
 ///
 /// Like `build_dpop_message` but allows overriding the `alg` header field
 /// for composite algorithms (e.g., `ML-DSA-65-ES256`).
+///
+/// # Security
+///
+/// The `alg` parameter is validated against an allowlist to prevent algorithm
+/// confusion attacks (e.g., `"none"`, `"HS256"`). Only algorithms that this
+/// agent can produce valid DPoP proofs for are accepted.
 #[instrument(skip(public_key_jwk, nonce), fields(method, target, alg))]
 pub fn build_dpop_message_with_alg(
     public_key_jwk: &serde_json::Value,
@@ -170,6 +176,12 @@ pub fn build_dpop_message_with_alg(
     nonce: Option<&str>,
     alg: &str,
 ) -> Result<String, DPoPError> {
+    // Security: allowlist prevents algorithm confusion attacks (RFC 9449 §4.2).
+    // Only algorithms this agent can produce valid proofs for are permitted.
+    const ALLOWED_ALGORITHMS: &[&str] = &["ES256", "ML-DSA-65-ES256"];
+    if !ALLOWED_ALGORITHMS.contains(&alg) {
+        return Err(DPoPError::UnsupportedAlgorithm(alg.to_string()));
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| DPoPError::ClockError)?
@@ -255,6 +267,10 @@ pub enum DPoPError {
     /// Propagated from hardware signer backends (YubiKey, TPM).
     #[error("Hardware signer error: {0}")]
     HardwareSigner(String),
+    /// Returned when `build_dpop_message_with_alg` receives an algorithm not in the allowlist.
+    /// Prevents algorithm confusion attacks (RFC 9449 §4.2).
+    #[error("Unsupported DPoP algorithm: {0}")]
+    UnsupportedAlgorithm(String),
 }
 
 #[cfg(test)]
@@ -430,6 +446,71 @@ mod tests {
         let sig = vec![0u8; 65];
         let result = assemble_dpop_proof(&msg, &sig);
         assert!(matches!(result, Err(DPoPError::InvalidSignatureLength(65))));
+    }
+
+    // ── F-15: algorithm allowlist for build_dpop_message_with_alg ──────────
+
+    /// F-15 positive: ES256 is accepted.
+    #[test]
+    fn test_build_dpop_message_with_alg_accepts_es256() {
+        let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"x","y":"y"});
+        let result = build_dpop_message_with_alg(&jwk, "SSH", "host", None, "ES256");
+        assert!(result.is_ok(), "ES256 must be accepted: {result:?}");
+    }
+
+    /// F-15 positive: ML-DSA-65-ES256 (PQC composite) is accepted.
+    #[test]
+    fn test_build_dpop_message_with_alg_accepts_ml_dsa_65_es256() {
+        let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"x","y":"y"});
+        let result = build_dpop_message_with_alg(&jwk, "SSH", "host", None, "ML-DSA-65-ES256");
+        assert!(
+            result.is_ok(),
+            "ML-DSA-65-ES256 must be accepted: {result:?}"
+        );
+    }
+
+    /// F-15 negative: "none" algorithm is rejected (algorithm confusion attack).
+    #[test]
+    fn test_build_dpop_message_with_alg_rejects_none() {
+        let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"x","y":"y"});
+        let result = build_dpop_message_with_alg(&jwk, "SSH", "host", None, "none");
+        assert!(
+            matches!(result, Err(DPoPError::UnsupportedAlgorithm(ref a)) if a == "none"),
+            "\"none\" must be rejected: {result:?}"
+        );
+    }
+
+    /// F-15 negative: HS256 (symmetric) is rejected.
+    #[test]
+    fn test_build_dpop_message_with_alg_rejects_hs256() {
+        let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"x","y":"y"});
+        let result = build_dpop_message_with_alg(&jwk, "SSH", "host", None, "HS256");
+        assert!(
+            matches!(result, Err(DPoPError::UnsupportedAlgorithm(ref a)) if a == "HS256"),
+            "HS256 must be rejected: {result:?}"
+        );
+    }
+
+    /// F-15 negative: RS256 is rejected (not in agent's supported algorithms).
+    #[test]
+    fn test_build_dpop_message_with_alg_rejects_rs256() {
+        let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"x","y":"y"});
+        let result = build_dpop_message_with_alg(&jwk, "SSH", "host", None, "RS256");
+        assert!(
+            matches!(result, Err(DPoPError::UnsupportedAlgorithm(ref a)) if a == "RS256"),
+            "RS256 must be rejected: {result:?}"
+        );
+    }
+
+    /// F-15 negative: empty string is rejected.
+    #[test]
+    fn test_build_dpop_message_with_alg_rejects_empty() {
+        let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"x","y":"y"});
+        let result = build_dpop_message_with_alg(&jwk, "SSH", "host", None, "");
+        assert!(
+            matches!(result, Err(DPoPError::UnsupportedAlgorithm(ref a)) if a.is_empty()),
+            "Empty algorithm must be rejected: {result:?}"
+        );
     }
 
     #[test]

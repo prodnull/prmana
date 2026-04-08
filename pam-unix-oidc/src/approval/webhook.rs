@@ -108,6 +108,9 @@ impl WebhookConfig {
             }
         }
 
+        // Security: TLS verification bypass is only available in test-mode builds.
+        // In production builds, this entire block is compiled out.
+        #[cfg(feature = "test-mode")]
         if std::env::var("UNIX_OIDC_WEBHOOK_INSECURE")
             .map(|v| v.to_lowercase() == "true")
             .unwrap_or(false)
@@ -241,5 +244,88 @@ mod tests {
     fn test_webhook_config_strips_trailing_slash() {
         let config = WebhookConfig::new("https://example.com/api/");
         assert_eq!(config.webhook_url, "https://example.com/api");
+    }
+
+    /// F-06 positive: default config from_env has verify_tls == true.
+    #[test]
+    fn test_webhook_config_default_tls_enabled() {
+        // Set only the required env var; leave UNIX_OIDC_WEBHOOK_INSECURE unset.
+        let _url_guard = TempEnvGuard::set("UNIX_OIDC_WEBHOOK_URL", "https://example.com/hook");
+        let _insecure_guard = TempEnvGuard::remove("UNIX_OIDC_WEBHOOK_INSECURE");
+
+        let config = WebhookConfig::from_env().unwrap();
+        assert!(
+            config.verify_tls,
+            "verify_tls must default to true when UNIX_OIDC_WEBHOOK_INSECURE is unset"
+        );
+    }
+
+    /// F-06 negative: in non-test-mode builds, setting UNIX_OIDC_WEBHOOK_INSECURE=true
+    /// does NOT disable TLS verification (the env var is ignored).
+    #[cfg(not(feature = "test-mode"))]
+    #[test]
+    fn test_webhook_insecure_env_ignored_without_test_mode() {
+        let _url_guard = TempEnvGuard::set("UNIX_OIDC_WEBHOOK_URL", "https://example.com/hook");
+        let _insecure_guard = TempEnvGuard::set("UNIX_OIDC_WEBHOOK_INSECURE", "true");
+
+        let config = WebhookConfig::from_env().unwrap();
+        assert!(
+            config.verify_tls,
+            "verify_tls must remain true even when UNIX_OIDC_WEBHOOK_INSECURE=true \
+             in non-test-mode builds"
+        );
+    }
+
+    /// F-06 test-mode: setting UNIX_OIDC_WEBHOOK_INSECURE=true disables TLS verification.
+    #[cfg(feature = "test-mode")]
+    #[test]
+    fn test_webhook_insecure_env_disables_tls_in_test_mode() {
+        let _url_guard = TempEnvGuard::set("UNIX_OIDC_WEBHOOK_URL", "https://example.com/hook");
+        let _insecure_guard = TempEnvGuard::set("UNIX_OIDC_WEBHOOK_INSECURE", "true");
+
+        let config = WebhookConfig::from_env().unwrap();
+        assert!(
+            !config.verify_tls,
+            "verify_tls must be false when UNIX_OIDC_WEBHOOK_INSECURE=true in test-mode"
+        );
+    }
+}
+
+/// RAII guard for temporarily setting/removing environment variables in tests.
+/// Restores the original value on drop.
+#[cfg(test)]
+struct TempEnvGuard {
+    key: String,
+    original: Option<String>,
+}
+
+#[cfg(test)]
+impl TempEnvGuard {
+    fn set(key: &str, value: &str) -> Self {
+        let original = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self {
+            key: key.to_string(),
+            original,
+        }
+    }
+
+    fn remove(key: &str) -> Self {
+        let original = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self {
+            key: key.to_string(),
+            original,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempEnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(val) => std::env::set_var(&self.key, val),
+            None => std::env::remove_var(&self.key),
+        }
     }
 }

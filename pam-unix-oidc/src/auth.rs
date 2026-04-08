@@ -177,9 +177,8 @@ pub fn authenticate_multi_issuer(
         // When set, only these algorithms are accepted from tokens for this issuer.
         allowed_algorithms: match issuer_config.allowed_algorithms.as_ref() {
             Some(names) => Some(
-                crate::oidc::validation::parse_algorithm_names(names).map_err(|e| {
-                    AuthError::Config(format!("invalid allowed_algorithms: {e}"))
-                })?,
+                crate::oidc::validation::parse_algorithm_names(names)
+                    .map_err(|e| AuthError::Config(format!("invalid allowed_algorithms: {e}")))?,
             ),
             None => None,
         },
@@ -485,52 +484,40 @@ fn apply_per_issuer_dpop(
         // this handles the cache-backed path (require_nonce=true, expected_nonce=None).
         if dpop_config.require_nonce && dpop_config.expected_nonce.is_none() {
             match &result.nonce {
-                Some(nonce) => {
-                    match global_nonce_cache().consume(nonce) {
-                        Ok(()) => {
-                            tracing::debug!(
-                                nonce_prefix = &nonce[..nonce.len().min(8)],
-                                "DPoP nonce consumed successfully (multi-issuer path)"
-                            );
-                        }
-                        Err(NonceConsumeError::ConsumedOrExpired) => {
-                            tracing::warn!(
-                                "DPoP nonce replay or expiry detected in multi-issuer path"
-                            );
-                            return Err(AuthError::DPoPValidation(
-                                DPoPValidationError::NonceMismatch,
-                            ));
-                        }
-                        Err(NonceConsumeError::EmptyNonce) => {
-                            tracing::warn!(
-                                "DPoP nonce in proof is empty (multi-issuer path)"
-                            );
-                            return Err(AuthError::DPoPValidation(
-                                DPoPValidationError::MissingNonce,
-                            ));
-                        }
+                Some(nonce) => match global_nonce_cache().consume(nonce) {
+                    Ok(()) => {
+                        tracing::debug!(
+                            nonce_prefix = &nonce[..nonce.len().min(8)],
+                            "DPoP nonce consumed successfully (multi-issuer path)"
+                        );
                     }
-                }
-                None => {
-                    match dpop_nonce_enforcement {
-                        EnforcementMode::Strict => {
-                            tracing::warn!(
-                                "DPoP nonce required (strict) but proof has no nonce \
+                    Err(NonceConsumeError::ConsumedOrExpired) => {
+                        tracing::warn!("DPoP nonce replay or expiry detected in multi-issuer path");
+                        return Err(AuthError::DPoPValidation(
+                            DPoPValidationError::NonceMismatch,
+                        ));
+                    }
+                    Err(NonceConsumeError::EmptyNonce) => {
+                        tracing::warn!("DPoP nonce in proof is empty (multi-issuer path)");
+                        return Err(AuthError::DPoPValidation(DPoPValidationError::MissingNonce));
+                    }
+                },
+                None => match dpop_nonce_enforcement {
+                    EnforcementMode::Strict => {
+                        tracing::warn!(
+                            "DPoP nonce required (strict) but proof has no nonce \
                                  (multi-issuer path)"
-                            );
-                            return Err(AuthError::DPoPValidation(
-                                DPoPValidationError::MissingNonce,
-                            ));
-                        }
-                        EnforcementMode::Warn => {
-                            tracing::warn!(
-                                "DPoP proof missing nonce in multi-issuer path — \
-                                 proceeding (warn mode)"
-                            );
-                        }
-                        EnforcementMode::Disabled => {}
+                        );
+                        return Err(AuthError::DPoPValidation(DPoPValidationError::MissingNonce));
                     }
-                }
+                    EnforcementMode::Warn => {
+                        tracing::warn!(
+                            "DPoP proof missing nonce in multi-issuer path — \
+                                 proceeding (warn mode)"
+                        );
+                    }
+                    EnforcementMode::Disabled => {}
+                },
             }
         }
 
@@ -1881,9 +1868,9 @@ timeouts:
         // Verify that raw_claim in auth.rs is taken from the configured claim
         // (email), not always from preferred_username. We check this via the
         // TokenClaims::get_claim_str API that auth.rs (post-fix) calls.
+        use crate::oidc::token::TokenClaims;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
-        use crate::oidc::token::TokenClaims;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1905,7 +1892,10 @@ timeouts:
         let claims = TokenClaims::from_token(&token).unwrap();
         // preferred_username is absent — the raw claim for "email" username_claim
         // must come from get_claim_str("email"), NOT from preferred_username.
-        assert!(claims.preferred_username.is_none(), "preferred_username must be absent");
+        assert!(
+            claims.preferred_username.is_none(),
+            "preferred_username must be absent"
+        );
         let raw_via_get_claim_str = claims.get_claim_str("email");
         assert_eq!(
             raw_via_get_claim_str.as_deref(),

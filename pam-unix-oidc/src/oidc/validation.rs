@@ -56,9 +56,7 @@ impl std::error::Error for UnsupportedKeyAlgorithm {}
 ///
 /// Note: This is a standalone function rather than `TryFrom` because both
 /// `KeyAlgorithm` and `Algorithm` are external types (orphan rule).
-pub fn key_algorithm_to_algorithm(
-    ka: &KeyAlgorithm,
-) -> Result<Algorithm, UnsupportedKeyAlgorithm> {
+pub fn key_algorithm_to_algorithm(ka: &KeyAlgorithm) -> Result<Algorithm, UnsupportedKeyAlgorithm> {
     match ka {
         KeyAlgorithm::RS256 => Ok(Algorithm::RS256),
         KeyAlgorithm::RS384 => Ok(Algorithm::RS384),
@@ -97,7 +95,9 @@ pub fn parse_algorithm_names(names: &[String]) -> Result<Vec<Algorithm>, String>
             "PS384" => Ok(Algorithm::PS384),
             "PS512" => Ok(Algorithm::PS512),
             "EdDSA" => Ok(Algorithm::EdDSA),
-            other => Err(format!("unsupported algorithm in allowed_algorithms: '{other}'")),
+            other => Err(format!(
+                "unsupported algorithm in allowed_algorithms: '{other}'"
+            )),
         })
         .collect()
 }

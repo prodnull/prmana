@@ -176,8 +176,8 @@ enum Commands {
         #[arg(long)]
         client_id: Option<String>,
 
-        /// OAuth client secret (optional)
-        #[arg(long)]
+        /// OAuth client secret (optional, prefer OIDC_CLIENT_SECRET env var)
+        #[arg(long, hide = true)]
         client_secret: Option<String>,
 
         /// Signer backend: software (default), yubikey:<slot> (e.g. yubikey:9a), tpm.
@@ -637,6 +637,15 @@ async fn run_login(
         .or_else(|| std::env::var("OIDC_CLIENT_ID").ok())
         .unwrap_or_else(|| "unix-oidc".to_string());
 
+    // Security: warn if client_secret was passed via CLI arg — visible in `ps` output.
+    // Prefer OIDC_CLIENT_SECRET env var instead.
+    if client_secret.is_some() {
+        eprintln!(
+            "WARNING: --client-secret passes secrets via command line (visible in ps). \
+             Use OIDC_CLIENT_SECRET env var instead."
+        );
+    }
+
     // Security (MEM-03): wrap client_secret in SecretString immediately — must not appear in logs.
     let client_secret: Option<SecretString> = client_secret.map(SecretString::from).or_else(|| {
         std::env::var("OIDC_CLIENT_SECRET")
@@ -791,11 +800,12 @@ async fn run_login(
 
         // SHRD-05: Sanitize terminal escape sequences from IdP-supplied URIs.
         // A compromised IdP could inject ANSI escape sequences to attack the terminal.
-        let (verification_uri, uri_was_sanitized) =
-            sanitize_terminal_output(verification_uri_raw);
+        let (verification_uri, uri_was_sanitized) = sanitize_terminal_output(verification_uri_raw);
         if uri_was_sanitized {
-            let removed =
-                unix_oidc_agent::sanitize::format_removed_bytes(verification_uri_raw, &verification_uri);
+            let removed = unix_oidc_agent::sanitize::format_removed_bytes(
+                verification_uri_raw,
+                &verification_uri,
+            );
             warn!(
                 raw_uri_len = verification_uri_raw.len(),
                 sanitized_uri_len = verification_uri.len(),
@@ -804,13 +814,11 @@ async fn run_login(
             );
         }
 
-        let verification_uri_complete_raw =
-            device_response["verification_uri_complete"].as_str();
+        let verification_uri_complete_raw = device_response["verification_uri_complete"].as_str();
         let verification_uri_complete = verification_uri_complete_raw.map(|raw| {
             let (sanitized, was_modified) = sanitize_terminal_output(raw);
             if was_modified {
-                let removed =
-                    unix_oidc_agent::sanitize::format_removed_bytes(raw, &sanitized);
+                let removed = unix_oidc_agent::sanitize::format_removed_bytes(raw, &sanitized);
                 warn!(
                     raw_uri_len = raw.len(),
                     sanitized_uri_len = sanitized.len(),
@@ -1805,6 +1813,53 @@ mod tests {
         assert!(
             updated_legacy["signer_type"].is_null(),
             "Legacy metadata without signer_type should produce null, not crash"
+        );
+    }
+
+    // ── F-03: --client-secret CLI exposure mitigation ─────────────────────────
+
+    /// F-03 positive: --client-secret is hidden from help output.
+    /// Users who discover it via source should prefer OIDC_CLIENT_SECRET env var.
+    #[test]
+    fn test_client_secret_arg_hidden_from_help() {
+        use clap::CommandFactory;
+        let cmd = super::Cli::command();
+
+        // Find the "login" subcommand
+        let login_cmd = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "login")
+            .expect("login subcommand must exist");
+
+        // Find the --client-secret argument
+        let arg = login_cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "client_secret")
+            .expect("client_secret argument must exist");
+
+        assert!(
+            arg.is_hide_set(),
+            "--client-secret must be hidden from help output to discourage CLI usage"
+        );
+    }
+
+    /// F-03 negative: --client-secret is NOT shown in rendered help text.
+    #[test]
+    fn test_client_secret_absent_from_rendered_help() {
+        use clap::CommandFactory;
+        let mut cmd = super::Cli::command();
+        let mut buf = Vec::new();
+
+        // Get the login subcommand's help text
+        let login_cmd = cmd
+            .find_subcommand_mut("login")
+            .expect("login subcommand must exist");
+        login_cmd.write_help(&mut buf).unwrap();
+        let help_text = String::from_utf8(buf).unwrap();
+
+        assert!(
+            !help_text.contains("--client-secret"),
+            "--client-secret must not appear in help output, got:\n{help_text}"
         );
     }
 

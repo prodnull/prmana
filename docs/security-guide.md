@@ -12,6 +12,9 @@ This guide covers security best practices for deploying and operating unix-oidc 
 - [Audit and Monitoring](#audit-and-monitoring)
 - [Incident Response](#incident-response)
 - [Compliance Mapping](#compliance-mapping)
+- [Cross-Server and Replay Protection Analysis](#cross-server-and-replay-protection-analysis)
+- [Implementation Hardening](#implementation-hardening)
+- [Acknowledged Limitations](#acknowledged-limitations)
 
 ---
 
@@ -475,6 +478,107 @@ The Linux agent uses the [Secret Service API](https://specifications.freedesktop
 2. **Prefer keyring backends over file storage** — the keyring provides memory protection, access control, and (with encrypted sessions) transport encryption that file storage cannot.
 3. **Restrict D-Bus monitor access** in hardened environments: remove `dbus-monitor` from production images, or apply AppArmor/SELinux policy to restrict `org.freedesktop.DBus.Monitoring` interface access.
 4. **Full-disk encryption** remains the primary defense for at-rest credential material on CoW filesystems and SSDs (NIST SP 800-88 Rev 1, §2.5).
+
+---
+
+## Cross-Server and Replay Protection Analysis
+
+This section documents the threat model for token and DPoP proof replay across servers and connections, including known limitations and compensating controls.
+
+### Cross-server replay: Blocked by DPoP `htu` binding
+
+Each DPoP proof is bound to the target server's hostname via the `htu` (HTTP Target URI) claim. When a user SSHs to multiple servers simultaneously, the agent generates a fresh proof per server with that server's hostname. The PAM module on each server compares the proof's `htu` against its own hostname — a proof generated for `serverA` is rejected on `serverB` with a target mismatch error.
+
+Additionally, each proof contains a unique `jti` (UUID v4), a fresh `iat` timestamp, and the `cnf` thumbprint binding. Even the same OIDC token requires a server-specific, freshly-signed DPoP proof for each target.
+
+### Same-server replay: Requires SSH transport compromise
+
+Within a single SSH connection, the in-memory JTI cache prevents proof reuse. Across connections to the same server, each forked sshd child has an independent JTI cache (known limitation — see below). However, exploiting this requires:
+
+1. Intercepting the DPoP proof, which travels inside SSH-encrypted keyboard-interactive data
+2. Replaying it to the same server within the proof's `iat` window (default 60s)
+3. The proof's `cnf` thumbprint must match the token's binding — both are tied to the agent's ephemeral private key
+
+An attacker with SSH MITM capability already has a shell. DPoP replay is moot at that point.
+
+### Nonce protocol: Proactive delivery avoids cross-fork issues
+
+The standard HTTP DPoP nonce pattern (server rejects with 401 → client retries with nonce in a new request) would create an auth loop in sshd's forking model. unix-oidc avoids this by using proactive nonce delivery within a single SSH connection:
+
+1. **Round 1**: PAM module generates nonce, stores in process-local cache, delivers to client via `PROMPT_ECHO_ON`
+2. **Round 2**: Client binds nonce into DPoP proof, returns via `PROMPT_ECHO_OFF`
+3. PAM module consumes nonce from the same process's cache
+
+All steps occur within a single forked sshd child. No cross-process nonce handoff is needed.
+
+### Known limitation: Per-fork JTI cache
+
+The JTI and nonce caches are in-memory `Lazy` singletons, initialized fresh in each forked sshd child. This means replay protection applies within a connection but not across connections. This is a deliberate design tradeoff:
+
+- **Why not shared state**: PAM modules run in-process within sshd children. Shared-memory IPC or external daemon coordination adds complexity and failure modes to a security-critical authentication path.
+- **Compensating controls**: (1) DPoP proof `iat` window defaults to 60s. (2) Token `exp` limits replay window. (3) DPoP `cnf` binding renders tokens useless without the ephemeral private key. (4) SSH encryption protects the proof in transit. (5) Documented in `jti-cache-architecture.md`.
+
+---
+
+## Implementation Hardening
+
+The following code-level protections are enforced across the codebase. These were verified in a multi-reviewer security audit (April 2026) and hardened where gaps were found.
+
+### File operations
+
+- **Atomic file permissions**: All credential files are created with `OpenOptions::mode(0o600)` via `OpenOptionsExt`, setting permissions at creation time. This prevents TOCTOU race conditions where a file could be briefly world-readable between creation and a subsequent `chmod`.
+- **Secure deletion**: On-disk credentials are overwritten with a three-pass pattern (random → complement → random → unlink) per NIST SP 800-88 Rev 1. Limitations on CoW filesystems and SSDs are logged as warnings; full-disk encryption is the recommended defense for those environments.
+
+### Rate limiting
+
+- **Capacity cap**: The rate limiter enforces a maximum of 100,000 entries with automatic cleanup triggered on each failure recording. This prevents memory exhaustion from credential-stuffing attacks with millions of unique usernames.
+- **Configuration bounds**: Environment-configurable rate limit parameters are clamped to safe ranges (`max_attempts` to 1–1000). Out-of-range values are corrected with a logged warning, preventing accidental or malicious disabling of rate limiting.
+- **Success resets**: On successful authentication, the user's failure history is fully cleared. This prevents a subtle re-lockout DoS where an attacker's prior failures could cause a legitimate user to be locked out after a single subsequent failure.
+
+### DPoP and cryptographic protections
+
+- **JWK thumbprint canonicalization**: Thumbprint computation uses hardcoded `"P-256"` and `"EC"` values in the canonical JSON (RFC 7638), not user-supplied `kty`/`crv` fields. This prevents an attacker from manipulating the thumbprint by supplying alternative key type identifiers.
+- **Algorithm enforcement**: Server-side validation uses an asymmetric-only allowlist (ES256, EdDSA, RS256, RS384, RS512, PS256, PS384, PS512). Client-side proof generation additionally enforces `["ES256", "ML-DSA-65-ES256"]` only. Symmetric algorithms and `"none"` are rejected at both layers.
+- **JTI cache limits**: Both the PAM module and the rust-oauth-dpop library enforce 100,000-entry capacity limits on JTI caches to prevent memory exhaustion from DPoP proof flooding.
+- **Nonce single-use enforcement**: Nonces are consumed atomically via `moka::Cache::remove()`, preventing TOCTOU races in the consume path.
+
+### IPC and daemon security
+
+- **Message size limits**: The agent daemon enforces a 64 KiB maximum on IPC messages. Oversized messages receive an error response without being parsed.
+- **Peer credential verification**: All Unix socket IPC validates the connecting process's UID via `SO_PEERCRED` (Linux) or `getpeereid` (macOS). Cross-user IPC is rejected.
+- **JSON serialization**: IPC messages use `serde_json` structured serialization instead of string interpolation, preventing JSON injection through crafted session IDs or other dynamic values.
+- **Lock poison recovery**: All `RwLock` operations in the DPoP library use `unwrap_or_else(|e| e.into_inner())` to recover from poisoned locks instead of panicking. A panic in a PAM module can lock users out of their system.
+
+### Input validation and safety
+
+- **UTF-8 safe truncation**: CIBA binding messages are truncated using character boundary detection (`char_indices()`), not byte slicing. This prevents panics when non-ASCII hostnames push the message past the 64-byte CIBA limit.
+- **Webhook TLS enforcement**: The ability to disable TLS certificate verification for webhook endpoints is gated behind the `test-mode` compile-time feature flag. Production binaries cannot disable certificate verification via environment variables.
+- **Session and request IDs**: All security-relevant identifiers (session IDs, approval request IDs) use `getrandom` for CSPRNG-based generation. Nanosecond-timestamp-only identifiers were replaced to prevent prediction attacks.
+- **Client secret protection**: The `--client-secret` CLI argument is hidden from help output and produces a deprecation warning at runtime directing users to the `OIDC_CLIENT_SECRET` environment variable, which is not visible in process listings.
+
+---
+
+## Acknowledged Limitations
+
+The following are known design constraints with documented compensating controls. They are tracked for future mitigation.
+
+### CIBA step-up trusts agent IPC
+
+The PAM module trusts the `StepUpComplete` response from the agent daemon without independently validating an OIDC token. The agent performs full OIDC validation internally, and the IPC channel is protected by UID-based peer credential verification (socket permissions 0600, `SO_PEERCRED`/`getpeereid`). An attacker who can spoof IPC responses already has the target user's UID and equivalent access to SSH keys, browser cookies, etc.
+
+**Future mitigation**: Return the CIBA ID token from the agent and validate it in the PAM module for defense-in-depth.
+
+### PAM module does not zeroize bearer tokens
+
+The PAM module handles OIDC tokens as standard `String` types without `SecretString` or `Zeroizing` wrappers. The agent daemon uses full memory protection (SecretString, mlock, ZeroizeOnDrop) because it holds long-lived keys. The PAM module handles tokens transiently in a short-lived forked process that exits after authentication. Core dumps are disabled at startup.
+
+**Future mitigation**: Add `Zeroizing<String>` wrappers for token handling in the PAM module for defense-in-depth against swap-based exposure.
+
+### Webhook approval lacks request/response signing
+
+The webhook approval provider relies on TLS for transport security but does not include HMAC signatures on request or response bodies. In environments where TLS termination occurs at a load balancer with unencrypted internal traffic, this could allow approval spoofing.
+
+**Future mitigation**: Add HMAC-based request signing and response verification.
 
 ---
 

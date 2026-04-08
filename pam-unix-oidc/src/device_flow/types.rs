@@ -81,14 +81,12 @@ impl DeviceAuthResponse {
             // SHRD-04: Reuse shared HTTPS validator from policy::config.
             use crate::policy::config::validate_https_url;
 
-            validate_https_url(&self.verification_uri, "verification_uri").map_err(|msg| {
-                DeviceFlowError::InvalidResponse(msg)
-            })?;
+            validate_https_url(&self.verification_uri, "verification_uri")
+                .map_err(DeviceFlowError::InvalidResponse)?;
 
             if let Some(ref uri) = self.verification_uri_complete {
-                validate_https_url(uri, "verification_uri_complete").map_err(|msg| {
-                    DeviceFlowError::InvalidResponse(msg)
-                })?;
+                validate_https_url(uri, "verification_uri_complete")
+                    .map_err(DeviceFlowError::InvalidResponse)?;
             }
         }
         Ok(())

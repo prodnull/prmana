@@ -837,7 +837,12 @@ fn test_allow_unsafe_pipeline_bypasses_collision_safety() {
 
     let iss = "https://entra-unsafe.example.com";
     // Token uses email claim (UPN-style) — strip_domain would extract "alice"
-    let token = make_test_token(iss, "alice@corp.example", "alice@corp.example", Some("jti-unsafe-entr-01"));
+    let token = make_test_token(
+        iss,
+        "alice@corp.example",
+        "alice@corp.example",
+        Some("jti-unsafe-entr-01"),
+    );
 
     let policy = PolicyConfig {
         issuers: vec![IssuerConfig {
@@ -874,7 +879,12 @@ fn test_allow_unsafe_pipeline_default_false_still_blocks() {
     std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
 
     let iss = "https://entra-safe.example.com";
-    let token = make_test_token(iss, "bob@corp.example", "bob@corp.example", Some("jti-safe-entr-02"));
+    let token = make_test_token(
+        iss,
+        "bob@corp.example",
+        "bob@corp.example",
+        Some("jti-safe-entr-02"),
+    );
 
     let policy = PolicyConfig {
         issuers: vec![IssuerConfig {
@@ -936,9 +946,8 @@ fn make_test_dpop_proof(method: &str, target: &str, nonce: Option<&str>) -> (Str
         .map(|n| format!(r#","nonce":"{n}""#))
         .unwrap_or_default();
     let jti = uuid::Uuid::new_v4().to_string();
-    let claims_json = format!(
-        r#"{{"jti":"{jti}","htm":"{method}","htu":"{target}","iat":{now}{nonce_field}}}"#
-    );
+    let claims_json =
+        format!(r#"{{"jti":"{jti}","htm":"{method}","htu":"{target}","iat":{now}{nonce_field}}}"#);
     let header_json = format!(
         r#"{{"typ":"dpop+jwt","alg":"ES256","jwk":{{"kty":"EC","crv":"P-256","x":"{x}","y":"{y}"}}}}"#
     );
@@ -998,13 +1007,8 @@ fn test_multi_issuer_dpop_nonce_replay_rejected() {
 
     // First call: nonce is consumed by apply_per_issuer_dpop.
     // The call will proceed past DPoP enforcement and fail at SSSD lookup (no SSSD in tests).
-    let first = authenticate_multi_issuer(
-        &token,
-        Some(&dpop_proof),
-        &dpop_config,
-        &policy,
-        &registry,
-    );
+    let first =
+        authenticate_multi_issuer(&token, Some(&dpop_proof), &dpop_config, &policy, &registry);
     std::env::remove_var("UNIX_OIDC_TEST_MODE");
 
     // First call must NOT fail with DPoPValidation — it may fail at UserNotFound.
@@ -1016,13 +1020,8 @@ fn test_multi_issuer_dpop_nonce_replay_rejected() {
     std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
 
     // Second call: same proof with the now-consumed nonce must be rejected.
-    let second = authenticate_multi_issuer(
-        &token,
-        Some(&dpop_proof),
-        &dpop_config,
-        &policy,
-        &registry,
-    );
+    let second =
+        authenticate_multi_issuer(&token, Some(&dpop_proof), &dpop_config, &policy, &registry);
     std::env::remove_var("UNIX_OIDC_TEST_MODE");
 
     assert!(
@@ -1082,7 +1081,13 @@ fn test_acr_enforcement_matching_acr_passes() {
     std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
 
     let iss = "https://acr-match.example.com";
-    let token = make_test_token_with_acr(iss, "alice", "alice", Some("jti-acr-match-01"), Some("urn:mfa"));
+    let token = make_test_token_with_acr(
+        iss,
+        "alice",
+        "alice",
+        Some("jti-acr-match-01"),
+        Some("urn:mfa"),
+    );
 
     let policy = PolicyConfig {
         issuers: vec![IssuerConfig {
@@ -1118,7 +1123,13 @@ fn test_acr_enforcement_wrong_acr_rejected() {
     std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
 
     let iss = "https://acr-wrong.example.com";
-    let token = make_test_token_with_acr(iss, "alice", "alice", Some("jti-acr-wrong-01"), Some("urn:low"));
+    let token = make_test_token_with_acr(
+        iss,
+        "alice",
+        "alice",
+        Some("jti-acr-wrong-01"),
+        Some("urn:low"),
+    );
 
     let policy = PolicyConfig {
         issuers: vec![IssuerConfig {
@@ -1699,11 +1710,11 @@ fn test_config_fresh_bad_yaml_keeps_previous() {
 
     // Overwrite with bad YAML
     std::thread::sleep(std::time::Duration::from_millis(10));
-    std::fs::write(&config_path, b"{{invalid: yaml: {{content}}}}")
-        .expect("must write bad config");
+    std::fs::write(&config_path, b"{{invalid: yaml: {{content}}}}").expect("must write bad config");
 
     // Reload must return the previous valid config (not fail or return empty)
-    let config2 = PolicyConfig::load_fresh().expect("bad YAML reload must return previous valid config, not Err");
+    let config2 = PolicyConfig::load_fresh()
+        .expect("bad YAML reload must return previous valid config, not Err");
     assert_eq!(
         config2.issuers[0].issuer_url, "https://hot-reload-good.example.com",
         "bad YAML reload must preserve previous valid config"
@@ -1729,7 +1740,8 @@ fn test_config_fresh_missing_file_keeps_previous() {
 
     let config1 = PolicyConfig::load_fresh().expect("must load valid config");
     assert_eq!(
-        config1.issuers[0].issuer_url, "https://hot-reload-present.example.com"
+        config1.issuers[0].issuer_url,
+        "https://hot-reload-present.example.com"
     );
 
     // Delete the config file
@@ -1766,7 +1778,10 @@ issuers:
     .extract()
     .expect("required_acr must deserialise from YAML");
 
-    let acr = policy.issuers[0].acr_mapping.as_ref().expect("acr_mapping must be present");
+    let acr = policy.issuers[0]
+        .acr_mapping
+        .as_ref()
+        .expect("acr_mapping must be present");
     assert_eq!(
         acr.required_acr,
         Some("urn:mfa".to_string()),

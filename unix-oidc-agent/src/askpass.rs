@@ -67,20 +67,32 @@ fn token_tmpfile_path(ppid: u32) -> PathBuf {
     std::env::temp_dir().join(format!(".unix-oidc-token-{ppid}"))
 }
 
-/// Write `contents` to `path` and set permissions to 0600 (owner-only).
+/// Write `contents` to `path` with permissions set to 0600 (owner-only).
 ///
-/// Security: the token tmpfile contains an access token briefly.
-/// 0600 limits exposure to the file-owner only.
+/// Security: uses `OpenOptions::mode()` to set permissions atomically at file
+/// creation, preventing the TOCTOU race where `fs::write()` then
+/// `set_permissions()` leaves a window during which the file is world-readable
+/// under the default umask. The token tmpfile contains an access token briefly
+/// and must be strictly owner-only.
 fn write_with_restricted_perms(path: &PathBuf, contents: &str) -> io::Result<()> {
-    fs::write(path, contents)?;
-
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        Ok(())
     }
 
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+    }
 }
 
 // ── public entry point ───────────────────────────────────────────────────────
@@ -423,5 +435,59 @@ mod tests {
             token_path.starts_with(&temp_dir),
             "Token tmpfile should be in temp dir"
         );
+    }
+
+    /// F-02 positive: write_with_restricted_perms creates file with 0o600.
+    #[cfg(unix)]
+    #[test]
+    fn test_write_restricted_perms_atomic_0600() {
+        use std::os::unix::fs::MetadataExt;
+
+        let path = std::env::temp_dir().join(format!(
+            ".unix-oidc-test-atomic-perms-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        write_with_restricted_perms(&path, "atomic-test-content").unwrap();
+
+        let meta = fs::metadata(&path).expect("File should exist");
+        let mode = meta.mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "File must be created with 0o600 permissions atomically, got: {mode:o}"
+        );
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "atomic-test-content");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    /// F-02 negative: file has no group/other permissions even with permissive umask.
+    #[cfg(unix)]
+    #[test]
+    fn test_write_restricted_perms_no_group_other_bits() {
+        use std::os::unix::fs::MetadataExt;
+
+        let path = std::env::temp_dir().join(format!(
+            ".unix-oidc-test-no-group-other-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        write_with_restricted_perms(&path, "restricted-content").unwrap();
+
+        let meta = fs::metadata(&path).expect("File should exist");
+        let mode = meta.mode() & 0o777;
+
+        // No group or other bits should be set regardless of umask.
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "File must have no group/other permissions, got: {mode:o}"
+        );
+
+        let _ = fs::remove_file(&path);
     }
 }

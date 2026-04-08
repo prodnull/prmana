@@ -146,7 +146,9 @@ fn verify_line(line: &str, key: &[u8], expected_prev: &str) -> LineResult {
         };
     }
 
-    LineResult::Ok { chain_hash: recorded_chain_hash }
+    LineResult::Ok {
+        chain_hash: recorded_chain_hash,
+    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -180,7 +182,9 @@ fn main() {
     println!("Events processed: {}", result.processed);
 
     if result.no_chain_fields {
-        println!("Chain status: NOT ENABLED (no chain fields found — tamper-evidence was not enabled)");
+        println!(
+            "Chain status: NOT ENABLED (no chain fields found — tamper-evidence was not enabled)"
+        );
         process::exit(0);
     }
 
@@ -208,7 +212,10 @@ fn main() {
                 b.line_number.saturating_sub(1)
             );
         }
-        println!("Chain status: INVALID ({} break(s) detected)", result.breaks.len());
+        println!(
+            "Chain status: INVALID ({} break(s) detected)",
+            result.breaks.len()
+        );
         process::exit(1);
     }
 }
@@ -349,7 +356,10 @@ mod audit_verify_tests {
 
             // Build the final logged line: flatten event + add chain fields.
             let mut chained = event.as_object().unwrap().clone();
-            chained.insert("prev_hash".to_string(), serde_json::Value::String(prev.clone()));
+            chained.insert(
+                "prev_hash".to_string(),
+                serde_json::Value::String(prev.clone()),
+            );
             chained.insert(
                 "chain_hash".to_string(),
                 serde_json::Value::String(chain_hash.clone()),
@@ -403,7 +413,10 @@ mod audit_verify_tests {
 
         assert_eq!(result.processed, 3, "all 3 events must be processed");
         assert!(result.breaks.is_empty(), "valid chain must have no breaks");
-        assert!(!result.no_chain_fields, "chained log must not report no-chain-fields");
+        assert!(
+            !result.no_chain_fields,
+            "chained log must not report no-chain-fields"
+        );
     }
 
     // ── Test 2: Modified event reports a break ────────────────────────────────
@@ -425,7 +438,10 @@ mod audit_verify_tests {
 
         assert_eq!(result.processed, 2);
         // The first event will fail because its HMAC doesn't match after tampering.
-        assert!(!result.breaks.is_empty(), "tampered event must cause a break");
+        assert!(
+            !result.breaks.is_empty(),
+            "tampered event must cause a break"
+        );
     }
 
     // ── Test 3: Deleted event reports a break at the gap ─────────────────────
@@ -449,7 +465,10 @@ mod audit_verify_tests {
         assert_eq!(result.processed, 2, "2 events remain after deletion");
         // Event 3 (now at index 1 after deletion) will have prev_hash == event2's
         // chain_hash, but the expected prev is event1's chain_hash — chain breaks.
-        assert!(!result.breaks.is_empty(), "deleted event must cause a chain break");
+        assert!(
+            !result.breaks.is_empty(),
+            "deleted event must cause a chain break"
+        );
     }
 
     // ── Test 4 (negative): No chain fields → reports NOT ENABLED ─────────────
@@ -462,7 +481,10 @@ mod audit_verify_tests {
         let reader = Cursor::new(log_content);
         let result = run_verification(reader, TEST_KEY);
 
-        assert!(result.no_chain_fields, "log without chain fields must set no_chain_fields=true");
+        assert!(
+            result.no_chain_fields,
+            "log without chain fields must set no_chain_fields=true"
+        );
     }
 
     // ── Test 5: Empty file → no events ───────────────────────────────────────
@@ -472,7 +494,10 @@ mod audit_verify_tests {
         let reader = Cursor::new("");
         let result = run_verification(reader, TEST_KEY);
 
-        assert_eq!(result.processed, 0, "empty file must yield 0 processed events");
+        assert_eq!(
+            result.processed, 0,
+            "empty file must yield 0 processed events"
+        );
         assert!(result.breaks.is_empty(), "empty file must have no breaks");
     }
 
@@ -487,7 +512,10 @@ mod audit_verify_tests {
         // Valid chain with OCSF fields → should pass.
         let reader = Cursor::new(log_content.clone());
         let result = run_verification(reader, TEST_KEY);
-        assert!(result.breaks.is_empty(), "valid OCSF-enriched chain must verify cleanly");
+        assert!(
+            result.breaks.is_empty(),
+            "valid OCSF-enriched chain must verify cleanly"
+        );
 
         // Tamper with an OCSF field (change severity_id) → chain must break.
         let tampered = log_content.replace("\"severity_id\":1", "\"severity_id\":5");

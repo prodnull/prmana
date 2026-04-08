@@ -36,6 +36,19 @@ const DEFAULT_LOCKOUT_SECS: u64 = 60;
 /// Maximum lockout duration (1 hour)
 const MAX_LOCKOUT_SECS: u64 = 3600;
 
+/// Maximum number of entries (users + IPs) before triggering automatic cleanup.
+/// Prevents unbounded memory growth from distributed brute-force attacks.
+const MAX_ENTRIES: usize = 100_000;
+
+/// Minimum interval between automatic cleanups (seconds).
+const CLEANUP_INTERVAL_SECS: u64 = 60;
+
+/// Minimum allowed max_attempts value.
+const MIN_MAX_ATTEMPTS: u32 = 1;
+
+/// Maximum allowed max_attempts value.
+const MAX_MAX_ATTEMPTS: u32 = 1000;
+
 /// Rate limit errors
 #[derive(Debug, Error)]
 pub enum RateLimitError {
@@ -102,7 +115,20 @@ impl RateLimitConfig {
 
         let max_attempts = std::env::var("UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS")
             .ok()
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<u32>().ok())
+            .map(|v| {
+                let clamped = v.clamp(MIN_MAX_ATTEMPTS, MAX_MAX_ATTEMPTS);
+                if clamped != v {
+                    tracing::warn!(
+                        configured = v,
+                        clamped = clamped,
+                        min = MIN_MAX_ATTEMPTS,
+                        max = MAX_MAX_ATTEMPTS,
+                        "UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS out of valid range, clamped"
+                    );
+                }
+                clamped
+            })
             .unwrap_or(DEFAULT_MAX_ATTEMPTS);
 
         let initial_lockout = std::env::var("UNIX_OIDC_RATE_LIMIT_LOCKOUT")
@@ -128,6 +154,8 @@ pub struct RateLimiter {
     ips: RwLock<HashMap<String, RateLimitEntry>>,
     /// Configuration
     config: RateLimitConfig,
+    /// Last time automatic cleanup was run
+    last_cleanup: RwLock<Instant>,
 }
 
 impl RateLimiter {
@@ -142,6 +170,7 @@ impl RateLimiter {
             users: RwLock::new(HashMap::new()),
             ips: RwLock::new(HashMap::new()),
             config,
+            last_cleanup: RwLock::new(Instant::now()),
         }
     }
 
@@ -198,7 +227,10 @@ impl RateLimiter {
     /// Record a failed authentication attempt.
     ///
     /// This increments the failure counter and may trigger a lockout.
+    /// Automatically triggers cleanup when capacity is exceeded or enough time has elapsed.
     pub fn record_failure(&self, username: &str, source_ip: Option<&str>) {
+        self.maybe_cleanup();
+
         let now = Instant::now();
         let window_start = now - self.config.window;
 
@@ -243,23 +275,27 @@ impl RateLimiter {
 
     /// Record a successful authentication.
     ///
-    /// This resets the consecutive failure counter.
+    /// This resets the consecutive failure counter and clears the attempts history.
+    /// Clearing attempts is critical: stale attempts from before success would
+    /// otherwise count toward the next lockout threshold, causing premature re-lockout.
     pub fn record_success(&self, username: &str, source_ip: Option<&str>) {
-        // Reset user consecutive failures
+        // Reset user consecutive failures and clear attempts
         {
             let mut users = self.users.write();
             if let Some(entry) = users.get_mut(username) {
                 entry.consecutive_failures = 0;
                 entry.lockout_until = None;
+                entry.attempts.clear();
             }
         }
 
-        // Reset IP consecutive failures
+        // Reset IP consecutive failures and clear attempts
         if let Some(ip) = source_ip {
             let mut ips = self.ips.write();
             if let Some(entry) = ips.get_mut(ip) {
                 entry.consecutive_failures = 0;
                 entry.lockout_until = None;
+                entry.attempts.clear();
             }
         }
     }
@@ -304,6 +340,42 @@ impl RateLimiter {
             .and_then(|e| e.lockout_until)
             .map(|until| now < until)
             .unwrap_or(false)
+    }
+
+    /// Return total number of tracked entries (users + IPs).
+    pub fn total_entries(&self) -> usize {
+        self.users.read().len() + self.ips.read().len()
+    }
+
+    /// Automatically run cleanup if capacity is exceeded or enough time has elapsed.
+    ///
+    /// Called from `record_failure()` to prevent unbounded memory growth from
+    /// distributed brute-force attacks without requiring an external cleanup timer.
+    fn maybe_cleanup(&self) {
+        let now = Instant::now();
+        let needs_cleanup = {
+            let last = self.last_cleanup.read();
+            let elapsed = now.duration_since(*last).as_secs() >= CLEANUP_INTERVAL_SECS;
+            let over_capacity = self.total_entries() > MAX_ENTRIES;
+            elapsed || over_capacity
+        };
+
+        if needs_cleanup {
+            self.cleanup();
+            let mut last = self.last_cleanup.write();
+            *last = Instant::now();
+
+            // After cleanup, if still over capacity, log a warning.
+            // We do NOT reject auth — that would be a DoS vector.
+            if self.total_entries() > MAX_ENTRIES {
+                tracing::warn!(
+                    total_entries = self.total_entries(),
+                    max_entries = MAX_ENTRIES,
+                    "Rate limiter still over capacity after cleanup; \
+                     possible distributed brute-force attack"
+                );
+            }
+        }
     }
 
     /// Clean up expired entries.
@@ -426,9 +498,9 @@ mod tests {
         // Authenticate successfully
         limiter.record_success("alice", None);
 
-        // Should no longer be locked out
+        // Should no longer be locked out, and attempts must be cleared
         assert!(limiter.check_allowed("alice", None).is_ok());
-        assert_eq!(limiter.user_failure_count("alice"), 3); // Attempts still recorded
+        assert_eq!(limiter.user_failure_count("alice"), 0); // F-12: attempts cleared on success
     }
 
     #[test]
@@ -478,5 +550,163 @@ mod tests {
         }
 
         assert!(limiter.is_user_locked_out("alice"));
+    }
+
+    /// F-12 positive: after success, user can fail max_attempts - 1 times again
+    /// before being locked out (full budget restored).
+    #[test]
+    fn test_success_clears_attempts_allows_full_budget() {
+        let mut config = test_config();
+        config.initial_lockout = Duration::from_millis(10);
+        let limiter = RateLimiter::with_config(config);
+
+        // Exhaust all attempts to trigger lockout
+        for _ in 0..3 {
+            limiter.record_failure("alice", None);
+        }
+        assert!(limiter.is_user_locked_out("alice"));
+
+        // Wait for lockout to expire, then succeed
+        std::thread::sleep(Duration::from_millis(20));
+        limiter.record_success("alice", None);
+
+        // Failure count must be zero after success
+        assert_eq!(limiter.user_failure_count("alice"), 0);
+
+        // User can now fail max_attempts - 1 times without being locked out
+        for _ in 0..2 {
+            limiter.record_failure("alice", None);
+        }
+        assert!(
+            !limiter.is_user_locked_out("alice"),
+            "user must not be locked out with fewer than max_attempts failures after success"
+        );
+
+        // The third failure triggers lockout again (full budget was restored)
+        limiter.record_failure("alice", None);
+        assert!(limiter.is_user_locked_out("alice"));
+    }
+
+    /// F-12 negative: a single failure after success does NOT cause immediate re-lockout
+    /// (the old bug where stale attempts remained would cause this).
+    #[test]
+    fn test_single_failure_after_success_does_not_relock() {
+        let mut config = test_config();
+        config.initial_lockout = Duration::from_millis(10);
+        let limiter = RateLimiter::with_config(config);
+
+        // Fill up to max_attempts - 1 failures
+        for _ in 0..2 {
+            limiter.record_failure("alice", None);
+        }
+
+        // Succeed — this must clear all attempts
+        limiter.record_success("alice", None);
+
+        // A single new failure must NOT trigger lockout
+        limiter.record_failure("alice", None);
+        assert!(
+            !limiter.is_user_locked_out("alice"),
+            "a single failure after success must not trigger lockout"
+        );
+        assert_eq!(limiter.user_failure_count("alice"), 1);
+    }
+
+    /// F-13 positive: after many entries, cleanup removes expired ones.
+    #[test]
+    fn test_cleanup_removes_expired_entries() {
+        let config = RateLimitConfig {
+            window: Duration::from_millis(50),
+            max_attempts: 100,
+            initial_lockout: Duration::from_millis(10),
+            exponential_backoff: false,
+        };
+        let limiter = RateLimiter::with_config(config);
+
+        // Add many entries
+        for i in 0..50 {
+            limiter.record_failure(&format!("user-{i}"), Some(&format!("10.0.0.{i}")));
+        }
+        assert!(limiter.total_entries() > 0);
+
+        // Wait for window to expire
+        std::thread::sleep(Duration::from_millis(60));
+
+        // Cleanup should remove all expired entries
+        limiter.cleanup();
+        assert_eq!(
+            limiter.total_entries(),
+            0,
+            "all expired entries must be removed after cleanup"
+        );
+    }
+
+    /// F-13 negative: entries over capacity trigger cleanup via maybe_cleanup.
+    #[test]
+    fn test_maybe_cleanup_triggered_by_record_failure() {
+        let config = RateLimitConfig {
+            window: Duration::from_millis(10),
+            max_attempts: 100,
+            initial_lockout: Duration::from_millis(10),
+            exponential_backoff: false,
+        };
+        let limiter = RateLimiter::with_config(config);
+
+        // Add entries (they'll expire quickly due to 10ms window)
+        for i in 0..20 {
+            limiter.record_failure(&format!("user-{i}"), None);
+        }
+
+        // Wait for entries to expire
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Force last_cleanup to be old enough to trigger maybe_cleanup
+        {
+            let mut last = limiter.last_cleanup.write();
+            *last = Instant::now() - Duration::from_secs(CLEANUP_INTERVAL_SECS + 1);
+        }
+
+        // record_failure calls maybe_cleanup, which should evict expired entries
+        limiter.record_failure("trigger-user", None);
+
+        // Only the trigger-user entry should remain (the 20 expired ones are gone)
+        assert!(
+            limiter.total_entries() <= 2, // trigger-user in users map (maybe also trigger-user IP=None → not in ips)
+            "expired entries must be cleaned up, got {} entries",
+            limiter.total_entries()
+        );
+    }
+
+    /// F-14 positive: valid env value is used as-is.
+    #[test]
+    fn test_rate_limit_config_valid_max_attempts() {
+        std::env::set_var("UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS", "50");
+        let config = RateLimitConfig::from_env();
+        std::env::remove_var("UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS");
+        assert_eq!(config.max_attempts, 50);
+    }
+
+    /// F-14 negative: value of 0 is clamped to 1.
+    #[test]
+    fn test_rate_limit_config_zero_clamped_to_min() {
+        std::env::set_var("UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS", "0");
+        let config = RateLimitConfig::from_env();
+        std::env::remove_var("UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS");
+        assert_eq!(
+            config.max_attempts, 1,
+            "max_attempts of 0 must be clamped to MIN_MAX_ATTEMPTS (1)"
+        );
+    }
+
+    /// F-14 negative: very large value is clamped to 1000.
+    #[test]
+    fn test_rate_limit_config_large_clamped_to_max() {
+        std::env::set_var("UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS", "999999");
+        let config = RateLimitConfig::from_env();
+        std::env::remove_var("UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS");
+        assert_eq!(
+            config.max_attempts, 1000,
+            "max_attempts of 999999 must be clamped to MAX_MAX_ATTEMPTS (1000)"
+        );
     }
 }

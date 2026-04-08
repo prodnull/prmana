@@ -65,14 +65,22 @@ impl SecureStorage for FileStorage {
     fn store(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
         let path = self.key_path(key);
 
-        let mut file = File::create(&path)?;
-
+        // Security: Atomic permission setting at file creation via OpenOptions::mode().
+        // Prevents TOCTOU race where File::create() then set_permissions() leaves a
+        // window during which the file is world-readable under the default umask.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&path, perms)?;
-        }
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?
+        };
+
+        #[cfg(not(unix))]
+        let mut file = File::create(&path)?;
 
         file.write_all(value)?;
         file.sync_all()?;
@@ -228,5 +236,45 @@ mod tests {
 
         // Should be readable/writable by owner only (0600)
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// F-01 positive: stored file has mode 0o600 (atomic via OpenOptions::mode).
+    #[cfg(unix)]
+    #[test]
+    fn test_store_creates_file_with_0600_atomically() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (storage, _temp) = test_storage();
+        storage.store("atomic-perm-test", b"secret-value").unwrap();
+
+        let path = storage.key_path("atomic-perm-test");
+        let meta = fs::metadata(&path).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "File must be created with 0o600 permissions, got: {mode:o}"
+        );
+    }
+
+    /// F-01 negative: file is NOT created with default umask permissions.
+    /// Verifies that even under a permissive umask, the file is restricted.
+    #[cfg(unix)]
+    #[test]
+    fn test_store_never_creates_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (storage, _temp) = test_storage();
+        storage.store("umask-test", b"secret-value").unwrap();
+
+        let path = storage.key_path("umask-test");
+        let meta = fs::metadata(&path).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+
+        // The file must not be group- or world-readable/writable/executable.
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "File must have no group/other permissions, got: {mode:o}"
+        );
     }
 }

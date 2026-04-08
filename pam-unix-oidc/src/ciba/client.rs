@@ -128,12 +128,20 @@ pub fn build_binding_message(command: &str, hostname: &str) -> String {
 
     let msg = format!("sudo {exe_name} on {hostname}");
 
-    // Truncate to 64 characters (CIBA spec recommends short binding_message for
-    // authenticator UI display; see CIBA Core 1.0 §7.1 binding_message guidance).
+    // Truncate to at most 64 bytes at a valid UTF-8 character boundary.
+    // CIBA Core 1.0 §7.1 recommends short binding_message for authenticator UI display.
+    // Byte-slicing a multi-byte UTF-8 codepoint would panic, so we use char_indices
+    // to find the last valid boundary at or before byte 64.
     if msg.len() <= 64 {
         msg
     } else {
-        msg[..64].to_string()
+        let end = msg
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= 64)
+            .last()
+            .unwrap_or(0);
+        msg[..end].to_string()
     }
 }
 
@@ -299,5 +307,64 @@ mod tests {
         let msg = build_binding_message("cat", "srv");
         assert_eq!(msg, "sudo cat on srv");
         assert!(msg.len() <= 64);
+    }
+
+    /// F-07 positive: ASCII-only message longer than 64 bytes truncates to exactly 64 bytes.
+    #[test]
+    fn binding_message_ascii_truncates_to_exact_64() {
+        // "sudo ls on " = 11 bytes, so we need a hostname of 100 chars to exceed 64.
+        let long_host = "x".repeat(100);
+        let msg = build_binding_message("ls", &long_host);
+        assert_eq!(
+            msg.len(),
+            64,
+            "ASCII message must truncate to exactly 64 bytes"
+        );
+        assert!(msg.is_char_boundary(msg.len()));
+    }
+
+    /// F-07 negative: multi-byte UTF-8 at the 64-byte boundary does NOT panic
+    /// and produces valid UTF-8 of at most 64 bytes.
+    #[test]
+    fn binding_message_multibyte_utf8_no_panic() {
+        // U+1F512 (lock emoji 🔒) is 4 bytes in UTF-8.
+        // Build a hostname that places a multi-byte char across the 64-byte boundary.
+        // "sudo ls on " = 11 bytes. Fill remaining with emoji (4 bytes each).
+        // 11 + 13 * 4 = 63 bytes, next emoji would start at byte 63 and end at byte 67.
+        let emoji_host = "🔒".repeat(14); // 56 bytes of emoji in hostname
+        let msg = build_binding_message("ls", &emoji_host);
+
+        // Must not panic (the old code would panic here).
+        // Must be valid UTF-8 and at most 64 bytes.
+        assert!(
+            msg.len() <= 64,
+            "message must be at most 64 bytes, got {}",
+            msg.len()
+        );
+        // Verify it's valid UTF-8 (if we get here without panic, String guarantees it,
+        // but let's be explicit)
+        assert!(
+            std::str::from_utf8(msg.as_bytes()).is_ok(),
+            "must be valid UTF-8"
+        );
+    }
+
+    /// F-07 negative: CJK characters (3 bytes each) at the boundary are handled safely.
+    #[test]
+    fn binding_message_cjk_boundary_no_panic() {
+        // U+4E16 (世) is 3 bytes in UTF-8.
+        // "sudo ls on " = 11 bytes. Need chars to push past 64.
+        // 11 + 18 * 3 = 65 bytes — the 18th char would straddle the boundary.
+        let cjk_host = "世".repeat(20);
+        let msg = build_binding_message("ls", &cjk_host);
+        assert!(
+            msg.len() <= 64,
+            "CJK message must be at most 64 bytes, got {}",
+            msg.len()
+        );
+        assert!(
+            std::str::from_utf8(msg.as_bytes()).is_ok(),
+            "must be valid UTF-8"
+        );
     }
 }

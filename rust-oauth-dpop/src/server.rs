@@ -23,6 +23,11 @@ const P256_COORDINATE_LEN: usize = 32;
 static DPOP_JTI_CACHE: std::sync::LazyLock<DPoPJtiCache> =
     std::sync::LazyLock::new(DPoPJtiCache::new);
 
+/// Maximum number of JTI cache entries before forced cleanup (DoS prevention).
+/// If the cache exceeds this size even after cleanup, new entries are still
+/// allowed — rejecting would let an attacker cause denial of service.
+const MAX_CACHE_ENTRIES: usize = 100_000;
+
 /// DPoP JTI cache for replay protection
 struct DPoPJtiCache {
     entries: RwLock<HashMap<String, Instant>>,
@@ -47,7 +52,7 @@ impl DPoPJtiCache {
 
         // Check if JTI already exists
         {
-            let entries = self.entries.read().unwrap();
+            let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
             if let Some(&exp) = entries.get(jti) {
                 if exp > now {
                     return false; // Replay detected
@@ -57,7 +62,7 @@ impl DPoPJtiCache {
 
         // Record the JTI
         {
-            let mut entries = self.entries.write().unwrap();
+            let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
             // Double-check after acquiring write lock
             if let Some(&exp) = entries.get(jti) {
                 if exp > now {
@@ -65,6 +70,23 @@ impl DPoPJtiCache {
                 }
             }
             entries.insert(jti.to_string(), expires_at);
+
+            // F-16: Size-based cleanup to prevent unbounded memory growth.
+            // If over limit after insert, run cleanup inline. If still over
+            // after cleanup, allow anyway — rejecting would be a DoS vector.
+            if entries.len() > MAX_CACHE_ENTRIES {
+                entries.retain(|_, exp| *exp > now);
+                if let Ok(mut last) = self.last_cleanup.write() {
+                    *last = now;
+                }
+                if entries.len() > MAX_CACHE_ENTRIES {
+                    eprintln!(
+                        "DPoP JTI cache at {} entries after cleanup (limit {}), allowing to prevent DoS",
+                        entries.len(),
+                        MAX_CACHE_ENTRIES,
+                    );
+                }
+            }
         }
 
         true // New JTI
@@ -73,14 +95,19 @@ impl DPoPJtiCache {
     fn maybe_cleanup(&self) {
         let now = Instant::now();
         let should_cleanup = {
-            let last = self.last_cleanup.read().unwrap();
+            let last = self.last_cleanup.read().unwrap_or_else(|e| e.into_inner());
             now.duration_since(*last) > Duration::from_secs(300)
         };
 
-        if should_cleanup {
-            let mut entries = self.entries.write().unwrap();
+        let size_over_limit = {
+            let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
+            entries.len() > MAX_CACHE_ENTRIES
+        };
+
+        if should_cleanup || size_over_limit {
+            let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
             entries.retain(|_, exp| *exp > now);
-            *self.last_cleanup.write().unwrap() = now;
+            *self.last_cleanup.write().unwrap_or_else(|e| e.into_inner()) = now;
         }
     }
 }
@@ -348,9 +375,13 @@ fn jwk_to_verifying_key(jwk: &EcPublicJwk) -> Result<VerifyingKey, DPoPValidatio
 fn compute_jwk_thumbprint(jwk: &EcPublicJwk) -> String {
     // RFC 7638: canonical JSON with lexicographic member ordering
     // For EC P-256: crv < kty < x < y
+    // Security: Hardcode "P-256" and "EC" to prevent attacker-controlled kty/crv
+    // from altering the thumbprint (e.g., kty:"oct" would change the hash).
+    // The JWK is already validated as EC P-256 by jwk_to_verifying_key() before
+    // this function is called, so these values are the only correct ones.
     let canonical = format!(
-        r#"{{"crv":"{}","kty":"{}","x":"{}","y":"{}"}}"#,
-        jwk.crv, jwk.kty, jwk.x, jwk.y
+        r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
+        jwk.x, jwk.y
     );
 
     let hash = Sha256::digest(canonical.as_bytes());
@@ -593,5 +624,194 @@ mod tests {
         assert!(!constant_time_eq("hello", "hell")); // Different lengths
         assert!(!constant_time_eq("", "x"));
         assert!(constant_time_eq("", ""));
+    }
+
+    // ---------------------------------------------------------------
+    // F-09: JWK thumbprint uses hardcoded canonical kty/crv
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_f09_thumbprint_from_jwk_matches_coordinates() {
+        // Positive: thumbprint from JWK with correct kty/crv matches
+        // thumbprint from raw coordinates (compute_thumbprint_from_coordinates).
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let point = verifying_key.to_encoded_point(false);
+
+        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
+        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
+
+        let jwk = EcPublicJwk::new(x.clone(), y.clone());
+        let thumb_from_jwk = compute_jwk_thumbprint(&jwk);
+
+        // compute_thumbprint_from_coordinates uses hardcoded P-256/EC
+        let thumb_from_coords = crate::thumbprint::compute_thumbprint_from_coordinates(&x, &y);
+
+        assert_eq!(
+            thumb_from_jwk, thumb_from_coords,
+            "JWK thumbprint must match coordinate-based thumbprint"
+        );
+    }
+
+    #[test]
+    fn test_f09_attacker_cannot_alter_thumbprint_via_kty_crv() {
+        // Negative: JWK with manipulated kty/crv still produces the same
+        // canonical P-256/EC thumbprint. An attacker cannot change the
+        // thumbprint by injecting kty:"oct" or crv:"P-384".
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let point = verifying_key.to_encoded_point(false);
+
+        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
+        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
+
+        // Legitimate JWK
+        let legit_jwk = EcPublicJwk::new(x.clone(), y.clone());
+        let legit_thumb = compute_jwk_thumbprint(&legit_jwk);
+
+        // Attacker JWK with kty:"oct" (symmetric key type)
+        let mut attacker_jwk_oct = EcPublicJwk::new(x.clone(), y.clone());
+        attacker_jwk_oct.kty = "oct".to_string();
+        let attacker_thumb_oct = compute_jwk_thumbprint(&attacker_jwk_oct);
+
+        // Attacker JWK with crv:"P-384"
+        let mut attacker_jwk_384 = EcPublicJwk::new(x.clone(), y.clone());
+        attacker_jwk_384.crv = "P-384".to_string();
+        let attacker_thumb_384 = compute_jwk_thumbprint(&attacker_jwk_384);
+
+        // Both must produce the same thumbprint because kty/crv are hardcoded
+        assert_eq!(
+            legit_thumb, attacker_thumb_oct,
+            "Manipulated kty must not change thumbprint"
+        );
+        assert_eq!(
+            legit_thumb, attacker_thumb_384,
+            "Manipulated crv must not change thumbprint"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // F-10: RwLock poisoning recovery
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_f10_cache_normal_operation() {
+        // Positive: normal cache operations work as expected
+        let cache = DPoPJtiCache::new();
+
+        // New JTI should be accepted
+        assert!(
+            cache.check_and_record("test-jti-normal-1", 60),
+            "New JTI should be accepted"
+        );
+
+        // Same JTI should be rejected (replay)
+        assert!(
+            !cache.check_and_record("test-jti-normal-1", 60),
+            "Replayed JTI should be rejected"
+        );
+
+        // Different JTI should be accepted
+        assert!(
+            cache.check_and_record("test-jti-normal-2", 60),
+            "Different JTI should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_f10_cache_survives_lock_poisoning() {
+        // Negative: after a simulated lock poisoning (panic inside a write
+        // guard), the cache still functions and does not panic.
+        use std::sync::Arc;
+
+        let cache = Arc::new(DPoPJtiCache::new());
+
+        // Poison the write lock by panicking while holding it
+        let cache_clone = Arc::clone(&cache);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut entries = cache_clone.entries.write().unwrap();
+            entries.insert("poisoning-jti".to_string(), Instant::now() + Duration::from_secs(60));
+            panic!("intentional panic to poison the RwLock");
+        }));
+        assert!(result.is_err(), "Panic should have been caught");
+
+        // The lock is now poisoned. Verify cache still works via
+        // unwrap_or_else(|e| e.into_inner()) recovery.
+        assert!(
+            !cache.check_and_record("poisoning-jti", 60),
+            "JTI inserted before panic should still be detected as replay"
+        );
+
+        assert!(
+            cache.check_and_record("post-poison-jti", 60),
+            "New JTI after poisoning should be accepted (cache must not panic)"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // F-16: JTI cache size limit
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_f16_cache_size_limit_triggers_cleanup() {
+        // Negative: after inserting MAX_CACHE_ENTRIES + 1 entries, cleanup
+        // triggers and cache size is reduced.
+        let cache = DPoPJtiCache::new();
+
+        // Insert MAX_CACHE_ENTRIES + 1 entries with a very short TTL (already expired)
+        // so cleanup can actually remove them.
+        let now = Instant::now();
+        {
+            let mut entries = cache.entries.write().unwrap_or_else(|e| e.into_inner());
+            for i in 0..=MAX_CACHE_ENTRIES {
+                // TTL of 0 means they expired at insert time (now - 1s to be safe)
+                entries.insert(
+                    format!("size-test-jti-{}", i),
+                    now - Duration::from_secs(1),
+                );
+            }
+            assert!(
+                entries.len() > MAX_CACHE_ENTRIES,
+                "Cache should exceed limit before cleanup"
+            );
+        }
+
+        // Trigger cleanup by calling check_and_record (which calls maybe_cleanup,
+        // and also does inline size-based cleanup after insert)
+        let accepted = cache.check_and_record("trigger-cleanup-jti", 60);
+        assert!(accepted, "New JTI should be accepted even when cache was over limit");
+
+        // After cleanup, expired entries should be removed
+        let entries = cache.entries.read().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            entries.len() <= MAX_CACHE_ENTRIES,
+            "Cache size ({}) should be at or below limit ({}) after cleanup of expired entries",
+            entries.len(),
+            MAX_CACHE_ENTRIES,
+        );
+    }
+
+    #[test]
+    fn test_f16_cache_accepts_entries_when_over_limit_after_cleanup() {
+        // Positive: even if the cache is over MAX_CACHE_ENTRIES after cleanup
+        // (all entries are still valid), new entries are still allowed.
+        // This prevents DoS by cache exhaustion.
+        let cache = DPoPJtiCache::new();
+
+        // Insert MAX_CACHE_ENTRIES entries with long TTL (won't be cleaned up)
+        {
+            let mut entries = cache.entries.write().unwrap_or_else(|e| e.into_inner());
+            let future = Instant::now() + Duration::from_secs(3600);
+            for i in 0..MAX_CACHE_ENTRIES {
+                entries.insert(format!("persist-jti-{}", i), future);
+            }
+        }
+
+        // This should succeed, not be rejected due to cache being full
+        let accepted = cache.check_and_record("over-limit-new-jti", 60);
+        assert!(
+            accepted,
+            "New JTI must be accepted even when cache exceeds limit (DoS prevention)"
+        );
     }
 }

@@ -75,13 +75,15 @@ pub struct SudoContext {
 }
 
 impl SudoContext {
-    pub fn new(user: &str, command: &str, tty: Option<&str>) -> Self {
-        Self {
+    pub fn new(user: &str, command: &str, tty: Option<&str>) -> Result<Self, SudoError> {
+        let session_id = generate_session_id()
+            .map_err(|e| SudoError::Config(format!("CSPRNG unavailable for session ID: {e}")))?;
+        Ok(Self {
             user: user.to_string(),
             command: command.to_string(),
             tty: tty.map(String::from),
-            session_id: generate_session_id(),
-        }
+            session_id,
+        })
     }
 }
 
@@ -521,10 +523,7 @@ fn perform_device_flow_step_up(
     // error message "token user '' does not match sudo user 'alice'").
     // Using `sub` as the fallback matches common IdP practice (Google, Azure AD in some
     // configurations) and produces a legible error message with the actual identity.
-    let token_user_str = claims
-        .preferred_username
-        .as_deref()
-        .unwrap_or(&claims.sub);
+    let token_user_str = claims.preferred_username.as_deref().unwrap_or(&claims.sub);
     if token_user_str != ctx.user {
         return Err(SudoError::UserMismatch {
             token_user: token_user_str.to_string(),
@@ -654,13 +653,8 @@ fn log_step_up_failed(ctx: &SudoContext, method: &str, reason: &str) {
     AuditEvent::step_up_failed(&ctx.user, Some(&ctx.command), method, reason).log();
 }
 
-fn generate_session_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("sudo-{timestamp:x}")
+fn generate_session_id() -> Result<String, getrandom::Error> {
+    crate::security::session::generate_sudo_session_id()
 }
 
 #[cfg(test)]
@@ -695,7 +689,7 @@ mod tests {
     /// log_step_up_initiated includes step-up method in audit log (no-panic test).
     #[test]
     fn test_log_step_up_initiated_includes_method() {
-        let ctx = SudoContext::new("alice", "/usr/bin/id", Some("/dev/pts/0"));
+        let ctx = SudoContext::new("alice", "/usr/bin/id", Some("/dev/pts/0")).unwrap();
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 120,
@@ -708,7 +702,7 @@ mod tests {
     /// perform_step_up_via_ipc returns SudoError::StepUp on IPC connection failure.
     #[test]
     fn test_perform_step_up_via_ipc_connection_refused() {
-        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None).unwrap();
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 5,
@@ -771,7 +765,7 @@ mod tests {
         // Give server time to bind.
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None).unwrap();
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 10,
@@ -828,7 +822,7 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None).unwrap();
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 10,
@@ -888,7 +882,7 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let ctx = SudoContext::new("alice", "/usr/bin/ls", None);
+        let ctx = SudoContext::new("alice", "/usr/bin/ls", None).unwrap();
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 10,
@@ -913,7 +907,8 @@ mod tests {
             "testuser",
             "/usr/bin/systemctl restart nginx",
             Some("/dev/pts/0"),
-        );
+        )
+        .unwrap();
 
         assert_eq!(ctx.user, "testuser");
         assert_eq!(ctx.command, "/usr/bin/systemctl restart nginx");
@@ -923,31 +918,59 @@ mod tests {
 
     #[test]
     fn test_sudo_context_without_tty() {
-        let ctx = SudoContext::new("admin", "/usr/bin/apt update", None);
+        let ctx = SudoContext::new("admin", "/usr/bin/apt update", None).unwrap();
 
         assert_eq!(ctx.user, "admin");
         assert_eq!(ctx.command, "/usr/bin/apt update");
         assert!(ctx.tty.is_none());
     }
 
+    /// F-04 positive: generated session ID has CSPRNG randomness in expected format.
     #[test]
-    fn test_generate_session_id() {
-        let id1 = generate_session_id();
-        let id2 = generate_session_id();
+    fn test_generate_session_id_format_with_csprng() {
+        let id = generate_session_id().unwrap();
+        assert!(id.starts_with("sudo-"), "must start with sudo- prefix");
 
-        assert!(id1.starts_with("sudo-"));
-        assert!(id2.starts_with("sudo-"));
-        // IDs should be unique (different timestamps)
-        // Note: This might occasionally fail if called within same nanosecond
+        // Format: sudo-{timestamp_hex}-{16_hex_chars_of_randomness}
+        let parts: Vec<&str> = id.split('-').collect();
+        // "sudo" + timestamp + random = at least 3 parts
+        assert!(
+            parts.len() >= 3,
+            "expected at least 3 dash-separated parts, got: {id}"
+        );
+        assert_eq!(parts[0], "sudo");
+
+        // Last part is 16 hex chars (8 bytes of CSPRNG randomness)
+        let random_part = parts.last().unwrap();
+        assert_eq!(
+            random_part.len(),
+            16,
+            "random part must be 16 hex chars, got: {random_part}"
+        );
+        assert!(
+            random_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "random part must be valid hex, got: {random_part}"
+        );
     }
 
+    /// F-04 negative: two IDs generated in quick succession are NOT equal (CSPRNG randomness).
     #[test]
-    fn test_session_id_format() {
-        let id = generate_session_id();
-        // Format: sudo-{timestamp}-{random}
-        let parts: Vec<&str> = id.split('-').collect();
-        assert!(parts.len() >= 2);
-        assert_eq!(parts[0], "sudo");
+    fn test_generate_session_id_uniqueness_from_csprng() {
+        let id1 = generate_session_id().unwrap();
+        let id2 = generate_session_id().unwrap();
+
+        assert_ne!(
+            id1, id2,
+            "two session IDs must differ due to CSPRNG randomness"
+        );
+
+        // Even the random suffix alone must differ (not just the timestamp)
+        let random1 = id1.split('-').last().unwrap();
+        let random2 = id2.split('-').last().unwrap();
+        assert_ne!(
+            random1, random2,
+            "random components must differ with 64 bits of entropy"
+        );
     }
 
     #[test]
