@@ -238,6 +238,143 @@ fi
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════
+# E2E-02b: DPoP Binding + Audit Thumbprint (KCDPOP-02)
+# ═══════════════════════════════════════════════════════════════════════
+echo "--- E2E-02b: DPoP Binding SSH→PAM→Audit Chain (KCDPOP-02) ---"
+
+# Generate ephemeral EC P-256 key for DPoP proof.
+DPOP_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-dpop-XXXXXX.pem)
+trap 'rm -f "$TOKEN_FILE" "$DPOP_KEY_FILE"' EXIT
+openssl ecparam -name prime256v1 -genkey -noout -out "$DPOP_KEY_FILE" 2>/dev/null
+
+# Extract x, y coordinates (same method as test_dpop_binding.sh — proven in CI).
+DPOP_X_B64=$(openssl ec -in "$DPOP_KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 64 | head -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+DPOP_Y_B64=$(openssl ec -in "$DPOP_KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+
+# Compute JWK thumbprint (RFC 7638 canonical form).
+DPOP_CANONICAL="{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"$DPOP_X_B64\",\"y\":\"$DPOP_Y_B64\"}"
+DPOP_THUMBPRINT=$(echo -n "$DPOP_CANONICAL" | openssl dgst -sha256 -binary | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+
+# Build and sign DPoP proof JWT.
+DPOP_JWK="{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"$DPOP_X_B64\",\"y\":\"$DPOP_Y_B64\"}"
+DPOP_JTI=$(openssl rand -hex 16)
+DPOP_IAT=$(date +%s)
+DPOP_TOKEN_ENDPOINT="${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token"
+
+base64url_encode_dpop() { base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='; }
+
+DPOP_HEADER=$(echo -n "{\"typ\":\"dpop+jwt\",\"alg\":\"ES256\",\"jwk\":$DPOP_JWK}" | base64url_encode_dpop)
+DPOP_PAYLOAD=$(echo -n "{\"jti\":\"$DPOP_JTI\",\"htm\":\"POST\",\"htu\":\"$DPOP_TOKEN_ENDPOINT\",\"iat\":$DPOP_IAT}" | base64url_encode_dpop)
+DPOP_SIGNING_INPUT="${DPOP_HEADER}.${DPOP_PAYLOAD}"
+
+# Sign with ES256, convert DER→P1363 (same pattern as test_dpop_binding.sh).
+DPOP_DER_SIG=$(echo -n "$DPOP_SIGNING_INPUT" | openssl dgst -sha256 -sign "$DPOP_KEY_FILE" | xxd -p | tr -d '\n')
+DPOP_OFF=6
+DPOP_R_LEN=$((16#${DPOP_DER_SIG:$DPOP_OFF:2}))
+DPOP_OFF=$((DPOP_OFF + 2))
+DPOP_R_HEX="${DPOP_DER_SIG:$DPOP_OFF:$((DPOP_R_LEN * 2))}"
+DPOP_OFF=$((DPOP_OFF + DPOP_R_LEN * 2 + 2))
+DPOP_S_LEN=$((16#${DPOP_DER_SIG:$DPOP_OFF:2}))
+DPOP_OFF=$((DPOP_OFF + 2))
+DPOP_S_HEX="${DPOP_DER_SIG:$DPOP_OFF:$((DPOP_S_LEN * 2))}"
+DPOP_R_HEX=$(printf '%064s' "$DPOP_R_HEX" | tr ' ' '0' | tail -c 64)
+DPOP_S_HEX=$(printf '%064s' "$DPOP_S_HEX" | tr ' ' '0' | tail -c 64)
+DPOP_SIGNATURE=$(echo -n "${DPOP_R_HEX}${DPOP_S_HEX}" | xxd -r -p | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+DPOP_PROOF="${DPOP_SIGNING_INPUT}.${DPOP_SIGNATURE}"
+
+# Acquire DPoP-bound token from Keycloak.
+DPOP_TOKEN_RESPONSE=$(curl -sf -X POST "$DPOP_TOKEN_ENDPOINT" \
+    -H "DPoP: $DPOP_PROOF" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=password&client_id=${CLIENT_ID}&client_secret=unix-oidc-test-secret&username=testuser&password=testpass&scope=openid" \
+    2>/dev/null || echo '{"error":"request_failed"}')
+
+DPOP_ACCESS_TOKEN=$(echo "$DPOP_TOKEN_RESPONSE" | jq -r '.access_token // empty')
+DPOP_TOKEN_TYPE=$(echo "$DPOP_TOKEN_RESPONSE" | jq -r '.token_type // empty')
+
+if [ -z "$DPOP_ACCESS_TOKEN" ] || [ "$DPOP_ACCESS_TOKEN" = "null" ]; then
+    result "FAIL" "DPoP token acquisition"
+    echo "    Response: ${DPOP_TOKEN_RESPONSE:0:200}"
+else
+    result "PASS" "DPoP token acquired (type: $DPOP_TOKEN_TYPE)"
+
+    # Verify cnf.jkt in token matches computed thumbprint.
+    DPOP_CLAIMS=$(echo "$DPOP_ACCESS_TOKEN" | cut -d'.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null || echo '{}')
+    DPOP_CNF_JKT=$(echo "$DPOP_CLAIMS" | jq -r '.cnf.jkt // empty')
+    if [ "$DPOP_CNF_JKT" = "$DPOP_THUMBPRINT" ]; then
+        result "PASS" "cnf.jkt matches computed thumbprint ($DPOP_THUMBPRINT)"
+    else
+        result "FAIL" "cnf.jkt mismatch (expected $DPOP_THUMBPRINT, got $DPOP_CNF_JKT)"
+    fi
+
+    # Clear audit log, then send DPoP-bound token through SSH→PAM.
+    docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
+        bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" >/dev/null 2>&1
+
+    DPOP_TOKEN_FILE=$(mktemp /tmp/unix-oidc-e2e-dpop-token-XXXXXX)
+    echo -n "$DPOP_ACCESS_TOKEN" > "$DPOP_TOKEN_FILE"
+    chmod 600 "$DPOP_TOKEN_FILE"
+
+    DPOP_SSH_RESULT=""
+    DPOP_SSH_EXIT=0
+    DPOP_SSH_RESULT=$(DISPLAY=:0 \
+        SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
+        SSH_ASKPASS_REQUIRE=force \
+        UNIX_OIDC_E2E_TOKEN_FILE="$DPOP_TOKEN_FILE" \
+        ssh -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o PreferredAuthentications=keyboard-interactive \
+            -o NumberOfPasswordPrompts=3 \
+            -o ConnectTimeout=10 \
+            -p "$SSH_PORT" \
+            testuser@localhost \
+            "echo SSH_DPOP_AUTH_OK" 2>/dev/null) || DPOP_SSH_EXIT=$?
+
+    rm -f "$DPOP_TOKEN_FILE"
+
+    if [ "$DPOP_SSH_EXIT" -eq 0 ] && echo "$DPOP_SSH_RESULT" | grep -q "SSH_DPOP_AUTH_OK"; then
+        result "PASS" "SSH→PAM chain with DPoP-bound token"
+    else
+        result "FAIL" "SSH→PAM chain with DPoP-bound token (exit=$DPOP_SSH_EXIT)"
+        echo "    SSH output: ${DPOP_SSH_RESULT:-empty}"
+    fi
+
+    # Verify dpop_thumbprint in audit event (KCDPOP-02 — structured jq assertion).
+    sleep 1
+    DPOP_AUDIT_LOG=$(docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
+        cat /var/log/unix-oidc-audit.log 2>/dev/null || echo "")
+
+    if [ -n "$DPOP_AUDIT_LOG" ]; then
+        DPOP_LOGIN_EVENT=$(echo "$DPOP_AUDIT_LOG" | grep '"event":"SSH_LOGIN_SUCCESS"' | tail -1)
+        if [ -n "$DPOP_LOGIN_EVENT" ]; then
+            AUDIT_DPOP_THUMBPRINT=$(echo "$DPOP_LOGIN_EVENT" | jq -r '.dpop_thumbprint // empty')
+            if [ "$AUDIT_DPOP_THUMBPRINT" = "$DPOP_THUMBPRINT" ]; then
+                result "PASS" "Audit dpop_thumbprint matches computed thumbprint"
+            elif [ -n "$AUDIT_DPOP_THUMBPRINT" ] && [ "$AUDIT_DPOP_THUMBPRINT" != "null" ]; then
+                result "FAIL" "Audit dpop_thumbprint mismatch (expected $DPOP_THUMBPRINT, got $AUDIT_DPOP_THUMBPRINT)"
+            else
+                result "FAIL" "Audit event missing dpop_thumbprint (field null or absent)"
+                echo "    Event: ${DPOP_LOGIN_EVENT:0:300}"
+            fi
+        else
+            if [ "$DPOP_SSH_EXIT" -ne 0 ]; then
+                result "SKIP" "Audit dpop_thumbprint verification (SSH chain did not succeed)"
+            else
+                result "FAIL" "No SSH_LOGIN_SUCCESS event in audit log after DPoP auth"
+            fi
+        fi
+    else
+        if [ "$DPOP_SSH_EXIT" -ne 0 ]; then
+            result "SKIP" "Audit dpop_thumbprint verification (SSH chain did not succeed)"
+        else
+            result "FAIL" "Audit log empty after DPoP SSH auth"
+        fi
+    fi
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════
 # E2E-03: Negative Security Tests
 # ═══════════════════════════════════════════════════════════════════════
 echo "--- E2E-03: Negative Security Tests ---"
