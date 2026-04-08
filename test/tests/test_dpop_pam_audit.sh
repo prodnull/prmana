@@ -29,8 +29,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${KEYCLOAK_REALM:-unix-oidc}"
-CLIENT_ID="${KEYCLOAK_CLIENT_ID:-unix-oidc}"
+REALM="${REALM:-unix-oidc}"
+CLIENT_ID="${CLIENT_ID:-unix-oidc}"
 CLIENT_SECRET="${CLIENT_SECRET:-unix-oidc-test-secret}"
 TEST_USERNAME="${TEST_USERNAME:-testuser}"
 TEST_PASSWORD="${TEST_PASSWORD:-testpass}"
@@ -112,8 +112,32 @@ TOKEN_ENDPOINT="${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token"
 DPOP_PAYLOAD=$(printf '{"jti":"%s","htm":"POST","htu":"%s","iat":%d}' "$JTI" "$TOKEN_ENDPOINT" "$NOW" | base64url_encode)
 
 SIGNING_INPUT="${DPOP_HEADER}.${DPOP_PAYLOAD}"
+
+# Convert DER (ASN.1) signature to IEEE P1363 (raw r||s) per RFC 9449/JWS requirement.
+# openssl outputs DER: SEQUENCE { INTEGER r, INTEGER s }. JWTs need fixed 32-byte r || 32-byte s.
+der_to_p1363() {
+    local der_hex
+    der_hex=$(xxd -p | tr -d '\n')
+    # Parse ASN.1: 30 <len> 02 <r_len> <r_hex> 02 <s_len> <s_hex>
+    local offset=4  # skip 30 <len>
+    local r_len=$((16#${der_hex:$offset:2} * 2))
+    offset=$((offset + 2))
+    local r_hex="${der_hex:$offset:$r_len}"
+    offset=$((offset + r_len + 2))  # skip r + 02
+    local s_len=$((16#${der_hex:$offset:2} * 2))
+    offset=$((offset + 2))
+    local s_hex="${der_hex:$offset:$s_len}"
+    # Pad or trim to 32 bytes (64 hex chars) each
+    while [ ${#r_hex} -lt 64 ]; do r_hex="00${r_hex}"; done
+    while [ ${#s_hex} -lt 64 ]; do s_hex="00${s_hex}"; done
+    r_hex="${r_hex: -64}"
+    s_hex="${s_hex: -64}"
+    echo -n "${r_hex}${s_hex}" | xxd -r -p
+}
+
 SIGNATURE=$(printf '%s' "$SIGNING_INPUT" | \
     openssl dgst -sha256 -sign "$TMPDIR_KEYS/ec_private.pem" | \
+    der_to_p1363 | \
     base64url_encode)
 
 DPOP_PROOF="${SIGNING_INPUT}.${SIGNATURE}"
