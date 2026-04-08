@@ -113,32 +113,23 @@ DPOP_PAYLOAD=$(printf '{"jti":"%s","htm":"POST","htu":"%s","iat":%d}' "$JTI" "$T
 
 SIGNING_INPUT="${DPOP_HEADER}.${DPOP_PAYLOAD}"
 
-# Convert DER (ASN.1) signature to IEEE P1363 (raw r||s) per RFC 9449/JWS requirement.
-# openssl outputs DER: SEQUENCE { INTEGER r, INTEGER s }. JWTs need fixed 32-byte r || 32-byte s.
-der_to_p1363() {
-    local der_hex
-    der_hex=$(xxd -p | tr -d '\n')
-    # Parse ASN.1: 30 <len> 02 <r_len> <r_hex> 02 <s_len> <s_hex>
-    local offset=4  # skip 30 <len>
-    local r_len=$((16#${der_hex:$offset:2} * 2))
-    offset=$((offset + 2))
-    local r_hex="${der_hex:$offset:$r_len}"
-    offset=$((offset + r_len + 2))  # skip r + 02
-    local s_len=$((16#${der_hex:$offset:2} * 2))
-    offset=$((offset + 2))
-    local s_hex="${der_hex:$offset:$s_len}"
-    # Pad or trim to 32 bytes (64 hex chars) each
-    while [ ${#r_hex} -lt 64 ]; do r_hex="00${r_hex}"; done
-    while [ ${#s_hex} -lt 64 ]; do s_hex="00${s_hex}"; done
-    r_hex="${r_hex: -64}"
-    s_hex="${s_hex: -64}"
-    echo -n "${r_hex}${s_hex}" | xxd -r -p
-}
-
-SIGNATURE=$(printf '%s' "$SIGNING_INPUT" | \
-    openssl dgst -sha256 -sign "$TMPDIR_KEYS/ec_private.pem" | \
-    der_to_p1363 | \
-    base64url_encode)
+# Sign with ES256 and convert DER signature to JWS format (R || S, each 32 bytes).
+# Pattern from test_dpop_binding.sh (proven in CI).
+DER_SIG=$(printf '%s' "$SIGNING_INPUT" | openssl dgst -sha256 -sign "$TMPDIR_KEYS/ec_private.pem" | xxd -p | tr -d '\n')
+# Parse DER: 30 <len> 02 <r_len> <r_bytes> 02 <s_len> <s_bytes>
+# Skip SEQUENCE header (30 XX) = 4 hex chars, then INTEGER tag (02) = 2 hex chars → offset 6
+OFFSET=6
+R_LEN=$((16#${DER_SIG:$OFFSET:2}))
+OFFSET=$((OFFSET + 2))
+R_HEX="${DER_SIG:$OFFSET:$((R_LEN * 2))}"
+OFFSET=$((OFFSET + R_LEN * 2 + 2))
+S_LEN=$((16#${DER_SIG:$OFFSET:2}))
+OFFSET=$((OFFSET + 2))
+S_HEX="${DER_SIG:$OFFSET:$((S_LEN * 2))}"
+# Pad/trim to exactly 32 bytes (64 hex chars) each — handles leading-zero ASN.1 integers
+R_HEX=$(printf '%064s' "$R_HEX" | tr ' ' '0' | tail -c 64)
+S_HEX=$(printf '%064s' "$S_HEX" | tr ' ' '0' | tail -c 64)
+SIGNATURE=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
 
 DPOP_PROOF="${SIGNING_INPUT}.${SIGNATURE}"
 echo "  DPoP proof built (jti: ${JTI:0:12}...)"
