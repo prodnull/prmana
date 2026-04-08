@@ -186,6 +186,17 @@ pub enum AgentResponseData {
         /// field will deserialize as None.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         parent_session_id: Option<String>,
+        /// Raw ID token from the IdP's CIBA token response (D-12, Phase 30-02).
+        ///
+        /// New PAM versions validate the signature, issuer, audience, and ACR
+        /// from this token directly (D-13 dual validation). Old PAM versions that
+        /// do not read this field continue to work — the `default` attribute
+        /// produces `None` for JSON that lacks the key (backward compat).
+        ///
+        /// The agent performs best-effort pre-validation before returning this token.
+        /// PAM is the enforcement point and must validate independently.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        id_token: Option<String>,
     },
     /// Step-up failed or timed out.
     ///
@@ -293,11 +304,13 @@ impl AgentResponse {
         acr: Option<String>,
         session_id: String,
         parent_session_id: Option<String>,
+        id_token: Option<String>,
     ) -> Self {
         Self::Success(AgentResponseData::StepUpComplete {
             acr,
             session_id,
             parent_session_id,
+            id_token,
         })
     }
 
@@ -701,7 +714,7 @@ mod tests {
     /// StepUpComplete response round-trips with acr=None.
     #[test]
     fn test_step_up_complete_response_round_trip_no_acr() {
-        let resp = AgentResponse::step_up_complete(None, "sess-123".to_string(), None);
+        let resp = AgentResponse::step_up_complete(None, "sess-123".to_string(), None, None);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             json.contains(r#""session_id":"sess-123""#),
@@ -727,6 +740,7 @@ mod tests {
         let resp = AgentResponse::step_up_complete(
             Some("http://schemas.openid.net/phr".to_string()),
             "sess-456".to_string(),
+            None,
             None,
         );
         let json = serde_json::to_string(&resp).unwrap();
@@ -820,6 +834,7 @@ mod tests {
             Some("urn:mfa".to_string()),
             "sess-789".to_string(),
             Some("parent-sess-001".to_string()),
+            None,
         );
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -869,6 +884,7 @@ mod tests {
             None,
             "sess-disc-test".to_string(),
             Some("parent-abc".to_string()),
+            None,
         );
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
@@ -882,6 +898,75 @@ mod tests {
             ),
             "StepUpComplete with parent_session_id must still discriminate correctly, got: {parsed:?}"
         );
+    }
+
+    // ── TDD RED: id_token field in StepUpComplete (Phase 30-02) ─────────────
+
+    /// StepUpComplete with id_token=Some(token) serializes to JSON containing "id_token" key.
+    #[test]
+    fn test_step_up_complete_id_token_round_trip() {
+        let raw_token = "eyJhbGciOiJSUzI1NiJ9.eyJhY3IiOiJ1cm46ZXhhbXBsZTptZmEifQ.sig";
+        let resp = AgentResponse::step_up_complete(
+            Some("urn:example:mfa".to_string()),
+            "sess-123".to_string(),
+            None,
+            Some(raw_token.to_string()),
+        );
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            json.contains("id_token"),
+            "id_token must appear in JSON when Some, got: {json}"
+        );
+        let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            AgentResponse::Success(AgentResponseData::StepUpComplete {
+                id_token,
+                session_id,
+                ..
+            }) => {
+                assert_eq!(
+                    id_token.as_deref(),
+                    Some(raw_token),
+                    "id_token must survive round-trip, got: {id_token:?}"
+                );
+                assert_eq!(session_id, "sess-123");
+            }
+            other => panic!("Expected StepUpComplete, got: {other:?}"),
+        }
+    }
+
+    /// StepUpComplete with id_token=None serializes WITHOUT "id_token" key (skip_serializing_if).
+    #[test]
+    fn test_step_up_complete_no_id_token_omitted_from_json() {
+        let resp =
+            AgentResponse::step_up_complete(None, "sess-456".to_string(), None, None);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !json.contains("id_token"),
+            "id_token must be absent from JSON when None, got: {json}"
+        );
+    }
+
+    /// JSON without id_token field must deserialize to StepUpComplete with id_token=None (backward compat).
+    #[test]
+    fn test_step_up_complete_no_id_token_backward_compat() {
+        // Old-format JSON without id_token — old PAM/agent produced this
+        let json = r#"{"status":"success","acr":"mfa","session_id":"sess-001"}"#;
+        let parsed: AgentResponse = serde_json::from_str(json).unwrap();
+        match parsed {
+            AgentResponse::Success(AgentResponseData::StepUpComplete {
+                id_token,
+                session_id,
+                ..
+            }) => {
+                assert!(
+                    id_token.is_none(),
+                    "id_token must be None when absent in JSON (backward compat), got: {id_token:?}"
+                );
+                assert_eq!(session_id, "sess-001");
+            }
+            other => panic!("Expected StepUpComplete, got: {other:?}"),
+        }
     }
 
     /// Existing SessionAcknowledged/Ok ordering is preserved after adding StepUp variants.

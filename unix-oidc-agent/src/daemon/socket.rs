@@ -1898,7 +1898,7 @@ async fn handle_step_up_result(
                 acr = ?acr,
                 "AGENT_STEP_UP_COMPLETE"
             );
-            AgentResponse::step_up_complete(acr, session_id, parent_session_id)
+            AgentResponse::step_up_complete(acr, session_id, parent_session_id, None)
         }
         Ok(StepUpOutcome::TimedOut {
             reason,
