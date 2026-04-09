@@ -565,25 +565,46 @@ mod linux_impl {
     }
 
     // ── Integration tests (require real TPM hardware or swtpm) ──────────────
+    //
+    // Set UNIX_OIDC_TPM_TCTI to override the default TCTI for CI with swtpm.
+    // Example: UNIX_OIDC_TPM_TCTI=swtpm cargo test --features tpm,test-mode -- --ignored
 
     #[cfg(test)]
     mod integration_tests {
         use super::*;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use crate::hardware::TpmConfig;
+
+        fn test_tcti() -> String {
+            std::env::var("UNIX_OIDC_TPM_TCTI").unwrap_or_else(|_| "tabrmd".to_string())
+        }
+
+        fn test_config() -> SignerConfig {
+            SignerConfig {
+                tpm: Some(TpmConfig {
+                    tcti: Some(test_tcti()),
+                    persistent_handle: Some(DEFAULT_HANDLE),
+                    pin_cache_timeout: None,
+                }),
+                ..Default::default()
+            }
+        }
 
         #[test]
-        #[ignore = "Requires TPM 2.0 with tpm2-abrmd running"]
+        #[ignore = "Requires TPM 2.0 or swtpm (set UNIX_OIDC_TPM_TCTI=swtpm for CI)"]
         fn test_tpm_probe_p256() {
-            TpmSigner::probe_p256("tabrmd")
+            TpmSigner::probe_p256(&test_tcti())
                 .expect("P-256 probe must succeed on a P-256-capable TPM");
         }
 
         #[test]
-        #[ignore = "Requires TPM 2.0 with tpm2-abrmd running"]
-        fn test_tpm_sign_proof() {
-            let config = SignerConfig::default();
-            let signer = TpmSigner::load(&config)
-                .expect("TpmSigner::load requires an existing key at handle 0x81000001");
+        #[ignore = "Requires TPM 2.0 or swtpm (set UNIX_OIDC_TPM_TCTI=swtpm for CI)"]
+        fn test_tpm_provision_and_sign() {
+            let config = test_config();
+
+            // Provision — returns TpmSigner directly (CRIT-2 fix).
+            let signer = TpmSigner::provision(&config)
+                .expect("TpmSigner::provision failed");
 
             let thumbprint = signer.thumbprint();
             assert_eq!(
@@ -592,6 +613,18 @@ mod linux_impl {
                 "thumbprint must be 43 chars (base64url SHA-256)"
             );
 
+            // Verify thumbprint matches independent computation from JWK.
+            let jwk = signer.public_key_jwk();
+            let recomputed = crate::crypto::thumbprint::compute_ec_thumbprint(
+                jwk["x"].as_str().unwrap(),
+                jwk["y"].as_str().unwrap(),
+            );
+            assert_eq!(
+                thumbprint, recomputed,
+                "TPM thumbprint must match compute_ec_thumbprint"
+            );
+
+            // Sign a DPoP proof.
             let proof = signer
                 .sign_proof("SSH", "server.example.com", None)
                 .expect("sign_proof failed");
@@ -604,9 +637,26 @@ mod linux_impl {
 
             let header = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
             let header_json: serde_json::Value = serde_json::from_slice(&header).unwrap();
-            let jwk = &header_json["jwk"];
-            assert_eq!(jwk["kty"], "EC");
-            assert_eq!(jwk["crv"], "P-256");
+            let jwk_header = &header_json["jwk"];
+            assert_eq!(jwk_header["kty"], "EC");
+            assert_eq!(jwk_header["crv"], "P-256");
+        }
+
+        #[test]
+        #[ignore = "Requires TPM 2.0 or swtpm (set UNIX_OIDC_TPM_TCTI=swtpm for CI)"]
+        fn test_tpm_load_existing_key() {
+            let config = test_config();
+
+            // Load requires a key already provisioned at the default handle.
+            let signer = TpmSigner::load(&config)
+                .expect("TpmSigner::load requires an existing key at handle 0x81000001");
+
+            let proof = signer
+                .sign_proof("SSH", "server.example.com", Some("test-nonce"))
+                .expect("sign_proof with nonce failed");
+
+            let parts: Vec<&str> = proof.split('.').collect();
+            assert_eq!(parts.len(), 3, "JWT must have 3 parts");
         }
     }
 }

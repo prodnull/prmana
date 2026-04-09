@@ -508,6 +508,59 @@ jobs:
         run: docker rm -f test-host-systemd 2>/dev/null || true
 
   # ============================================================================
+  # TPM 2.0 Integration Tests (swtpm simulator)
+  # ============================================================================
+  tpm-integration:
+    name: TPM 2.0 Integration (swtpm)
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-tpm-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Start swtpm
+        run: |
+          docker compose -f docker-compose.tpm-test.yaml up -d
+          for i in $(seq 1 12); do
+            if echo | nc -w1 localhost 2321 2>/dev/null; then
+              echo "swtpm ready after ~$((i * 2))s"
+              break
+            fi
+            echo "Waiting for swtpm... ($i/12)"
+            sleep 2
+          done
+
+      - name: Run TPM integration tests
+        run: |
+          cargo test -p unix-oidc-agent --features tpm,test-mode -- --ignored tpm
+        env:
+          UNIX_OIDC_TPM_TCTI: swtpm
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.tpm-test.yaml logs
+
+      - name: Stop swtpm
+        if: always()
+        run: docker compose -f docker-compose.tpm-test.yaml down -v
+
+  # ============================================================================
   # Minimum Supported Rust Version
   # ============================================================================
   msrv:
