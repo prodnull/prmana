@@ -660,6 +660,17 @@ impl PamServiceModule for PamUnixOidc {
                         .log();
                         PamError::AUTH_ERR
                     }
+                    AuthError::AttestationFailed(_) => {
+                        // ADR-018: Hardware attestation verification failed.
+                        AuditEvent::token_validation_failed(
+                            Some(&pam_user),
+                            &format!("Hardware attestation failed: {reason}"),
+                            source_ip,
+                            token_issuer_for_audit.as_deref(),
+                        )
+                        .log();
+                        PamError::AUTH_ERR
+                    }
                 }
             }
         }

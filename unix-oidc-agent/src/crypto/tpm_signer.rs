@@ -105,7 +105,7 @@ mod linux_impl {
 
     use std::str::FromStr;
 
-    use crate::crypto::dpop::{assemble_dpop_proof, build_dpop_message, DPoPError};
+    use crate::crypto::dpop::{assemble_dpop_proof, build_dpop_message, build_dpop_message_with_attestation, DPoPError};
     use crate::crypto::signer::DPoPSigner;
     use crate::crypto::tpm_signer::pad_to_32;
     use crate::hardware::SignerConfig;
@@ -449,22 +449,54 @@ mod linux_impl {
             target: &str,
             nonce: Option<&str>,
         ) -> Result<String, DPoPError> {
-            // Step 1: Build the unsigned DPoP message.
-            let message = build_dpop_message(&self.public_key_jwk, method, target, nonce)?;
+            // Step 1: Attempt attestation (best-effort — ADR-018).
+            // certify() opens its own ephemeral TPM context (open-certify-close).
+            // On failure, proceed without attestation; WARN is logged.
+            let attestation_json = match self.certify() {
+                Ok(evidence) => match serde_json::to_value(&evidence) {
+                    Ok(v) => {
+                        tracing::debug!("TPM attestation evidence produced for DPoP proof");
+                        Some(v)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to serialize TPM attestation evidence — proceeding without"
+                        );
+                        None
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "TPM certify failed — proceeding without attestation evidence"
+                    );
+                    None
+                }
+            };
 
-            // Step 2: SHA-256 hash of the message.
+            // Step 2: Build the unsigned DPoP message, with attestation if available.
+            let message = build_dpop_message_with_attestation(
+                &self.public_key_jwk,
+                method,
+                target,
+                nonce,
+                attestation_json.as_ref(),
+            )?;
+
+            // Step 3: SHA-256 hash of the message.
             // Unrestricted signing keys use a pre-computed digest + null hash-check ticket.
             let hash_bytes = Sha256::digest(message.as_bytes());
             let digest = TpmDigest::try_from(hash_bytes.as_ref())
                 .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
-            // Step 3: Open a fresh TPM context per call (no persistent context — HW-04 pattern).
+            // Step 4: Open a fresh TPM context per call (no persistent context — HW-04 pattern).
             let tcti_conf = parse_tcti(&self.tcti_conf)
                 .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
             let mut ctx =
                 Context::new(tcti_conf).map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
-            // Step 4: Load the key handle from the persistent handle.
+            // Step 5: Load the key handle from the persistent handle.
             let persistent_tpm_handle = PersistentTpmHandle::new(self.persistent_handle)
                 .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
             let tpm_handle = TpmHandle::Persistent(persistent_tpm_handle);
@@ -477,12 +509,12 @@ mod linux_impl {
                 })?
                 .into();
 
-            // Step 5: Build signing scheme (ECDSA + SHA-256).
+            // Step 6: Build signing scheme (ECDSA + SHA-256).
             let scheme = SignatureScheme::EcDsa {
                 hash_scheme: HashScheme::new(HashingAlgorithm::Sha256),
             };
 
-            // Step 6: Build null hash-check ticket.
+            // Step 7: Build null hash-check ticket.
             // Unrestricted signing keys do not require a TPM-internal hash check
             // (the TPM does not verify the hash itself). Pass a null ticket.
             // tss-esapi 7.6: TPMT_TK_HASHCHECK.hierarchy is TPMI_RH_HIERARCHY (u32).
@@ -506,7 +538,7 @@ mod linux_impl {
                     )
                 })?;
 
-            // Step 7: Extract r‖s from the EcDsa signature, left-padding each to 32 bytes.
+            // Step 8: Extract r‖s from the EcDsa signature, left-padding each to 32 bytes.
             let sig_bytes = match signature {
                 tss_esapi::structures::Signature::EcDsa(ecc_sig) => {
                     let r = ecc_sig.signature_r().value();
@@ -527,7 +559,7 @@ mod linux_impl {
                 }
             };
 
-            // Step 8: Assemble the final DPoP JWT.
+            // Step 9: Assemble the final DPoP JWT.
             assemble_dpop_proof(&message, &sig_bytes)
         }
     }

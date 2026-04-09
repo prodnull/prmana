@@ -820,12 +820,19 @@ async fn handle_request(
                     state_read
                         .metrics
                         .record_proof_request(true, start.elapsed());
+                    // Extract attestation evidence from the DPoP proof JWT header
+                    // (ADR-018). The TpmSigner embeds it in the `attest` field during
+                    // sign_proof(). We parse it out for the IPC response so the PAM
+                    // client can log it. Best-effort: WARN on parse failure.
+                    let attestation = extract_attestation_from_proof(&proof);
+
                     (
                         AgentResponse::proof(
                             token,
                             proof,
                             expires_in,
                             Some(presence_type.as_str().to_string()),
+                            attestation,
                         ),
                         false,
                     )
@@ -1133,6 +1140,30 @@ async fn handle_request(
             }
         },
     }
+}
+
+/// Extract the `attest` field from a DPoP proof JWT header (ADR-018).
+///
+/// Returns `Some(serde_json::Value)` if the header contains attestation evidence,
+/// `None` otherwise. This is best-effort: parse failures are logged at WARN and
+/// return `None` — attestation in the IPC response is informational; the PAM
+/// module independently extracts it from the JWT header during verification.
+fn extract_attestation_from_proof(proof: &str) -> Option<serde_json::Value> {
+    use base64::Engine;
+
+    let header_b64 = proof.split('.').next()?;
+    let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to decode DPoP proof header for attestation extraction");
+        })
+        .ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to parse DPoP proof header JSON for attestation extraction");
+        })
+        .ok()?;
+    header.get("attest").cloned()
 }
 
 /// Extract subject and delegation depth from an exchanged token (best-effort decode).

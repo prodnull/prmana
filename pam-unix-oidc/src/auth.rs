@@ -48,6 +48,13 @@ pub enum AuthError {
     /// gain access by presenting a token from an unconfigured IdP.
     #[error("Token from unknown issuer '{0}' — not in configured issuers")]
     UnknownIssuer(String),
+
+    /// Hardware attestation verification failed (ADR-018).
+    ///
+    /// Returned when attestation enforcement is `strict` and the DPoP proof
+    /// either lacks attestation evidence or the evidence is structurally invalid.
+    #[error("Attestation verification failed: {0}")]
+    AttestationFailed(#[from] crate::oidc::attestation::AttestationError),
 }
 
 /// Check if test mode is explicitly enabled.
@@ -340,6 +347,7 @@ pub fn authenticate_multi_issuer(
         &claims,
         issuer_config.dpop_enforcement,
         policy.effective_security_modes().dpop_required,
+        issuer_config.attestation.as_ref(),
     )?;
 
     // Step 7: Per-issuer claim mapping (MIDP-03).
@@ -555,6 +563,7 @@ fn apply_per_issuer_dpop(
     claims: &crate::oidc::token::TokenClaims,
     enforcement: EnforcementMode,
     dpop_nonce_enforcement: EnforcementMode,
+    attestation_config: Option<&crate::policy::config::AttestationConfig>,
 ) -> Result<Option<String>, AuthError> {
     // Fast path: DPoP is disabled for this issuer.
     // Accept the token regardless of whether a proof was provided.
@@ -630,6 +639,11 @@ fn apply_per_issuer_dpop(
             let proof = dpop_proof.ok_or(AuthError::DPoPRequired)?;
             let result = validate_and_enforce_nonce(proof)?;
             verify_dpop_binding(&result.thumbprint, token_jkt)?;
+            // ADR-018: Verify hardware attestation evidence from the DPoP proof header.
+            crate::oidc::attestation::verify_attestation_optional(
+                result.attestation.as_ref(),
+                attestation_config,
+            )?;
             return Ok(Some(result.thumbprint));
         }
     }
@@ -639,6 +653,11 @@ fn apply_per_issuer_dpop(
         (Some(proof), _) => {
             // Proof provided for unbound token — validate it anyway (audit/logging).
             let result = validate_and_enforce_nonce(proof)?;
+            // ADR-018: Verify hardware attestation evidence from the DPoP proof header.
+            crate::oidc::attestation::verify_attestation_optional(
+                result.attestation.as_ref(),
+                attestation_config,
+            )?;
             Ok(Some(result.thumbprint))
         }
         (None, EnforcementMode::Strict) => {
