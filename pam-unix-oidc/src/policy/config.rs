@@ -288,6 +288,39 @@ impl Default for SpiffeMappingConfig {
 /// Controls which OAuth clients are authorized to perform token exchange
 /// (RFC 8693) against tokens from this issuer, and limits on the delegation chain.
 ///
+// ── Hardware attestation (Phase 37, ADR-018) ────────────────────────────────
+
+/// Hardware attestation enforcement configuration.
+///
+/// Controls whether the PAM module requires TPM key attestation evidence
+/// in DPoP proof headers. When enabled, the `attest` field in the DPoP
+/// JWT header is verified to prove the signing key is TPM-resident.
+///
+/// ```yaml
+/// issuers:
+///   - issuer_url: "https://keycloak.example.com/realms/corp"
+///     attestation:
+///       enforcement: strict  # or warn, disabled
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AttestationConfig {
+    /// Enforcement mode for hardware attestation. Default: `Disabled`.
+    ///
+    /// - `strict`: DPoP proofs without valid attestation are rejected.
+    /// - `warn`: Missing/invalid attestation is logged but allowed.
+    /// - `disabled`: Attestation check skipped entirely (default).
+    pub enforcement: EnforcementMode,
+}
+
+impl Default for AttestationConfig {
+    fn default() -> Self {
+        Self {
+            enforcement: EnforcementMode::Disabled,
+        }
+    }
+}
+
 /// When `delegation` is absent from an issuer config, token exchange is not
 /// accepted for tokens from that issuer — any token with an `act` claim is rejected.
 ///
@@ -464,6 +497,14 @@ pub struct IssuerConfig {
     #[serde(default)]
     pub spiffe_mapping: Option<SpiffeMappingConfig>,
 
+    /// Hardware attestation enforcement for this issuer (Phase 37, ADR-018).
+    ///
+    /// When present with `enforcement: strict`, DPoP proofs must include a valid
+    /// `attest` field in the JWT header. When absent or `disabled`, attestation
+    /// is not checked (backward compatible default).
+    #[serde(default)]
+    pub attestation: Option<AttestationConfig>,
+
     /// Token exchange (RFC 8693) delegation policy for this issuer (Phase 37).
     ///
     /// When present, tokens from this issuer that contain an `act` claim are
@@ -537,6 +578,7 @@ impl Default for IssuerConfig {
             jwks_cache_ttl_secs: default_jwks_cache_ttl(),
             http_timeout_secs: default_http_timeout(),
             spiffe_mapping: None,
+            attestation: None,
             delegation: None,
             recovery_interval_secs: default_recovery_interval(),
             #[cfg(any(test, feature = "test-mode"))]
@@ -2870,5 +2912,61 @@ security_modes:
         let deleg = issuer.delegation.expect("delegation should be present");
         assert_eq!(deleg.allowed_exchangers, vec!["jump-host-a"]);
         assert_eq!(deleg.max_depth, 2);
+    }
+
+    // ── Phase 37: AttestationConfig tests (ADR-018) ─────────────────────
+
+    #[test]
+    fn test_attestation_config_defaults() {
+        let att = AttestationConfig::default();
+        assert_eq!(att.enforcement, EnforcementMode::Disabled);
+    }
+
+    #[test]
+    fn test_attestation_config_from_yaml_strict() {
+        let yaml = r#"
+            enforcement: strict
+        "#;
+        let att: AttestationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(att.enforcement, EnforcementMode::Strict);
+    }
+
+    #[test]
+    fn test_attestation_config_from_yaml_warn() {
+        let yaml = r#"
+            enforcement: warn
+        "#;
+        let att: AttestationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(att.enforcement, EnforcementMode::Warn);
+    }
+
+    #[test]
+    fn test_attestation_config_empty_yaml_uses_defaults() {
+        let yaml = "{}";
+        let att: AttestationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(att.enforcement, EnforcementMode::Disabled);
+    }
+
+    #[test]
+    fn test_issuer_config_without_attestation() {
+        let yaml = r#"
+            issuer_url: "https://idp.example.com/realms/corp"
+            client_id: "unix-oidc"
+        "#;
+        let issuer: IssuerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(issuer.attestation.is_none());
+    }
+
+    #[test]
+    fn test_issuer_config_with_attestation() {
+        let yaml = r#"
+            issuer_url: "https://idp.example.com/realms/corp"
+            client_id: "unix-oidc"
+            attestation:
+              enforcement: strict
+        "#;
+        let issuer: IssuerConfig = serde_yaml::from_str(yaml).unwrap();
+        let att = issuer.attestation.expect("attestation should be present");
+        assert_eq!(att.enforcement, EnforcementMode::Strict);
     }
 }

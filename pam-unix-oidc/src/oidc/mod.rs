@@ -1,5 +1,6 @@
 //! OIDC token handling and validation.
 
+pub mod attestation;
 pub mod dpop;
 pub mod introspection;
 pub mod jwks;
