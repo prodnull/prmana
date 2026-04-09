@@ -215,9 +215,9 @@ pub fn provision_signer(
 
     #[cfg(all(feature = "tpm", target_os = "linux"))]
     if signer_spec == "tpm" {
-        // probe_p256() is called inside provision() — early exit if TPM lacks NistP256.
-        let _metadata = crate::crypto::TpmSigner::provision(config)?;
-        let signer = crate::crypto::TpmSigner::load(config)?;
+        // provision() returns TpmSigner directly using create_primary output —
+        // no separate load() call needed (prevents TOCTOU handle-squatting).
+        let signer = crate::crypto::TpmSigner::provision(config)?;
         return Ok(("tpm".to_string(), Arc::new(signer)));
     }
 

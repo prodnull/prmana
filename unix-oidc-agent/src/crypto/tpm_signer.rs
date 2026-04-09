@@ -42,14 +42,22 @@
 /// - If `bytes.len() < 32`: the result is right-aligned with zero padding on
 ///   the left.
 /// - If `bytes.len() == 32`: returned unchanged.
-/// - If `bytes.len() > 32`: only the rightmost 32 bytes are used (defensive;
-///   a well-behaved P-256 TPM will never produce > 32 bytes).
-pub fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
+/// - If `bytes.len() > 32`: returns `Err` — a well-behaved P-256 TPM will
+///   never produce > 32 bytes. Silent truncation would violate the project's
+///   "never silently fail" invariant.
+pub fn pad_to_32(bytes: &[u8]) -> Result<[u8; 32], String> {
+    if bytes.len() > 32 {
+        return Err(format!(
+            "P-256 scalar is {} bytes (expected ≤32). \
+             The TPM returned an oversized value — this indicates a \
+             malfunctioning or non-conformant TPM.",
+            bytes.len()
+        ));
+    }
     let mut out = [0u8; 32];
-    let take = bytes.len().min(32);
-    let start = 32 - take;
-    out[start..].copy_from_slice(&bytes[bytes.len().saturating_sub(32)..]);
-    out
+    let start = 32 - bytes.len();
+    out[start..].copy_from_slice(bytes);
+    Ok(out)
 }
 
 // ── Linux-only TPM implementation (requires libtss2-esys) ───────────────────
@@ -60,6 +68,7 @@ mod linux_impl {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use sha2::{Digest, Sha256};
     use tss_esapi::{
+        attributes::ObjectAttributesBuilder,
         constants::{ecc::EccCurveIdentifier, tss::TPM2_RH_NULL},
         handles::{KeyHandle, PersistentTpmHandle, TpmHandle},
         interface_types::{
@@ -76,10 +85,12 @@ mod linux_impl {
         Context,
     };
 
+    use std::str::FromStr;
+
     use crate::crypto::dpop::{assemble_dpop_proof, build_dpop_message, DPoPError};
     use crate::crypto::signer::DPoPSigner;
     use crate::crypto::tpm_signer::pad_to_32;
-    use crate::hardware::{PinCache, SignerConfig};
+    use crate::hardware::SignerConfig;
 
     /// Default TPM TCTI connection string.
     const DEFAULT_TCTI: &str = "tabrmd";
@@ -135,15 +146,20 @@ mod linux_impl {
     /// The P-256 signing key is stored as a non-exportable persistent object at
     /// `persistent_handle`. The private key never leaves the TPM; all signing
     /// operations are performed inside the TPM.
+    ///
+    /// No `tss_esapi::Context` is stored — each `sign_proof()` call opens a
+    /// fresh context (open-sign-close pattern). If a `Context` field is ever
+    /// added, the `unsafe impl Send/Sync` below must be re-evaluated because
+    /// `tss_esapi::Context` is `!Send`.
     pub struct TpmSigner {
         persistent_handle: u32,
         tcti_conf: String,
-        _pin_cache: PinCache,
         thumbprint: String,
         public_key_jwk: serde_json::Value,
     }
 
-    // PinCache is Send+Sync; all other fields are String/Value — also Send+Sync.
+    // All fields are String/u32/serde_json::Value — all Send+Sync.
+    // No tss_esapi::Context is stored; contexts are ephemeral per sign_proof() call.
     unsafe impl Send for TpmSigner {}
     unsafe impl Sync for TpmSigner {}
 
@@ -180,20 +196,27 @@ mod linux_impl {
             Ok(())
         }
 
-        /// Provision a new P-256 signing key and make it persistent.
+        /// Provision a new P-256 signing key, persist it, and return a ready signer.
         ///
         /// Creates an unrestricted P-256 ECDSA key under the Owner hierarchy and
         /// stores it at `config.tpm.persistent_handle` (default `0x81000001`).
         ///
-        /// Returns `(handle, jwk, thumbprint)` for the newly created key.
+        /// Returns a fully initialized `TpmSigner` using the `out_public` from
+        /// `create_primary` directly — no second TPM read is needed, which
+        /// eliminates a TOCTOU race where an attacker could swap the persistent
+        /// handle between provision and load.
+        ///
+        /// # Security
+        ///
+        /// The Owner hierarchy must have a password set in production deployments.
+        /// Without it, any process that can reach the TPM can evict and replace
+        /// this key. See `docs/hardware-key-setup.md` for deployment guidance.
         ///
         /// # Errors
         ///
         /// Returns `TpmSignerError::P256NotSupported` if the TPM lacks NistP256,
         /// or `TpmSignerError::ProvisionFailed` on any TPM error.
-        pub fn provision(
-            config: &SignerConfig,
-        ) -> anyhow::Result<(u32, serde_json::Value, String)> {
+        pub fn provision(config: &SignerConfig) -> anyhow::Result<Self> {
             let tpm_cfg = config.tpm.as_ref();
             let tcti = tpm_cfg
                 .and_then(|t| t.tcti.as_deref())
@@ -232,9 +255,16 @@ mod linux_impl {
             })
             .map_err(|e| TpmSignerError::ProvisionFailed(e.to_string()))?;
 
+            // Derive JWK + thumbprint from the create_primary output directly,
+            // not from a second TPM read (prevents TOCTOU handle-squatting).
             let (jwk, thumbprint) = extract_p256_jwk_from_public(&out_public)?;
 
-            Ok((handle_val, jwk, thumbprint))
+            Ok(Self {
+                persistent_handle: handle_val,
+                tcti_conf: tcti.to_owned(),
+                thumbprint,
+                public_key_jwk: jwk,
+            })
         }
 
         /// Load an existing P-256 key from its persistent handle.
@@ -254,7 +284,14 @@ mod linux_impl {
             let handle_val = tpm_cfg
                 .and_then(|t| t.persistent_handle)
                 .unwrap_or(DEFAULT_HANDLE);
-            let pin_timeout = tpm_cfg.and_then(|t| t.pin_cache_timeout).unwrap_or(28800);
+
+            // Validate persistent handle range (TCG TPM 2.0 Part 2, Table 28).
+            if !(0x81000000..=0x81FFFFFF).contains(&handle_val) {
+                bail!(
+                    "Invalid persistent handle {handle_val:#010x}: must be in range \
+                     0x81000000–0x81FFFFFF (owner hierarchy persistent objects)"
+                );
+            }
 
             let tcti_conf = parse_tcti(&tcti)?;
             let mut ctx = Context::new(tcti_conf)
@@ -278,7 +315,6 @@ mod linux_impl {
             Ok(Self {
                 persistent_handle: handle_val,
                 tcti_conf: tcti,
-                _pin_cache: PinCache::new(pin_timeout),
                 thumbprint,
                 public_key_jwk: jwk,
             })
@@ -362,8 +398,10 @@ mod linux_impl {
                 tss_esapi::structures::Signature::EcDsa(ecc_sig) => {
                     let r = ecc_sig.signature_r().value();
                     let s = ecc_sig.signature_s().value();
-                    let r_padded = pad_to_32(r);
-                    let s_padded = pad_to_32(s);
+                    let r_padded = pad_to_32(r)
+                        .map_err(|e| DPoPError::HardwareSigner(format!("r scalar: {e}")))?;
+                    let s_padded = pad_to_32(s)
+                        .map_err(|e| DPoPError::HardwareSigner(format!("s scalar: {e}")))?;
                     let mut out = [0u8; 64];
                     out[..32].copy_from_slice(&r_padded);
                     out[32..].copy_from_slice(&s_padded);
@@ -384,24 +422,80 @@ mod linux_impl {
     // ── Private helpers ─────────────────────────────────────────────────────
 
     /// Parse a TCTI string into a `TctiNameConf`.
+    ///
+    /// Security: `mssim`/`swtpm` (software TPM simulators) are only available in
+    /// test builds. In production, an attacker who can write to signer.yaml could
+    /// redirect the TCTI to a simulator they control, defeating the hardware
+    /// non-exportability guarantee. See threat model: "Fake TPM Simulator Attack."
     fn parse_tcti(tcti: &str) -> anyhow::Result<TctiNameConf> {
         let lower = tcti.trim().to_lowercase();
         if lower == "tabrmd" {
             Ok(TctiNameConf::Tabrmd(TabrmdConfig::default()))
         } else if lower.starts_with("device") {
-            Ok(TctiNameConf::Device(DeviceConfig::default()))
+            // Parse optional path: "device:/dev/tpmrm0" → DeviceConfig with that path
+            if let Some(path) = lower.strip_prefix("device:") {
+                let path = path.trim();
+                if path.is_empty() {
+                    Ok(TctiNameConf::Device(DeviceConfig::default()))
+                } else {
+                    Ok(TctiNameConf::Device(
+                        DeviceConfig::from_str(path)
+                            .context(format!("Invalid device path: {path}"))?,
+                    ))
+                }
+            } else {
+                Ok(TctiNameConf::Device(DeviceConfig::default()))
+            }
         } else if lower == "mssim" || lower == "swtpm" {
-            Ok(TctiNameConf::Mssim(NetworkTPMConfig::default()))
+            // Software TPM simulators provide no hardware security guarantees.
+            // Only allow in test builds to prevent "Fake TPM" substitution attacks.
+            #[cfg(any(test, feature = "test-mode"))]
+            {
+                tracing::warn!(
+                    tcti = tcti,
+                    "Using software TPM simulator — no hardware security guarantees"
+                );
+                Ok(TctiNameConf::Mssim(NetworkTPMConfig::default()))
+            }
+            #[cfg(not(any(test, feature = "test-mode")))]
+            {
+                bail!(
+                    "Software TPM simulators (mssim/swtpm) are disabled in production builds. \
+                     They provide no hardware key protection. \
+                     Use 'tabrmd' or 'device' for a real TPM."
+                )
+            }
         } else {
             bail!(
-                "Unknown TCTI '{tcti}'. Supported values: tabrmd, device, mssim. \
+                "Unknown TCTI '{tcti}'. Supported values: tabrmd, device. \
                  See `man tss2-tcti` for advanced TCTI strings."
             )
         }
     }
 
     /// Build the public area for an unrestricted P-256 ECDSA signing key.
+    ///
+    /// Security: the object attributes enforce non-exportability at the hardware
+    /// level. These flags are HARD-FAIL requirements — without them the key can
+    /// be duplicated out of the TPM, defeating the entire DPoP binding guarantee.
+    ///
+    /// - `fixed_tpm`:              key cannot be moved to a different TPM
+    /// - `fixed_parent`:           key cannot be re-parented (prevents duplication)
+    /// - `sensitive_data_origin`:  TPM generated the key internally (not injected)
+    /// - `user_with_auth`:         required for sign without a policy session
+    /// - `no_da`:                  no dictionary-attack lockout on signing (DPoP has no PIN)
+    /// - `sign_encrypt`:           this is a signing key
     fn build_p256_key_public() -> anyhow::Result<Public> {
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_no_da(true)
+            .with_sign_encrypt(true)
+            .build()
+            .context("Building P-256 object attributes")?;
+
         let ecc_params = PublicEccParametersBuilder::new()
             .with_ecc_scheme(EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)))
             .with_curve(EccCurve::NistP256)
@@ -413,6 +507,7 @@ mod linux_impl {
 
         PublicBuilder::new()
             .with_public_algorithm(PublicAlgorithm::Ecc)
+            .with_object_attributes(object_attributes)
             .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
             .with_ecc_parameters(ecc_params)
             .with_ecc_unique_identifier(Default::default())
@@ -421,19 +516,34 @@ mod linux_impl {
     }
 
     /// Extract (JWK, thumbprint) from a tss-esapi `Public` ECC key.
+    ///
+    /// Verifies the key is P-256 (NistP256) — rejects any other curve to
+    /// prevent silent misuse of P-384/P-521 keys at the same handle.
     fn extract_p256_jwk_from_public(
         public: &Public,
     ) -> anyhow::Result<(serde_json::Value, String)> {
-        let ecc_point = match public {
-            Public::Ecc { unique, .. } => unique,
+        let (ecc_point, parameters) = match public {
+            Public::Ecc {
+                unique, parameters, ..
+            } => (unique, parameters),
             _ => bail!("Expected ECC public key type from TPM"),
         };
+
+        // MED-1: Verify the loaded key is actually P-256, not a different curve.
+        if parameters.ecc_curve() != EccCurve::NistP256 {
+            bail!(
+                "TPM key at handle is {:?}, not P-256. DPoP requires ES256 (P-256 ECDSA).",
+                parameters.ecc_curve()
+            );
+        }
 
         let x_bytes = ecc_point.x().value();
         let y_bytes = ecc_point.y().value();
 
-        let x_padded = pad_to_32(x_bytes);
-        let y_padded = pad_to_32(y_bytes);
+        let x_padded = pad_to_32(x_bytes)
+            .map_err(|e| anyhow::anyhow!("TPM x-coordinate: {e}"))?;
+        let y_padded = pad_to_32(y_bytes)
+            .map_err(|e| anyhow::anyhow!("TPM y-coordinate: {e}"))?;
 
         let x_b64 = URL_SAFE_NO_PAD.encode(x_padded);
         let y_b64 = URL_SAFE_NO_PAD.encode(y_padded);
@@ -515,7 +625,7 @@ mod tests {
     #[test]
     fn test_pad_to_32_short() {
         let input = vec![0x01u8; 30]; // 30 bytes
-        let result = pad_to_32(&input);
+        let result = pad_to_32(&input).unwrap();
         assert_eq!(result.len(), 32);
         assert_eq!(result[0], 0x00, "first padding byte must be zero");
         assert_eq!(result[1], 0x00, "second padding byte must be zero");
@@ -526,7 +636,7 @@ mod tests {
     #[test]
     fn test_pad_to_32_exact() {
         let input: Vec<u8> = (0u8..32).collect();
-        let result = pad_to_32(&input);
+        let result = pad_to_32(&input).unwrap();
         assert_eq!(result.len(), 32);
         assert_eq!(result.as_slice(), input.as_slice());
     }
@@ -534,31 +644,28 @@ mod tests {
     /// Empty input must produce all-zero output.
     #[test]
     fn test_pad_to_32_empty() {
-        let result = pad_to_32(&[]);
+        let result = pad_to_32(&[]).unwrap();
         assert_eq!(result, [0u8; 32], "empty input must produce all zeros");
     }
 
     /// Single byte must appear in the rightmost position.
     #[test]
     fn test_pad_to_32_single_byte() {
-        let result = pad_to_32(&[0x42]);
+        let result = pad_to_32(&[0x42]).unwrap();
         assert_eq!(result[31], 0x42, "single byte must be in last position");
         assert_eq!(&result[..31], &[0u8; 31], "all leading bytes must be zero");
     }
 
-    /// Input longer than 32 bytes must use only the rightmost 32 bytes.
+    /// Input longer than 32 bytes must return an error (not silently truncate).
     #[test]
-    fn test_pad_to_32_truncates_from_left() {
-        // 33-byte input: leading 0xFF then bytes 0..32
-        let mut input = vec![0xFFu8];
-        input.extend(0u8..32);
-        assert_eq!(input.len(), 33);
+    fn test_pad_to_32_rejects_overlong() {
+        let input = vec![0xFFu8; 33];
         let result = pad_to_32(&input);
-        assert_eq!(result.len(), 32);
+        assert!(result.is_err(), "overlong input must return Err");
+        let msg = result.unwrap_err();
         assert!(
-            !result.contains(&0xFF),
-            "leading byte must be truncated, result: {result:?}"
+            msg.contains("33 bytes"),
+            "error must include actual length: {msg}"
         );
-        assert_eq!(result.as_slice(), &input[1..33]);
     }
 }
