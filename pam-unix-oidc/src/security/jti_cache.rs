@@ -8,13 +8,23 @@
 //! - Tokens with the same JTI are rejected after first use
 //! - Expired entries are automatically cleaned up
 //! - Thread-safe for concurrent PAM authentication
+//! - Cross-fork replay detection via filesystem-backed `FsAtomicStore` (D-06)
 //!
 //! ## Limitations
 //!
 //! - In-memory cache is lost on process restart
 //! - Single-server only (use Redis for distributed deployments)
 //! - Memory grows with number of active tokens (bounded by cleanup)
+//!
+//! ## References
+//!
+//! - RFC 9449 §11.1 — JTI uniqueness for DPoP proofs
+//! - D-06 (Phase 30 design): strict-mode filesystem failure = hard-reject;
+//!   permissive-mode filesystem failure = per-process fallback + LOG_CRIT
 
+use crate::policy::config::EnforcementMode;
+use crate::security::fs_store::{AtomicRecordResult, FsAtomicStore};
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -248,9 +258,130 @@ impl JtiCheckResult {
 /// Using a global instance ensures JTIs are tracked for the lifetime of the
 /// PAM module in memory.
 pub fn global_jti_cache() -> &'static JtiCache {
-    use once_cell::sync::Lazy;
     static CACHE: Lazy<JtiCache> = Lazy::new(JtiCache::new);
     &CACHE
+}
+
+// ── Filesystem-backed JTI store (Phase 30, D-06) ──────────────────────────────
+
+/// Global filesystem-based JTI store. Directory: `/run/unix-oidc/jti/`.
+///
+/// Backed by `FsAtomicStore` with `O_CREAT | O_EXCL` semantics so that all
+/// `sshd` worker processes (forked from the same parent) share a single kernel-
+/// enforced replay-protection state.
+///
+/// Override the backing directory with `UNIX_OIDC_JTI_DIR` for testing.
+pub fn global_jti_store() -> &'static FsAtomicStore {
+    static STORE: Lazy<FsAtomicStore> =
+        Lazy::new(|| FsAtomicStore::new("/run/unix-oidc/jti", "UNIX_OIDC_JTI_DIR"));
+    &STORE
+}
+
+/// Check-and-record a JTI with filesystem-based cross-fork replay protection.
+///
+/// Routes through `FsAtomicStore` (kernel-atomic `O_CREAT | O_EXCL`) for
+/// cross-fork state. On filesystem failure the behaviour is governed by
+/// `enforcement`:
+///
+/// - **`Strict`**: `IoError` is treated as a hard-reject (returns
+///   `JtiCheckResult::Replay`). Secure-by-default: authentication fails rather
+///   than proceeding without replay protection (D-06, CLAUDE.md §Hard-Fail).
+///
+/// - **`Warn` / `Disabled`**: Falls back to the per-process in-memory
+///   `JtiCache`. This restores pre-Phase-30 behaviour for operators running
+///   without the `/run/unix-oidc/` tmpfiles directory. A **LOG_CRIT** message
+///   is written to syslog (`LOG_AUTH`) so the degradation is SIEM-visible
+///   (D-06, RESEARCH Pitfall 5).
+///
+/// # Arguments
+///
+/// * `jti`         – The JWT ID claim value (may be `None` if the token omits it).
+/// * `issuer`      – The token's `iss` claim. Used as the cross-issuer isolation
+///                   scope (D-02): two issuers sharing a JTI value hash to
+///                   different filenames.
+/// * `username`    – The authenticating username (for logging and the fallback cache).
+/// * `ttl_seconds` – How long to remember this JTI (should match token lifetime).
+/// * `enforcement` – Enforcement mode from `SecurityModes.jti_enforcement`.
+pub fn check_and_record_fs(
+    jti: Option<&str>,
+    issuer: &str,
+    username: &str,
+    ttl_seconds: u64,
+    enforcement: EnforcementMode,
+) -> JtiCheckResult {
+    let jti = match jti {
+        Some(j) if !j.is_empty() => j,
+        _ => return JtiCheckResult::Missing,
+    };
+
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_add(ttl_seconds);
+
+    let store = global_jti_store();
+
+    // Opportunistic sweep (5% probability) — evicts expired entries without a
+    // dedicated background thread (D-04).
+    store.opportunistic_sweep();
+
+    // `issuer` is the scope so two issuers sharing a JTI value hash to
+    // different filenames (D-02, cross-issuer isolation).
+    match store.check_and_record(issuer, jti, expires_at) {
+        AtomicRecordResult::New => JtiCheckResult::Valid,
+        AtomicRecordResult::AlreadyExists => JtiCheckResult::Replay,
+        AtomicRecordResult::IoError(e) => match enforcement {
+            EnforcementMode::Strict => {
+                // D-06: hard-fail — treat filesystem unavailability as replay
+                // so that authentication fails closed rather than open.
+                tracing::error!(
+                    error = %e,
+                    issuer = %issuer,
+                    username = %username,
+                    "JTI filesystem store unavailable (strict mode) - hard-failing authentication"
+                );
+                JtiCheckResult::Replay
+            }
+            EnforcementMode::Warn | EnforcementMode::Disabled => {
+                // D-06: LOG_CRIT so that the degradation is visible in SIEM
+                // dashboards, not just in the application trace log.
+                tracing::error!(
+                    error = %e,
+                    issuer = %issuer,
+                    username = %username,
+                    "JTI filesystem store unavailable - cross-fork replay protection degraded; \
+                     falling back to per-process cache (LOG_CRIT emitted to syslog)"
+                );
+                emit_syslog_crit(&format!(
+                    "unix-oidc: JTI filesystem store unavailable at /run/unix-oidc/jti/ - \
+                     cross-fork replay protection degraded for issuer={issuer}; \
+                     set jti_enforcement=strict to hard-fail instead"
+                ));
+                // Fallback to per-process cache to preserve v1.x behaviour (D-07).
+                global_jti_cache().check_and_record(Some(jti), username, ttl_seconds)
+            }
+        },
+    }
+}
+
+/// Emit a LOG_CRIT message to syslog (`LOG_AUTH` facility).
+///
+/// Modelled after `log_to_syslog` in `audit.rs`. Failures are silently
+/// ignored — syslog unavailability must never block authentication.
+fn emit_syslog_crit(message: &str) {
+    use syslog::{Facility, Formatter3164};
+
+    let formatter = Formatter3164 {
+        facility: Facility::LOG_AUTH,
+        hostname: None,
+        process: "unix-oidc".to_string(),
+        pid: std::process::id(),
+    };
+
+    if let Ok(mut logger) = syslog::unix(formatter) {
+        let _ = logger.crit(message);
+    }
 }
 
 #[cfg(test)]

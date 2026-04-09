@@ -8,7 +8,6 @@ use crate::oidc::{
     TokenValidator, ValidationConfig, ValidationError,
 };
 use crate::policy::config::{EnforcementMode, IssuerConfig, IssuerHealthManager, PolicyConfig};
-use crate::security::jti_cache::global_jti_cache;
 use crate::security::nonce_cache::{global_nonce_cache, NonceConsumeError};
 use crate::security::session::generate_ssh_session_id;
 use crate::sssd::groups::{check_group_policy, GroupPolicyError};
@@ -328,7 +327,6 @@ pub fn authenticate_multi_issuer(
     // Key format: "{iss}:{jti}" — so issuer A's JTI "x" and issuer B's JTI "x"
     // are independent cache entries, preventing cross-issuer replay collisions.
     if jti_enforcement != EnforcementMode::Disabled {
-        let scoped_jti = claims.jti.as_deref().map(|jti| format!("{}:{}", iss, jti));
         let token_ttl = {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -338,8 +336,19 @@ pub fn authenticate_multi_issuer(
             exp_u64.saturating_sub(now)
         };
 
-        let jti_result =
-            global_jti_cache().check_and_record(scoped_jti.as_deref(), &username_str, token_ttl);
+        // Phase 30 (D-06): Route through FsAtomicStore for cross-fork replay
+        // protection. The issuer URL is used as the isolation scope (D-02) so
+        // two issuers sharing a JTI value hash to different filesystem entries.
+        // On strict-mode filesystem failure this returns Replay (hard-fail).
+        // On permissive-mode filesystem failure this falls back to per-process
+        // cache with LOG_CRIT to syslog.
+        let jti_result = crate::security::jti_cache::check_and_record_fs(
+            claims.jti.as_deref(),
+            &iss,
+            &username_str,
+            token_ttl,
+            jti_enforcement,
+        );
 
         match jti_result {
             crate::security::jti_cache::JtiCheckResult::Valid => {
@@ -1174,7 +1183,23 @@ mod tests {
     use crate::oidc::{validate_dpop_proof, DPoPConfig, DPoPValidationError};
     use crate::security::nonce_cache::{generate_dpop_nonce, DPoPNonceCache};
 
+    // Redirect the filesystem JTI store to a per-process tempdir.
+    // `global_jti_store()` is a Lazy initialised on first access; setting
+    // UNIX_OIDC_JTI_DIR before that first access points it at a writable
+    // tempdir instead of /run/unix-oidc/jti (unwritable in CI / dev).
+    static AUTH_TEST_JTI_DIR: std::sync::OnceLock<tempfile::TempDir> =
+        std::sync::OnceLock::new();
+
+    fn setup_jti_dir() {
+        AUTH_TEST_JTI_DIR.get_or_init(|| {
+            let tmp = tempfile::tempdir().expect("tempdir for JTI store");
+            std::env::set_var("UNIX_OIDC_JTI_DIR", tmp.path());
+            tmp
+        });
+    }
+
     fn make_test_proof_with_nonce(target: &str, nonce: Option<&str>) -> (String, String) {
+        setup_jti_dir();
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};

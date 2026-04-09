@@ -6,13 +6,10 @@
 //! - JWK coordinate length validation
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use once_cell::sync::Lazy;
 use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
-use parking_lot::RwLock;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
@@ -33,93 +30,6 @@ const ML_DSA_65_VK_SIZE: usize = 1952;
 
 /// Maximum entries in the DPoP JTI cache before forced cleanup/rejection
 /// This prevents memory exhaustion attacks where an attacker submits many unique JTIs
-const MAX_JTI_CACHE_ENTRIES: usize = 100_000;
-
-/// Global DPoP JTI cache for replay protection (RFC 9449 Section 11.1)
-static DPOP_JTI_CACHE: Lazy<DPoPJtiCache> = Lazy::new(DPoPJtiCache::new);
-
-/// DPoP JTI cache for replay protection
-struct DPoPJtiCache {
-    entries: RwLock<HashMap<String, Instant>>,
-    last_cleanup: RwLock<Instant>,
-}
-
-impl DPoPJtiCache {
-    fn new() -> Self {
-        Self {
-            entries: RwLock::new(HashMap::new()),
-            last_cleanup: RwLock::new(Instant::now()),
-        }
-    }
-
-    /// Check if JTI is a replay and record it if not
-    /// Returns true if this is a new JTI (valid), false if replay or cache full
-    fn check_and_record(&self, jti: &str, ttl_seconds: u64) -> bool {
-        self.maybe_cleanup();
-
-        let now = Instant::now();
-        let expires_at = now + Duration::from_secs(ttl_seconds);
-
-        // Check if JTI already exists
-        {
-            let entries = self.entries.read();
-            if let Some(&exp) = entries.get(jti) {
-                if exp > now {
-                    return false; // Replay detected
-                }
-            }
-        }
-
-        // Record the JTI
-        {
-            let mut entries = self.entries.write();
-            // Double-check after acquiring write lock
-            if let Some(&exp) = entries.get(jti) {
-                if exp > now {
-                    return false; // Replay detected
-                }
-            }
-
-            // Security: Enforce size limit to prevent memory exhaustion
-            // If cache is full after cleanup, reject new entries
-            if entries.len() >= MAX_JTI_CACHE_ENTRIES {
-                // Force cleanup to try to make room
-                let before_cleanup = entries.len();
-                entries.retain(|_, exp| *exp > now);
-
-                // If still at capacity after cleanup, reject
-                if entries.len() >= MAX_JTI_CACHE_ENTRIES {
-                    tracing::warn!(
-                        cache_size = entries.len(),
-                        before_cleanup = before_cleanup,
-                        "DPoP JTI cache at capacity, rejecting new proof"
-                    );
-                    return false;
-                }
-            }
-
-            entries.insert(jti.to_string(), expires_at);
-        }
-
-        true // New JTI
-    }
-
-    fn maybe_cleanup(&self) {
-        let now = Instant::now();
-        let should_cleanup = {
-            let last = self.last_cleanup.read();
-            now.duration_since(*last) > Duration::from_secs(300)
-        };
-
-        if should_cleanup {
-            let mut entries = self.entries.write();
-            entries.retain(|_, exp| *exp > now);
-            drop(entries);
-            *self.last_cleanup.write() = now;
-        }
-    }
-}
-
 /// Constant-time string comparison for cryptographic values
 fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
@@ -367,9 +277,45 @@ pub fn validate_dpop_proof(
 
     // JTI replay protection (RFC 9449 Section 11.1)
     // TTL = max_proof_age + 5 seconds (for clock skew)
+    //
+    // Phase 30 (D-05): DPoP proof JTI uses the same FsAtomicStore as access
+    // token JTI for cross-fork replay protection. "dpop" is used as the scope
+    // so DPoP proof JTIs are isolated from access token JTIs in the filesystem
+    // directory. DPoP binding is a HARD-FAIL check (CLAUDE.md §Security
+    // Invariants): IoError is treated identically to a replay — authentication
+    // fails closed rather than open.
     let jti_ttl = config.max_proof_age + 5;
-    if !DPOP_JTI_CACHE.check_and_record(&claims.jti, jti_ttl) {
-        return Err(DPoPValidationError::ReplayDetected);
+    let jti_expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_add(jti_ttl);
+
+    {
+        use crate::security::fs_store::AtomicRecordResult;
+        let jti_store = crate::security::jti_cache::global_jti_store();
+        match jti_store.check_and_record("dpop", &claims.jti, jti_expires_at) {
+            AtomicRecordResult::New => { /* proceed — first use of this proof JTI */ }
+            AtomicRecordResult::AlreadyExists => {
+                tracing::warn!(
+                    jti = %claims.jti,
+                    "DPoP proof JTI replay detected"
+                );
+                return Err(DPoPValidationError::ReplayDetected);
+            }
+            AtomicRecordResult::IoError(e) => {
+                // DPoP proof replay protection is HARD-FAIL per CLAUDE.md.
+                // Filesystem unavailability is treated as a replay rather than
+                // falling back to the per-process cache — an attacker who can
+                // remove the tmpfiles directory should not gain cross-fork replay.
+                tracing::error!(
+                    error = %e,
+                    jti = %claims.jti,
+                    "DPoP proof JTI filesystem store unavailable - hard-failing (replay)"
+                );
+                return Err(DPoPValidationError::ReplayDetected);
+            }
+        }
     }
 
     let nonce = claims.nonce;
@@ -535,8 +481,32 @@ mod tests {
     use p256::ecdsa::{signature::Signer, SigningKey};
     use p256::elliptic_curve::rand_core::OsRng;
 
-    // Helper to create a test proof
+    // ── Test isolation for filesystem JTI store ───────────────────────────────
+    //
+    // `global_jti_store()` is a `Lazy<FsAtomicStore>` that reads
+    // `UNIX_OIDC_JTI_DIR` at first access. Tests must redirect it to a
+    // per-process tempdir before any test calls `validate_dpop_proof`.
+    //
+    // `SETUP` is a `OnceLock<tempfile::TempDir>` so the tempdir stays alive
+    // for the lifetime of the test binary and the Lazy is only initialised once.
+    static SETUP: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+
+    fn setup_jti_dir() {
+        SETUP.get_or_init(|| {
+            let tmp = tempfile::tempdir().expect("tempdir for JTI store");
+            // Set UNIX_OIDC_JTI_DIR before `global_jti_store()` is first accessed.
+            // Safety: tests in the same binary share the env; this is idempotent
+            // because OnceLock guarantees the closure runs exactly once.
+            std::env::set_var("UNIX_OIDC_JTI_DIR", tmp.path());
+            tmp
+        });
+    }
+
+    // Helper to create a test proof.
+    // Also ensures the JTI filesystem store is redirected to a tempdir so
+    // tests do not fail due to a missing/unwritable /run/unix-oidc/jti/.
     fn create_test_proof(method: &str, target: &str, nonce: Option<&str>) -> (String, String) {
+        setup_jti_dir();
         let signing_key = SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
         let point = verifying_key.to_encoded_point(false);
@@ -734,6 +704,7 @@ mod tests {
 
     #[test]
     fn test_replay_detection() {
+        setup_jti_dir();
         // Create a proof with a specific JTI
         let signing_key = SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();

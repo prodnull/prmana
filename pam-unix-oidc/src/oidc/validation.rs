@@ -3,7 +3,7 @@
 use crate::oidc::jwks::{JwksError, JwksProvider};
 use crate::oidc::token::TokenClaims;
 use crate::policy::config::EnforcementMode;
-use crate::security::jti_cache::{global_jti_cache, JtiCheckResult};
+use crate::security::jti_cache::{check_and_record_fs, JtiCheckResult};
 use jsonwebtoken::jwk::KeyAlgorithm;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use std::sync::Arc;
@@ -294,15 +294,23 @@ impl TokenValidator {
         // Disabled mode skips the cache lookup entirely to avoid unnecessary state.
         // Strict and Warn modes both record seen JTIs; they differ only in how
         // a *missing* JTI (no jti claim at all) is handled.
+        //
+        // Phase 30 (D-06): Route through FsAtomicStore for cross-fork replay
+        // protection. Previously this callsite did NOT scope by issuer (RESEARCH
+        // Pitfall 3) — check_and_record_fs fixes that by using the issuer URL as
+        // the cross-issuer isolation scope (D-02).
         if self.config.jti_enforcement != EnforcementMode::Disabled {
             // Calculate TTL for JTI cache based on token expiration
             let ttl_seconds =
                 (claims.exp - now + self.config.clock_skew_tolerance_secs).max(0) as u64;
 
-            let jti_result = global_jti_cache().check_and_record(
+            let username = claims.preferred_username.as_deref().unwrap_or("unknown");
+            let jti_result = check_and_record_fs(
                 claims.jti.as_deref(),
-                claims.preferred_username.as_deref().unwrap_or("unknown"),
+                &self.config.issuer, // issuer scoping: fixes RESEARCH Pitfall 3
+                username,
                 ttl_seconds,
+                self.config.jti_enforcement,
             );
 
             match jti_result {
