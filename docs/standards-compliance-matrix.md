@@ -33,7 +33,9 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | RFC | Title | Sections Referenced | Implementation Files | Status | Notes |
 |-----|-------|---------------------|----------------------|--------|-------|
-| RFC 8693 | OAuth 2.0 Token Exchange | `act` claim format | `docs/adr/005-dpop-token-exchange.md`, `docs/adr/005-dpop-token-exchange-alignment.md`, `test/tests/test_token_exchange.sh`, `test/tests/test_token_exchange.py` | Referenced-Only | Deferred to v2.1; design documented in ADR-005; integration test scripts exist but not in CI |
+| RFC 8693 | OAuth 2.0 Token Exchange | SS2.1 (request params), SS2.2 (response), SS4.1 (`act` claim) | `unix-oidc-agent/src/exchange.rs`, `unix-oidc-agent/src/daemon/socket.rs`, `pam-unix-oidc/src/oidc/token.rs`, `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/policy/config.rs`, `test/tests/test_token_exchange.sh`, `test/tests/test_token_exchange.py`, `test/tests/test_attested_exchange.sh` | Implemented (Phase 37) | Token exchange with DPoP rebinding, `act` claim validation, delegation chain depth limits, attestation evidence in DPoP header |
+| RFC 7643 | SCIM: Core Schema | SS3.1 (metadata), SS4.1 (User resource), SS5 (ServiceProviderConfig), SS8 (schema URIs) | `unix-oidc-scim/src/schema.rs`, `unix-oidc-scim/src/lib.rs` | Implemented (Phase 37) | User resource, name/email sub-attributes, list responses, error responses, ServiceProviderConfig |
+| RFC 7644 | SCIM: Protocol | SS3.4.2 (list response), SS3.12 (error response) | `unix-oidc-scim/src/routes.rs`, `unix-oidc-scim/src/main.rs`, `unix-oidc-scim/src/schema.rs` | Implemented (Phase 37) | CRUD endpoints for User resources, filtering, pagination, bearer token auth |
 | RFC 4648 | Base16/32/64 Encodings | SS5 (base64url) | `test/tests/test_token_exchange.sh:87` | Full | Base64URL encoding in DPoP proof construction |
 | RFC 5480 | ECC SubjectPublicKeyInfo ASN.1 | P-256 curve OID `1.2.840.10045.3.1.7` | `docs/hardware-key-setup.md:82` | Full | PKCS#11 key generation uses this OID |
 | RFC 5785 | Well-Known URIs | -- | `pam-unix-oidc/src/oidc/discovery.rs` | Full | `/.well-known/openid-configuration` endpoint |
@@ -210,7 +212,7 @@ Referenced in `docs/THREAT_MODEL.md` (Appendix A) and `docs/threat-model.md` (Se
 | Category | Full | Partial | Referenced-Only | Total |
 |----------|------|---------|-----------------|-------|
 | RFCs (Normative) | 13 | 1 | 0 | 14 |
-| RFCs (Informative/Planned) | 1 | 0 | 3 | 4 |
+| RFCs (Informative/Planned) | 6 | 0 | 1 | 7 |
 | OpenID Specs | 4 | 0 | 0 | 4 |
 | IETF Drafts | 0 | 1 | 1 | 2 |
 | NIST SP | 2 | 4 | 1 | 7 |
@@ -219,7 +221,7 @@ Referenced in `docs/THREAT_MODEL.md` (Appendix A) and `docs/threat-model.md` (Se
 | PCI DSS Requirements | 5 | 1 | 0 | 6 mapped (0 gaps) |
 | OCSF Schema | 7 audit event types with category_uid/class_uid/severity_id | Phase 27 OBS-07 | `pam-unix-oidc/src/audit.rs` |
 | MITRE ATT&CK Techniques | 18 mapped | -- | -- | 18 |
-| **Totals** | **49** | **10** | **7** | **66** |
+| **Totals** | **54** | **10** | **5** | **69** |
 
 ---
 
@@ -257,6 +259,11 @@ For each source file that references standards, the standards it cites.
 | `rust-oauth-dpop/src/thumbprint.rs` | RFC 7638 |
 | `rust-oauth-dpop/src/lib.rs` | RFC 9449 SS4.2 |
 | `rust-oauth-dpop/src/jwk.rs` | RFC 7638 |
+| `unix-oidc-agent/src/exchange.rs` | RFC 8693 SS2.1/SS2.2, RFC 9449 |
+| `unix-oidc-scim/src/schema.rs` | RFC 7643 SS3.1/SS4.1/SS5/SS8, RFC 7644 SS3.4.2/SS3.12 |
+| `unix-oidc-scim/src/routes.rs` | RFC 7644 |
+| `unix-oidc-scim/src/main.rs` | RFC 7644 |
+| `unix-oidc-scim/src/lib.rs` | RFC 7643, RFC 7644 |
 
 ### Cross-Language DPoP Libraries
 
@@ -275,6 +282,7 @@ For each source file that references standards, the standards it cites.
 | `test/tests/test_token_exchange.py` | RFC 9449, RFC 8693, RFC 7638 SS3.2 |
 | `test/tests/test_token_exchange.sh` | RFC 9449 SS4.2, RFC 8693, RFC 7638 SS3.2, RFC 7517, RFC 7518, RFC 4648 SS5 |
 | `test/tests/test_dpop_binding.sh` | RFC 9449, RFC 7638 |
+| `test/tests/test_attested_exchange.sh` | RFC 8693, RFC 9449 |
 
 ### Documentation Files
 
