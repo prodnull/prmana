@@ -1183,7 +1183,10 @@ pub struct BreakGlassConfig {
     pub enabled: bool,
     /// Legacy single-account field (v1.0 backward compat). Use `accounts` for new configs.
     pub local_account: Option<String>,
-    /// Authentication method (yubikey_otp)
+    /// Authentication method required before granting break-glass bypass (Phase 36-02).
+    /// When set to `"yubikey_otp"`, the PAM module prompts for a 6-digit TOTP code
+    /// and verifies offline against /etc/unix-oidc/break-glass-otp.json.
+    /// When `None`, break-glass bypasses without a hardware factor.
     pub requires: Option<String>,
     /// Whether to send alerts on break-glass use
     pub alert_on_use: bool,
