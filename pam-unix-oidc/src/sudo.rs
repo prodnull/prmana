@@ -394,7 +394,7 @@ pub(crate) fn perform_step_up_via_ipc(
             let id_token = response.get("id_token").and_then(|v| v.as_str());
             let require_id_token = security_modes.step_up_require_id_token;
 
-            let acr = match (id_token, require_id_token) {
+            let (acr, id_token_verified) = match (id_token, require_id_token) {
                 (Some(token_str), _) => {
                     // D-14: Validate using existing TokenValidator infrastructure.
                     // Build ValidationConfig from environment (same pattern as
@@ -432,11 +432,22 @@ pub(crate) fn perform_step_up_via_ipc(
                             error = %e,
                             "CIBA step-up: ID token validation failed"
                         );
+                        // Emit audit event with specific validation failure before returning Err.
+                        // This makes the cryptographic failure visible in the OCSF audit stream.
+                        AuditEvent::step_up_failed(
+                            &ctx.user,
+                            Some(ctx.command.as_str()),
+                            "ciba",
+                            &format!("CIBA ID token validation failed: {e}"),
+                            Some(&e.to_string()),
+                        )
+                        .log();
                         SudoError::StepUp(format!("CIBA ID token validation failed: {e}"))
                     })?;
 
-                    // D-15: ACR extracted ONLY after signature verification
-                    claims.acr
+                    // D-15: ACR extracted ONLY after signature verification.
+                    // id_token_verified=true: signature, issuer, audience, expiry all passed.
+                    (claims.acr, true)
                 }
                 (None, true) => {
                     // D-16: missing ID token when step_up_require_id_token=true — hard-fail
@@ -456,6 +467,7 @@ pub(crate) fn perform_step_up_via_ipc(
                 (None, false) => {
                     // D-16 permissive: fall back to deprecated agent-asserted ACR.
                     // LOG_CRIT so the degradation is SIEM-visible.
+                    // id_token_verified=false: no cryptographic verification performed.
                     tracing::error!(
                         "CIBA step-up: id_token absent, falling back to agent-asserted ACR \
                          (step_up_require_id_token=false) — LOG_CRIT emitted to syslog"
@@ -465,13 +477,14 @@ pub(crate) fn perform_step_up_via_ipc(
                          set step_up_require_id_token=true to enforce cryptographic \
                          verification (D-16)"
                     );
-                    response.get("acr").and_then(|v| v.as_str()).map(str::to_string)
+                    (response.get("acr").and_then(|v| v.as_str()).map(str::to_string), false)
                 }
             };
 
             return Ok(StepUpResult {
                 acr,
                 jti: None, // CIBA does not produce a JTI at the PAM layer.
+                id_token_verified,
             });
         }
 
@@ -654,6 +667,8 @@ fn perform_device_flow_step_up(
     Ok(StepUpResult {
         acr: claims.acr,
         jti: claims.jti,
+        // Device-flow always validates the token via TokenValidator before reaching here.
+        id_token_verified: true,
     })
 }
 
@@ -663,6 +678,10 @@ pub(crate) struct StepUpResult {
     /// JTI from device-flow token; unused at the PAM layer post-validation.
     #[allow(dead_code)]
     jti: Option<String>,
+    /// Whether the CIBA ID token was cryptographically verified via `TokenValidator`.
+    /// `true` = signature, issuer, audience, expiry all checked.
+    /// `false` = legacy agent-asserted ACR path (step_up_require_id_token=false).
+    id_token_verified: bool,
 }
 
 struct PollDisplay<'a> {
@@ -763,12 +782,15 @@ fn log_step_up_success(ctx: &SudoContext, result: &StepUpResult, _response_time_
         &ctx.session_id,
         result.acr.as_deref(),
         None, // auth_time is in the token claims, not passed here
+        result.id_token_verified,
     )
     .log();
 }
 
 fn log_step_up_failed(ctx: &SudoContext, method: &str, reason: &str) {
-    AuditEvent::step_up_failed(&ctx.user, Some(&ctx.command), method, reason).log();
+    // verification_failure is None here — CIBA ID token validation failures emit their
+    // own audit event with the specific reason at the callsite (perform_step_up_via_ipc).
+    AuditEvent::step_up_failed(&ctx.user, Some(&ctx.command), method, reason, None).log();
 }
 
 fn generate_session_id() -> Result<String, getrandom::Error> {

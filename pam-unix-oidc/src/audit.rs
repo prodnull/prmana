@@ -280,6 +280,10 @@ pub enum AuditEvent {
         session_id: String,
         oidc_acr: Option<String>,
         oidc_auth_time: Option<i64>,
+        /// Whether the CIBA ID token was cryptographically verified via TokenValidator.
+        /// `true` = signature, issuer, audience, expiry all checked.
+        /// `false` = legacy path (agent-asserted ACR without ID token).
+        id_token_verified: bool,
     },
 
     /// Sudo step-up authentication failed
@@ -291,6 +295,10 @@ pub enum AuditEvent {
         host: String,
         method: String,
         reason: String,
+        /// When step-up failed due to ID token validation, this contains the specific
+        /// validation failure (e.g., "signature mismatch", "expired", "wrong audience").
+        /// `None` for non-ID-token failures (e.g., timeout, user denied).
+        verification_failure: Option<String>,
     },
 
     /// Break-glass emergency access used.
@@ -439,6 +447,49 @@ pub enum AuditEvent {
         issuer_url: String,
         host: String,
     },
+
+    /// JTI replay detected — same token/proof used across sshd forks.
+    ///
+    /// Emitted when `FsAtomicStore::check_and_record()` returns `AlreadyExists`,
+    /// proving a JTI was seen by a different process. This is an attack indicator
+    /// requiring immediate SIEM investigation.
+    ///
+    /// OCSF: Authentication / Logon (activity_id 1, severity_id 4 = High).
+    #[serde(rename = "JTI_REPLAY_DETECTED")]
+    JtiReplayDetected {
+        timestamp: String,
+        /// The JTI claim value from the replayed token/proof.
+        jti: String,
+        /// Issuer that issued the token carrying the replayed JTI.
+        issuer: Option<String>,
+        /// `"access_token"` or `"dpop_proof"` — which JTI was replayed.
+        token_type: String,
+        /// Username attempting authentication (if known at this point).
+        user: Option<String>,
+        source_ip: Option<String>,
+        host: String,
+    },
+
+    /// JTI filesystem store degraded — fell back to per-process cache.
+    ///
+    /// Emitted when `FsAtomicStore` I/O fails and permissive mode activates the
+    /// per-process fallback cache, or when strict mode hard-rejects the operation.
+    /// This MUST trigger SIEM alerting — cross-fork replay protection is reduced
+    /// to per-process only (permissive) or the login is rejected (strict).
+    ///
+    /// OCSF: Authentication / Other (activity_id 99, severity_id 5 = Critical).
+    #[serde(rename = "JTI_STORE_DEGRADED")]
+    JtiStoreDegraded {
+        timestamp: String,
+        /// Filesystem error description (e.g., `"Permission denied"`, `"No space left on device"`).
+        reason: String,
+        /// Enforcement mode active at time of degradation: `"strict"` (login rejected) or
+        /// `"permissive"` (per-process fallback active).
+        enforcement: String,
+        /// Store type: `"jti"` for access-token JTI store, `"nonce"` for DPoP nonce store.
+        store_type: String,
+        host: String,
+    },
 }
 
 impl AuditEvent {
@@ -523,6 +574,11 @@ impl AuditEvent {
     }
 
     /// Create a step-up success event.
+    ///
+    /// `id_token_verified` must be `true` when the CIBA ID token was validated
+    /// via `TokenValidator` (signature + issuer + audience + expiry all checked),
+    /// and `false` for the legacy agent-asserted-ACR path (deprecated, no crypto).
+    #[allow(clippy::too_many_arguments)]
     pub fn step_up_success(
         user: &str,
         command: Option<&str>,
@@ -530,6 +586,7 @@ impl AuditEvent {
         session_id: &str,
         oidc_acr: Option<&str>,
         oidc_auth_time: Option<i64>,
+        id_token_verified: bool,
     ) -> Self {
         Self::StepUpSuccess {
             timestamp: iso_timestamp(),
@@ -540,11 +597,22 @@ impl AuditEvent {
             session_id: session_id.to_string(),
             oidc_acr: oidc_acr.map(String::from),
             oidc_auth_time,
+            id_token_verified,
         }
     }
 
     /// Create a step-up failed event.
-    pub fn step_up_failed(user: &str, command: Option<&str>, method: &str, reason: &str) -> Self {
+    ///
+    /// `verification_failure` must be `Some(reason)` when the failure was caused by
+    /// ID token validation (e.g., `"signature mismatch"`, `"expired"`, `"wrong audience"`),
+    /// and `None` for non-validation failures (e.g., timeout, user denied).
+    pub fn step_up_failed(
+        user: &str,
+        command: Option<&str>,
+        method: &str,
+        reason: &str,
+        verification_failure: Option<&str>,
+    ) -> Self {
         Self::StepUpFailed {
             timestamp: iso_timestamp(),
             user: user.to_string(),
@@ -552,6 +620,7 @@ impl AuditEvent {
             host: get_hostname(),
             method: method.to_string(),
             reason: reason.to_string(),
+            verification_failure: verification_failure.map(String::from),
         }
     }
 
@@ -708,6 +777,49 @@ impl AuditEvent {
         }
     }
 
+    /// Create a JTI replay detected event.
+    ///
+    /// Call when `FsAtomicStore::check_and_record()` returns `AlreadyExists`,
+    /// indicating a JTI was already seen by another process (cross-fork replay attack).
+    ///
+    /// `token_type` must be `"access_token"` or `"dpop_proof"` to indicate which
+    /// JTI namespace was replayed.
+    pub fn jti_replay_detected(
+        jti: &str,
+        issuer: Option<&str>,
+        token_type: &str,
+        user: Option<&str>,
+        source_ip: Option<&str>,
+    ) -> Self {
+        Self::JtiReplayDetected {
+            timestamp: iso_timestamp(),
+            jti: jti.to_string(),
+            issuer: issuer.map(String::from),
+            token_type: token_type.to_string(),
+            user: user.map(String::from),
+            source_ip: source_ip.map(String::from),
+            host: get_hostname(),
+        }
+    }
+
+    /// Create a JTI store degraded event.
+    ///
+    /// Call when `FsAtomicStore` I/O fails and enforcement mode dispatches:
+    /// - `enforcement = "strict"`: login rejected (hard-fail, returns `Replay`)
+    /// - `enforcement = "permissive"`: per-process fallback activated (LOG_CRIT emitted)
+    ///
+    /// `store_type` must be `"jti"` for the access-token JTI store or `"nonce"` for
+    /// the DPoP nonce store.
+    pub fn jti_store_degraded(reason: &str, enforcement: &str, store_type: &str) -> Self {
+        Self::JtiStoreDegraded {
+            timestamp: iso_timestamp(),
+            reason: reason.to_string(),
+            enforcement: enforcement.to_string(),
+            store_type: store_type.to_string(),
+            host: get_hostname(),
+        }
+    }
+
     /// Log this event to the configured audit destinations.
     ///
     /// When `UNIX_OIDC_AUDIT_HMAC_KEY` is set, the output JSON is augmented with
@@ -780,6 +892,8 @@ impl AuditEvent {
             Self::SessionCloseFailed { .. } => "SESSION_CLOSE_FAILED",
             Self::IssuerDegraded { .. } => "ISSUER_DEGRADED",
             Self::IssuerRecovered { .. } => "ISSUER_RECOVERED",
+            Self::JtiReplayDetected { .. } => "JTI_REPLAY_DETECTED",
+            Self::JtiStoreDegraded { .. } => "JTI_STORE_DEGRADED",
         }
     }
 
@@ -798,6 +912,11 @@ impl AuditEvent {
                     AuditSeverity::Info
                 }
             }
+            // JTI replay is an attack indicator — WARNING syslog (HIGH OCSF severity_id 4).
+            // JTI store degraded is a security infrastructure failure — CRITICAL regardless
+            // of enforcement mode (strict = login rejected; permissive = fallback active).
+            Self::JtiReplayDetected { .. } => AuditSeverity::Warning,
+            Self::JtiStoreDegraded { .. } => AuditSeverity::Critical,
             Self::SshLoginFailed { .. }
             | Self::TokenValidationFailed { .. }
             | Self::StepUpFailed { .. }
@@ -871,6 +990,14 @@ impl AuditEvent {
             // Issuer health transitions — activity_id 99 (Other)
             Self::IssuerDegraded { .. } => (99, 4), // High: issuer degraded
             Self::IssuerRecovered { .. } => (99, 1), // Info: issuer recovered
+
+            // JTI replay — activity_id 1 (Logon, failed attempt), severity_id 4 (High)
+            // Cross-fork replay is an attack indicator; SIEM must alert on this event.
+            Self::JtiReplayDetected { .. } => (1, 4),
+
+            // JTI store degraded — activity_id 99 (Other), severity_id 5 (Critical)
+            // Security infrastructure failure: cross-fork replay protection degraded or rejected.
+            Self::JtiStoreDegraded { .. } => (99, 5),
         };
 
         let class_uid: u32 = 3002;
@@ -1696,7 +1823,7 @@ mod tests {
         let not_found = AuditEvent::user_not_found("alice");
         assert_eq!(not_found.syslog_severity(), AuditSeverity::Warning);
 
-        let step_failed = AuditEvent::step_up_failed("u", None, "ciba", "timeout");
+        let step_failed = AuditEvent::step_up_failed("u", None, "ciba", "timeout", None);
         assert_eq!(step_failed.syslog_severity(), AuditSeverity::Warning);
 
         let intro_failed = AuditEvent::introspection_failed(None, None, "err", "strict");
@@ -1717,7 +1844,7 @@ mod tests {
         let initiated = AuditEvent::step_up_initiated("u", None, "ciba", None);
         assert_eq!(initiated.syslog_severity(), AuditSeverity::Info);
 
-        let step_ok = AuditEvent::step_up_success("u", None, "ciba", "s", None, None);
+        let step_ok = AuditEvent::step_up_success("u", None, "ciba", "s", None, None, false);
         assert_eq!(step_ok.syslog_severity(), AuditSeverity::Info);
 
         // OBS-07: new variants must also be Warning
@@ -1889,8 +2016,8 @@ mod tests {
             AuditEvent::token_validation_failed(None, "reason", None, None),
             AuditEvent::user_not_found("user"),
             AuditEvent::step_up_initiated("u", None, "ciba", None),
-            AuditEvent::step_up_success("u", None, "ciba", "s", None, None),
-            AuditEvent::step_up_failed("u", None, "ciba", "timeout"),
+            AuditEvent::step_up_success("u", None, "ciba", "s", None, None, false),
+            AuditEvent::step_up_failed("u", None, "ciba", "timeout", None),
             AuditEvent::break_glass_auth("u", None, true),
             AuditEvent::session_opened("s", "u", None, 0),
             AuditEvent::session_closed("s", "u", 0),
@@ -1948,6 +2075,113 @@ mod tests {
             result.is_ok(),
             "Old-format JSON must still deserialize: {:?}",
             result.err()
+        );
+    }
+
+    // ── Phase 30-05: JTI replay and store-degraded audit event tests ───────────
+
+    /// JTI_REPLAY_DETECTED event serializes with required fields and correct OCSF values.
+    #[test]
+    fn test_jti_replay_detected_fields() {
+        let event = AuditEvent::jti_replay_detected(
+            "abc-123",
+            Some("https://idp.example.com"),
+            "access_token",
+            Some("alice"),
+            Some("10.0.0.1"),
+        );
+        assert_eq!(event.event_type(), "JTI_REPLAY_DETECTED");
+        let json = event.enriched_log_json();
+        assert!(json.contains("\"jti\":\"abc-123\""), "jti field missing: {json}");
+        assert!(
+            json.contains("\"token_type\":\"access_token\""),
+            "token_type field missing: {json}"
+        );
+        assert!(json.contains("\"severity_id\":4"), "severity_id 4 (High) missing: {json}");
+        assert!(json.contains("\"class_uid\":3002"), "class_uid 3002 missing: {json}");
+        assert!(
+            json.contains("\"issuer\":\"https://idp.example.com\""),
+            "issuer field missing: {json}"
+        );
+    }
+
+    /// JTI_REPLAY_DETECTED OCSF fields: severity_id 4 (High), activity_id 1 (Logon).
+    #[test]
+    fn test_jti_replay_detected_ocsf_severity_high() {
+        let event = AuditEvent::jti_replay_detected("x", None, "dpop_proof", None, None);
+        let ocsf = event.ocsf_fields();
+        assert_eq!(ocsf.severity_id, 4, "JTI replay must be High (severity_id 4)");
+        assert_eq!(ocsf.activity_id, 1, "JTI replay must be Logon (activity_id 1)");
+        assert_eq!(ocsf.class_uid, 3002, "Must use Authentication class (3002)");
+        assert_eq!(ocsf.type_uid, 300201, "type_uid must be class_uid*100+activity_id");
+    }
+
+    /// JTI_STORE_DEGRADED event serializes with required fields and correct OCSF values.
+    #[test]
+    fn test_jti_store_degraded_fields() {
+        let event =
+            AuditEvent::jti_store_degraded("No space left on device", "permissive", "jti");
+        assert_eq!(event.event_type(), "JTI_STORE_DEGRADED");
+        let json = event.enriched_log_json();
+        assert!(
+            json.contains("\"enforcement\":\"permissive\""),
+            "enforcement field missing: {json}"
+        );
+        assert!(
+            json.contains("\"store_type\":\"jti\""),
+            "store_type field missing: {json}"
+        );
+        assert!(json.contains("\"severity_id\":5"), "severity_id 5 (Critical) missing: {json}");
+        assert!(
+            json.contains("No space left on device"),
+            "reason field missing: {json}"
+        );
+    }
+
+    /// JTI_STORE_DEGRADED OCSF fields: severity_id 5 (Critical), activity_id 99 (Other).
+    #[test]
+    fn test_jti_store_degraded_ocsf_critical() {
+        let event =
+            AuditEvent::jti_store_degraded("Permission denied", "strict", "nonce");
+        let ocsf = event.ocsf_fields();
+        assert_eq!(ocsf.severity_id, 5, "JTI store degraded must be Critical (severity_id 5)");
+        assert_eq!(ocsf.activity_id, 99, "JTI store degraded must be Other (activity_id 99)");
+        assert_eq!(ocsf.type_uid, 300299, "type_uid must be class_uid*100+activity_id");
+    }
+
+    /// StepUpSuccess with id_token_verified=true serializes the field correctly.
+    #[test]
+    fn test_step_up_success_with_id_token_verified() {
+        let event = AuditEvent::step_up_success(
+            "alice",
+            Some("sudo reboot"),
+            "ciba",
+            "sess-1",
+            Some("urn:mace:incommon:iap:silver"),
+            Some(1_700_000_000),
+            true,
+        );
+        let json = event.enriched_log_json();
+        assert!(
+            json.contains("\"id_token_verified\":true"),
+            "id_token_verified:true missing: {json}"
+        );
+    }
+
+    /// StepUpFailed with verification_failure serializes the field correctly.
+    #[test]
+    fn test_step_up_failed_with_verification_failure() {
+        let event = AuditEvent::step_up_failed(
+            "bob",
+            Some("sudo su"),
+            "ciba",
+            "ID token signature mismatch",
+            Some("signature verification failed"),
+        );
+        let json = event.enriched_log_json();
+        assert!(
+            json.contains("\"verification_failure\":\"signature verification failed\""),
+            "verification_failure field missing: {json}"
         );
     }
 }
