@@ -329,7 +329,20 @@ pub fn check_and_record_fs(
     // different filenames (D-02, cross-issuer isolation).
     match store.check_and_record(issuer, jti, expires_at) {
         AtomicRecordResult::New => JtiCheckResult::Valid,
-        AtomicRecordResult::AlreadyExists => JtiCheckResult::Replay,
+        AtomicRecordResult::AlreadyExists => {
+            // Cross-fork replay detected: another sshd worker already consumed this JTI.
+            // Emit OCSF audit event before returning rejection so the attack is
+            // visible in the audit stream regardless of calling code's error handling.
+            crate::audit::AuditEvent::jti_replay_detected(
+                jti,
+                Some(issuer),
+                "access_token",
+                Some(username),
+                None, // source_ip not available in JTI cache layer
+            )
+            .log();
+            JtiCheckResult::Replay
+        }
         AtomicRecordResult::IoError(e) => match enforcement {
             EnforcementMode::Strict => {
                 // D-06: hard-fail — treat filesystem unavailability as replay
@@ -340,6 +353,13 @@ pub fn check_and_record_fs(
                     username = %username,
                     "JTI filesystem store unavailable (strict mode) - hard-failing authentication"
                 );
+                // Emit OCSF audit event: store degraded in strict mode (login rejected).
+                crate::audit::AuditEvent::jti_store_degraded(
+                    &e.to_string(),
+                    "strict",
+                    "jti",
+                )
+                .log();
                 JtiCheckResult::Replay
             }
             EnforcementMode::Warn | EnforcementMode::Disabled => {
@@ -357,6 +377,13 @@ pub fn check_and_record_fs(
                      cross-fork replay protection degraded for issuer={issuer}; \
                      set jti_enforcement=strict to hard-fail instead"
                 ));
+                // Emit OCSF audit event: store degraded in permissive mode (fallback active).
+                crate::audit::AuditEvent::jti_store_degraded(
+                    &e.to_string(),
+                    "permissive",
+                    "jti",
+                )
+                .log();
                 // Fallback to per-process cache to preserve v1.x behaviour (D-07).
                 global_jti_cache().check_and_record(Some(jti), username, ttl_seconds)
             }
@@ -479,5 +506,47 @@ mod tests {
 
         // Should be the same instance
         assert!(std::ptr::eq(cache1, cache2));
+    }
+
+    // ── Phase 30-05: audit event emission tests ────────────────────────────────
+
+    /// Verify that AuditEvent::jti_replay_detected() constructs and serializes
+    /// without panic, exercises enriched_log_json() → OCSF → HMAC chain path.
+    #[test]
+    fn test_jti_replay_emits_audit_event() {
+        // Arrange: construct the event that check_and_record_fs emits on AlreadyExists.
+        let event = crate::audit::AuditEvent::jti_replay_detected(
+            "test-jti-001",
+            Some("https://keycloak.test"),
+            "access_token",
+            Some("testuser"),
+            Some("127.0.0.1"),
+        );
+        // Act: serialize — exercises enriched_log_json → OCSF → HMAC chain.
+        let json = event.enriched_log_json();
+        // Assert: required fields present.
+        assert!(json.contains("JTI_REPLAY_DETECTED"), "event name missing: {json}");
+        assert!(json.contains("test-jti-001"), "jti field missing: {json}");
+        assert!(json.contains("keycloak.test"), "issuer field missing: {json}");
+        assert!(json.contains("testuser"), "user field missing: {json}");
+    }
+
+    /// Verify that AuditEvent::jti_store_degraded() constructs correctly for
+    /// both enforcement modes used by check_and_record_fs.
+    #[test]
+    fn test_jti_store_degraded_emits_audit_event() {
+        for (enforcement, store_type) in [("strict", "jti"), ("permissive", "nonce")] {
+            let event = crate::audit::AuditEvent::jti_store_degraded(
+                "No such file or directory",
+                enforcement,
+                store_type,
+            );
+            let json = event.enriched_log_json();
+            assert!(json.contains("JTI_STORE_DEGRADED"), "event name missing [{enforcement}]: {json}");
+            assert!(json.contains(enforcement), "enforcement field missing: {json}");
+            assert!(json.contains(store_type), "store_type field missing: {json}");
+            // severity_id 5 (Critical) must be present for both enforcement modes.
+            assert!(json.contains("\"severity_id\":5"), "severity_id 5 missing [{enforcement}]: {json}");
+        }
     }
 }
