@@ -16,6 +16,26 @@ pub enum TokenError {
     InvalidFormat,
 }
 
+/// RFC 8693 §4.1 `act` (actor) claim for token delegation.
+///
+/// Represents the entity that performed the token exchange. Supports recursive
+/// nesting for multi-hop delegation chains (e.g., user → jump-host-a → jump-host-b).
+///
+/// Security: `delegation_depth()` on `TokenClaims` counts the chain. Operators
+/// configure `max_delegation_depth` in policy.yaml to cap acceptable hop count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActClaim {
+    /// Subject identifier of the acting party (exchanger).
+    pub sub: String,
+    /// OAuth client_id of the acting party. Present when the IdP includes it.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Nested actor — the party that delegated to this actor.
+    /// `Box` breaks the recursive type; serde handles Option<Box<T>> natively.
+    #[serde(default)]
+    pub act: Option<Box<ActClaim>>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TokenClaims {
     /// Subject (user identifier)
@@ -58,6 +78,11 @@ pub struct TokenClaims {
     /// RFC 9449: Contains jkt (JWK thumbprint) for DPoP-bound tokens
     #[serde(default)]
     pub cnf: Option<ConfirmationClaim>,
+
+    /// RFC 8693 `act` (actor) claim for delegated/exchanged tokens.
+    /// Present when this token was obtained via token exchange (multi-hop SSH).
+    #[serde(default)]
+    pub act: Option<ActClaim>,
 
     /// All remaining claims not matched by the fields above.
     ///
@@ -117,6 +142,17 @@ impl StringOrVec {
 }
 
 impl TokenClaims {
+    /// Count the delegation depth of the `act` chain. Returns 0 if no `act` claim.
+    pub fn delegation_depth(&self) -> usize {
+        let mut depth = 0;
+        let mut current = self.act.as_ref();
+        while let Some(act) = current {
+            depth += 1;
+            current = act.act.as_deref();
+        }
+        depth
+    }
+
     /// Extract a claim as a `String` regardless of where it lives in the struct.
     ///
     /// Checks the known typed fields first (sub, preferred_username, iss, acr, jti),
@@ -382,5 +418,75 @@ mod tests {
         assert_eq!(claims.preferred_username.as_deref(), Some("testuser"));
         assert_eq!(claims.sub, "testuser");
         assert_eq!(claims.iss, "http://localhost:8080/realms/test");
+    }
+
+    // ── Phase 37: RFC 8693 act (actor) claim tests ─────────────────────────
+
+    #[test]
+    fn test_parse_act_claim_single_hop() {
+        let json = r#"{
+            "sub": "alice@example.com",
+            "iss": "https://idp.example.com",
+            "aud": "unix-oidc",
+            "exp": 9999999999,
+            "iat": 1000000000,
+            "cnf": { "jkt": "jump-host-thumbprint" },
+            "act": { "sub": "service-account-jump-host-a", "client_id": "jump-host-a" }
+        }"#;
+        let claims: TokenClaims = serde_json::from_str(json).unwrap();
+        let act = claims.act.expect("act claim should be present");
+        assert_eq!(act.sub, "service-account-jump-host-a");
+        assert_eq!(act.client_id.as_deref(), Some("jump-host-a"));
+        assert!(act.act.is_none(), "no nested delegation");
+    }
+
+    #[test]
+    fn test_parse_act_claim_nested_delegation() {
+        let json = r#"{
+            "sub": "alice@example.com",
+            "iss": "https://idp.example.com",
+            "aud": "unix-oidc",
+            "exp": 9999999999,
+            "iat": 1000000000,
+            "act": {
+                "sub": "jump-host-b",
+                "act": { "sub": "jump-host-a" }
+            }
+        }"#;
+        let claims: TokenClaims = serde_json::from_str(json).unwrap();
+        let act = claims.act.unwrap();
+        assert_eq!(act.sub, "jump-host-b");
+        let inner = act.act.unwrap();
+        assert_eq!(inner.sub, "jump-host-a");
+    }
+
+    #[test]
+    fn test_delegation_depth() {
+        let json = r#"{
+            "sub": "alice@example.com",
+            "iss": "https://idp.example.com",
+            "aud": "unix-oidc",
+            "exp": 9999999999,
+            "iat": 1000000000,
+            "act": {
+                "sub": "hop-3",
+                "act": { "sub": "hop-2", "act": { "sub": "hop-1" } }
+            }
+        }"#;
+        let claims: TokenClaims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.delegation_depth(), 3);
+    }
+
+    #[test]
+    fn test_no_act_claim_depth_zero() {
+        let json = r#"{
+            "sub": "alice@example.com",
+            "iss": "https://idp.example.com",
+            "aud": "unix-oidc",
+            "exp": 9999999999,
+            "iat": 1000000000
+        }"#;
+        let claims: TokenClaims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.delegation_depth(), 0);
     }
 }

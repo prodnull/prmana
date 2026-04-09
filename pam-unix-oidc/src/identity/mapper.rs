@@ -450,6 +450,7 @@ mod tests {
             amr: None,
             jti: None,
             cnf: None,
+            act: None,
             extra: std::collections::HashMap::new(),
         }
     }
