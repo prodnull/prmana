@@ -228,6 +228,57 @@ impl Default for IdentityConfig {
     }
 }
 
+// ── SPIFFE username mapping (Phase 35) ────────────────────────────────────────
+
+/// SPIFFE ID → Unix username mapping strategy.
+///
+/// When an issuer is a SPIRE OIDC Discovery Provider and the `sub` claim
+/// contains a SPIFFE ID (`spiffe://trust-domain/path/segments`), this config
+/// controls how the SPIFFE ID is mapped to a Unix username.
+///
+/// Three strategies are supported, evaluated in priority order:
+/// 1. `static_map` — explicit SPIFFE ID → username table (highest priority)
+/// 2. `regex` — regex with `(?P<username>...)` capture group
+/// 3. `path_suffix` — last path segment of the SPIFFE ID (default)
+///
+/// ```yaml
+/// issuers:
+///   - issuer_url: "https://spire.example.com"
+///     spiffe_mapping:
+///       strategy: path_suffix          # or "regex" or "static_map"
+///       # For regex strategy:
+///       # pattern: "spiffe://[^/]+/ns/[^/]+/sa/(?P<username>[a-z0-9-]+)"
+///       # For static_map strategy:
+///       # mappings:
+///       #   "spiffe://td/ns/prod/sa/ml-agent": "ml-agent"
+///       #   "spiffe://td/ns/prod/sa/etl-worker": "etl"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpiffeMappingConfig {
+    /// Mapping strategy: `"path_suffix"`, `"regex"`, or `"static_map"`.
+    /// Default: `"path_suffix"`.
+    pub strategy: String,
+
+    /// Regex pattern with `(?P<username>...)` capture group.
+    /// Required when `strategy` is `"regex"`.
+    pub pattern: Option<String>,
+
+    /// Explicit SPIFFE ID → username mappings.
+    /// Used when `strategy` is `"static_map"`.
+    pub mappings: HashMap<String, String>,
+}
+
+impl Default for SpiffeMappingConfig {
+    fn default() -> Self {
+        Self {
+            strategy: "path_suffix".to_string(),
+            pattern: None,
+            mappings: HashMap::new(),
+        }
+    }
+}
+
 // ── Multi-issuer configuration (Phase 21, MIDP-01..05, MIDP-08) ──────────────
 
 /// ACR claim mapping configuration for a specific issuer.
@@ -363,6 +414,14 @@ pub struct IssuerConfig {
     /// the IdP's domain constraint fully compensates for it.
     #[serde(default)]
     pub allow_unsafe_identity_pipeline: bool,
+    /// SPIFFE ID → Unix username mapping for this issuer (Phase 35).
+    ///
+    /// When set, tokens with a `sub` claim starting with `spiffe://` use this
+    /// mapping instead of `claim_mapping`. The SPIRE trust domain must be
+    /// registered as a standard OIDC issuer via the SPIRE OIDC Discovery Provider.
+    #[serde(default)]
+    pub spiffe_mapping: Option<SpiffeMappingConfig>,
+
     /// Per-issuer algorithm allowlist for JWT validation (SHRD-01/02).
     ///
     /// When present, only these algorithms are accepted from tokens validated
@@ -427,6 +486,7 @@ impl Default for IssuerConfig {
             allowed_algorithms: None,
             jwks_cache_ttl_secs: default_jwks_cache_ttl(),
             http_timeout_secs: default_http_timeout(),
+            spiffe_mapping: None,
             recovery_interval_secs: default_recovery_interval(),
             #[cfg(any(test, feature = "test-mode"))]
             allow_insecure_http_for_testing: false,

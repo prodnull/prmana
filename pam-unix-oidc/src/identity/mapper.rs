@@ -19,8 +19,10 @@
 use regex::Regex;
 use thiserror::Error;
 
+use std::collections::HashMap;
+
 use crate::oidc::token::TokenClaims;
-use crate::policy::config::{IdentityConfig, TransformConfig};
+use crate::policy::config::{IdentityConfig, SpiffeMappingConfig, TransformConfig};
 
 // ── Error type ─────────────────────────────────────────────────────────────────
 
@@ -226,6 +228,123 @@ fn validate_username(username: &str) -> Result<(), IdentityError> {
         ));
     }
     Ok(())
+}
+
+// ── SPIFFE username mapper (Phase 35) ─────────────────────────────────────────
+
+/// Maps SPIFFE IDs (`spiffe://trust-domain/path/segments`) to Unix usernames.
+///
+/// Three strategies, evaluated in priority order:
+/// 1. `static_map` — exact SPIFFE ID → username lookup
+/// 2. `regex` — regex with `(?P<username>...)` capture group applied to the full SPIFFE ID
+/// 3. `path_suffix` — last path segment of the SPIFFE ID
+///
+/// Constructed from [`SpiffeMappingConfig`] via [`Self::from_config`].
+pub struct SpiffeUsernameMapper {
+    strategy: SpiffeStrategy,
+}
+
+enum SpiffeStrategy {
+    PathSuffix,
+    Regex(Regex),
+    StaticMap(HashMap<String, String>),
+}
+
+impl std::fmt::Debug for SpiffeUsernameMapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.strategy {
+            SpiffeStrategy::PathSuffix => f.write_str("SpiffeMapper(path_suffix)"),
+            SpiffeStrategy::Regex(re) => write!(f, "SpiffeMapper(regex: {})", re.as_str()),
+            SpiffeStrategy::StaticMap(m) => write!(f, "SpiffeMapper(static_map: {} entries)", m.len()),
+        }
+    }
+}
+
+impl SpiffeUsernameMapper {
+    /// Build a mapper from config. Validates regex patterns at load time.
+    pub fn from_config(config: &SpiffeMappingConfig) -> Result<Self, IdentityError> {
+        let strategy = match config.strategy.as_str() {
+            "path_suffix" => SpiffeStrategy::PathSuffix,
+            "regex" => {
+                let pattern = config.pattern.as_deref().ok_or_else(|| {
+                    IdentityError::InvalidRegex(
+                        "regex".to_string(),
+                        "spiffe_mapping.pattern is required when strategy is 'regex'".to_string(),
+                    )
+                })?;
+                if !pattern.contains("(?P<username>") {
+                    return Err(IdentityError::MissingCaptureGroup(pattern.to_string()));
+                }
+                let re = Regex::new(pattern)
+                    .map_err(|e| IdentityError::InvalidRegex(pattern.to_string(), e.to_string()))?;
+                SpiffeStrategy::Regex(re)
+            }
+            "static_map" => {
+                if config.mappings.is_empty() {
+                    return Err(IdentityError::InvalidRegex(
+                        "static_map".to_string(),
+                        "spiffe_mapping.mappings must not be empty for static_map strategy"
+                            .to_string(),
+                    ));
+                }
+                SpiffeStrategy::StaticMap(config.mappings.clone())
+            }
+            other => {
+                return Err(IdentityError::InvalidRegex(
+                    other.to_string(),
+                    "unknown spiffe_mapping strategy (expected 'path_suffix', 'regex', or 'static_map')".to_string(),
+                ));
+            }
+        };
+        Ok(Self { strategy })
+    }
+
+    /// Returns `true` if `sub` looks like a SPIFFE ID.
+    pub fn is_spiffe_id(sub: &str) -> bool {
+        sub.starts_with("spiffe://")
+    }
+
+    /// Map a SPIFFE ID to a Unix username.
+    ///
+    /// The `sub` claim must start with `spiffe://`. Returns [`IdentityError`]
+    /// if the mapping fails or the resulting username is invalid.
+    pub fn map_spiffe_id(&self, spiffe_id: &str) -> Result<String, IdentityError> {
+        let username = match &self.strategy {
+            SpiffeStrategy::PathSuffix => {
+                // spiffe://trust-domain/ns/prod/sa/my-agent → "my-agent"
+                spiffe_id
+                    .rsplit('/')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        IdentityError::TransformFailed(format!(
+                            "SPIFFE ID has no path segments: {spiffe_id}"
+                        ))
+                    })?
+                    .to_string()
+            }
+            SpiffeStrategy::Regex(re) => re
+                .captures(spiffe_id)
+                .and_then(|caps| caps.name("username"))
+                .map(|m| m.as_str().to_string())
+                .ok_or_else(|| {
+                    IdentityError::TransformFailed(format!(
+                        "SPIFFE ID did not match regex: {spiffe_id}"
+                    ))
+                })?,
+            SpiffeStrategy::StaticMap(map) => map
+                .get(spiffe_id)
+                .cloned()
+                .ok_or_else(|| {
+                    IdentityError::TransformFailed(format!(
+                        "SPIFFE ID not in static map: {spiffe_id}"
+                    ))
+                })?,
+        };
+
+        validate_username(&username)?;
+        Ok(username)
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -498,5 +617,173 @@ mod tests {
             matches!(result, Err(IdentityError::InvalidRegex(_, _))),
             "expected InvalidRegex for unknown simple transform, got {result:?}"
         );
+    }
+
+    // ── SPIFFE mapping tests (Phase 35) ─────────────────────────────────────
+
+    mod spiffe {
+        use super::*;
+        use crate::policy::config::SpiffeMappingConfig;
+        use std::collections::HashMap;
+
+        #[test]
+        fn test_is_spiffe_id() {
+            assert!(SpiffeUsernameMapper::is_spiffe_id("spiffe://example.com/ns/prod/sa/agent"));
+            assert!(!SpiffeUsernameMapper::is_spiffe_id("https://idp.example.com"));
+            assert!(!SpiffeUsernameMapper::is_spiffe_id("alice@corp.com"));
+        }
+
+        #[test]
+        fn test_path_suffix_extracts_last_segment() {
+            let config = SpiffeMappingConfig::default(); // path_suffix
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            assert_eq!(
+                mapper.map_spiffe_id("spiffe://example.com/ns/prod/sa/ml-agent").unwrap(),
+                "ml-agent"
+            );
+        }
+
+        #[test]
+        fn test_path_suffix_simple_path() {
+            let config = SpiffeMappingConfig::default();
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            assert_eq!(
+                mapper.map_spiffe_id("spiffe://td/my-workload").unwrap(),
+                "my-workload"
+            );
+        }
+
+        #[test]
+        fn test_path_suffix_rejects_empty_path() {
+            let config = SpiffeMappingConfig::default();
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            // Trailing slash → last segment is empty
+            let result = mapper.map_spiffe_id("spiffe://example.com/");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_regex_extracts_username() {
+            let config = SpiffeMappingConfig {
+                strategy: "regex".to_string(),
+                pattern: Some(r"spiffe://[^/]+/ns/[^/]+/sa/(?P<username>[a-z0-9-]+)".to_string()),
+                mappings: HashMap::new(),
+            };
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            assert_eq!(
+                mapper.map_spiffe_id("spiffe://td/ns/prod/sa/etl-worker").unwrap(),
+                "etl-worker"
+            );
+        }
+
+        #[test]
+        fn test_regex_rejects_non_matching() {
+            let config = SpiffeMappingConfig {
+                strategy: "regex".to_string(),
+                pattern: Some(r"spiffe://prod\.example\.com/(?P<username>[a-z]+)".to_string()),
+                mappings: HashMap::new(),
+            };
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            let result = mapper.map_spiffe_id("spiffe://staging.example.com/agent");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_regex_missing_pattern_rejected() {
+            let config = SpiffeMappingConfig {
+                strategy: "regex".to_string(),
+                pattern: None,
+                mappings: HashMap::new(),
+            };
+            assert!(SpiffeUsernameMapper::from_config(&config).is_err());
+        }
+
+        #[test]
+        fn test_regex_missing_capture_group_rejected() {
+            let config = SpiffeMappingConfig {
+                strategy: "regex".to_string(),
+                pattern: Some(r"spiffe://[a-z]+/[a-z]+".to_string()),
+                mappings: HashMap::new(),
+            };
+            assert!(SpiffeUsernameMapper::from_config(&config).is_err());
+        }
+
+        #[test]
+        fn test_static_map_exact_lookup() {
+            let mut mappings = HashMap::new();
+            mappings.insert(
+                "spiffe://td/ns/prod/sa/ml-agent".to_string(),
+                "ml-agent".to_string(),
+            );
+            mappings.insert(
+                "spiffe://td/ns/prod/sa/etl".to_string(),
+                "etl-user".to_string(),
+            );
+            let config = SpiffeMappingConfig {
+                strategy: "static_map".to_string(),
+                pattern: None,
+                mappings,
+            };
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            assert_eq!(
+                mapper.map_spiffe_id("spiffe://td/ns/prod/sa/ml-agent").unwrap(),
+                "ml-agent"
+            );
+            assert_eq!(
+                mapper.map_spiffe_id("spiffe://td/ns/prod/sa/etl").unwrap(),
+                "etl-user"
+            );
+        }
+
+        #[test]
+        fn test_static_map_rejects_unknown_id() {
+            let mut mappings = HashMap::new();
+            mappings.insert("spiffe://td/known".to_string(), "user".to_string());
+            let config = SpiffeMappingConfig {
+                strategy: "static_map".to_string(),
+                pattern: None,
+                mappings,
+            };
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            assert!(mapper.map_spiffe_id("spiffe://td/unknown").is_err());
+        }
+
+        #[test]
+        fn test_static_map_empty_rejected_at_config() {
+            let config = SpiffeMappingConfig {
+                strategy: "static_map".to_string(),
+                pattern: None,
+                mappings: HashMap::new(),
+            };
+            assert!(SpiffeUsernameMapper::from_config(&config).is_err());
+        }
+
+        #[test]
+        fn test_unknown_strategy_rejected() {
+            let config = SpiffeMappingConfig {
+                strategy: "custom".to_string(),
+                pattern: None,
+                mappings: HashMap::new(),
+            };
+            assert!(SpiffeUsernameMapper::from_config(&config).is_err());
+        }
+
+        #[test]
+        fn test_mapped_username_validated() {
+            // Static map returns a username with '/' → must be rejected
+            let mut mappings = HashMap::new();
+            mappings.insert("spiffe://td/evil".to_string(), "../../root".to_string());
+            let config = SpiffeMappingConfig {
+                strategy: "static_map".to_string(),
+                pattern: None,
+                mappings,
+            };
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            let result = mapper.map_spiffe_id("spiffe://td/evil");
+            assert!(
+                matches!(result, Err(IdentityError::InvalidUsername(_, _))),
+                "path traversal username must be rejected: {result:?}"
+            );
+        }
     }
 }
