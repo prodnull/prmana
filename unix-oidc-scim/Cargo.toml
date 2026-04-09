@@ -44,6 +44,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Unix user management
 uzers = "0.12"
 
+# HTTP client for JWKS fetch (OIDC discovery + key retrieval)
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
 # Reuse PAM crate's policy config and validation for SCIM endpoint auth
 pam-unix-oidc = { path = "../pam-unix-oidc" }
 

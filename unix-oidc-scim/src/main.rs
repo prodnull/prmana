@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use figment::providers::Format; // Required for Yaml::file()
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -47,8 +48,32 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // TODO: Load config from YAML file via figment using args.config
-    let config = ScimConfig::default();
+    // Load config from YAML file via figment with env-var overrides.
+    // Missing file is not fatal when --insecure-no-auth is set (dev mode).
+    let config: ScimConfig = match figment::Figment::new()
+        .merge(figment::providers::Yaml::file(&args.config))
+        .merge(figment::providers::Env::prefixed("UNIX_OIDC_SCIM_").split("__"))
+        .extract()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            if args.insecure_no_auth {
+                tracing::warn!(
+                    config_path = %args.config,
+                    error = %e,
+                    "Config file not loadable — using defaults (--insecure-no-auth active)"
+                );
+                ScimConfig::default()
+            } else {
+                bail!(
+                    "Failed to load config from {}: {}\n\
+                     Ensure the config file exists or pass --insecure-no-auth for development.",
+                    args.config,
+                    e,
+                );
+            }
+        }
+    };
 
     // Determine auth mode — refuse to start without explicit auth config
     // or explicit bypass flag. This service can call useradd/userdel, so

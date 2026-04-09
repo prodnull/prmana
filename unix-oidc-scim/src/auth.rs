@@ -13,10 +13,57 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
+use tokio::sync::OnceCell;
 
 use crate::schema::ScimError;
+
+/// Cached JWKS keys fetched from the issuer's discovery endpoint.
+///
+/// Lazily initialized on the first request. The `OnceCell` ensures only
+/// one fetch occurs even under concurrent requests.
+static JWKS_CACHE: OnceCell<jsonwebtoken::jwk::JwkSet> = OnceCell::const_new();
+
+/// Fetch JWKS from the issuer's OIDC discovery endpoint.
+async fn fetch_jwks(issuer: &str) -> Result<jsonwebtoken::jwk::JwkSet, String> {
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    // Fetch discovery document
+    let discovery: serde_json::Value = client
+        .get(&discovery_url)
+        .send()
+        .await
+        .map_err(|e| format!("OIDC discovery fetch failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("OIDC discovery parse failed: {e}"))?;
+
+    let jwks_uri = discovery
+        .get("jwks_uri")
+        .and_then(|v| v.as_str())
+        .ok_or("OIDC discovery missing jwks_uri")?;
+
+    // Fetch JWKS
+    let jwks: jsonwebtoken::jwk::JwkSet = client
+        .get(jwks_uri)
+        .send()
+        .await
+        .map_err(|e| format!("JWKS fetch failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("JWKS parse failed: {e}"))?;
+
+    tracing::info!(jwks_uri = jwks_uri, keys = jwks.keys.len(), "JWKS loaded");
+    Ok(jwks)
+}
 
 /// Authentication mode for the SCIM service.
 ///
@@ -24,9 +71,9 @@ use crate::schema::ScimError;
 /// The service refuses to start without an explicit choice.
 #[derive(Debug, Clone)]
 pub enum AuthMode {
-    /// Full JWT validation against the configured OIDC issuer.
+    /// Full JWT validation with JWKS signature verification against the configured OIDC issuer.
     Validated {
-        /// OIDC issuer URL (used for `iss` claim validation).
+        /// OIDC issuer URL (used for `iss` claim validation and JWKS discovery).
         issuer: String,
         /// Expected audience (`aud` claim).
         audience: String,
@@ -92,11 +139,8 @@ pub async fn auth_middleware(
                     tracing::debug!("Insecure mode: skipping token validation");
                 }
                 AuthMode::Validated { issuer, audience } => {
-                    // Validate JWT structure and claims.
-                    // Phase 37: Validates iss, aud, exp using the token's embedded key info.
-                    // Full JWKS fetch + key rotation is deferred — for now we decode the
-                    // header to reject malformed/expired tokens and verify iss/aud claims.
-                    let header = match jsonwebtoken::decode_header(token) {
+                    // Parse JWT header to determine algorithm and key ID.
+                    let header = match decode_header(token) {
                         Ok(h) => h,
                         Err(e) => {
                             tracing::warn!(error = %e, "Bearer token has invalid JWT header");
@@ -104,32 +148,73 @@ pub async fn auth_middleware(
                         }
                     };
 
-                    // Enforce asymmetric algorithms only — never accept "none" or HMAC
+                    // Enforce asymmetric algorithms only — never accept "none" or HMAC.
+                    // Algorithm confusion attacks (CVE-2016-5431 class) are blocked here.
                     match header.alg {
                         Algorithm::ES256
                         | Algorithm::ES384
                         | Algorithm::RS256
                         | Algorithm::RS384
-                        | Algorithm::RS512 => {}
+                        | Algorithm::RS512
+                        | Algorithm::PS256
+                        | Algorithm::PS384
+                        | Algorithm::PS512
+                        | Algorithm::EdDSA => {}
                         other => {
                             tracing::warn!(algorithm = ?other, "Bearer token uses disallowed algorithm");
                             return unauthorized("Invalid token");
                         }
                     }
 
-                    // Validate claims structure (iss, aud, exp) without full signature
-                    // verification. Full JWKS-based signature verification requires
-                    // fetching the issuer's keys — deferred to next phase.
+                    // Fetch JWKS from issuer (cached after first request).
+                    let issuer_clone = issuer.clone();
+                    let jwks = match JWKS_CACHE
+                        .get_or_try_init(|| fetch_jwks(&issuer_clone))
+                        .await
+                    {
+                        Ok(j) => j,
+                        Err(e) => {
+                            tracing::error!(error = %e, issuer = %issuer, "Failed to fetch JWKS");
+                            return unauthorized("Authentication service unavailable");
+                        }
+                    };
+
+                    // Find the matching key by kid (if present in header) or by algorithm.
+                    let kid = header.kid.as_deref();
+                    let decoding_key = jwks
+                        .keys
+                        .iter()
+                        .find(|k| {
+                            // Match by kid if both header and key have it
+                            if let (Some(hdr_kid), Some(key_kid)) = (kid, &k.common.key_id) {
+                                return hdr_kid == key_kid;
+                            }
+                            // Fall back to algorithm match
+                            k.common
+                                .key_algorithm
+                                .map(|ka| format!("{ka:?}") == format!("{:?}", header.alg))
+                                .unwrap_or(false)
+                        })
+                        .and_then(|jwk| DecodingKey::from_jwk(jwk).ok());
+
+                    let decoding_key = match decoding_key {
+                        Some(k) => k,
+                        None => {
+                            tracing::warn!(
+                                kid = ?kid,
+                                algorithm = ?header.alg,
+                                "No matching JWKS key for Bearer token"
+                            );
+                            return unauthorized("Invalid token");
+                        }
+                    };
+
+                    // Full JWT validation: signature + iss + aud + exp.
                     let mut validation = Validation::new(header.alg);
                     validation.set_issuer(&[issuer]);
                     validation.set_audience(&[audience]);
-                    // Insecure: skip signature for now (JWKS fetch TODO).
-                    // Claims (iss, aud, exp) are still enforced.
-                    validation.insecure_disable_signature_validation();
 
-                    if let Err(e) =
-                        decode::<BearerClaims>(token, &DecodingKey::from_secret(&[]), &validation)
-                    {
+                    if let Err(e) = decode::<BearerClaims>(token, &decoding_key, &validation) {
                         tracing::warn!(
                             error = %e,
                             issuer = %issuer,
@@ -138,7 +223,7 @@ pub async fn auth_middleware(
                         return unauthorized("Invalid token");
                     }
 
-                    tracing::debug!(issuer = %issuer, "Bearer token claims validated");
+                    tracing::debug!(issuer = %issuer, "Bearer token validated (signature + claims)");
                 }
             }
 
