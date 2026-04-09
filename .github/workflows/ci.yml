@@ -561,6 +561,63 @@ jobs:
         run: docker compose -f docker-compose.tpm-test.yaml down -v
 
   # ============================================================================
+  # SPIFFE/SPIRE Integration Tests (Phase 35)
+  # ============================================================================
+  spire-integration:
+    name: SPIFFE/SPIRE Integration
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-spire-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Prepare SPIRE socket directory
+        run: sudo mkdir -p /tmp/spire-agent/public && sudo chmod 777 /tmp/spire-agent/public
+
+      - name: Start SPIRE server + agent
+        run: |
+          docker compose -f docker-compose.spire-test.yaml up -d
+          echo "Waiting for SPIRE agent..."
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.spire-test.yaml exec -T spire-agent \
+              /opt/spire/bin/spire-agent healthcheck 2>/dev/null; then
+              echo "SPIRE agent ready after ~$((i * 2))s"
+              break
+            fi
+            echo "Waiting for SPIRE agent... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run SPIRE integration tests
+        run: cargo test -p unix-oidc-agent --features spire -- --ignored spire
+        env:
+          UNIX_OIDC_SPIRE_SOCKET: /tmp/spire-agent/public/api.sock
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.spire-test.yaml logs
+
+      - name: Stop SPIRE
+        if: always()
+        run: docker compose -f docker-compose.spire-test.yaml down -v
+
+  # ============================================================================
   # Minimum Supported Rust Version
   # ============================================================================
   msrv:

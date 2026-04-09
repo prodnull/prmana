@@ -1,0 +1,93 @@
+# SPIRE integration test environment for Phase 35 SPIFFE/SPIRE bridge.
+#
+# Runs a SPIRE server + agent pair with a pre-registered workload identity.
+# The agent exposes the Workload API on a Unix domain socket that the
+# SpireSigner connects to via gRPC.
+#
+# Usage:
+#   docker compose -f docker-compose.spire-test.yaml up -d
+#   # Wait for agent health check
+#   UNIX_OIDC_SPIRE_SOCKET=/tmp/spire-agent/public/api.sock \
+#     cargo test -p unix-oidc-agent --features spire -- --ignored spire
+#   docker compose -f docker-compose.spire-test.yaml down -v
+
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.14.5
+    command:
+      - -config
+      - /opt/spire/conf/server.conf
+    volumes:
+      - ./test/fixtures/spire/server.conf:/opt/spire/conf/server.conf:ro
+      - spire-data:/opt/spire/data
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.14.5
+    command:
+      - -config
+      - /opt/spire/conf/agent.conf
+    volumes:
+      - ./test/fixtures/spire/agent.conf:/opt/spire/conf/agent.conf:ro
+      - spire-socket:/tmp/spire-agent/public
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    pid: "host"
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot container that:
+  # 1. Creates a join token for the agent
+  # 2. Registers a workload entry for the test process
+  spire-register:
+    image: ghcr.io/spiffe/spire-server:1.14.5
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        echo "Waiting for SPIRE server..."
+        until /opt/spire/bin/spire-server healthcheck -socketPath /opt/spire/data/server.sock 2>/dev/null; do
+          sleep 1
+        done
+
+        echo "Creating agent join token..."
+        TOKEN=$(/opt/spire/bin/spire-server token generate \
+          -socketPath /opt/spire/data/server.sock \
+          -spiffeID spiffe://unix-oidc-test/agent \
+          -output json | grep -o '"value":"[^"]*"' | cut -d'"' -f4)
+        echo "Join token: $TOKEN"
+
+        echo "Registering test workload..."
+        /opt/spire/bin/spire-server entry create \
+          -socketPath /opt/spire/data/server.sock \
+          -parentID spiffe://unix-oidc-test/agent \
+          -spiffeID spiffe://unix-oidc-test/ns/ci/sa/test-workload \
+          -selector unix:uid:0 \
+          -dns localhost \
+          -jwt-svid-ttl 300 || true
+
+        echo "SPIRE registration complete."
+    volumes:
+      - spire-data:/opt/spire/data
+    depends_on:
+      spire-server:
+        condition: service_healthy
+
+volumes:
+  spire-data:
+  spire-socket:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /tmp/spire-agent/public
