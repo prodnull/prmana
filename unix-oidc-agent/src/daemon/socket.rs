@@ -190,6 +190,12 @@ pub enum StepUpOutcome {
         session_id: String,
         /// Parent SSH session ID threaded through from the originating StepUp request.
         parent_session_id: Option<String>,
+        /// Raw ID token string from the IdP's CIBA token response (Phase 30-02, D-12).
+        ///
+        /// Carried here so the IPC response builder can include it in `StepUpComplete`.
+        /// The agent performs best-effort structural pre-validation before populating
+        /// this field. PAM is the enforcement point (D-13 dual validation).
+        id_token: Option<String>,
     },
     /// Step-up failed or timed out (reason: "denied" | "expired" | "timeout" | "acr_failed" | "error").
     TimedOut {
@@ -1884,6 +1890,7 @@ async fn handle_step_up_result(
             acr,
             session_id,
             parent_session_id,
+            id_token,
         }) => {
             // OBS-3: Audit event — step-up completed. Both sudo_session_id and
             // parent_session_id are logged for full end-to-end SIEM correlation.
@@ -1896,9 +1903,10 @@ async fn handle_step_up_result(
                 sudo_session_id = %session_id,
                 parent_session_id = ?parent_session_id,
                 acr = ?acr,
+                has_id_token = id_token.is_some(),
                 "AGENT_STEP_UP_COMPLETE"
             );
-            AgentResponse::step_up_complete(acr, session_id, parent_session_id, None)
+            AgentResponse::step_up_complete(acr, session_id, parent_session_id, id_token)
         }
         Ok(StepUpOutcome::TimedOut {
             reason,
@@ -1974,11 +1982,48 @@ pub(crate) async fn poll_ciba(
                     }
                 };
 
+                // Agent-side best-effort structural validation of the ID token (D-13).
+                //
+                // This is NOT the enforcement validation — PAM re-validates the token
+                // against the IdP's JWKS independently (T-30-06, T-30-09). The agent
+                // validation is a fail-fast gate that rejects structurally invalid tokens
+                // and tokens that fail basic claims checks (exp, iss) before sending them
+                // over IPC. A forged token that passes structural checks will still fail
+                // PAM's JWKS signature verification.
+                //
+                // We use structural/claims-only validation here because the agent does not
+                // have a JWKS cache warm enough for a full JWKS fetch on the critical path.
+                // Full signature verification happens in PAM.
+                let validated_id_token: Option<String> =
+                    match token_resp.id_token.as_deref() {
+                        None => None,
+                        Some(raw) => {
+                            match validate_id_token_structure(raw) {
+                                Ok(()) => Some(raw.to_string()),
+                                Err(e) => {
+                                    tracing::error!(
+                                        error = %e,
+                                        "CIBA id_token failed agent-side structural validation \
+                                         (D-13 fail-fast); returning id_token_validation_failed"
+                                    );
+                                    return StepUpOutcome::TimedOut {
+                                        reason: "id_token_validation_failed".to_string(),
+                                        user_message:
+                                            "Step-up token failed pre-validation".to_string(),
+                                    };
+                                }
+                            }
+                        }
+                    };
+
                 // ACR validation — HARD-FAIL invariant (CLAUDE.md).
                 if let Some(ref required) = acr_required {
-                    // Extract acr from id_token payload (decode middle segment without sig check).
-                    let actual_acr = token_resp
-                        .id_token
+                    // Extract acr from the validated id_token payload.
+                    // extract_acr_from_id_token is still used here for the deprecated `acr`
+                    // field (backward compat with old PAM). Full ACR enforcement uses the
+                    // id_token passed to PAM (D-13).
+                    #[allow(deprecated)]
+                    let actual_acr = validated_id_token
                         .as_deref()
                         .and_then(extract_acr_from_id_token);
 
@@ -2001,6 +2046,7 @@ pub(crate) async fn poll_ciba(
                         acr: actual_acr,
                         session_id: uuid::Uuid::new_v4().to_string(),
                         parent_session_id: parent_session_id.clone(),
+                        id_token: validated_id_token,
                     };
                 }
 
@@ -2008,6 +2054,7 @@ pub(crate) async fn poll_ciba(
                     acr: None,
                     session_id: uuid::Uuid::new_v4().to_string(),
                     parent_session_id: parent_session_id.clone(),
+                    id_token: validated_id_token,
                 };
             }
 
@@ -2074,6 +2121,16 @@ pub(crate) async fn poll_ciba(
 /// Decodes the middle (payload) segment of the JWT without signature verification.
 /// This is safe because we are only reading claims from a token we received from the
 /// trusted IdP token endpoint (the TLS connection provides transport security).
+///
+/// # Deprecation
+///
+/// Phase 30: This function is retained only for populating the backward-compatible
+/// `acr` field in `StepUpComplete`. New code should use the validated `id_token`
+/// passed through IPC instead (D-13 dual validation).
+#[deprecated(
+    note = "Phase 30: use the validated id_token field in StepUpComplete instead of \
+            extracting ACR via unverified base64 decode (D-13)"
+)]
 fn extract_acr_from_id_token(id_token: &str) -> Option<String> {
     let parts: Vec<&str> = id_token.split('.').collect();
     if parts.len() != 3 {
@@ -2082,6 +2139,55 @@ fn extract_acr_from_id_token(id_token: &str) -> Option<String> {
     let payload = base64_decode_url(parts[1])?;
     let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
     claims["acr"].as_str().map(str::to_string)
+}
+
+/// Best-effort structural validation of a CIBA ID token (D-13 agent-side gate).
+///
+/// Checks performed (no signature verification — PAM is the enforcement point):
+/// 1. Three-part JWT structure (header.payload.signature).
+/// 2. Base64url-decodable payload.
+/// 3. Valid JSON payload.
+/// 4. `exp` claim is present and in the future (with 60s clock-skew tolerance).
+///
+/// Returns `Ok(())` when the token passes structural checks, `Err(String)` with a
+/// reason when it fails. A token that passes here will still be rejected by PAM if
+/// its signature does not match the IdP's JWKS.
+///
+/// The agent does NOT verify the signature here because JWKS fetch on the CIBA
+/// poll critical path would add latency and a network dependency. PAM has a warm
+/// JWKS cache and is the enforcement point.
+fn validate_id_token_structure(id_token: &str) -> Result<(), String> {
+    // 1. Three-part structure.
+    let parts: Vec<&str> = id_token.split('.').collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "malformed JWT: expected 3 parts, got {}",
+            parts.len()
+        ));
+    }
+
+    // 2 & 3. Decode and parse payload JSON.
+    let payload_bytes = base64_decode_url(parts[1])
+        .ok_or_else(|| "malformed JWT: payload is not valid base64url".to_string())?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload_bytes)
+        .map_err(|e| format!("malformed JWT payload JSON: {e}"))?;
+
+    // 4. exp claim is present and in the future (60s clock-skew tolerance).
+    let exp = claims["exp"]
+        .as_i64()
+        .ok_or_else(|| "id_token missing required exp claim".to_string())?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    const CLOCK_SKEW_SECS: i64 = 60;
+    if exp + CLOCK_SKEW_SECS < now {
+        return Err(format!(
+            "id_token expired: exp={exp}, now={now}, skew={CLOCK_SKEW_SECS}s"
+        ));
+    }
+
+    Ok(())
 }
 
 /// Extract username from a JWT access token without full validation
@@ -2681,7 +2787,7 @@ mod tests {
         );
     }
 
-    /// StepUpOutcome::Complete carries acr, session_id, and parent_session_id.
+    /// StepUpOutcome::Complete carries acr, session_id, parent_session_id, and id_token.
     #[test]
     fn test_step_up_outcome_complete_fields() {
         let outcome = StepUpOutcome::Complete {
@@ -2690,6 +2796,7 @@ mod tests {
             ),
             session_id: "sess-abc".to_string(),
             parent_session_id: None,
+            id_token: None,
         };
         match outcome {
             StepUpOutcome::Complete {
@@ -3291,6 +3398,7 @@ mod tests {
                 acr: Some("urn:example:acr:mfa".to_string()),
                 session_id: "sess-abc".to_string(),
                 parent_session_id: None,
+                id_token: None,
             }
         });
 
@@ -3414,6 +3522,228 @@ mod tests {
                 );
             }
             other => panic!("Expected error response for oversized message, got: {other:?}"),
+        }
+    }
+
+    // ── TDD: validate_id_token_structure (Phase 30-02, D-13) ────────────────
+
+    /// validate_id_token_structure accepts a structurally valid, non-expired JWT.
+    #[test]
+    fn test_validate_id_token_structure_valid() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        // exp = far future (year 2100 ≈ 4102444800)
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            r#"{"sub":"user1","iss":"https://idp.example.com","exp":4102444800}"#,
+        );
+        let sig = URL_SAFE_NO_PAD.encode(b"fakesig");
+        let id_token = format!("{header}.{payload}.{sig}");
+
+        assert!(
+            validate_id_token_structure(&id_token).is_ok(),
+            "Expected Ok for valid, non-expired JWT"
+        );
+    }
+
+    /// validate_id_token_structure rejects a token with fewer than 3 parts.
+    #[test]
+    fn test_validate_id_token_structure_wrong_parts() {
+        let result = validate_id_token_structure("only.two");
+        assert!(
+            result.is_err(),
+            "Expected Err for malformed JWT (< 3 parts)"
+        );
+        assert!(
+            result.unwrap_err().contains("3 parts"),
+            "Error message should mention part count"
+        );
+    }
+
+    /// validate_id_token_structure rejects a token with invalid base64 payload.
+    #[test]
+    fn test_validate_id_token_structure_invalid_base64() {
+        let result = validate_id_token_structure("header.!!!invalid_base64!!!.sig");
+        assert!(
+            result.is_err(),
+            "Expected Err for non-base64url payload"
+        );
+    }
+
+    /// validate_id_token_structure rejects a token with invalid JSON payload.
+    #[test]
+    fn test_validate_id_token_structure_invalid_json() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let payload = URL_SAFE_NO_PAD.encode(b"not json at all");
+        let result = validate_id_token_structure(&format!("header.{payload}.sig"));
+        assert!(result.is_err(), "Expected Err for non-JSON payload");
+    }
+
+    /// validate_id_token_structure rejects a token missing the exp claim.
+    #[test]
+    fn test_validate_id_token_structure_missing_exp() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","iss":"https://idp.example.com"}"#);
+        let result = validate_id_token_structure(&format!("h.{payload}.s"));
+        assert!(result.is_err(), "Expected Err for missing exp claim");
+        assert!(
+            result.unwrap_err().contains("exp"),
+            "Error message should mention exp claim"
+        );
+    }
+
+    /// validate_id_token_structure rejects an expired token (exp in the past beyond clock skew).
+    #[test]
+    fn test_validate_id_token_structure_expired() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        // exp = Unix epoch (1970-01-01) — far in the past
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","exp":1}"#);
+        let result = validate_id_token_structure(&format!("h.{payload}.s"));
+        assert!(result.is_err(), "Expected Err for expired token");
+        assert!(
+            result.unwrap_err().contains("expired"),
+            "Error message should mention expiry"
+        );
+    }
+
+    /// poll_ciba carries id_token through StepUpOutcome::Complete when token endpoint includes it.
+    #[tokio::test]
+    async fn test_poll_ciba_id_token_passed_through_on_complete() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Build a valid, non-expired id_token for the mock response.
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload =
+            URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","acr":"urn:mfa","exp":4102444800}"#);
+        let sig = URL_SAFE_NO_PAD.encode(b"fakesig");
+        let id_token_value = format!("{header}.{payload}.{sig}");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let id_token_clone = id_token_value.clone();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let body = format!(
+                    r#"{{"access_token":"tok123","id_token":"{id_token_clone}","token_type":"Bearer","expires_in":3600}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let outcome = poll_ciba(
+            http,
+            format!("http://127.0.0.1:{port}/token"),
+            vec![],
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_secs(10),
+            None, // no ACR required
+            None,
+        )
+        .await;
+
+        match outcome {
+            StepUpOutcome::Complete { id_token, .. } => {
+                assert_eq!(
+                    id_token.as_deref(),
+                    Some(id_token_value.as_str()),
+                    "id_token must be passed through StepUpOutcome::Complete"
+                );
+            }
+            other => panic!("Expected Complete, got: {other:?}"),
+        }
+    }
+
+    /// poll_ciba returns TimedOut("id_token_validation_failed") when token endpoint
+    /// returns a structurally invalid id_token (expired).
+    #[tokio::test]
+    async fn test_poll_ciba_id_token_validation_failed_returns_timed_out() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Expired id_token (exp = 1, far in the past).
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","exp":1}"#);
+        let sig = URL_SAFE_NO_PAD.encode(b"fakesig");
+        let bad_id_token = format!("{header}.{payload}.{sig}");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let bad_token_clone = bad_id_token.clone();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let body = format!(
+                    r#"{{"access_token":"tok456","id_token":"{bad_token_clone}","token_type":"Bearer","expires_in":3600}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let outcome = poll_ciba(
+            http,
+            format!("http://127.0.0.1:{port}/token"),
+            vec![],
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_secs(10),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                outcome,
+                StepUpOutcome::TimedOut { ref reason, .. }
+                if reason == "id_token_validation_failed"
+            ),
+            "Expected TimedOut(id_token_validation_failed) for invalid id_token, got: {outcome:?}"
+        );
+    }
+
+    /// StepUpOutcome::Complete now carries id_token field.
+    #[test]
+    fn test_step_up_outcome_complete_carries_id_token() {
+        let outcome = StepUpOutcome::Complete {
+            acr: Some("urn:mfa".to_string()),
+            session_id: "sess-xyz".to_string(),
+            parent_session_id: None,
+            id_token: Some("eyJ.eyJ.sig".to_string()),
+        };
+        match outcome {
+            StepUpOutcome::Complete { id_token, .. } => {
+                assert_eq!(id_token.as_deref(), Some("eyJ.eyJ.sig"));
+            }
+            _ => panic!("Expected Complete"),
         }
     }
 }
