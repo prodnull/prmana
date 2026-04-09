@@ -197,9 +197,11 @@ pub async fn list_users(State(provisioner): State<AppState>) -> Json<ScimListRes
 }
 
 /// Build the axum Router with all SCIM endpoints.
-pub fn build_router(provisioner: AppState) -> axum::Router {
+pub fn build_router(provisioner: AppState, auth_mode: crate::auth::AuthMode) -> axum::Router {
     use axum::middleware;
     use axum::routing::{get, post};
+
+    let auth_state = std::sync::Arc::new(auth_mode);
 
     axum::Router::new()
         .route("/ServiceProviderConfig", get(get_service_provider_config))
@@ -209,7 +211,10 @@ pub fn build_router(provisioner: AppState) -> axum::Router {
             "/Users/:id",
             get(get_user).put(replace_user).delete(delete_user),
         )
-        .layer(middleware::from_fn(crate::auth::auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            auth_state,
+            crate::auth::auth_middleware,
+        ))
         .with_state(provisioner)
 }
 
@@ -222,7 +227,14 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_provisioner() -> AppState {
-        Arc::new(Provisioner::new(crate::config::ScimConfig::default()))
+        Arc::new(Provisioner::new(crate::config::ScimConfig {
+            dry_run: true,
+            ..crate::config::ScimConfig::default()
+        }))
+    }
+
+    fn test_router() -> axum::Router {
+        build_router(test_provisioner(), crate::auth::AuthMode::Insecure)
     }
 
     fn authed_get(uri: &str) -> Request<Body> {
@@ -264,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_service_provider_config() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let resp = app
             .oneshot(authed_get("/ServiceProviderConfig"))
             .await
@@ -282,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_schemas() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let resp = app.oneshot(authed_get("/Schemas")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
@@ -293,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_user() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let create_body = serde_json::json!({
             "schemas": [SCHEMA_USER],
             "userName": "testscim"
@@ -324,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_reserved_username_rejected() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let body = serde_json::json!({
             "schemas": [SCHEMA_USER],
             "userName": "root"
@@ -335,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_duplicate_returns_409() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let body = serde_json::json!({
             "schemas": [SCHEMA_USER],
             "userName": "duproute"
@@ -353,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nonexistent_user_returns_404() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let resp = app
             .oneshot(authed_get("/Users/nonexistent-id"))
             .await
@@ -363,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_user() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let create_body = serde_json::json!({
             "schemas": [SCHEMA_USER],
             "userName": "putuser"
@@ -395,7 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_nonexistent_returns_404() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let body = serde_json::json!({
             "schemas": [SCHEMA_USER],
             "userName": "ghost"
@@ -409,7 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_user() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let create_body = serde_json::json!({
             "schemas": [SCHEMA_USER],
             "userName": "delroute"
@@ -440,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_returns_404() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let resp = app
             .oneshot(authed_delete("/Users/no-such-id"))
             .await
@@ -450,7 +462,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_users() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
 
         // Empty list
         let resp = app.clone().oneshot(authed_get("/Users")).await.unwrap();
@@ -477,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unauthenticated_request_rejected() {
-        let app = build_router(test_provisioner());
+        let app = test_router();
         let req = Request::builder()
             .uri("/Users")
             .body(Body::empty())

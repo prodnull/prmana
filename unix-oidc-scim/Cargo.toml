@@ -28,6 +28,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror.workspace = true
 anyhow.workspace = true
 
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# JWT validation
+jsonwebtoken = "9.0"
+
 # Configuration
 figment = { version = "0.10", features = ["yaml", "env"] }
 
