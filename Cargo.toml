@@ -3,6 +3,7 @@
 members = [
     "pam-unix-oidc",
     "unix-oidc-agent",
+    "unix-oidc-scim",
     "examples/webhook-server",
 ]
 exclude = ["fuzz"]

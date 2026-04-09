@@ -1,0 +1,47 @@
+[package]
+name = "unix-oidc-scim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SCIM 2.0 provisioning service for unix-oidc user lifecycle management"
+
+[[bin]]
+name = "unix-oidc-scim"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP framework
+axum = "0.7"
+
+# Async runtime
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Configuration
+figment = { version = "0.10", features = ["yaml", "env"] }
+
+# Identity
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Unix user management
+uzers = "0.12"
+
+# Reuse PAM crate's policy config and validation for SCIM endpoint auth
+pam-unix-oidc = { path = "../pam-unix-oidc" }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.11", features = ["json"] }
+tokio-test = "0.4"
