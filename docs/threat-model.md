@@ -231,4 +231,63 @@ Prioritized by risk reduction impact.
 
 ---
 
-*Last updated: 2026-03-12. Revision required when new trust boundaries, authentication flows (e.g., CIBA production deployment), or storage backends are introduced.*
+---
+
+## 8. Privilege Escalation Assessment (April 2026)
+
+Three-tier adversarial review performed by Codex (source audit), validated by Claude and Gemini.
+
+### Tier 1: Unprivileged User → Root
+
+**Verdict: No confirmed exploit path.**
+
+| Attack Vector | Exploitability | Impact | Mitigation |
+|---------------|:---:|--------|------------|
+| PAM-env token injection (`UNIX_OIDC_ACCEPT_PAM_ENV`) | Requires precondition | Arbitrary JWT fed to PAM auth — still requires valid signature, issuer, audience, username match, and SSSD existence | Explicit opt-in gate, warning logs, exact username equality, SSSD group checks |
+| Break-glass OIDC bypass | Requires precondition | Widens auth surface for listed accounts — not an escalation by itself | Requires `break_glass.enabled=true` + explicit account membership |
+| Session record path manipulation | Theoretical | Path traversal to overwrite arbitrary files during session lifecycle | Session ID validation (allowlist charset), 0700 dir, atomic 0600 temp file |
+
+### Tier 2: Remote Attacker → Root
+
+**Verdict: No confirmed exploit path.**
+
+| Attack Vector | Exploitability | Impact | Mitigation |
+|---------------|:---:|--------|------------|
+| JWT forgery / algorithm confusion | Theoretical | Forged token accepted as valid | Asymmetric-only allowlist, HS*/none rejection, header/JWKS alg pinning, issuer/audience/expiry checks, unknown-issuer hard reject |
+| IdP impersonation / JWKS cache poisoning | Theoretical | Attacker keys trusted for token validation | Discovery issuer must exactly match configured issuer, per-issuer JWKS registries |
+| DPoP bypass for bound tokens | Theoretical | Bearer use of DPoP-bound token | Proof validation, JTI replay protection, nonce consumption, thumbprint binding |
+| Test-mode shipped in production | Requires precondition | All signature verification bypassed | `compile_error!` if test-mode feature enabled in release builds |
+
+### Tier 3: Same-User Malware → Credential/Session Abuse
+
+**Verdict: Confirmed by design. SSH-agent trust model.**
+
+The agent daemon treats any process running as the same UID as fully trusted. This matches OpenSSH's `ssh-agent` security model. The following primitives are available to a same-UID attacker:
+
+| Primitive | IPC Command | Blast Radius | Mitigation |
+|-----------|-------------|--------------|------------|
+| **Proof issuance** | `GetProof` | Attacker gets access token + DPoP proof for attacker-chosen target | None against same-UID; hardware signers prevent key extraction but not broker-mediated signing |
+| **Token refresh** | `Refresh` | Extends session lifetime, maintains persistence | Session-close cleanup eventually clears tokens |
+| **Daemon shutdown** | `Shutdown` | Local DoS — user loses broker availability | Graceful drain only; no caller restriction beyond UID |
+| **Credential wipe** | `SessionClosed` | Forced logout, token revocation, credential deletion | None beyond same-UID trust |
+| **Step-up trigger** | `StepUp` / `StepUpResult` | Push-spam / approval fatigue; piggyback on elevated sessions | `step_up_require_id_token=true` prevents trusting unverified ACR in sudo, but doesn't prevent flow initiation |
+| **Status/metrics** | `Status` / `Metrics` | Leaks username, token expiry, signer thumbprint, backend state | Same-UID-only access |
+
+**When this matters:**
+- Infostealers, malicious browser extensions, developer workstation malware
+- Lateral movement as the same account
+- Session hijacking within the user context
+
+**When this is acceptable:**
+- Primary goal is hardening SSH/sudo against privilege escalation (Tier 1/2)
+- Users operate on managed workstations with endpoint protection
+- Hardware-bound keys (TPM/YubiKey) prevent raw key extraction
+
+**Planned mitigations (v3.1):**
+1. IPC channel separation: crypto operations on user socket, admin operations on root-only socket
+2. Optional per-session binding for restricted environments
+3. TPM 2.0 integration makes the agent a non-exportable signing oracle
+
+---
+
+*Last updated: 2026-04-09. Revision required when new trust boundaries, authentication flows (e.g., CIBA production deployment), or storage backends are introduced.*
