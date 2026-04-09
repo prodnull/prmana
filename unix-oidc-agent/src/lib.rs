@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod sanitize;
 pub mod security;
 pub mod storage;
+pub mod exchange;
 
 #[cfg(feature = "spire")]
 pub mod spire;
