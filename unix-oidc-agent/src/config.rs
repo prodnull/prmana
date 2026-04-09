@@ -193,6 +193,22 @@ pub struct CryptoConfig {
     /// Enable PQC (ML-DSA-65) in addition to ES256
     #[serde(default)]
     pub enable_pqc: bool,
+
+    /// Hardware presence cache TTL in seconds.
+    ///
+    /// When a hardware signer (YubiKey, TPM) successfully generates a DPoP proof
+    /// via physical touch, subsequent requests for the same `(remote_user, target)`
+    /// within this TTL are signed automatically without re-triggering the hardware
+    /// presence requirement.
+    ///
+    /// Default: 300 (5 minutes). Set to 0 to disable caching (every request
+    /// requires a fresh touch).
+    #[serde(default = "default_presence_cache_ttl")]
+    pub presence_cache_ttl_secs: u64,
+}
+
+fn default_presence_cache_ttl() -> u64 {
+    300
 }
 
 impl AgentConfig {

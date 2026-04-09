@@ -159,6 +159,12 @@ pub struct AgentState {
     /// Security (MEM-03): wrapped in SecretString to prevent accidental logging.
     /// The raw value is accessed only at the HTTP form parameter boundary in handle_step_up().
     pub oidc_client_secret: Option<SecretString>,
+    /// Hardware presence cache — per-(remote_user, target) touch authorization window.
+    ///
+    /// When a hardware signer (YubiKey, TPM) successfully signs via physical touch,
+    /// subsequent requests for the same user+target within the TTL are signed
+    /// automatically. Process-scoped, never written to disk, zeroed on drop.
+    pub presence_cache: crate::daemon::presence_cache::PresenceCache,
     /// Active CIBA step-up flows, keyed by correlation_id.
     ///
     /// Each entry holds a Tokio JoinHandle for the async poll loop plus the
@@ -232,6 +238,12 @@ impl std::fmt::Debug for AgentState {
 
 impl AgentState {
     pub fn new() -> Self {
+        Self::with_presence_ttl(
+            crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+        )
+    }
+
+    pub fn with_presence_ttl(presence_cache_ttl_secs: u64) -> Self {
         Self {
             signer: None,
             access_token: None,
@@ -247,6 +259,9 @@ impl AgentState {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                presence_cache_ttl_secs,
+            ),
             pending_step_ups: HashMap::new(),
         }
     }
@@ -687,18 +702,16 @@ async fn handle_request(
             target,
             method,
             nonce,
+            remote_user,
         } => {
             let start = Instant::now();
             let state_read = state.read().await;
 
             // OPS-13: structured audit log for every DPoP proof request.
-            // Emitted at INFO so operators can monitor authentication activity
-            // without enabling debug output.  Sensitive fields (access token,
-            // nonce) are intentionally excluded — the tracing span already
-            // carries request_id and peer_pid for correlation.
             info!(
                 username = %state_read.username.as_deref().unwrap_or("unknown"),
                 target = %target,
+                remote_user = %remote_user.as_deref().unwrap_or("unknown"),
                 signer_type = %state_read.signer_type.as_deref().unwrap_or("unknown"),
                 "DPoP proof requested"
             );
@@ -713,6 +726,9 @@ async fn handle_request(
                 .as_deref()
                 .unwrap_or("unknown")
                 .to_string();
+            // Resolve the remote user for presence cache keying.
+            // Falls back to "unknown" if not provided by the PAM client.
+            let remote_user_str = remote_user.as_deref().unwrap_or("unknown");
 
             let signer = match &state_read.signer {
                 Some(s) => s,
@@ -758,6 +774,14 @@ async fn handle_request(
                 }
             };
 
+            // Hardware presence cache: check if we can skip the physical touch.
+            let is_hw = crate::daemon::presence_cache::is_hardware_signer(&signer_type_str);
+            let cached_presence = if is_hw {
+                state_read.presence_cache.check(remote_user_str, &target)
+            } else {
+                None
+            };
+
             match signer.sign_proof(&method, &target, nonce.as_deref()) {
                 Ok(proof) => {
                     let expires_in = state_read
@@ -771,10 +795,18 @@ async fn handle_request(
                         })
                         .unwrap_or(0);
 
+                    // Determine presence type for OCSF audit metadata.
+                    let presence_type = if !is_hw {
+                        crate::daemon::presence_cache::PresenceType::NotApplicable
+                    } else if cached_presence.is_some() {
+                        crate::daemon::presence_cache::PresenceType::Cached
+                    } else {
+                        // Fresh hardware touch succeeded — record in cache.
+                        state_read.presence_cache.record(remote_user_str, &target);
+                        crate::daemon::presence_cache::PresenceType::PhysicalTouch
+                    };
+
                     // OBS-1: Audit event — authentication success (DPoP proof issued).
-                    // session_id is "n/a" at GetProof time: pam_sm_open_session runs
-                    // after auth succeeds and creates the session file, so no session_id
-                    // exists in the agent yet. The target field provides correlation context.
                     tracing::info!(
                         target: "unix_oidc_audit",
                         event_type = "authentication",
@@ -783,14 +815,32 @@ async fn handle_request(
                         outcome = "success",
                         signer_type = %signer_type_str,
                         auth_target = %target,
+                        presence_type = %presence_type.as_str(),
                         "AGENT_AUTH"
                     );
                     state_read
                         .metrics
                         .record_proof_request(true, start.elapsed());
-                    (AgentResponse::proof(token, proof, expires_in), false)
+                    (
+                        AgentResponse::proof(
+                            token,
+                            proof,
+                            expires_in,
+                            Some(presence_type.as_str().to_string()),
+                        ),
+                        false,
+                    )
                 }
                 Err(e) => {
+                    // Atomic invalidation: hardware signing failure (device removed,
+                    // communication error, etc.) wipes all cached presence immediately.
+                    if is_hw {
+                        tracing::warn!(
+                            error = %e,
+                            "Hardware signing failed — clearing presence cache"
+                        );
+                        state_read.presence_cache.clear();
+                    }
                     // OBS-1: Audit event — authentication failure (DPoP sign error).
                     tracing::info!(
                         target: "unix_oidc_audit",
@@ -813,6 +863,9 @@ async fn handle_request(
             let state_read = state.read().await;
             let refresh_failed = state_read.refresh_failed;
 
+            let pc_ttl = Some(state_read.presence_cache.ttl_secs());
+            let pc_active = Some(state_read.presence_cache.active_count());
+
             let response = if refresh_failed {
                 AgentResponse::status_with_refresh_failed(
                     state_read.is_logged_in(),
@@ -824,6 +877,8 @@ async fn handle_request(
                     state_read.migration_status.clone(),
                     state_read.signer_type.clone(),
                     true,
+                    pc_ttl,
+                    pc_active,
                 )
             } else {
                 AgentResponse::status(
@@ -835,6 +890,8 @@ async fn handle_request(
                     state_read.storage_backend.clone(),
                     state_read.migration_status.clone(),
                     state_read.signer_type.clone(),
+                    pc_ttl,
+                    pc_active,
                 )
             };
 
@@ -998,11 +1055,13 @@ impl AgentClient {
         target: &str,
         method: &str,
         nonce: Option<&str>,
+        remote_user: Option<&str>,
     ) -> Result<AgentResponse, ClientError> {
         self.send(AgentRequest::GetProof {
             target: target.to_string(),
             method: method.to_string(),
             nonce: nonce.map(String::from),
+            remote_user: remote_user.map(String::from),
         })
         .await
     }
@@ -1514,7 +1573,9 @@ async fn cleanup_session(state: Arc<RwLock<AgentState>>, session_id: String) {
         state_write.username = None;
         state_write.refresh_failed = false;
         state_write.signer = None;
-        debug!(session_id = %session_id, "In-memory credentials cleared");
+        // Atomic invalidation: wipe all cached hardware presence on session close.
+        state_write.presence_cache.clear();
+        debug!(session_id = %session_id, "In-memory credentials and presence cache cleared");
     }
 
     // Step 4: Delete stored credentials.
@@ -2257,6 +2318,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         }));
 
@@ -2308,6 +2372,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         }));
 
@@ -2320,7 +2387,7 @@ mod tests {
 
         let client = AgentClient::new(socket_path);
         let response = client
-            .get_proof("server.example.com", "SSH", None)
+            .get_proof("server.example.com", "SSH", None, None)
             .await
             .unwrap();
 
@@ -2353,7 +2420,7 @@ mod tests {
 
         let client = AgentClient::new(socket_path);
         let response = client
-            .get_proof("server.example.com", "SSH", None)
+            .get_proof("server.example.com", "SSH", None, None)
             .await
             .unwrap();
 
@@ -2471,6 +2538,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         };
         let debug_output = format!("{state:?}");
@@ -2504,6 +2574,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         };
         let exposed = state.access_token.as_ref().unwrap().expose_secret();
@@ -2644,6 +2717,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         }));
 
@@ -2693,6 +2769,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         }));
 
@@ -3243,6 +3322,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         }));
 
@@ -3317,6 +3399,9 @@ mod tests {
             oidc_issuer: None,
             oidc_client_id: None,
             oidc_client_secret: None,
+            presence_cache: crate::daemon::presence_cache::PresenceCache::new(
+                crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+            ),
             pending_step_ups: HashMap::new(),
         }));
 
@@ -3329,7 +3414,7 @@ mod tests {
 
         let client = AgentClient::new(socket_path);
         let response = client
-            .get_proof("prod.example.com", "SSH", None)
+            .get_proof("prod.example.com", "SSH", None, None)
             .await
             .unwrap();
 

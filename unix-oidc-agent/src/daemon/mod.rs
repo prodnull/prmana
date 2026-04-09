@@ -6,6 +6,7 @@
 //! - Client for connecting to the daemon
 
 pub mod peer_cred;
+pub mod presence_cache;
 pub mod protocol;
 pub mod socket;
 pub mod sweep;

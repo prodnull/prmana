@@ -512,6 +512,8 @@ async fn run_status() -> anyhow::Result<()> {
             storage_backend,
             migration_status,
             signer_type,
+            presence_cache_ttl_secs,
+            presence_cache_active,
             refresh_failed,
         })) => {
             if logged_in {
@@ -551,6 +553,14 @@ async fn run_status() -> anyhow::Result<()> {
             }
             if let Some(migration) = migration_status {
                 println!("  Migration: {migration}");
+            }
+            if let Some(ttl) = presence_cache_ttl_secs {
+                let active = presence_cache_active.unwrap_or(0);
+                if ttl > 0 {
+                    println!("  Presence cache: {ttl}s TTL, {active} active");
+                } else {
+                    println!("  Presence cache: disabled");
+                }
             }
             if refresh_failed == Some(true) {
                 println!("  Auto-refresh: FAILED (token will expire; re-login required)");
@@ -592,11 +602,12 @@ async fn run_get_proof(
 ) -> anyhow::Result<()> {
     let client = AgentClient::default();
 
-    match client.get_proof(&target, &method, nonce.as_deref()).await {
+    match client.get_proof(&target, &method, nonce.as_deref(), None).await {
         Ok(AgentResponse::Success(AgentResponseData::Proof {
             token,
             dpop_proof,
             expires_in,
+            ..
         })) => {
             // Output in a format that SSH can consume
             println!("{token}");
@@ -1432,6 +1443,9 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         oidc_issuer,
         oidc_client_id,
         oidc_client_secret,
+        presence_cache: unix_oidc_agent::daemon::presence_cache::PresenceCache::new(
+            unix_oidc_agent::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
+        ),
         pending_step_ups: std::collections::HashMap::new(),
     })
 }

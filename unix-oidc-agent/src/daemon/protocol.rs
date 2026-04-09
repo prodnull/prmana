@@ -14,6 +14,10 @@ pub enum AgentRequest {
         method: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         nonce: Option<String>,
+        /// Remote Unix username being authenticated (for per-user presence cache).
+        /// When set, the hardware presence cache is scoped to this user+target pair.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        remote_user: Option<String>,
     },
 
     /// Get current status
@@ -121,6 +125,10 @@ pub enum AgentResponseData {
         token: String,
         dpop_proof: String,
         expires_in: u64,
+        /// How the hardware signer was authorized: "physical_touch", "cached", or "not_applicable".
+        /// Allows the PAM module to emit the correct OCSF audit signal.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        presence_type: Option<String>,
     },
     Status {
         logged_in: bool,
@@ -143,6 +151,12 @@ pub enum AgentResponseData {
         /// Set at daemon startup from stored token metadata.
         #[serde(skip_serializing_if = "Option::is_none")]
         signer_type: Option<String>,
+        /// Hardware presence cache TTL in seconds. 0 = disabled.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        presence_cache_ttl_secs: Option<u64>,
+        /// Number of active (non-expired) entries in the presence cache.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        presence_cache_active: Option<usize>,
         /// True when the background auto-refresh task exhausted all retries.
         /// Operator signal: token will expire at natural lifetime; manual refresh or re-login required.
         /// Omitted from JSON when None (backward compat — callers that don't set this field are unaffected).
@@ -221,11 +235,17 @@ pub enum AgentResponseData {
 }
 
 impl AgentResponse {
-    pub fn proof(token: String, dpop_proof: String, expires_in: u64) -> Self {
+    pub fn proof(
+        token: String,
+        dpop_proof: String,
+        expires_in: u64,
+        presence_type: Option<String>,
+    ) -> Self {
         Self::Success(AgentResponseData::Proof {
             token,
             dpop_proof,
             expires_in,
+            presence_type,
         })
     }
 
@@ -239,6 +259,8 @@ impl AgentResponse {
         storage_backend: Option<String>,
         migration_status: Option<String>,
         signer_type: Option<String>,
+        presence_cache_ttl_secs: Option<u64>,
+        presence_cache_active: Option<usize>,
     ) -> Self {
         Self::Success(AgentResponseData::Status {
             logged_in,
@@ -249,6 +271,8 @@ impl AgentResponse {
             storage_backend,
             migration_status,
             signer_type,
+            presence_cache_ttl_secs,
+            presence_cache_active,
             refresh_failed: None,
         })
     }
@@ -267,6 +291,8 @@ impl AgentResponse {
         migration_status: Option<String>,
         signer_type: Option<String>,
         refresh_failed: bool,
+        presence_cache_ttl_secs: Option<u64>,
+        presence_cache_active: Option<usize>,
     ) -> Self {
         Self::Success(AgentResponseData::Status {
             logged_in,
@@ -277,6 +303,8 @@ impl AgentResponse {
             storage_backend,
             migration_status,
             signer_type,
+            presence_cache_ttl_secs,
+            presence_cache_active,
             refresh_failed: Some(refresh_failed),
         })
     }
@@ -356,6 +384,7 @@ mod tests {
             target: "server.example.com".to_string(),
             method: "SSH".to_string(),
             nonce: Some("abc123".to_string()),
+            remote_user: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -373,6 +402,7 @@ mod tests {
                 target,
                 method,
                 nonce,
+                ..
             } => {
                 assert_eq!(target, "server.example.com");
                 assert_eq!(method, "SSH");
@@ -384,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_response_serialization() {
-        let resp = AgentResponse::proof("token123".to_string(), "proof456".to_string(), 300);
+        let resp = AgentResponse::proof("token123".to_string(), "proof456".to_string(), 300, None);
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""status":"success""#));
@@ -411,6 +441,8 @@ mod tests {
             Some("keyring (Secret Service)".to_string()),
             Some("migrated".to_string()),
             Some("software".to_string()),
+            Some(300),
+            Some(0),
         );
 
         let json = serde_json::to_string(&resp).unwrap();
@@ -425,7 +457,7 @@ mod tests {
     /// TDD: storage_backend field is omitted from JSON when None (skip_serializing_if).
     #[test]
     fn test_status_response_omits_storage_fields_when_none() {
-        let resp = AgentResponse::status(false, None, None, None, None, None, None, None);
+        let resp = AgentResponse::status(false, None, None, None, None, None, None, None, None, None);
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -454,6 +486,8 @@ mod tests {
             Some("keyring (keyutils @u)".to_string()),
             Some("n/a".to_string()),
             Some("yubikey:9a".to_string()),
+            Some(300),
+            Some(2),
         );
 
         let json = serde_json::to_string(&resp).unwrap();
@@ -490,6 +524,8 @@ mod tests {
             None,
             None,
             Some("yubikey:9a".to_string()),
+            Some(300),
+            Some(1),
         );
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""signer_type":"yubikey:9a""#));
@@ -566,6 +602,8 @@ mod tests {
             None,
             None,
             true,
+            None,
+            None,
         );
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -577,7 +615,7 @@ mod tests {
     /// Status response omits refresh_failed field when None (backward compat).
     #[test]
     fn test_status_response_refresh_failed_absent_when_none() {
-        let resp = AgentResponse::status(false, None, None, None, None, None, None, None);
+        let resp = AgentResponse::status(false, None, None, None, None, None, None, None, None, None);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             !json.contains("refresh_failed"),

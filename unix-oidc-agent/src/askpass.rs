@@ -148,7 +148,7 @@ pub async fn run_ssh_askpass(prompt: String) -> anyhow::Result<()> {
         let target = std::env::var("UNIX_OIDC_TARGET").unwrap_or_default();
 
         let response: AgentResponse = AgentClient::default()
-            .get_proof(&target, "SSH", nonce.as_deref())
+            .get_proof(&target, "SSH", nonce.as_deref(), None)
             .await
             .context("GetProof IPC failed")?;
 
@@ -190,7 +190,7 @@ pub async fn run_ssh_askpass(prompt: String) -> anyhow::Result<()> {
         let target = std::env::var("UNIX_OIDC_TARGET").unwrap_or_default();
 
         let response: AgentResponse = AgentClient::default()
-            .get_proof(&target, "SSH", None)
+            .get_proof(&target, "SSH", None, None)
             .await
             .context("GetProof IPC failed (token fallback)")?;
 
