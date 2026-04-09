@@ -3,4 +3,8 @@
 //! Implements RFC 7643 (SCIM Core Schema) and RFC 7644 (SCIM Protocol)
 //! for automated user lifecycle management on Unix systems.
 
+pub mod auth;
+pub mod config;
+pub mod provisioner;
+pub mod routes;
 pub mod schema;

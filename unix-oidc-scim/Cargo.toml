@@ -45,3 +45,5 @@ pam-unix-oidc = { path = "../pam-unix-oidc" }
 tempfile = "3"
 reqwest = { version = "0.11", features = ["json"] }
 tokio-test = "0.4"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
