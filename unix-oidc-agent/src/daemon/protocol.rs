@@ -3,6 +3,11 @@
 use crate::metrics::MetricsSnapshot;
 use serde::{Deserialize, Serialize};
 
+/// Default HTTP method for DPoP proof binding in token exchange requests.
+fn default_ssh_method() -> String {
+    "SSH".to_string()
+}
+
 /// Request from client to agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
@@ -76,6 +81,22 @@ pub enum AgentRequest {
     /// Agent returns StepUpPending (still waiting), StepUpComplete, or StepUpTimedOut.
     #[serde(rename = "step_up_result")]
     StepUpResult { correlation_id: String },
+
+    /// Perform RFC 8693 token exchange: exchange a subject token for a new
+    /// token bound to this agent's DPoP key, targeting a different audience.
+    ///
+    /// Used for multi-hop SSH: a jump host exchanges the user's incoming token
+    /// for a new token bound to the jump host's DPoP key.
+    #[serde(rename = "exchange_token")]
+    ExchangeToken {
+        /// The subject token to exchange (the connecting user's access token).
+        subject_token: String,
+        /// Target audience for the exchanged token (next hop hostname).
+        audience: String,
+        /// HTTP method for DPoP proof binding. Default: "SSH".
+        #[serde(default = "default_ssh_method")]
+        method: String,
+    },
 }
 
 impl AgentRequest {
@@ -94,6 +115,7 @@ impl AgentRequest {
             AgentRequest::SessionClosed { .. } => "SessionClosed",
             AgentRequest::StepUp { .. } => "StepUp",
             AgentRequest::StepUpResult { .. } => "StepUpResult",
+            AgentRequest::ExchangeToken { .. } => "ExchangeToken",
         }
     }
 }
@@ -121,6 +143,28 @@ pub enum AgentResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AgentResponseData {
+    /// Token exchange response — new token bound to this agent's DPoP key.
+    ///
+    /// Discriminant field: `original_subject` (unique to this variant).
+    ///
+    /// ORDERING: Must appear BEFORE `Proof` in this enum. With `#[serde(untagged)]`,
+    /// serde tries variants in declaration order. `Proof` and `ExchangedProof` share
+    /// the same required base fields (`token`, `dpop_proof`, `expires_in`), so if
+    /// `Proof` were first, serde would match it and silently drop `original_subject`
+    /// and `delegation_depth`. By placing `ExchangedProof` first, serde matches it
+    /// only when `original_subject` is present, then falls through to `Proof`.
+    ExchangedProof {
+        /// The exchanged access token.
+        token: String,
+        /// DPoP proof for the exchanged token (signed by this agent's key).
+        dpop_proof: String,
+        /// Seconds until the exchanged token expires.
+        expires_in: u64,
+        /// Original subject (user) from the subject_token's `sub` claim.
+        original_subject: String,
+        /// Delegation depth of the `act` chain in the exchanged token.
+        delegation_depth: usize,
+    },
     Proof {
         token: String,
         dpop_proof: String,
@@ -129,6 +173,12 @@ pub enum AgentResponseData {
         /// Allows the PAM module to emit the correct OCSF audit signal.
         #[serde(skip_serializing_if = "Option::is_none")]
         presence_type: Option<String>,
+        /// TPM attestation evidence (ADR-018). Present when the signer is TPM-backed
+        /// and attestation was successfully produced. JSON object with `certify_info`,
+        /// `signature`, and `ak_public` fields (all base64url-encoded). The PAM module
+        /// can verify this to enforce hardware-bound key requirements.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attestation: Option<serde_json::Value>,
     },
     Status {
         logged_in: bool,
@@ -240,12 +290,14 @@ impl AgentResponse {
         dpop_proof: String,
         expires_in: u64,
         presence_type: Option<String>,
+        attestation: Option<serde_json::Value>,
     ) -> Self {
         Self::Success(AgentResponseData::Proof {
             token,
             dpop_proof,
             expires_in,
             presence_type,
+            attestation,
         })
     }
 
@@ -414,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_response_serialization() {
-        let resp = AgentResponse::proof("token123".to_string(), "proof456".to_string(), 300, None);
+        let resp = AgentResponse::proof("token123".to_string(), "proof456".to_string(), 300, None, None);
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""status":"success""#));
@@ -1005,6 +1057,141 @@ mod tests {
             }
             other => panic!("Expected StepUpComplete, got: {other:?}"),
         }
+    }
+
+    // --- TDD: ExchangeToken IPC protocol (Phase 37-01 Task 4) ---
+
+    #[test]
+    fn test_exchange_token_request_roundtrip() {
+        let req = AgentRequest::ExchangeToken {
+            subject_token: "eyJhbGciOiJSUzI1NiJ9.test".into(),
+            audience: "target-host-b".into(),
+            method: "SSH".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""action":"exchange_token"#));
+        let parsed: AgentRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            AgentRequest::ExchangeToken {
+                subject_token,
+                audience,
+                method,
+            } => {
+                assert_eq!(subject_token, "eyJhbGciOiJSUzI1NiJ9.test");
+                assert_eq!(audience, "target-host-b");
+                assert_eq!(method, "SSH");
+            }
+            _ => panic!("Expected ExchangeToken"),
+        }
+    }
+
+    #[test]
+    fn test_exchange_token_default_method() {
+        let json = r#"{"action":"exchange_token","subject_token":"tok","audience":"host"}"#;
+        let parsed: AgentRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            AgentRequest::ExchangeToken { method, .. } => {
+                assert_eq!(method, "SSH");
+            }
+            _ => panic!("Expected ExchangeToken"),
+        }
+    }
+
+    #[test]
+    fn test_exchanged_proof_response_serde() {
+        let data = AgentResponseData::ExchangedProof {
+            token: "new-token".into(),
+            dpop_proof: "new-proof".into(),
+            expires_in: 300,
+            original_subject: "alice@example.com".into(),
+            delegation_depth: 1,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("original_subject"));
+        assert!(json.contains("alice@example.com"));
+    }
+
+    /// Verify untagged serde discrimination: ExchangedProof (with `original_subject`)
+    /// must deserialize as ExchangedProof, not be swallowed by Proof.
+    ///
+    /// This test catches the ordering bug where `Proof` appeared before `ExchangedProof`
+    /// in the enum and serde matched `Proof` first, silently dropping `original_subject`
+    /// and `delegation_depth`.
+    #[test]
+    fn test_exchanged_proof_deserializes_as_exchanged_proof_not_proof() {
+        let json = serde_json::json!({
+            "token": "exchanged-tok",
+            "dpop_proof": "exchanged-prf",
+            "expires_in": 300,
+            "original_subject": "alice@example.com",
+            "delegation_depth": 2
+        });
+        let data: AgentResponseData = serde_json::from_value(json).unwrap();
+        match data {
+            AgentResponseData::ExchangedProof {
+                original_subject,
+                delegation_depth,
+                ..
+            } => {
+                assert_eq!(original_subject, "alice@example.com");
+                assert_eq!(delegation_depth, 2);
+            }
+            other => panic!(
+                "Expected ExchangedProof, got {other:?} — \
+                 check variant ordering in AgentResponseData"
+            ),
+        }
+    }
+
+    /// Proof (without `original_subject`) must still deserialize as Proof.
+    #[test]
+    fn test_proof_without_original_subject_deserializes_as_proof() {
+        let json = serde_json::json!({
+            "token": "plain-tok",
+            "dpop_proof": "plain-prf",
+            "expires_in": 60
+        });
+        let data: AgentResponseData = serde_json::from_value(json).unwrap();
+        assert!(
+            matches!(data, AgentResponseData::Proof { .. }),
+            "Expected Proof, got {data:?}"
+        );
+    }
+
+    // ── ADR-018: attestation evidence in Proof response ──────────────────
+
+    #[test]
+    fn test_proof_response_with_attestation() {
+        let data = AgentResponseData::Proof {
+            token: "tok".into(),
+            dpop_proof: "proof".into(),
+            expires_in: 300,
+            presence_type: None,
+            attestation: Some(serde_json::json!({
+                "certify_info": "Y2VydA",
+                "signature": "c2ln",
+                "ak_public": "YWs"
+            })),
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("attestation"));
+        assert!(json.contains("certify_info"));
+    }
+
+    #[test]
+    fn test_proof_response_without_attestation_omits_field() {
+        let data = AgentResponseData::Proof {
+            token: "tok".into(),
+            dpop_proof: "proof".into(),
+            expires_in: 300,
+            presence_type: None,
+            attestation: None,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(
+            !json.contains("attestation"),
+            "attestation should be omitted when None"
+        );
     }
 
     /// Existing SessionAcknowledged/Ok ordering is preserved after adding StepUp variants.
