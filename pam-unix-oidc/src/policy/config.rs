@@ -701,12 +701,22 @@ static CONFIG_CACHE: Lazy<Mutex<Option<ConfigCache>>> = Lazy::new(|| Mutex::new(
 /// [`PolicyConfig::effective_security_modes`] to get the correct defaults in
 /// both the v1.0 and v2.0 cases.
 ///
-/// Default values match v1.0 code behavior exactly, ensuring a zero-behavior-change
-/// upgrade for operators who do not add the new section.
+/// ## Breaking change in v3.0 (Phase 30)
+///
+/// `jti_enforcement` default changed from `warn` to `strict` (D-06).
+/// Operators who relied on the implicit `warn` default must add an explicit
+/// `jti_enforcement: warn` to their `policy.yaml` to preserve the old behavior.
+/// Strict mode hard-rejects authentication when the filesystem store returns
+/// `IoError` (T-30-03 — disk full maps to authentication failure, not bypass).
 #[derive(Debug, Clone, Serialize)]
 #[serde(default)]
 pub struct SecurityModes {
-    /// JTI replay-prevention enforcement. Default: `warn` (some IdPs omit JTI).
+    /// JTI replay-prevention enforcement. Default: `strict` (D-06).
+    ///
+    /// **Breaking change from v2.x**: was `warn`; now `strict` for new deployments.
+    /// In `strict` mode a missing JTI claim or a filesystem error in the JTI store
+    /// causes hard authentication failure.  Set to `warn` to restore the previous
+    /// behavior for IdPs that do not issue JTI claims.
     pub jti_enforcement: EnforcementMode,
     /// DPoP token binding enforcement. Default: `strict` (binding is critical).
     pub dpop_required: EnforcementMode,
@@ -719,16 +729,34 @@ pub struct SecurityModes {
     /// - `warn`: log a warning but allow login if NSS lookup fails.
     /// - `disabled`: skip group membership check entirely.
     pub groups_enforcement: EnforcementMode,
+    /// Whether CIBA step-up authentication requires a raw ID token for PAM-side
+    /// cryptographic validation.  Default: `true` (D-16).
+    ///
+    /// When `true` the PAM module requires the agent to pass the full signed ID
+    /// token so it can verify the signature, ACR, and AMR claims locally.
+    ///
+    /// When `false` the PAM module falls back to trusting agent-asserted ACR
+    /// values without cryptographic verification.  This is a security downgrade —
+    /// a `LOG_CRIT` is emitted on every step-up that uses the fallback path.
+    /// Set to `false` only when integrating with legacy CIBA agents that cannot
+    /// forward the raw ID token.
+    pub step_up_require_id_token: bool,
+}
+
+/// Helper for serde default: returns `true`.
+fn default_true() -> bool {
+    true
 }
 
 impl Default for SecurityModes {
     fn default() -> Self {
         Self {
-            jti_enforcement: EnforcementMode::Warn,
+            jti_enforcement: EnforcementMode::Strict,
             dpop_required: EnforcementMode::Strict,
             amr_enforcement: EnforcementMode::Disabled,
             acr: AcrConfig::default(),
             groups_enforcement: EnforcementMode::Warn,
+            step_up_require_id_token: true,
         }
     }
 }
@@ -743,6 +771,8 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
             amr_enforcement: EnforcementMode,
             acr: AcrConfig,
             groups_enforcement: EnforcementMode,
+            #[serde(default = "default_true")]
+            step_up_require_id_token: bool,
         }
         impl Default for Raw {
             fn default() -> Self {
@@ -753,6 +783,7 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
                     amr_enforcement: s.amr_enforcement,
                     acr: s.acr,
                     groups_enforcement: s.groups_enforcement,
+                    step_up_require_id_token: s.step_up_require_id_token,
                 }
             }
         }
@@ -763,6 +794,7 @@ impl<'de> serde::de::Deserialize<'de> for SecurityModes {
             amr_enforcement: r.amr_enforcement,
             acr: r.acr,
             groups_enforcement: r.groups_enforcement,
+            step_up_require_id_token: r.step_up_require_id_token,
         })
     }
 }
@@ -1498,12 +1530,14 @@ mod tests {
 
     #[test]
     fn test_security_modes_defaults() {
+        // jti_enforcement changed to Strict in v3.0 (D-06 — breaking change).
         let modes = SecurityModes::default();
-        assert_eq!(modes.jti_enforcement, EnforcementMode::Warn);
+        assert_eq!(modes.jti_enforcement, EnforcementMode::Strict);
         assert_eq!(modes.dpop_required, EnforcementMode::Strict);
         assert_eq!(modes.amr_enforcement, EnforcementMode::Disabled);
         assert_eq!(modes.acr.enforcement, EnforcementMode::Warn);
         assert!(modes.acr.minimum_level.is_none());
+        assert!(modes.step_up_require_id_token, "step_up_require_id_token must default to true (D-16)");
     }
 
     #[test]
@@ -1553,8 +1587,9 @@ ssh_login:
             "v1.0 yaml must produce security_modes=None"
         );
         // effective_security_modes() must still return correct defaults
+        // Note: jti_enforcement default is now Strict (D-06, v3.0 breaking change).
         let modes = policy.effective_security_modes();
-        assert_eq!(modes.jti_enforcement, EnforcementMode::Warn);
+        assert_eq!(modes.jti_enforcement, EnforcementMode::Strict);
         assert_eq!(modes.dpop_required, EnforcementMode::Strict);
     }
 
@@ -2503,5 +2538,59 @@ issuers:
             .expect("group_mapping must be present");
         assert_eq!(gm.source, GroupSource::NssOnly);
         assert_eq!(gm.claim, "groups");
+    }
+
+    // ── Phase 30: FsAtomicStore / SecurityModes extension tests ─────────────
+
+    #[test]
+    fn test_step_up_require_id_token_default_true() {
+        // D-16: step_up_require_id_token must default to true when absent from YAML.
+        let yaml = r#"
+host:
+  classification: standard
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("minimal yaml must load");
+
+        // If security_modes section absent, effective_security_modes() returns default.
+        let modes = policy.effective_security_modes();
+        assert!(
+            modes.step_up_require_id_token,
+            "step_up_require_id_token must default to true when absent from YAML (D-16)"
+        );
+    }
+
+    #[test]
+    fn test_step_up_require_id_token_false_parses_correctly() {
+        // Operators can opt out of ID token passthrough (logs LOG_CRIT on use).
+        let yaml = r#"
+security_modes:
+  step_up_require_id_token: false
+"#;
+        let policy: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
+            .merge(Yaml::string(yaml))
+            .extract()
+            .expect("step_up_require_id_token: false must parse");
+
+        let modes = policy.effective_security_modes();
+        assert!(
+            !modes.step_up_require_id_token,
+            "step_up_require_id_token: false must parse and be stored as false"
+        );
+    }
+
+    #[test]
+    fn test_jti_enforcement_default_is_strict() {
+        // D-06: jti_enforcement default changed from Warn to Strict in v3.0.
+        // This is a breaking change — operators relying on the implicit Warn default
+        // must add `jti_enforcement: warn` explicitly.
+        let modes = SecurityModes::default();
+        assert_eq!(
+            modes.jti_enforcement,
+            EnforcementMode::Strict,
+            "jti_enforcement must default to Strict in v3.0 (D-06)"
+        );
     }
 }
