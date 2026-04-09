@@ -81,8 +81,19 @@ sudo:
     - webauthn     # FIDO2/WebAuthn passkey authentication
     # - push       # Push notification to mobile authenticator (future)
 
-  # Timeout for step-up authentication (seconds)
-  timeout_seconds: 300  # 5 minutes
+  # Default timeout for step-up authentication (seconds)
+  challenge_timeout: 300  # 5 minutes
+
+  # Per-method timeout overrides (Phase 36-01).
+  # Methods not listed use challenge_timeout.
+  method_timeouts:
+    fido2: 30           # FIDO2 hardware tap is fast — short timeout
+    push: 120           # Push notification — user must respond on phone
+    device_flow: 300    # Device flow — user must open browser
+
+  # CIBA/device-flow poll interval in seconds.
+  # Minimum: 1. The IdP may request slower polling via SlowDown.
+  poll_interval_secs: 5
 
   # Required ACR level for step-up authentication
   # Set to a higher ACR than SSH to require stronger auth for sudo

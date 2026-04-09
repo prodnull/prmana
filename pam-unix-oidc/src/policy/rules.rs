@@ -65,6 +65,8 @@ impl<'a> PolicyRules<'a> {
         Some(SudoStepUpRequirements {
             allowed_methods: self.policy.sudo.allowed_methods.clone(),
             timeout: self.policy.sudo.challenge_timeout,
+            method_timeouts: self.policy.sudo.method_timeouts.clone(),
+            poll_interval_secs: self.policy.sudo.poll_interval_secs,
             minimum_acr: self.get_minimum_acr_for_classification(),
         })
     }
@@ -99,8 +101,12 @@ pub struct SshLoginRequirements {
 pub struct SudoStepUpRequirements {
     /// Allowed step-up methods
     pub allowed_methods: Vec<StepUpMethod>,
-    /// Timeout for the step-up challenge in seconds
+    /// Default timeout for the step-up challenge in seconds
     pub timeout: u64,
+    /// Per-method timeout overrides (Phase 36-01).
+    pub method_timeouts: super::config::MethodTimeouts,
+    /// CIBA/device-flow poll interval in seconds (Phase 36-01).
+    pub poll_interval_secs: u64,
     /// Minimum ACR level for the step-up token
     pub minimum_acr: Option<String>,
 }

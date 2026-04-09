@@ -1099,8 +1099,18 @@ pub struct SudoConfig {
     pub step_up_required: bool,
     /// Allowed step-up methods
     pub allowed_methods: Vec<StepUpMethod>,
-    /// Timeout for step-up challenge in seconds
+    /// Default timeout for step-up challenge in seconds.
+    /// Can be overridden per-method via `method_timeouts`.
     pub challenge_timeout: u64,
+    /// Per-method timeout overrides in seconds (Phase 36-01).
+    /// E.g., FIDO2 may need 30s while device_flow needs 300s.
+    /// Methods not listed here use `challenge_timeout`.
+    #[serde(default)]
+    pub method_timeouts: MethodTimeouts,
+    /// CIBA/device-flow poll interval in seconds (Phase 36-01).
+    /// Default: 5. Minimum: 1. The IdP may request slower polling via SlowDown.
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
     /// Command-specific rules
     #[serde(default)]
     pub commands: Vec<CommandRule>,
@@ -1108,6 +1118,36 @@ pub struct SudoConfig {
     /// Enforcement behaviour is governed by `security_modes.groups_enforcement`.
     #[serde(default)]
     pub sudo_groups: Vec<String>,
+}
+
+fn default_poll_interval() -> u64 {
+    5
+}
+
+/// Per-method timeout overrides (Phase 36-01).
+///
+/// Each field overrides `challenge_timeout` for a specific step-up method.
+/// `None` means use the global `challenge_timeout`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct MethodTimeouts {
+    /// Timeout for FIDO2/WebAuthn (typically shorter — hardware tap is fast).
+    pub fido2: Option<u64>,
+    /// Timeout for push notification (depends on user responsiveness).
+    pub push: Option<u64>,
+    /// Timeout for device authorization grant (user must open browser).
+    pub device_flow: Option<u64>,
+}
+
+impl MethodTimeouts {
+    /// Get the timeout for a specific method, falling back to the default.
+    pub fn timeout_for(&self, method: &StepUpMethod, default: u64) -> u64 {
+        match method {
+            StepUpMethod::Fido2 => self.fido2.unwrap_or(default),
+            StepUpMethod::Push => self.push.unwrap_or(default),
+            StepUpMethod::DeviceFlow => self.device_flow.unwrap_or(default),
+        }
+    }
 }
 
 impl Default for SudoConfig {
@@ -1118,6 +1158,8 @@ impl Default for SudoConfig {
             // STP-07: step-up timeout defaults to 120s (covers CIBA poll window
             // with typical IdP push delivery; configurable via policy.yaml).
             challenge_timeout: 120,
+            method_timeouts: MethodTimeouts::default(),
+            poll_interval_secs: 5,
             commands: Vec::new(),
             sudo_groups: Vec::new(),
         }

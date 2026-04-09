@@ -37,8 +37,11 @@ pub enum SudoError {
     #[error("Step-up denied by user")]
     Denied,
 
-    #[error("Step-up timeout")]
-    Timeout,
+    #[error("Step-up timeout ({method} exceeded {timeout_secs}s)")]
+    Timeout {
+        method: String,
+        timeout_secs: u64,
+    },
 
     #[error("Configuration error: {0}")]
     Config(String),
@@ -339,19 +342,33 @@ pub(crate) fn perform_step_up_via_ipc(
             .to_string()
     };
 
-    let poll_interval_secs = 5u64; // Default; agent may return a shorter interval.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(requirements.timeout);
+    let poll_interval_secs = requirements.poll_interval_secs.max(1);
+    let method_timeout = requirements.method_timeouts.timeout_for(&method, requirements.timeout);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(method_timeout);
+
+    tracing::info!(
+        method = method_str,
+        timeout_secs = method_timeout,
+        poll_interval_secs,
+        "Starting step-up poll loop"
+    );
 
     // ── Step 2: Poll for result ───────────────────────────────────────────────
     loop {
         if std::time::Instant::now() >= deadline {
-            return Err(SudoError::Timeout);
+            return Err(SudoError::Timeout {
+                method: method_str.to_string(),
+                timeout_secs: method_timeout,
+            });
         }
 
         std::thread::sleep(std::time::Duration::from_secs(poll_interval_secs));
 
         if std::time::Instant::now() >= deadline {
-            return Err(SudoError::Timeout);
+            return Err(SudoError::Timeout {
+                method: method_str.to_string(),
+                timeout_secs: method_timeout,
+            });
         }
 
         let step_up_result_msg = serde_json::json!({
@@ -392,7 +409,10 @@ pub(crate) fn perform_step_up_via_ipc(
             let code = response["code"].as_str().unwrap_or("");
             if code == "STEP_UP_NOT_FOUND" {
                 // Correlation ID expired — treat as timeout.
-                return Err(SudoError::Timeout);
+                return Err(SudoError::Timeout {
+                    method: method_str.to_string(),
+                    timeout_secs: method_timeout,
+                });
             }
             let msg = response["message"].as_str().unwrap_or("unknown");
             return Err(SudoError::StepUp(format!("Agent poll error: {msg}")));
@@ -507,7 +527,10 @@ pub(crate) fn perform_step_up_via_ipc(
             // StepUpTimedOut: { reason, user_message }
             let reason = response["reason"].as_str().unwrap_or("unknown");
             match reason {
-                "timeout" => return Err(SudoError::Timeout),
+                "timeout" => return Err(SudoError::Timeout {
+                    method: method_str.to_string(),
+                    timeout_secs: method_timeout,
+                }),
                 "denied" => return Err(SudoError::Denied),
                 _ => return Err(SudoError::StepUp(format!("Step-up failed: {reason}"))),
             }
@@ -733,8 +756,11 @@ fn poll_with_display(
         if elapsed >= timeout {
             display
                 .display
-                .show_failure("Timeout waiting for authentication");
-            return Err(SudoError::Timeout);
+                .show_failure("Timeout waiting for device flow authentication");
+            return Err(SudoError::Timeout {
+                method: "device_flow".to_string(),
+                timeout_secs: timeout.as_secs(),
+            });
         }
 
         // Update display
@@ -760,8 +786,11 @@ fn poll_with_display(
             Err(DeviceFlowError::Timeout) => {
                 display
                     .display
-                    .show_failure("Timeout waiting for authentication");
-                return Err(SudoError::Timeout);
+                    .show_failure("Timeout waiting for device flow authentication");
+                return Err(SudoError::Timeout {
+                    method: "device_flow".to_string(),
+                    timeout_secs: timeout.as_secs(),
+                });
             }
             Err(e) => {
                 display.display.show_failure(&e.to_string());
@@ -848,6 +877,8 @@ mod tests {
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 120,
+            method_timeouts: crate::policy::config::MethodTimeouts::default(),
+            poll_interval_secs: 5,
             minimum_acr: None,
         };
         // Must not panic; method is extracted from allowed_methods.
@@ -861,6 +892,8 @@ mod tests {
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 5,
+            method_timeouts: crate::policy::config::MethodTimeouts::default(),
+            poll_interval_secs: 5,
             minimum_acr: None,
         };
         // Point to a non-existent socket.
@@ -928,6 +961,8 @@ mod tests {
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 10,
+            method_timeouts: crate::policy::config::MethodTimeouts::default(),
+            poll_interval_secs: 5,
             minimum_acr: None,
         };
 
@@ -992,6 +1027,8 @@ mod tests {
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 10,
+            method_timeouts: crate::policy::config::MethodTimeouts::default(),
+            poll_interval_secs: 5,
             minimum_acr: None,
         };
 
@@ -1007,7 +1044,7 @@ mod tests {
             &modes,
         );
         assert!(
-            matches!(result, Err(SudoError::Timeout)),
+            matches!(result, Err(SudoError::Timeout { .. })),
             "Expected SudoError::Timeout, got: {result:?}"
         );
     }
@@ -1057,6 +1094,8 @@ mod tests {
         let reqs = SudoStepUpRequirements {
             allowed_methods: vec![StepUpMethod::Push],
             timeout: 10,
+            method_timeouts: crate::policy::config::MethodTimeouts::default(),
+            poll_interval_secs: 5,
             minimum_acr: None,
         };
 
@@ -1154,8 +1193,12 @@ mod tests {
         let err = SudoError::Denied;
         assert!(err.to_string().contains("denied"));
 
-        let err = SudoError::Timeout;
-        assert!(err.to_string().contains("timeout"));
+        let err = SudoError::Timeout {
+            method: "fido2".to_string(),
+            timeout_secs: 30,
+        };
+        assert!(err.to_string().contains("fido2"));
+        assert!(err.to_string().contains("30s"));
 
         let err = SudoError::UserMismatch {
             token_user: "alice".to_string(),
