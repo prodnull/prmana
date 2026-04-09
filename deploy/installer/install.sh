@@ -3,11 +3,12 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | bash
 set -euo pipefail
 
-VERSION="0.1.0"
-SCRIPT_VERSION="1.0.0"
+VERSION="3.0.0"
+SCRIPT_VERSION="2.0.0"
 GITHUB_REPO="prodnull/unix-oidc"
 INSTALL_DIR="/etc/unix-oidc"
 PAM_DIR=""  # Set by detect_os
+OS_FAMILY="" # debian or rhel, set by detect_os
 
 # Colors for output
 RED='\033[0;31m'
@@ -23,6 +24,11 @@ FORCE_MODE=false
 OIDC_ISSUER=""
 OIDC_CLIENT_ID="unix-oidc"
 INSTALL_AGENT=true
+VERIFY_SLSA=false
+OFFLINE_TARBALL=""
+CONFIGURE_PAM=false
+BREAKGLASS_USER=""
+ROLLBACK_PAM=false
 
 #######################################
 # Logging functions
@@ -77,10 +83,11 @@ detect_os() {
         exit 1
     fi
 
-    # Set PAM directory based on OS
+    # Set PAM directory and OS family based on OS
     case "$os" in
         ubuntu|debian)
             PAM_DIR="/lib/security"
+            OS_FAMILY="debian"
             ;;
         rhel|rocky|almalinux|centos|fedora|amzn)
             if [ "$arch" = "x86_64" ]; then
@@ -88,6 +95,7 @@ detect_os() {
             else
                 PAM_DIR="/lib/security"
             fi
+            OS_FAMILY="rhel"
             ;;
         *)
             log_error "Unsupported OS: $os"
@@ -227,77 +235,113 @@ download_binary() {
     local remaining="${os_info#*:}"  # version:arch:pam_dir
     remaining="${remaining#*:}"       # arch:pam_dir
     local arch="${remaining%%:*}"     # arch
-    local download_url=""
-    local checksum_url=""
-    local sig_url=""
-    local cert_url=""
 
     local release_base="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}"
     local artifact_name="unix-oidc-v${VERSION}-linux-${arch}.tar.gz"
-
-    download_url="${release_base}/${artifact_name}"
-    checksum_url="${release_base}/${artifact_name}.sha256"
-    sig_url="${release_base}/${artifact_name}.sig"
-    cert_url="${release_base}/${artifact_name}.pem"
 
     local tmp_dir
     tmp_dir=$(mktemp -d)
     trap 'rm -rf '"$tmp_dir" EXIT
 
-    log_info "Downloading unix-oidc v${VERSION} for linux-${arch}..."
-
     if [ "$DRY_RUN" = true ]; then
-        log_dry "Download $download_url"
-        log_dry "Verify checksum from $checksum_url"
+        if [ -n "$OFFLINE_TARBALL" ]; then
+            log_dry "Use offline tarball: $OFFLINE_TARBALL"
+        else
+            log_dry "Download ${release_base}/${artifact_name}"
+        fi
+        log_dry "Verify SHA-256 checksum"
+        log_dry "Verify Sigstore signature (if cosign available)"
+        if [ "$VERIFY_SLSA" = true ]; then
+            log_dry "Verify SLSA provenance (gh attestation verify)"
+        fi
         return 0
     fi
 
-    # Download files
-    curl -fsSL "$download_url" -o "$tmp_dir/archive.tar.gz" || {
-        log_error "Failed to download binary"
-        exit 1
-    }
+    # Offline mode: use pre-downloaded tarball
+    if [ -n "$OFFLINE_TARBALL" ]; then
+        log_info "Using offline tarball: $OFFLINE_TARBALL"
+        if [ ! -f "$OFFLINE_TARBALL" ]; then
+            log_error "Offline tarball not found: $OFFLINE_TARBALL"
+            exit 1
+        fi
+        cp "$OFFLINE_TARBALL" "$tmp_dir/archive.tar.gz"
+    else
+        log_info "Downloading unix-oidc v${VERSION} for linux-${arch}..."
+        curl -fsSL "${release_base}/${artifact_name}" -o "$tmp_dir/archive.tar.gz" || {
+            log_error "Failed to download binary"
+            exit 1
+        }
+    fi
 
-    curl -fsSL "$checksum_url" -o "$tmp_dir/checksum.sha256" || {
-        log_error "Failed to download checksum"
-        exit 1
-    }
-
-    # Verify checksum
+    # Download and verify against consolidated SHA256SUMS
     log_info "Verifying checksum..."
+    if [ -z "$OFFLINE_TARBALL" ]; then
+        curl -fsSL "${release_base}/SHA256SUMS" -o "$tmp_dir/SHA256SUMS" || {
+            # Fall back to per-artifact checksum for older releases
+            log_warn "Consolidated SHA256SUMS not found, trying per-artifact checksum"
+            curl -fsSL "${release_base}/${artifact_name}.sha256" -o "$tmp_dir/SHA256SUMS" || {
+                log_error "Failed to download checksum"
+                exit 1
+            }
+        }
+    fi
+
     cd "$tmp_dir"
-    if ! sha256sum -c checksum.sha256 --status 2>/dev/null; then
-        # Try BSD sha256 format
-        expected=$(awk '{print $1}' checksum.sha256)
-        actual=$(sha256sum archive.tar.gz | awk '{print $1}')
+    # Rename archive to match the expected filename in SHA256SUMS
+    cp archive.tar.gz "$artifact_name"
+    if sha256sum --version &>/dev/null 2>&1; then
+        # GNU coreutils
+        if ! grep "$artifact_name" SHA256SUMS | sha256sum -c --status 2>/dev/null; then
+            log_error "SHA-256 checksum verification FAILED"
+            exit 1
+        fi
+    else
+        # BSD (macOS) — not expected during Linux install but handle gracefully
+        expected=$(grep "$artifact_name" SHA256SUMS | awk '{print $1}')
+        actual=$(shasum -a 256 "$artifact_name" | awk '{print $1}')
         if [ "$expected" != "$actual" ]; then
-            log_error "Checksum verification failed!"
+            log_error "SHA-256 checksum verification FAILED"
             exit 1
         fi
     fi
     log_success "Checksum verified"
 
-    # Verify signature if cosign available
+    # Verify Sigstore signature on SHA256SUMS (covers all artifacts transitively)
     if command -v cosign &> /dev/null; then
-        log_info "Verifying signature..."
-        curl -fsSL "$sig_url" -o "$tmp_dir/archive.sig" || {
-            log_warn "Could not download signature, skipping verification"
-        }
-        curl -fsSL "$cert_url" -o "$tmp_dir/archive.pem" || {
-            log_warn "Could not download certificate, skipping verification"
-        }
+        log_info "Verifying Sigstore signature..."
+        curl -fsSL "${release_base}/SHA256SUMS.sig" -o "$tmp_dir/SHA256SUMS.sig" 2>/dev/null || true
+        curl -fsSL "${release_base}/SHA256SUMS.pem" -o "$tmp_dir/SHA256SUMS.pem" 2>/dev/null || true
 
-        if [ -f "$tmp_dir/archive.sig" ] && [ -f "$tmp_dir/archive.pem" ]; then
+        if [ -f "$tmp_dir/SHA256SUMS.sig" ] && [ -f "$tmp_dir/SHA256SUMS.pem" ]; then
             if cosign verify-blob \
-                --certificate "$tmp_dir/archive.pem" \
-                --signature "$tmp_dir/archive.sig" \
+                --certificate "$tmp_dir/SHA256SUMS.pem" \
+                --signature "$tmp_dir/SHA256SUMS.sig" \
                 --certificate-identity-regexp "https://github.com/${GITHUB_REPO}" \
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-                "$tmp_dir/archive.tar.gz" 2>/dev/null; then
-                log_success "Signature verified"
+                "$tmp_dir/SHA256SUMS" 2>/dev/null; then
+                log_success "Sigstore signature verified"
             else
-                log_warn "Signature verification failed - continuing anyway"
+                log_warn "Sigstore signature verification failed — continuing"
             fi
+        else
+            log_warn "Signature files not available, skipping Sigstore verification"
+        fi
+    else
+        log_warn "cosign not found — skipping Sigstore verification"
+        log_info "Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/"
+    fi
+
+    # Verify SLSA provenance if requested
+    if [ "$VERIFY_SLSA" = true ]; then
+        if command -v gh &> /dev/null; then
+            log_info "Verifying SLSA build provenance..."
+            if gh attestation verify "$tmp_dir/$artifact_name" --repo "${GITHUB_REPO}" 2>/dev/null; then
+                log_success "SLSA provenance verified"
+            else
+                log_warn "SLSA provenance verification failed — continuing"
+            fi
+        else
+            log_warn "gh CLI not found — skipping SLSA verification"
         fi
     fi
 
@@ -501,6 +545,10 @@ $PAM_DIR/pam_unix_oidc.so
 $INSTALL_DIR/config.env
 $INSTALL_DIR/pam.d-sshd.recommended
 $INSTALL_DIR/pam.d-sudo.recommended
+/usr/lib/systemd/user/unix-oidc-agent.service
+/usr/lib/systemd/user/unix-oidc-agent.socket
+/etc/tmpfiles.d/unix-oidc.conf
+/usr/share/pam-configs/unix-oidc
 EOF
 
     log_success "Created install manifest at $manifest"
@@ -576,6 +624,261 @@ test_with_pamtester() {
 }
 
 #######################################
+# Configure PAM using native OS tools (33-02)
+# Uses pam-auth-update (Debian) or authselect (RHEL)
+# Never edits /etc/pam.d/ files directly.
+#######################################
+configure_pam() {
+    if [ "$CONFIGURE_PAM" = false ]; then
+        log_info "Skipping PAM configuration (use --configure-pam to enable)"
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry "Configure PAM via native OS tools"
+        log_dry "Backup current PAM config"
+        return 0
+    fi
+
+    # Backup current PAM state
+    local backup_dir
+    backup_dir="$INSTALL_DIR/.pam-backup-$(date +%Y%m%d%H%M%S)"
+    mkdir -p "$backup_dir"
+    cp -a /etc/pam.d/sshd "$backup_dir/" 2>/dev/null || true
+    cp -a /etc/pam.d/sudo "$backup_dir/" 2>/dev/null || true
+    log_info "PAM config backed up to $backup_dir"
+
+    case "$OS_FAMILY" in
+        debian)
+            if command -v pam-auth-update &>/dev/null; then
+                log_info "Configuring PAM via pam-auth-update..."
+                # Install the pam-auth-update profile
+                cat > /usr/share/pam-configs/unix-oidc << 'PAMCFG'
+Name: unix-oidc OIDC Authentication
+Default: no
+Priority: 192
+Auth-Type: Primary
+Auth:
+    [success=end default=ignore] pam_unix_oidc.so
+PAMCFG
+                log_success "Installed pam-auth-update profile"
+                log_info "Enable with: sudo pam-auth-update --enable unix-oidc"
+                log_warn "Review the PAM stack before enabling in production"
+            else
+                log_warn "pam-auth-update not found — generating recommended configs only"
+                generate_pam_config
+            fi
+            ;;
+        rhel)
+            if command -v authselect &>/dev/null; then
+                log_info "Configuring PAM via authselect..."
+                # Create a custom authselect profile based on the current one
+                local current_profile
+                current_profile=$(authselect current -r 2>/dev/null || echo "sssd")
+                local custom_dir="/etc/authselect/custom/unix-oidc"
+                if [ ! -d "$custom_dir" ]; then
+                    authselect create-profile unix-oidc --base-on "$current_profile" 2>/dev/null || {
+                        log_warn "Could not create authselect profile — generating recommended configs only"
+                        generate_pam_config
+                        return 0
+                    }
+                fi
+                log_success "Created authselect profile 'unix-oidc'"
+                log_info "Enable with: sudo authselect select custom/unix-oidc"
+                log_warn "Review the profile before activating in production"
+            else
+                log_warn "authselect not found — generating recommended configs only"
+                generate_pam_config
+            fi
+            ;;
+        *)
+            log_warn "Unknown OS family — generating recommended PAM configs only"
+            generate_pam_config
+            ;;
+    esac
+
+    # Verify pam_unix.so is still in the stack (safety check)
+    if [ -f /etc/pam.d/sshd ]; then
+        if ! grep -q "pam_unix.so" /etc/pam.d/sshd 2>/dev/null; then
+            log_error "CRITICAL: pam_unix.so is missing from /etc/pam.d/sshd after PAM configuration!"
+            log_error "Restoring from backup..."
+            cp -a "$backup_dir/sshd" /etc/pam.d/sshd 2>/dev/null || true
+            log_error "Restored. PAM configuration was NOT applied."
+            return 1
+        fi
+    fi
+    log_success "PAM fallback (pam_unix.so) verified present"
+}
+
+#######################################
+# Rollback PAM configuration (33-02)
+#######################################
+rollback_pam() {
+    local latest_backup
+    if [ ! -d "$INSTALL_DIR" ]; then
+        log_error "No PAM backup found (install directory does not exist)"
+        exit 1
+    fi
+    latest_backup=$(find "$INSTALL_DIR" -maxdepth 1 -name '.pam-backup-*' -type d | sort -r | head -1)
+
+    if [ -z "$latest_backup" ]; then
+        log_error "No PAM backup found in $INSTALL_DIR"
+        exit 1
+    fi
+
+    log_info "Restoring PAM config from: $latest_backup"
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry "Restore /etc/pam.d/sshd from $latest_backup/sshd"
+        log_dry "Restore /etc/pam.d/sudo from $latest_backup/sudo"
+        return 0
+    fi
+
+    [ -f "$latest_backup/sshd" ] && cp -a "$latest_backup/sshd" /etc/pam.d/sshd
+    [ -f "$latest_backup/sudo" ] && cp -a "$latest_backup/sudo" /etc/pam.d/sudo
+
+    # Remove pam-auth-update profile if present
+    rm -f /usr/share/pam-configs/unix-oidc
+
+    log_success "PAM configuration restored from backup"
+}
+
+#######################################
+# Install systemd/launchd service files (33-03)
+#######################################
+install_service_files() {
+    if [ "$DRY_RUN" = true ]; then
+        log_dry "Install systemd service, socket, and tmpfiles config"
+        return 0
+    fi
+
+    local src_dir
+    # Service files are bundled in the release tarball under contrib/systemd/
+    # or alongside this script in the repo checkout
+    for candidate in \
+        "$1/contrib/systemd" \
+        "$(dirname "$0")/../contrib/systemd" \
+        "/usr/share/unix-oidc/systemd"; do
+        if [ -d "$candidate" ]; then
+            src_dir="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$src_dir" ]; then
+        log_warn "systemd service files not found in release — skipping service installation"
+        return 0
+    fi
+
+    # Install systemd user service and socket (for per-user agent)
+    local user_unit_dir="/usr/lib/systemd/user"
+    mkdir -p "$user_unit_dir"
+
+    if [ -f "$src_dir/unix-oidc-agent.service" ]; then
+        cp "$src_dir/unix-oidc-agent.service" "$user_unit_dir/"
+        log_success "Installed $user_unit_dir/unix-oidc-agent.service"
+    fi
+
+    if [ -f "$src_dir/unix-oidc-agent.socket" ]; then
+        cp "$src_dir/unix-oidc-agent.socket" "$user_unit_dir/"
+        log_success "Installed $user_unit_dir/unix-oidc-agent.socket"
+    fi
+
+    # Install tmpfiles.d config (for system-level JTI/nonce directories)
+    if [ -f "$src_dir/unix-oidc.tmpfiles.conf" ]; then
+        cp "$src_dir/unix-oidc.tmpfiles.conf" /etc/tmpfiles.d/unix-oidc.conf
+        systemd-tmpfiles --create /etc/tmpfiles.d/unix-oidc.conf 2>/dev/null || {
+            log_warn "systemd-tmpfiles --create failed (directories may need manual creation)"
+        }
+        log_success "Installed /etc/tmpfiles.d/unix-oidc.conf"
+    fi
+
+    # Reload systemd
+    systemctl daemon-reload 2>/dev/null || true
+    log_success "systemd units installed (enable with: systemctl --user enable --now unix-oidc-agent.socket)"
+}
+
+#######################################
+# Validate break-glass access (33-04)
+# Verifies a local fallback account exists and can authenticate
+# without OIDC, preventing lockout if the IdP is unreachable.
+#######################################
+validate_breakglass() {
+    if [ -z "$BREAKGLASS_USER" ]; then
+        echo ""
+        log_warn "============================================================"
+        log_warn "  No break-glass user specified (--breakglass-user)"
+        log_warn "  Without a local fallback account, an IdP outage will"
+        log_warn "  lock you out of this server."
+        log_warn "  See: docs/release-verification.md, CLAUDE.md §Break-Glass"
+        log_warn "============================================================"
+        echo ""
+        return 0
+    fi
+
+    log_info "Validating break-glass user: $BREAKGLASS_USER"
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry "Verify user '$BREAKGLASS_USER' exists"
+        log_dry "Verify user has a password set"
+        log_dry "Verify pam_unix.so fallback is in PAM stack"
+        return 0
+    fi
+
+    # When --breakglass-user is explicitly set and validation fails,
+    # hard-fail the install (per Gemini security review 2026-04-09).
+    # An operator who specifies a break-glass user cares about lockout
+    # protection — proceeding with a broken fallback defeats the purpose.
+
+    # Check user exists
+    if ! id "$BREAKGLASS_USER" &>/dev/null; then
+        log_error "Break-glass user '$BREAKGLASS_USER' does not exist"
+        log_info "Create with: useradd -m -s /bin/bash $BREAKGLASS_USER && passwd $BREAKGLASS_USER"
+        exit 1
+    fi
+    log_success "User '$BREAKGLASS_USER' exists"
+
+    # Check user has a password set (not locked/expired)
+    local pw_status
+    pw_status=$(passwd -S "$BREAKGLASS_USER" 2>/dev/null || chage -l "$BREAKGLASS_USER" 2>/dev/null || echo "unknown")
+    if echo "$pw_status" | grep -qi "locked\|LK\|L "; then
+        log_error "Break-glass user '$BREAKGLASS_USER' account is locked"
+        log_info "Unlock with: passwd -u $BREAKGLASS_USER"
+        exit 1
+    fi
+    # Check for 'NP' (no password) or '!' in shadow
+    if echo "$pw_status" | grep -qi "NP\| NP "; then
+        log_error "Break-glass user '$BREAKGLASS_USER' has no password set"
+        log_info "Set password with: passwd $BREAKGLASS_USER"
+        exit 1
+    fi
+    log_success "User '$BREAKGLASS_USER' has a password set"
+
+    # Verify pam_unix.so is in the sshd PAM stack
+    if [ -f /etc/pam.d/sshd ]; then
+        if grep -q "pam_unix.so" /etc/pam.d/sshd 2>/dev/null; then
+            log_success "pam_unix.so fallback present in /etc/pam.d/sshd"
+        else
+            log_error "pam_unix.so NOT found in /etc/pam.d/sshd — break-glass will fail!"
+            exit 1
+        fi
+    else
+        log_warn "/etc/pam.d/sshd not found — cannot verify PAM fallback"
+    fi
+
+    # Verify user can log in via SSH (password auth enabled)
+    if [ -f /etc/ssh/sshd_config ]; then
+        if grep -qE "^PasswordAuthentication\s+no" /etc/ssh/sshd_config 2>/dev/null; then
+            log_warn "PasswordAuthentication is disabled in sshd_config"
+            log_warn "Break-glass user won't be able to SSH with password"
+            log_info "Consider: Match User $BREAKGLASS_USER + PasswordAuthentication yes"
+        fi
+    fi
+
+    log_success "Break-glass validation passed for '$BREAKGLASS_USER'"
+}
+
+#######################################
 # Print usage
 #######################################
 usage() {
@@ -585,24 +888,38 @@ unix-oidc installer v${SCRIPT_VERSION}
 Usage: $0 [OPTIONS]
 
 Options:
-    --issuer URL        OIDC issuer URL (required for production)
-    --client-id ID      OIDC client ID (default: unix-oidc)
-    --version VER       unix-oidc version to install (default: $VERSION)
-    --no-agent          Skip agent installation
-    --dry-run           Show what would be done without making changes
-    --yes, -y           Skip confirmation prompts
-    --force             Bypass PAM safety checks (use with caution!)
-    --help, -h          Show this help message
+    --issuer URL              OIDC issuer URL (required for production)
+    --client-id ID            OIDC client ID (default: unix-oidc)
+    --version VER             unix-oidc version to install (default: $VERSION)
+    --no-agent                Skip agent installation
+    --configure-pam           Configure PAM via native OS tools (pam-auth-update/authselect)
+    --rollback-pam            Restore PAM config from most recent backup
+    --breakglass-user USER    Validate break-glass account for IdP outage recovery
+    --verify-slsa             Verify SLSA build provenance (requires gh CLI)
+    --offline TARBALL         Use a pre-downloaded release tarball (air-gapped installs)
+    --dry-run                 Show what would be done without making changes
+    --yes, -y                 Skip confirmation prompts
+    --force                   Bypass PAM safety checks (use with caution!)
+    --help, -h                Show this help message
 
 Examples:
     # Dry run to see what would happen
     $0 --dry-run
 
-    # Install with specific IdP
-    $0 --issuer https://login.example.com/realms/myorg --client-id myapp
+    # Install with specific IdP and break-glass validation
+    $0 --issuer https://login.example.com/realms/myorg --breakglass-user breakglass
 
-    # Non-interactive install
-    $0 --issuer https://login.example.com --yes
+    # Full install with PAM configuration
+    $0 --issuer https://login.example.com --configure-pam --breakglass-user breakglass --yes
+
+    # Air-gapped install from pre-downloaded tarball
+    $0 --offline ./unix-oidc-v${VERSION}-linux-x86_64.tar.gz --issuer https://login.example.com
+
+    # Verify full supply chain (checksums + Sigstore + SLSA)
+    $0 --issuer https://login.example.com --verify-slsa
+
+    # Rollback PAM to pre-install state
+    $0 --rollback-pam
 
 EOF
 }
@@ -628,6 +945,26 @@ parse_args() {
             --no-agent)
                 INSTALL_AGENT=false
                 shift
+                ;;
+            --configure-pam)
+                CONFIGURE_PAM=true
+                shift
+                ;;
+            --rollback-pam)
+                ROLLBACK_PAM=true
+                shift
+                ;;
+            --breakglass-user)
+                BREAKGLASS_USER="$2"
+                shift 2
+                ;;
+            --verify-slsa)
+                VERIFY_SLSA=true
+                shift
+                ;;
+            --offline)
+                OFFLINE_TARBALL="$2"
+                shift 2
                 ;;
             --dry-run)
                 DRY_RUN=true
@@ -689,6 +1026,12 @@ main() {
         echo ""
     fi
 
+    # Handle rollback mode (standalone operation)
+    if [ "$ROLLBACK_PAM" = true ]; then
+        rollback_pam
+        exit 0
+    fi
+
     # Step 1: Detect OS
     log_info "Detecting system..."
     local os_info
@@ -700,7 +1043,7 @@ main() {
     remaining="${remaining#*:}"
     local arch="${remaining%%:*}"
     PAM_DIR="${remaining#*:}"
-    log_success "Detected: $os $version ($arch)"
+    log_success "Detected: $os $version ($arch), family: $OS_FAMILY"
     log_success "PAM directory: $PAM_DIR"
 
     # Step 2: Check prerequisites
@@ -720,6 +1063,11 @@ main() {
         log_info "  - Agent: /usr/local/bin/unix-oidc-agent"
     fi
     log_info "  - Config: $INSTALL_DIR/"
+    log_info "  - systemd units: /usr/lib/systemd/user/"
+    log_info "  - tmpfiles: /etc/tmpfiles.d/unix-oidc.conf"
+    if [ "$CONFIGURE_PAM" = true ]; then
+        log_info "  - PAM config via $OS_FAMILY native tools"
+    fi
     echo ""
 
     confirm "Proceed with installation?"
@@ -734,19 +1082,29 @@ main() {
         tmp_dir="/tmp/dry-run"
     fi
 
-    # Step 6: Install
-    log_info "Installing..."
+    # Step 6: Install binaries
+    log_info "Installing binaries..."
     install_pam_module "$tmp_dir"
     install_agent "$tmp_dir"
 
-    # Step 7: Configure
+    # Step 7: Install service files (systemd/tmpfiles)
+    log_info "Installing service files..."
+    install_service_files "$tmp_dir"
+
+    # Step 8: Configure
     log_info "Creating configuration..."
     create_config
-    generate_pam_config
+    configure_pam
+    if [ "$CONFIGURE_PAM" = false ]; then
+        generate_pam_config
+    fi
+
+    # Step 9: Create manifest (includes new files)
     create_manifest
 
-    # Step 8: Validate
+    # Step 10: Validate
     validate_issuer
+    validate_breakglass
     test_with_pamtester
 
     # Done
@@ -760,10 +1118,18 @@ main() {
     echo "==============================================================="
     echo ""
     log_info "Next steps:"
-    log_info "  1. Edit $INSTALL_DIR/config.env with your OIDC issuer"
-    log_info "  2. Review $INSTALL_DIR/pam.d-sshd.recommended"
-    log_info "  3. Copy PAM config to /etc/pam.d/sshd (carefully!)"
-    log_info "  4. Test with: pamtester sshd yourusername authenticate"
+    if [ -z "$OIDC_ISSUER" ]; then
+        log_info "  1. Edit $INSTALL_DIR/config.env with your OIDC issuer"
+    fi
+    if [ "$CONFIGURE_PAM" = false ]; then
+        log_info "  2. Review $INSTALL_DIR/pam.d-sshd.recommended"
+        log_info "  3. Apply PAM config: $0 --configure-pam (or copy manually)"
+    fi
+    log_info "  4. Enable agent: systemctl --user enable --now unix-oidc-agent.socket"
+    if [ -z "$BREAKGLASS_USER" ]; then
+        log_warn "  5. Configure a break-glass account! (--breakglass-user)"
+    fi
+    log_info "  6. Test with: pamtester sshd yourusername authenticate"
     echo ""
     log_info "Documentation: https://github.com/${GITHUB_REPO}#readme"
     log_info "Quickstart: https://github.com/${GITHUB_REPO}/blob/main/deploy/quickstart/"

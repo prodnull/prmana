@@ -74,6 +74,28 @@ jobs:
         run: |
           cargo build --release --locked --target ${{ matrix.target }} -p unix-oidc-agent
 
+      - name: Assert test-mode feature is NOT active
+        if: matrix.build_pam == true
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: |
+          # Security gate: release binaries must never include test-mode.
+          # test-mode bypasses all JWT signature verification.
+          PAM_SO="target/${MATRIX_TARGET}/release/libpam_unix_oidc.so"
+          if [ ! -f "$PAM_SO" ]; then
+            echo "::error::PAM module not found at ${PAM_SO}"
+            exit 1
+          fi
+          # Check for the test-mode sentinel string that only exists when
+          # the feature is compiled in (the insecure constructor log message)
+          if strings "$PAM_SO" | grep -qi "insecure.*test.*mode\|UNIX_OIDC_TEST_MODE\|new_insecure_for_testing"; then
+            echo "::error::CRITICAL: Release binary contains test-mode code!"
+            echo "::error::The binary was built with --features test-mode."
+            echo "::error::This bypasses ALL signature verification."
+            exit 1
+          fi
+          echo "Test-mode gate: PASSED (no test-mode sentinel found in release binary)"
+
       - name: Generate SBOM
         run: |
           cargo install cargo-cyclonedx --locked
@@ -149,6 +171,7 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v6
 
@@ -162,18 +185,35 @@ jobs:
           mkdir release-files
           find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} release-files/ \;
 
+      - name: Generate consolidated SHA256SUMS
+        working-directory: release-files
+        run: |
+          sha256sum *.tar.gz > SHA256SUMS
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
       - name: Sign release artifacts
-        env:
-          REF_NAME: ${{ github.ref_name }}
+        working-directory: release-files
         run: |
-          cd release-files
           for tarball in *.tar.gz; do
-            # Sign with keyless signing (uses OIDC identity from GitHub Actions)
-            cosign sign-blob --yes --output-signature "${tarball}.sig" --output-certificate "${tarball}.pem" "${tarball}"
+            cosign sign-blob --yes \
+              --output-signature "${tarball}.sig" \
+              --output-certificate "${tarball}.pem" \
+              "${tarball}"
           done
+          # Sign the consolidated checksums file
+          cosign sign-blob --yes \
+            --output-signature "SHA256SUMS.sig" \
+            --output-certificate "SHA256SUMS.pem" \
+            "SHA256SUMS"
+
+      - name: Generate SLSA provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-files/*.tar.gz
 
       - name: Generate release notes
         env:
@@ -185,21 +225,39 @@ jobs:
           else
             echo "See CHANGELOG.md for details." > release-notes.md
           fi
+          cat >> release-notes.md << 'NOTES'
+
+          ## Verification
+
+          All release artifacts are signed with [Sigstore](https://sigstore.dev) keyless signing
+          and include [SLSA](https://slsa.dev) build provenance attestations.
+
+          ### Verify checksums
+          ```bash
+          sha256sum -c SHA256SUMS
+          ```
+
+          ### Verify Sigstore signature
+          ```bash
+          cosign verify-blob \
+            --certificate SHA256SUMS.pem \
+            --signature SHA256SUMS.sig \
+            --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS
+          ```
+
+          ### Verify SLSA provenance
+          ```bash
+          gh attestation verify unix-oidc-*.tar.gz --repo prodnull/unix-oidc
+          ```
+
+          See [docs/release-verification.md](docs/release-verification.md) for full details.
+          NOTES
+
           echo "" >> release-notes.md
           echo "## Checksums" >> release-notes.md
-          cat release-files/*.sha256 >> release-notes.md
-          echo "" >> release-notes.md
-          echo "## Signature Verification" >> release-notes.md
-          echo "All release artifacts are signed using Sigstore keyless signing." >> release-notes.md
-          echo "" >> release-notes.md
-          echo "To verify a release:" >> release-notes.md
-          echo "\`\`\`bash" >> release-notes.md
-          echo "cosign verify-blob --certificate unix-oidc-${REF_NAME}-linux-x86_64.tar.gz.pem \\\\" >> release-notes.md
-          echo "  --signature unix-oidc-${REF_NAME}-linux-x86_64.tar.gz.sig \\\\" >> release-notes.md
-          echo "  --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \\\\" >> release-notes.md
-          echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\\" >> release-notes.md
-          echo "  unix-oidc-${REF_NAME}-linux-x86_64.tar.gz" >> release-notes.md
-          echo "\`\`\`" >> release-notes.md
+          cat release-files/SHA256SUMS >> release-notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -207,7 +265,9 @@ jobs:
           body_path: release-notes.md
           files: |
             release-files/*.tar.gz
-            release-files/*.sha256
+            release-files/SHA256SUMS
+            release-files/SHA256SUMS.sig
+            release-files/SHA256SUMS.pem
             release-files/*.sig
             release-files/*.pem
           draft: false
