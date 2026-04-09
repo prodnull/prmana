@@ -227,8 +227,8 @@ pub trait ApprovalProvider: Send + Sync {
 
 /// Generate a unique request ID with CSPRNG randomness.
 ///
-/// Format: `apr-{timestamp_hex}-{random_hex}` where random_hex is 16 hex chars
-/// (8 bytes / 64 bits of cryptographic randomness via getrandom).
+/// Format: `apr-{timestamp_hex}-{random_hex}` where random_hex is 32 hex chars
+/// (16 bytes / 128 bits of cryptographic randomness via getrandom).
 fn generate_request_id() -> Result<String, ApprovalError> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
@@ -236,7 +236,7 @@ fn generate_request_id() -> Result<String, ApprovalError> {
         .unwrap_or_default()
         .as_nanos();
 
-    let mut random_bytes = [0u8; 8];
+    let mut random_bytes = [0u8; 16];
     getrandom::fill(&mut random_bytes).map_err(|e| {
         ApprovalError::ConfigError(format!("CSPRNG unavailable for request ID: {e}"))
     })?;
@@ -279,7 +279,7 @@ mod tests {
         let id = generate_request_id().unwrap();
         assert!(id.starts_with("apr-"), "must start with apr- prefix");
 
-        // Format: apr-{timestamp_hex}-{16_hex_chars}
+        // Format: apr-{timestamp_hex}-{32_hex_chars}
         let parts: Vec<&str> = id.split('-').collect();
         assert!(
             parts.len() >= 3,
@@ -290,8 +290,8 @@ mod tests {
         let random_part = parts.last().unwrap();
         assert_eq!(
             random_part.len(),
-            16,
-            "random part must be 16 hex chars, got: {random_part}"
+            32,
+            "random part must be 32 hex chars, got: {random_part}"
         );
         assert!(
             random_part.chars().all(|c| c.is_ascii_hexdigit()),

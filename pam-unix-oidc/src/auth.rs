@@ -1068,18 +1068,18 @@ mod tests {
     fn test_secure_session_id_format() {
         let id = generate_ssh_session_id().unwrap();
         assert!(id.starts_with("unix-oidc-"));
-        // New format: unix-oidc-{timestamp_hex}-{16_char_random_hex}
+        // New format: unix-oidc-{timestamp_hex}-{32_char_random_hex}
         let parts: Vec<&str> = id.split('-').collect();
         assert!(parts.len() >= 3);
-        // Last part should be 16 chars of random hex
-        assert_eq!(parts.last().unwrap().len(), 16);
+        // Last part should be 32 chars of random hex (128-bit entropy)
+        assert_eq!(parts.last().unwrap().len(), 32);
     }
 
     #[test]
     fn test_secure_session_id_uniqueness() {
         let id1 = generate_ssh_session_id().unwrap();
         let id2 = generate_ssh_session_id().unwrap();
-        // With 64 bits of CSPRNG randomness, collisions are practically impossible
+        // With 128 bits of CSPRNG randomness, collisions are practically impossible
         assert_ne!(id1, id2);
     }
 

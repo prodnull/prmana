@@ -1691,6 +1691,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "reqwest",
+ "secrecy 0.10.3",
  "serde",
  "serde_json",
  "serde_yaml",

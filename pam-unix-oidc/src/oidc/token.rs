@@ -1,6 +1,7 @@
 //! JWT token parsing and claims extraction.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -15,7 +16,7 @@ pub enum TokenError {
     InvalidFormat,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TokenClaims {
     /// Subject (user identifier)
     pub sub: String,
@@ -66,6 +67,27 @@ pub struct TokenClaims {
     /// captures keys that are NOT already matched by the named fields.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Custom Debug impl redacts PII fields (sub, preferred_username) to prevent
+/// accidental exposure in logs. Non-PII fields (iss, aud, exp, jti, acr, amr)
+/// are shown in full since they appear intentionally in audit events.
+impl fmt::Debug for TokenClaims {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenClaims")
+            .field("sub", &"[REDACTED]")
+            .field("preferred_username", &self.preferred_username.as_ref().map(|_| "[REDACTED]"))
+            .field("iss", &self.iss)
+            .field("aud", &self.aud)
+            .field("exp", &self.exp)
+            .field("iat", &self.iat)
+            .field("auth_time", &self.auth_time)
+            .field("acr", &self.acr)
+            .field("amr", &self.amr)
+            .field("jti", &self.jti)
+            .field("cnf", &self.cnf)
+            .finish()
+    }
 }
 
 /// Confirmation claim for proof-of-possession (RFC 9449)
@@ -308,6 +330,47 @@ mod tests {
         let claims = TokenClaims::from_token(&token).unwrap();
 
         assert!(claims.groups_for_audit().is_none());
+    }
+
+    #[test]
+    fn test_debug_redacts_pii_fields() {
+        let token = create_test_token();
+        let claims = TokenClaims::from_token(&token).unwrap();
+        let debug_output = format!("{:?}", claims);
+
+        // PII fields must be redacted
+        assert!(
+            !debug_output.contains("testuser"),
+            "Debug output must not contain sub value: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output must show [REDACTED] for PII fields: {debug_output}"
+        );
+
+        // Non-PII fields should be visible for debugging
+        assert!(
+            debug_output.contains("localhost:8080"),
+            "Debug output should contain issuer: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("test-token-id"),
+            "Debug output should contain jti for replay diagnostics: {debug_output}"
+        );
+    }
+
+    #[test]
+    fn test_debug_redacts_preferred_username_when_present() {
+        let token = create_test_token();
+        let claims = TokenClaims::from_token(&token).unwrap();
+        assert!(claims.preferred_username.is_some());
+
+        let debug_output = format!("{:?}", claims);
+        // preferred_username should show Some("[REDACTED]"), not the actual value
+        assert!(
+            !debug_output.contains("\"testuser\""),
+            "preferred_username must be redacted in Debug: {debug_output}"
+        );
     }
 
     #[test]

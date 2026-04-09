@@ -50,6 +50,7 @@ use oidc::jwks::IssuerJwksRegistry;
 use once_cell::sync::Lazy;
 use pamsm::{Pam, PamError, PamFlags, PamLibExt, PamMsgStyle, PamServiceModule};
 use policy::config::{EnforcementMode, PolicyConfig};
+use secrecy::{ExposeSecret, SecretString};
 use security::nonce_cache::{generate_dpop_nonce, global_nonce_cache};
 use security::rate_limit::global_rate_limiter;
 
@@ -285,7 +286,7 @@ impl PamServiceModule for PamUnixOidc {
         };
 
         // Get the authentication token
-        let token = match get_auth_token(&pamh, test_mode) {
+        let secret_token = match get_auth_token(&pamh, test_mode) {
             Some(t) => t,
             None => {
                 // OBS-02: Emit AUTH_NO_TOKEN audit event — distinguishes "no token provided"
@@ -296,6 +297,9 @@ impl PamServiceModule for PamUnixOidc {
                 return PamError::AUTH_ERR;
             }
         };
+        // Expose the raw JWT for validation functions. The SecretString wrapper
+        // ensures the token is never leaked via Debug/Display formatting.
+        let token = secret_token.expose_secret();
 
         // Best-effort issuer extraction for forensic audit attribution (SBUG-01).
         //
@@ -305,7 +309,7 @@ impl PamServiceModule for PamUnixOidc {
         // If the token is malformed (not a valid JWT), we record None — the audit event
         // will have null oidc_issuer, which is honest: no issuer was identifiable.
         let token_issuer_for_audit: Option<String> =
-            crate::auth::extract_iss_for_routing(&token).ok();
+            crate::auth::extract_iss_for_routing(token).ok();
 
         // Load policy once — used for both path selection and DPoP config.
         //
@@ -943,7 +947,7 @@ fn is_pam_env_token_enabled() -> bool {
 /// Note: PAM conversation has a ~512 byte buffer limit, which is insufficient
 /// for JWT tokens (~1400+ bytes). For production use, pass tokens via environment
 /// variables or use the unix-oidc-agent with SSH_ASKPASS.
-fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<String> {
+fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<SecretString> {
     // In test mode, allow token from process environment variable
     // Security: Requires explicit UNIX_OIDC_TEST_MODE=true
     if test_mode {
@@ -959,7 +963,7 @@ fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<String> {
                 eprintln!(
                     "unix-oidc: SECURITY NOTICE: Accepting token from OIDC_TOKEN environment variable (test mode)."
                 );
-                return Some(token);
+                return Some(SecretString::from(token));
             }
         }
     }
@@ -982,7 +986,7 @@ fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<String> {
                     "unix-oidc: SECURITY NOTICE: Accepting token from PAM environment variable. \
                      Ensure PAM environment source is trusted."
                 );
-                return Some(token_str);
+                return Some(SecretString::from(token_str));
             }
         }
     }
@@ -991,7 +995,7 @@ fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<String> {
     if let Ok(Some(token)) = pamh.get_cached_authtok() {
         let token_str = token.to_string_lossy().to_string();
         if is_jwt(&token_str) {
-            return Some(token_str);
+            return Some(SecretString::from(token_str));
         }
     }
 
@@ -1000,7 +1004,7 @@ fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<String> {
     if let Ok(Some(token)) = pamh.conv(Some("OIDC Token: "), PamMsgStyle::PROMPT_ECHO_OFF) {
         let token_str = token.to_string_lossy().to_string();
         if is_jwt(&token_str) {
-            return Some(token_str);
+            return Some(SecretString::from(token_str));
         }
         // Log warning about potential truncation if the input looks like a partial JWT
         if token_str.starts_with("eyJ") && token_str.len() > 500 {

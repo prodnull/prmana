@@ -1101,12 +1101,12 @@ mod tests {
         );
         assert_eq!(parts[0], "sudo");
 
-        // Last part is 16 hex chars (8 bytes of CSPRNG randomness)
+        // Last part is 32 hex chars (16 bytes / 128 bits of CSPRNG randomness)
         let random_part = parts.last().unwrap();
         assert_eq!(
             random_part.len(),
-            16,
-            "random part must be 16 hex chars, got: {random_part}"
+            32,
+            "random part must be 32 hex chars, got: {random_part}"
         );
         assert!(
             random_part.chars().all(|c| c.is_ascii_hexdigit()),

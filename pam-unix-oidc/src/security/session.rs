@@ -13,7 +13,7 @@
 //!
 //! - `prefix`: Identifies the session type (unix-oidc, sudo, etc.)
 //! - `timestamp_hex`: Nanosecond timestamp for ordering and debugging
-//! - `random_hex`: 64 bits of cryptographic randomness
+//! - `random_hex`: 128 bits of cryptographic randomness
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,7 +22,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The session ID combines:
 /// - A prefix for identification
 /// - Timestamp for ordering and debugging
-/// - 64 bits of CSPRNG randomness for unpredictability
+/// - 128 bits of CSPRNG randomness for unpredictability
+///
+/// 128-bit random component provides a birthday bound of ~2^64, sufficient
+/// for high-volume environments per NIST SP 800-63B session identifier guidance.
 ///
 /// Returns an error if the OS CSPRNG is unavailable. Callers in PAM paths
 /// must propagate this error rather than panic — a PAM panic can lock users
@@ -35,7 +38,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// let session_id = generate_secure_session_id("unix-oidc").unwrap();
 /// assert!(session_id.starts_with("unix-oidc-"));
-/// // Example: unix-oidc-18d4f2a3b4c-a7f3e2d1c0b9a8f7
+/// // Example: unix-oidc-18d4f2a3b4c-a7f3e2d1c0b9a8f7e6d5c4b3a2918070
 /// ```
 pub fn generate_secure_session_id(prefix: &str) -> Result<String, getrandom::Error> {
     let timestamp = SystemTime::now()
@@ -63,13 +66,13 @@ pub fn generate_sudo_session_id() -> Result<String, getrandom::Error> {
     generate_secure_session_id("sudo")
 }
 
-/// Generate 8 bytes (64 bits) of cryptographic randomness.
+/// Generate 16 bytes (128 bits) of cryptographic randomness.
 ///
 /// Uses getrandom for cross-platform CSPRNG access.
 /// Returns an error if the OS CSPRNG is unavailable rather than panicking,
 /// so that PAM paths can propagate the error instead of crashing sshd.
-fn generate_random_bytes() -> Result<[u8; 8], getrandom::Error> {
-    let mut bytes = [0u8; 8];
+fn generate_random_bytes() -> Result<[u8; 16], getrandom::Error> {
+    let mut bytes = [0u8; 16];
 
     // Use getrandom crate for secure random bytes
     // Falls back to /dev/urandom on Linux, CryptGenRandom on Windows
@@ -95,10 +98,10 @@ pub fn is_valid_session_id(session_id: &str) -> bool {
         return false;
     }
 
-    // Last part should be the random hex (16 chars for 8 bytes).
+    // Last part should be the random hex (32 chars for 16 bytes).
     // The guard above guarantees parts.len() >= 3, so last() is always Some.
     let random_part = parts.last().unwrap_or(&"");
-    if random_part.len() != 16 {
+    if random_part.len() != 32 {
         return false;
     }
 
@@ -173,7 +176,7 @@ mod tests {
     #[test]
     fn test_random_bytes_entropy() {
         // Generate multiple sets of random bytes
-        let mut all_bytes: Vec<[u8; 8]> = Vec::new();
+        let mut all_bytes: Vec<[u8; 16]> = Vec::new();
 
         for _ in 0..100 {
             let bytes = generate_random_bytes().unwrap();

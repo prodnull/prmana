@@ -28,6 +28,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 use p256::elliptic_curve::rand_core::{OsRng, RngCore};
@@ -43,12 +44,27 @@ pub enum SecureDeleteError {
     IoError(#[from] std::io::Error),
     #[error("Overwrite failed (best-effort): {0}")]
     OverwriteFailed(String),
+    #[error("Symlink rejected (TOCTOU protection): {0}")]
+    SymlinkRejected(String),
+    #[error("Not a regular file (TOCTOU protection): {0}")]
+    NotRegularFile(String),
+    #[error("Owner mismatch: {path} owned by uid {actual_uid}, expected {expected_uid}")]
+    OwnerMismatch {
+        path: String,
+        expected_uid: u32,
+        actual_uid: u32,
+    },
 }
 
 /// Buffer size for overwrite passes (4 KiB per pass chunk)
 const OVERWRITE_BUF: usize = 4096;
 
 /// Remove a file with a three-pass random overwrite before unlinking.
+///
+/// Uses `O_NOFOLLOW` to reject symlinks and `fstat` on the opened file
+/// descriptor to verify the target is a regular file owned by the current
+/// user — preventing TOCTOU attacks where an attacker swaps the file for a
+/// symlink between the existence check and the open.
 ///
 /// If any overwrite pass fails the failure is logged and the function still
 /// attempts to unlink (best-effort semantics, per project decision). The
@@ -57,20 +73,57 @@ const OVERWRITE_BUF: usize = 4096;
 ///
 /// Returns `Err(NotFound)` if the path does not exist.
 pub fn secure_remove(path: &Path) -> Result<(), SecureDeleteError> {
-    if !path.exists() {
-        return Err(SecureDeleteError::NotFound(path.display().to_string()));
+    // Open with O_NOFOLLOW | O_NONBLOCK to reject symlinks and avoid blocking
+    // on FIFOs/sockets. O_NONBLOCK is safe here because we verify S_IFREG via
+    // fstat immediately after open — non-regular files are rejected before any I/O.
+    let file = match OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(SecureDeleteError::NotFound(path.display().to_string()));
+        }
+        Err(e) => {
+            // ELOOP on Linux / ENOENT-like on macOS when path is a symlink
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                return Err(SecureDeleteError::SymlinkRejected(path.display().to_string()));
+            }
+            return Err(SecureDeleteError::IoError(e));
+        }
+    };
+
+    // fstat on the fd (not the path) to prevent TOCTOU races.
+    let metadata = file.metadata()?;
+
+    // Verify the target is a regular file (S_IFREG), not a device, socket, etc.
+    let mode = metadata.mode();
+    if mode & libc::S_IFMT as u32 != libc::S_IFREG as u32 {
+        return Err(SecureDeleteError::NotRegularFile(path.display().to_string()));
     }
 
-    let metadata = std::fs::metadata(path)?;
+    // Verify ownership matches current effective UID to prevent overwriting
+    // files owned by other users (defense against privilege escalation via
+    // path manipulation).
+    let euid = unsafe { libc::geteuid() };
+    if metadata.uid() != euid {
+        return Err(SecureDeleteError::OwnerMismatch {
+            path: path.display().to_string(),
+            expected_uid: euid,
+            actual_uid: metadata.uid(),
+        });
+    }
+
     let size = metadata.len() as usize;
 
     if size == 0 {
-        // Nothing to overwrite; just unlink.
+        drop(file);
         std::fs::remove_file(path)?;
         return Ok(());
     }
 
-    match overwrite_three_pass(path, size) {
+    match overwrite_three_pass_fd(file, size) {
         Ok(()) => {}
         Err(e) => {
             warn!(
@@ -85,12 +138,13 @@ pub fn secure_remove(path: &Path) -> Result<(), SecureDeleteError> {
     Ok(())
 }
 
-/// Perform a three-pass (random, complement, random) overwrite.
-fn overwrite_three_pass(path: &Path, size: usize) -> Result<(), SecureDeleteError> {
+/// Perform a three-pass (random, complement, random) overwrite on an already-open fd.
+///
+/// Takes ownership of the `File` to ensure the fd is not shared. The caller
+/// has already verified via `fstat` that the fd refers to a regular file.
+fn overwrite_three_pass_fd(mut file: File, size: usize) -> Result<(), SecureDeleteError> {
     let mut rng = OsRng;
     let mut buf = vec![0u8; OVERWRITE_BUF.min(size)];
-
-    let mut file = OpenOptions::new().write(true).open(path)?;
 
     // Pass 1: random bytes
     overwrite_pass(&mut file, &mut buf, size, |buf| {
@@ -331,6 +385,45 @@ mod tests {
 
         secure_remove(&path).expect("secure_remove should handle large files");
         assert!(!path.exists(), "large file should be deleted");
+    }
+
+    #[test]
+    fn test_secure_remove_rejects_symlink() {
+        let dir = TempDir::new().unwrap();
+        let real_file = make_temp_file(&dir, "real.bin", b"real-content");
+        let symlink_path = dir.path().join("link.bin");
+
+        std::os::unix::fs::symlink(&real_file, &symlink_path).unwrap();
+
+        let result = secure_remove(&symlink_path);
+
+        // Must reject the symlink — either SymlinkRejected or a loop/permission error.
+        assert!(
+            result.is_err(),
+            "secure_remove must reject symlinks to prevent TOCTOU attacks"
+        );
+
+        // The real file must NOT have been overwritten.
+        let content = std::fs::read(&real_file).unwrap();
+        assert_eq!(content, b"real-content", "real file must not be modified");
+    }
+
+    #[test]
+    fn test_secure_remove_rejects_non_regular_file() {
+        // Create a named pipe (FIFO) — should be rejected by S_IFREG check.
+        let dir = TempDir::new().unwrap();
+        let fifo_path = dir.path().join("test.fifo");
+        let path_cstr =
+            std::ffi::CString::new(fifo_path.as_os_str().as_encoded_bytes()).unwrap();
+        unsafe {
+            libc::mkfifo(path_cstr.as_ptr(), 0o600);
+        }
+
+        let result = secure_remove(&fifo_path);
+        assert!(
+            result.is_err(),
+            "secure_remove must reject non-regular files"
+        );
     }
 
     #[test]
