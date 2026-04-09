@@ -23,6 +23,22 @@
 //! This is consistent with the security invariant in CLAUDE.md: if a security
 //! check cannot be performed, log it prominently and deny access.
 //!
+//! ## Accepted trust model: same-UID equivalence (SSH-agent model)
+//!
+//! **Design decision (reviewed April 2026, Codex finding 2):** Any process
+//! running as the same UID is treated as fully trusted. This matches the
+//! well-established `ssh-agent` trust model used by OpenSSH.
+//!
+//! **Implication:** A same-UID process can request DPoP proofs, trigger token
+//! refresh, shut down the daemon, or wipe credentials. If your threat model
+//! includes malware running under the authenticated user's account, mitigate
+//! with hardware-bound keys (TPM/YubiKey), SELinux/AppArmor confinement, or
+//! full-disk encryption.
+//!
+//! **v3.1 plan:** IPC channel separation — crypto operations (GetProof) on one
+//! socket, admin operations (Shutdown, SessionClosed) on a root-only socket.
+//! See `docs/security-audit-2026-04.md` Finding 2 for details.
+//!
 //! ## References
 //!
 //! - `socket(7)` Linux man page, `SO_PEERCRED` option.

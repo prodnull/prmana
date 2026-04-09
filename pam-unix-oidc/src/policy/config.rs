@@ -1363,7 +1363,10 @@ impl PolicyConfig {
 
         // Security (Codex finding 4): Inline YAML config is restricted to test-mode
         // builds. In production, environment injection of UNIX_OIDC_POLICY_YAML cannot
-        // override security policy. Even in test-mode, the config is validated.
+        // override security policy.
+        // Note: this path uses figment extraction (type-safe deserialization) but does
+        // NOT run the full load_from() validation (e.g. duplicate issuer detection).
+        // This is acceptable for test builds; production must use the file path.
         #[cfg(feature = "test-mode")]
         if let Ok(yaml) = std::env::var("UNIX_OIDC_POLICY_YAML") {
             let config: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
