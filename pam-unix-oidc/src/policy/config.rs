@@ -281,6 +281,49 @@ impl Default for SpiffeMappingConfig {
     }
 }
 
+// ── Token Exchange delegation (Phase 37, RFC 8693) ──────────────────────────
+
+/// Token exchange delegation policy for a specific issuer.
+///
+/// Controls which OAuth clients are authorized to perform token exchange
+/// (RFC 8693) against tokens from this issuer, and limits on the delegation chain.
+///
+/// When `delegation` is absent from an issuer config, token exchange is not
+/// accepted for tokens from that issuer — any token with an `act` claim is rejected.
+///
+/// ```yaml
+/// issuers:
+///   - issuer_url: "https://keycloak.example.com/realms/corp"
+///     delegation:
+///       allowed_exchangers: ["jump-host-a", "jump-host-b"]
+///       max_depth: 2
+///       exchanged_token_max_lifetime_secs: 300
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DelegationConfig {
+    /// OAuth client_ids authorized to perform token exchange.
+    /// The `act.client_id` or `act.sub` in the exchanged token must match one of these.
+    /// Empty list = no exchangers allowed (effectively disables exchange even if section present).
+    pub allowed_exchangers: Vec<String>,
+    /// Maximum delegation depth (number of `act` nesting levels). Default: 1.
+    /// A depth of 1 means user → single jump host. Depth 2 allows user → jump → jump.
+    pub max_depth: usize,
+    /// Maximum acceptable lifetime (seconds) for exchanged tokens. Default: 300 (5 min).
+    /// Exchanged tokens with `exp - iat` exceeding this are rejected.
+    pub exchanged_token_max_lifetime_secs: u64,
+}
+
+impl Default for DelegationConfig {
+    fn default() -> Self {
+        Self {
+            allowed_exchangers: Vec::new(),
+            max_depth: 1,
+            exchanged_token_max_lifetime_secs: 300,
+        }
+    }
+}
+
 // ── Multi-issuer configuration (Phase 21, MIDP-01..05, MIDP-08) ──────────────
 
 /// ACR claim mapping configuration for a specific issuer.
@@ -421,6 +464,14 @@ pub struct IssuerConfig {
     #[serde(default)]
     pub spiffe_mapping: Option<SpiffeMappingConfig>,
 
+    /// Token exchange (RFC 8693) delegation policy for this issuer (Phase 37).
+    ///
+    /// When present, tokens from this issuer that contain an `act` claim are
+    /// validated against the delegation rules. When absent, exchanged tokens
+    /// (tokens with `act`) are rejected.
+    #[serde(default)]
+    pub delegation: Option<DelegationConfig>,
+
     /// Per-issuer algorithm allowlist for JWT validation (SHRD-01/02).
     ///
     /// When present, only these algorithms are accepted from tokens validated
@@ -486,6 +537,7 @@ impl Default for IssuerConfig {
             jwks_cache_ttl_secs: default_jwks_cache_ttl(),
             http_timeout_secs: default_http_timeout(),
             spiffe_mapping: None,
+            delegation: None,
             recovery_interval_secs: default_recovery_interval(),
             #[cfg(any(test, feature = "test-mode"))]
             allow_insecure_http_for_testing: false,
@@ -2756,5 +2808,67 @@ security_modes:
             EnforcementMode::Strict,
             "jti_enforcement must default to Strict in v3.0 (D-06)"
         );
+    }
+
+    // ── Phase 37: DelegationConfig tests (RFC 8693 token exchange) ───────
+
+    #[test]
+    fn test_delegation_config_defaults() {
+        let deleg = DelegationConfig::default();
+        assert!(deleg.allowed_exchangers.is_empty());
+        assert_eq!(deleg.max_depth, 1);
+        assert_eq!(deleg.exchanged_token_max_lifetime_secs, 300);
+    }
+
+    #[test]
+    fn test_delegation_config_from_yaml() {
+        let yaml = r#"
+            allowed_exchangers:
+              - "jump-host-a"
+              - "jump-host-b"
+            max_depth: 3
+            exchanged_token_max_lifetime_secs: 600
+        "#;
+        let deleg: DelegationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(deleg.allowed_exchangers, vec!["jump-host-a", "jump-host-b"]);
+        assert_eq!(deleg.max_depth, 3);
+        assert_eq!(deleg.exchanged_token_max_lifetime_secs, 600);
+    }
+
+    #[test]
+    fn test_delegation_config_partial_yaml_uses_defaults() {
+        let yaml = r#"
+            allowed_exchangers:
+              - "jump-host-a"
+        "#;
+        let deleg: DelegationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(deleg.allowed_exchangers, vec!["jump-host-a"]);
+        assert_eq!(deleg.max_depth, 1); // default
+        assert_eq!(deleg.exchanged_token_max_lifetime_secs, 300); // default
+    }
+
+    #[test]
+    fn test_issuer_config_without_delegation() {
+        let yaml = r#"
+            issuer_url: "https://idp.example.com/realms/corp"
+            client_id: "unix-oidc"
+        "#;
+        let issuer: IssuerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(issuer.delegation.is_none());
+    }
+
+    #[test]
+    fn test_issuer_config_with_delegation() {
+        let yaml = r#"
+            issuer_url: "https://idp.example.com/realms/corp"
+            client_id: "unix-oidc"
+            delegation:
+              allowed_exchangers: ["jump-host-a"]
+              max_depth: 2
+        "#;
+        let issuer: IssuerConfig = serde_yaml::from_str(yaml).unwrap();
+        let deleg = issuer.delegation.expect("delegation should be present");
+        assert_eq!(deleg.allowed_exchangers, vec!["jump-host-a"]);
+        assert_eq!(deleg.max_depth, 2);
     }
 }
