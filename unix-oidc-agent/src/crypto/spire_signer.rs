@@ -116,15 +116,25 @@ pub struct SpireSigner {
 impl SpireSigner {
     /// Create a new SpireSigner with a fresh ephemeral DPoP key.
     ///
+    /// Uses `Handle::try_current()` — returns `Err` if called outside a tokio
+    /// runtime. Use `with_handle()` from synchronous contexts.
+    ///
     /// Does NOT fetch the SVID immediately — the first `sign_proof()` or
     /// `fetch_svid()` call will connect to the SPIRE agent.
-    pub fn new(config: SpireConfig) -> Self {
-        Self {
+    pub fn new(config: SpireConfig) -> Result<Self, SignerError> {
+        let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+            SignerError::Storage(
+                "SpireSigner::new() requires a tokio runtime. \
+                 Use SpireSigner::with_handle() from synchronous contexts."
+                    .to_string(),
+            )
+        })?;
+        Ok(Self {
             dpop_key: ProtectedSigningKey::generate(),
             config,
             cached_svid: Mutex::new(None),
-            rt_handle: tokio::runtime::Handle::current(),
-        }
+            rt_handle: handle,
+        })
     }
 
     /// Create a SpireSigner with an explicit runtime handle.
@@ -290,10 +300,20 @@ impl DPoPSigner for SpireSigner {
     }
 }
 
-// Send + Sync: ProtectedSigningKey is Send+Sync, Mutex<Option<CachedSvid>> is Send+Sync,
-// SpireConfig is Send+Sync, tokio Handle is Send+Sync.
-unsafe impl Send for SpireSigner {}
-unsafe impl Sync for SpireSigner {}
+/// Extract `exp` claim from a JWT as a Unix timestamp (seconds since epoch).
+///
+/// Public for use by the login path to set SVID metadata expiry.
+pub fn parse_jwt_exp_secs(jwt: &str) -> Option<i64> {
+    let parts: Vec<&str> = jwt.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    claims.get("exp")?.as_i64()
+}
 
 /// Extract `exp` claim from a JWT without full validation.
 ///

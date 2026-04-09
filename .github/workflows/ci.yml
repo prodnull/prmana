@@ -604,6 +604,12 @@ jobs:
             sleep 2
           done
 
+      - name: Wait for workload registration
+        run: |
+          echo "Waiting for spire-register to complete..."
+          docker compose -f docker-compose.spire-test.yaml wait spire-register
+          echo "Workload registration complete."
+
       - name: Run SPIRE integration tests
         run: cargo test -p unix-oidc-agent --features spire -- --ignored spire
         env:

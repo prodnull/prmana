@@ -71,10 +71,55 @@ pub enum OtpError {
 }
 
 /// Load enrolled OTP seeds from the configured path.
+///
+/// Security (Codex MED-2): validates file ownership and permissions before reading.
+/// Rejects symlinks, non-regular files, and files readable by group/other.
 pub fn load_seeds(path: &Path) -> Result<OtpSeedStore, OtpError> {
+    use std::os::unix::fs::MetadataExt;
+
     if !path.exists() {
         return Err(OtpError::SeedFileNotFound(path.display().to_string()));
     }
+
+    // Security: use lstat (symlink_metadata) to detect symlinks before following.
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| OtpError::SeedFileRead(format!("{}: {e}", path.display())))?;
+
+    // Reject symlinks — prevents TOCTOU redirect to attacker-controlled file.
+    if meta.file_type().is_symlink() {
+        return Err(OtpError::SeedFileRead(format!(
+            "{}: is a symlink (rejected for security)",
+            path.display()
+        )));
+    }
+
+    // Reject non-regular files (FIFOs, devices, etc.).
+    if !meta.file_type().is_file() {
+        return Err(OtpError::SeedFileRead(format!(
+            "{}: not a regular file",
+            path.display()
+        )));
+    }
+
+    // Require root ownership (uid 0).
+    if meta.uid() != 0 {
+        return Err(OtpError::SeedFileRead(format!(
+            "{}: must be owned by root (uid 0), got uid {}",
+            path.display(),
+            meta.uid()
+        )));
+    }
+
+    // Reject group/other-readable (mode must be 0600 or 0400).
+    let mode = meta.mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(OtpError::SeedFileRead(format!(
+            "{}: permissions too open ({:04o}), must be 0600 or 0400",
+            path.display(),
+            mode
+        )));
+    }
+
     let contents = std::fs::read_to_string(path)
         .map_err(|e| OtpError::SeedFileRead(format!("{}: {e}", path.display())))?;
     let store: OtpSeedStore = serde_json::from_str(&contents)
@@ -155,6 +200,8 @@ mod tests {
         assert_eq!(generate_totp_code(secret, 41152263, 8), "89005924");
         // Time=2000000000, counter=66666666 → "69279037"
         assert_eq!(generate_totp_code(secret, 66666666, 8), "69279037");
+        // Time=20000000000, counter=666666666 → "65353130"
+        assert_eq!(generate_totp_code(secret, 666666666, 8), "65353130");
     }
 
     #[test]

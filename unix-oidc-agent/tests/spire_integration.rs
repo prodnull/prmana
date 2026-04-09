@@ -172,7 +172,7 @@ async fn test_spire_live_fetch_svid() {
         audience: vec!["unix-oidc-test".to_string()],
         spiffe_id: None,
     };
-    let signer = SpireSigner::new(config);
+    let signer = SpireSigner::new(config).expect("SpireSigner::new in tokio runtime");
 
     let (spiffe_id, token) = signer.fetch_svid().expect("Should fetch SVID from live SPIRE agent");
     assert!(
@@ -202,7 +202,7 @@ async fn test_spire_live_svid_caching() {
         audience: vec!["unix-oidc-cache-test".to_string()],
         spiffe_id: None,
     };
-    let signer = SpireSigner::new(config);
+    let signer = SpireSigner::new(config).expect("SpireSigner::new in tokio runtime");
 
     let (id1, tok1) = signer.fetch_svid().unwrap();
     let (id2, tok2) = signer.fetch_svid().unwrap();

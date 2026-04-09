@@ -74,7 +74,7 @@ services:
           -spiffeID spiffe://unix-oidc-test/ns/ci/sa/test-workload \
           -selector unix:uid:0 \
           -dns localhost \
-          -jwt-svid-ttl 300 || true
+          -jwt-svid-ttl 300
 
         echo "SPIRE registration complete."
     volumes:

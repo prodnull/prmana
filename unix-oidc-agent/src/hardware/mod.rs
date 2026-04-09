@@ -195,7 +195,7 @@ pub fn build_signer(
                 spiffe_id: s.spiffe_id.clone(),
             })
             .unwrap_or_default();
-        return Ok(Arc::new(crate::crypto::SpireSigner::new(spire_cfg)));
+        return Ok(Arc::new(crate::crypto::SpireSigner::new(spire_cfg)?));
     }
 
     #[cfg(not(feature = "spire"))]

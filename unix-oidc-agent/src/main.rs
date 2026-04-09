@@ -723,6 +723,77 @@ async fn run_login(
 
     println!("DPoP thumbprint: {}", signer.thumbprint());
     println!();
+
+    // ── SPIRE login path (Phase 35-02, Codex HIGH-1 fix) ────────────────────
+    //
+    // SPIRE sessions bypass device flow entirely: the JWT-SVID is the access
+    // token, fetched directly from the local SPIRE agent. No refresh tokens,
+    // no token endpoints, no client secrets.
+    #[cfg(feature = "spire")]
+    if signer_spec == "spire" {
+        println!("Fetching JWT-SVID from SPIRE agent...");
+
+        // Build a fresh SpireSigner to call fetch_svid().
+        // We already have one in signer_arc, but we need the concrete type
+        // for fetch_svid() which is not on the DPoPSigner trait.
+        let hw_config = SignerConfig::load();
+        let spire_cfg = hw_config
+            .spire
+            .as_ref()
+            .map(|s| unix_oidc_agent::crypto::SpireConfig {
+                socket_path: s.socket_path.clone().unwrap_or_else(|| {
+                    unix_oidc_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
+                }),
+                audience: s.audience.clone().unwrap_or_default(),
+                spiffe_id: s.spiffe_id.clone(),
+            })
+            .unwrap_or_default();
+        let spire_signer = unix_oidc_agent::crypto::SpireSigner::new(spire_cfg)
+            .map_err(|e| anyhow::anyhow!("Failed to create SpireSigner: {e}"))?;
+
+        let (spiffe_id, svid_token) = spire_signer.fetch_svid().map_err(|e| {
+            anyhow::anyhow!("Failed to fetch JWT-SVID from SPIRE agent: {e}")
+        })?;
+
+        println!("SPIFFE ID: {spiffe_id}");
+        println!("JWT-SVID acquired from SPIRE agent");
+
+        // Parse SVID expiry for metadata.
+        let svid_exp = unix_oidc_agent::crypto::spire_signer::parse_jwt_exp_secs(&svid_token);
+        let token_expires = svid_exp.unwrap_or_else(|| {
+            // Default: 5 minutes from now (typical SVID TTL).
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (now + 300) as i64
+        });
+
+        // Store JWT-SVID as the access token.
+        let access_token = SecretString::from(svid_token);
+        storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
+
+        // SPIRE metadata: no refresh token, no token endpoint, no client secret.
+        let metadata = serde_json::json!({
+            "expires_at": token_expires,
+            "refresh_token": null,
+            "issuer": issuer,
+            "token_endpoint": null,
+            "client_id": client_id,
+            "client_secret": null,
+            "signer_type": "spire",
+            "revocation_endpoint": null,
+            "spiffe_id": spiffe_id,
+        });
+        storage.store(KEY_TOKEN_METADATA, metadata.to_string().as_bytes())?;
+
+        println!("JWT-SVID stored successfully");
+        println!("SVID expires at: {token_expires}");
+        println!();
+        println!("Start the agent daemon with: unix-oidc-agent serve");
+        return Ok(());
+    }
+
     println!("Starting device authorization flow with: {issuer}");
     println!("Client ID: {client_id}");
     println!();
@@ -1126,6 +1197,63 @@ async fn run_refresh() -> anyhow::Result<()> {
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to parse token metadata: {e}"))?;
 
+    let signer_type = metadata["signer_type"].as_str().unwrap_or("software");
+
+    // ── SPIRE sessions: re-acquire SVID instead of OAuth refresh (Codex HIGH-2) ──
+    #[cfg(feature = "spire")]
+    if signer_type == "spire" {
+        println!("Refreshing JWT-SVID from SPIRE agent...");
+        let hw_config = SignerConfig::load();
+        let spire_cfg = hw_config
+            .spire
+            .as_ref()
+            .map(|s| unix_oidc_agent::crypto::SpireConfig {
+                socket_path: s.socket_path.clone().unwrap_or_else(|| {
+                    unix_oidc_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
+                }),
+                audience: s.audience.clone().unwrap_or_default(),
+                spiffe_id: s.spiffe_id.clone(),
+            })
+            .unwrap_or_default();
+        let spire_signer = unix_oidc_agent::crypto::SpireSigner::new(spire_cfg)
+            .map_err(|e| anyhow::anyhow!("Failed to create SpireSigner: {e}"))?;
+
+        let (spiffe_id, svid_token) = spire_signer.fetch_svid().map_err(|e| {
+            anyhow::anyhow!("Failed to refresh JWT-SVID from SPIRE agent: {e}")
+        })?;
+
+        let svid_exp = unix_oidc_agent::crypto::spire_signer::parse_jwt_exp_secs(&svid_token);
+        let token_expires = svid_exp.unwrap_or_else(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (now + 300) as i64
+        });
+
+        let access_token = SecretString::from(svid_token);
+        storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
+
+        // Update metadata with new expiry.
+        let new_metadata = serde_json::json!({
+            "expires_at": token_expires,
+            "refresh_token": null,
+            "issuer": metadata["issuer"],
+            "token_endpoint": null,
+            "client_id": metadata["client_id"],
+            "client_secret": null,
+            "signer_type": "spire",
+            "revocation_endpoint": null,
+            "spiffe_id": spiffe_id,
+        });
+        storage.store(KEY_TOKEN_METADATA, new_metadata.to_string().as_bytes())?;
+
+        println!("JWT-SVID refreshed successfully (expires at {token_expires})");
+        return Ok(());
+    }
+
+    // ── Standard OAuth refresh path ──────────────────────────────────────────
+
     // Security (MEM-03): wrap refresh_token in SecretString at extraction — must not appear in logs.
     let refresh_token = SecretString::from(
         metadata["refresh_token"]
@@ -1160,17 +1288,22 @@ async fn run_refresh() -> anyhow::Result<()> {
 
     // RFC 9449 §4.2: DPoP proof must be included in token refresh requests.
     // Load the signer from storage to generate a fresh proof.
+    // Codex HIGH-2: branch by signer_type so hardware signers reopen the device.
     let signer: Arc<dyn DPoPSigner> = {
-        let signer_type = metadata["signer_type"].as_str().unwrap_or("software");
         match signer_type {
             #[cfg(feature = "pqc")]
             "pqc" => {
                 let pqc = load_or_create_pqc_signer(&storage)?;
                 Arc::new(*pqc) as Arc<dyn DPoPSigner>
             }
-            _ => {
+            "software" | "" => {
                 let sw = load_or_create_signer(&storage)?;
                 Arc::new(sw) as Arc<dyn DPoPSigner>
+            }
+            hw_spec => {
+                // Hardware signers (yubikey:<slot>, tpm): reopen via build_signer.
+                let hw_config = SignerConfig::load();
+                build_signer(hw_spec, &hw_config)?
             }
         }
     };
