@@ -16,6 +16,10 @@ pub struct ScimConfig {
     pub default_shell: String,
     /// Whether to create home directories. Default: true.
     pub create_home: bool,
+    /// Skip system commands (useradd/userdel). For testing only.
+    /// Production deployments MUST leave this false.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 impl Default for ScimConfig {
@@ -26,6 +30,7 @@ impl Default for ScimConfig {
             oidc_audience: "unix-oidc-scim".to_string(),
             default_shell: "/bin/bash".to_string(),
             create_home: true,
+            dry_run: false,
         }
     }
 }

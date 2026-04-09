@@ -123,8 +123,9 @@ pub fn validate_username(username: &str) -> Result<(), ProvisionError> {
 ///
 /// For Phase 37, we maintain a simple `HashMap` for CRUD operations
 /// and shell out to `useradd`/`userdel` for actual Unix account management.
-/// The subprocess calls are best-effort — they require root and will log
-/// a warning if they fail (e.g., in test or unprivileged contexts).
+/// System command failures are propagated — the in-memory store is only
+/// mutated on successful system operations to keep SCIM state consistent
+/// with actual Unix state.
 pub struct Provisioner {
     config: ScimConfig,
     /// In-memory store mapping SCIM id -> ScimUser.
@@ -162,15 +163,18 @@ impl Provisioner {
             version: None,
         });
 
-        // Attempt system useradd (best-effort — may fail in non-root context)
-        let result = self.run_useradd(&user.user_name);
-        if let Err(e) = &result {
-            tracing::warn!(
-                username = %user.user_name,
-                error = %e,
-                "useradd failed (may need root)"
-            );
-            // Continue anyway — the SCIM store tracks the intent
+        // Run system useradd — propagate failure to keep SCIM state
+        // consistent with actual Unix state. The in-memory store is only
+        // populated on system success.
+        if !self.config.dry_run {
+            if let Err(e) = self.run_useradd(&user.user_name) {
+                tracing::error!(
+                    username = %user.user_name,
+                    error = %e,
+                    "useradd failed — not adding user to SCIM store"
+                );
+                return Err(e);
+            }
         }
 
         store.insert(id, user.clone());
@@ -217,19 +221,24 @@ impl Provisioner {
     pub fn delete_user(&self, id: &str) -> Result<(), ProvisionError> {
         let mut store = self.users.write().unwrap();
         let user = store
-            .remove(id)
-            .ok_or_else(|| ProvisionError::UserNotFound(id.to_string()))?;
+            .get(id)
+            .ok_or_else(|| ProvisionError::UserNotFound(id.to_string()))?
+            .clone();
 
-        // Attempt system userdel
-        let result = self.run_userdel(&user.user_name);
-        if let Err(e) = &result {
-            tracing::warn!(
-                username = %user.user_name,
-                error = %e,
-                "userdel failed (may need root)"
-            );
+        // Run system userdel first — only remove from store on success
+        // to keep SCIM state consistent with actual Unix state.
+        if !self.config.dry_run {
+            if let Err(e) = self.run_userdel(&user.user_name) {
+                tracing::error!(
+                    username = %user.user_name,
+                    error = %e,
+                    "userdel failed — not removing user from SCIM store"
+                );
+                return Err(e);
+            }
         }
 
+        store.remove(id);
         Ok(())
     }
 
@@ -320,9 +329,16 @@ mod tests {
         ));
     }
 
+    fn test_config() -> ScimConfig {
+        ScimConfig {
+            dry_run: true,
+            ..ScimConfig::default()
+        }
+    }
+
     #[test]
     fn test_provisioner_create_and_get() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         let user = ScimUser {
             schemas: vec![SCHEMA_USER.into()],
             id: None,
@@ -344,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_provisioner_duplicate_rejected() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         let user = ScimUser {
             schemas: vec![SCHEMA_USER.into()],
             id: None,
@@ -363,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_provisioner_reserved_username_rejected() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         let user = ScimUser {
             schemas: vec![SCHEMA_USER.into()],
             id: None,
@@ -381,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_provisioner_replace_user() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         let user = ScimUser {
             schemas: vec![SCHEMA_USER.into()],
             id: None,
@@ -415,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_provisioner_replace_nonexistent() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         let user = ScimUser {
             schemas: vec![SCHEMA_USER.into()],
             id: None,
@@ -435,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_provisioner_delete_user() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         let user = ScimUser {
             schemas: vec![SCHEMA_USER.into()],
             id: None,
@@ -458,14 +474,14 @@ mod tests {
 
     #[test]
     fn test_provisioner_delete_nonexistent() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         let err = provisioner.delete_user("no-such-id").unwrap_err();
         assert!(matches!(err, ProvisionError::UserNotFound(_)));
     }
 
     #[test]
     fn test_provisioner_list_users() {
-        let provisioner = Provisioner::new(ScimConfig::default());
+        let provisioner = Provisioner::new(test_config());
         assert!(provisioner.list_users().is_empty());
 
         let user1 = ScimUser {
