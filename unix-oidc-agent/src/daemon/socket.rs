@@ -42,7 +42,6 @@ const MAX_IPC_MESSAGE_SIZE: usize = 64 * 1024;
 /// See: docs/threat-model.md §7 Recommendation 6 (P2), mitigates T2.4.
 const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 
-#[cfg(test)]
 use crate::daemon::protocol::AgentResponseData;
 
 /// Acquire a `UnixListener` via the appropriate mechanism for the current environment.
@@ -1002,7 +1001,179 @@ async fn handle_request(
             let is_err = matches!(response, AgentResponse::Error { .. });
             (response, is_err)
         }
+
+        // RFC 8693 token exchange — exchange a subject token for a new token
+        // bound to this agent's DPoP key, targeting a different audience.
+        AgentRequest::ExchangeToken {
+            subject_token,
+            audience,
+            method,
+        } => {
+            let state_read = state.read().await;
+
+            info!(
+                audience = %audience,
+                method = %method,
+                "Token exchange requested"
+            );
+
+            // Need a signer to generate the DPoP proof for the token endpoint call.
+            let signer = match &state_read.signer {
+                Some(s) => Arc::clone(s),
+                None => {
+                    return (
+                        AgentResponse::error(
+                            "Not logged in — cannot sign exchange proof",
+                            "NOT_LOGGED_IN",
+                        ),
+                        true,
+                    );
+                }
+            };
+
+            // Discover or retrieve the token endpoint from OIDC issuer.
+            let issuer = match &state_read.oidc_issuer {
+                Some(iss) => iss.clone(),
+                None => {
+                    return (
+                        AgentResponse::error(
+                            "No OIDC issuer configured — cannot discover token endpoint",
+                            "NO_ISSUER",
+                        ),
+                        true,
+                    );
+                }
+            };
+
+            let client_id = state_read
+                .oidc_client_id
+                .as_deref()
+                .unwrap_or("unix-oidc")
+                .to_string();
+
+            // Security (MEM-03): expose_secret() at this HTTP config boundary only.
+            let client_secret: Option<String> = state_read
+                .oidc_client_secret
+                .as_ref()
+                .map(|s| s.expose_secret().to_string());
+
+            // Drop the read lock before making the async HTTP call to avoid
+            // holding the RwLock across an await point.
+            drop(state_read);
+
+            // Build the token endpoint URL using Keycloak convention.
+            // TODO: Use OIDC discovery (.well-known/openid-configuration) to find
+            // the token_endpoint. For now, use the Keycloak realm URL convention.
+            let token_endpoint = format!(
+                "{}/protocol/openid-connect/token",
+                issuer.trim_end_matches('/')
+            );
+
+            // Generate a DPoP proof bound to the token endpoint (POST method).
+            // The proof binds to the IdP token endpoint — not the target audience —
+            // because the HTTP request is to the IdP, not to the downstream service.
+            let dpop_proof = match signer.sign_proof("POST", &token_endpoint, None) {
+                Ok(proof) => proof,
+                Err(e) => {
+                    return (
+                        AgentResponse::error(
+                            format!("Failed to generate DPoP proof for exchange: {e}"),
+                            "DPOP_ERROR",
+                        ),
+                        true,
+                    );
+                }
+            };
+
+            match crate::exchange::perform_token_exchange(
+                &token_endpoint,
+                &subject_token,
+                &audience,
+                &client_id,
+                client_secret.as_deref(),
+                &dpop_proof,
+            )
+            .await
+            {
+                Ok(resp) => {
+                    // Best-effort decode of exchanged token claims for IPC metadata.
+                    // Validation is the PAM module's responsibility — this is informational.
+                    let (original_subject, delegation_depth) =
+                        extract_exchange_claims(&resp.access_token);
+
+                    info!(
+                        audience = %audience,
+                        original_subject = %original_subject,
+                        delegation_depth = delegation_depth,
+                        expires_in = resp.expires_in,
+                        "Token exchange completed"
+                    );
+
+                    (
+                        AgentResponse::Success(AgentResponseData::ExchangedProof {
+                            token: resp.access_token,
+                            dpop_proof,
+                            expires_in: resp.expires_in,
+                            original_subject,
+                            delegation_depth,
+                        }),
+                        false,
+                    )
+                }
+                Err(e) => {
+                    warn!(error = %e, audience = %audience, "Token exchange failed");
+                    (
+                        AgentResponse::error(
+                            format!("Token exchange failed: {e}"),
+                            "EXCHANGE_FAILED",
+                        ),
+                        true,
+                    )
+                }
+            }
+        },
     }
+}
+
+/// Extract subject and delegation depth from an exchanged token (best-effort decode).
+///
+/// Does NOT validate the token — that is the PAM module's responsibility.
+/// This is only for populating the IPC response metadata so the caller can
+/// log/display delegation chain information without a full validation round-trip.
+fn extract_exchange_claims(token: &str) -> (String, usize) {
+    use base64::Engine;
+
+    // JWT structure: header.payload.signature — we only need the payload.
+    let parts: Vec<&str> = token.splitn(3, '.').collect();
+    if parts.len() < 2 {
+        return ("unknown".into(), 0);
+    }
+
+    let payload = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]) {
+        Ok(b) => b,
+        Err(_) => return ("unknown".into(), 0),
+    };
+
+    let claims: serde_json::Value = match serde_json::from_slice(&payload) {
+        Ok(v) => v,
+        Err(_) => return ("unknown".into(), 0),
+    };
+
+    let sub = claims
+        .get("sub")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Count act chain depth (RFC 8693 §4.1 / draft-ietf-oauth-identity-chaining).
+    let mut depth: usize = 0;
+    let mut current = claims.get("act");
+    while let Some(act) = current {
+        depth += 1;
+        current = act.get("act");
+    }
+
+    (sub, depth)
 }
 
 /// Client for connecting to the agent
