@@ -145,6 +145,18 @@ pub enum ValidationError {
 
     #[error("Token missing required JTI claim - replay protection cannot be enforced")]
     MissingJti,
+
+    #[error("Token exchange not allowed: issuer has no delegation config")]
+    DelegationNotAllowed,
+
+    #[error("Unauthorized exchanger: {exchanger} not in allowed_exchangers list")]
+    UnauthorizedExchanger { exchanger: String },
+
+    #[error("Delegation depth {actual} exceeds max {max}")]
+    DelegationDepthExceeded { actual: usize, max: usize },
+
+    #[error("Exchanged token lifetime {actual_secs}s exceeds max {max_secs}s")]
+    ExchangedTokenLifetimeExceeded { actual_secs: u64, max_secs: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -488,6 +500,83 @@ impl TokenValidator {
     pub fn config(&self) -> &ValidationConfig {
         &self.config
     }
+}
+
+// ── RFC 8693 delegation validation (Phase 37) ───────────────────────────────
+
+/// Validate an `act` claim against delegation policy.
+///
+/// Checks:
+/// 1. The top-level actor (exchanger) is in `allowed_exchangers` — matched
+///    against `act.client_id` first, then `act.sub` as fallback.
+/// 2. The delegation depth does not exceed `max_depth`.
+///
+/// Does NOT validate inner actors individually — the IdP is trusted to have
+/// validated each hop during the exchange. We only enforce the policy boundary.
+///
+/// # References
+/// - RFC 8693 §4.1 (`act` claim)
+/// - ADR-005-alignment (DPoP token exchange design)
+pub fn validate_delegation(
+    act: &crate::oidc::token::ActClaim,
+    config: &crate::policy::config::DelegationConfig,
+) -> Result<(), ValidationError> {
+    // Check exchanger authorization: match client_id first, fall back to sub
+    let exchanger_id = act.client_id.as_deref().unwrap_or(&act.sub);
+    if !config.allowed_exchangers.iter().any(|e| e == exchanger_id) {
+        return Err(ValidationError::UnauthorizedExchanger {
+            exchanger: exchanger_id.to_string(),
+        });
+    }
+
+    // Check delegation depth
+    let mut depth: usize = 1;
+    let mut current = act.act.as_deref();
+    while let Some(inner) = current {
+        depth += 1;
+        current = inner.act.as_deref();
+    }
+    if depth > config.max_depth {
+        return Err(ValidationError::DelegationDepthExceeded {
+            actual: depth,
+            max: config.max_depth,
+        });
+    }
+
+    Ok(())
+}
+
+/// Wrapper that rejects `act` claims when no delegation config is present.
+///
+/// When `config` is `None`, any token with an `act` claim is rejected with
+/// `DelegationNotAllowed`. This enforces the security invariant: delegation
+/// must be explicitly enabled per-issuer.
+pub fn validate_delegation_optional(
+    act: &crate::oidc::token::ActClaim,
+    config: Option<&crate::policy::config::DelegationConfig>,
+) -> Result<(), ValidationError> {
+    match config {
+        Some(c) => validate_delegation(act, c),
+        None => Err(ValidationError::DelegationNotAllowed),
+    }
+}
+
+/// Validate the lifetime of an exchanged token against the delegation policy.
+///
+/// Exchanged tokens should be short-lived. If `exp - iat` exceeds the
+/// configured `exchanged_token_max_lifetime_secs`, the token is rejected.
+pub fn validate_exchanged_token_lifetime(
+    claims: &crate::oidc::token::TokenClaims,
+    config: &crate::policy::config::DelegationConfig,
+) -> Result<(), ValidationError> {
+    let lifetime = (claims.exp - claims.iat).max(0) as u64;
+    if lifetime > config.exchanged_token_max_lifetime_secs {
+        return Err(ValidationError::ExchangedTokenLifetimeExceeded {
+            actual_secs: lifetime,
+            max_secs: config.exchanged_token_max_lifetime_secs,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -917,5 +1006,161 @@ mod tests {
         let result = validator.validate(&token);
 
         assert!(result.is_ok());
+    }
+
+    // ── Phase 37: Delegation validation tests (RFC 8693 token exchange) ──────
+
+    mod delegation_tests {
+        use crate::oidc::token::ActClaim;
+        use crate::oidc::validation::{
+            validate_delegation, validate_delegation_optional,
+            validate_exchanged_token_lifetime, ValidationError,
+        };
+        use crate::policy::config::DelegationConfig;
+
+        fn test_config() -> DelegationConfig {
+            DelegationConfig {
+                allowed_exchangers: vec!["jump-host-a".into(), "jump-host-b".into()],
+                max_depth: 2,
+                exchanged_token_max_lifetime_secs: 300,
+            }
+        }
+
+        #[test]
+        fn test_validate_delegation_allowed_by_client_id() {
+            let config = test_config();
+            let act = ActClaim {
+                sub: "service-account-jump".into(),
+                client_id: Some("jump-host-a".into()),
+                act: None,
+            };
+            assert!(validate_delegation(&act, &config).is_ok());
+        }
+
+        #[test]
+        fn test_validate_delegation_allowed_by_sub_fallback() {
+            let config = test_config();
+            let act = ActClaim {
+                sub: "jump-host-b".into(),
+                client_id: None,
+                act: None,
+            };
+            assert!(validate_delegation(&act, &config).is_ok());
+        }
+
+        #[test]
+        fn test_validate_delegation_unauthorized_exchanger() {
+            let config = test_config();
+            let act = ActClaim {
+                sub: "evil-host".into(),
+                client_id: Some("evil-host".into()),
+                act: None,
+            };
+            let err = validate_delegation(&act, &config).unwrap_err();
+            assert!(matches!(err, ValidationError::UnauthorizedExchanger { .. }));
+        }
+
+        #[test]
+        fn test_validate_delegation_depth_within_limit() {
+            let config = test_config(); // max_depth: 2
+            let act = ActClaim {
+                sub: "jump-host-b".into(),
+                client_id: Some("jump-host-b".into()),
+                act: Some(Box::new(ActClaim {
+                    sub: "jump-host-a".into(),
+                    client_id: None,
+                    act: None,
+                })),
+            };
+            assert!(validate_delegation(&act, &config).is_ok());
+        }
+
+        #[test]
+        fn test_validate_delegation_depth_exceeded() {
+            let mut config = test_config();
+            config.max_depth = 1; // only single hop allowed
+            let act = ActClaim {
+                sub: "jump-host-b".into(),
+                client_id: Some("jump-host-b".into()),
+                act: Some(Box::new(ActClaim {
+                    sub: "jump-host-a".into(),
+                    client_id: None,
+                    act: None,
+                })),
+            };
+            let err = validate_delegation(&act, &config).unwrap_err();
+            assert!(matches!(err, ValidationError::DelegationDepthExceeded { actual: 2, max: 1 }));
+        }
+
+        #[test]
+        fn test_validate_delegation_no_config_rejects() {
+            let act = ActClaim {
+                sub: "any".into(),
+                client_id: None,
+                act: None,
+            };
+            let err = validate_delegation_optional(&act, None).unwrap_err();
+            assert!(matches!(err, ValidationError::DelegationNotAllowed));
+        }
+
+        #[test]
+        fn test_validate_delegation_with_config_passes_through() {
+            let config = test_config();
+            let act = ActClaim {
+                sub: "jump-host-a".into(),
+                client_id: Some("jump-host-a".into()),
+                act: None,
+            };
+            assert!(validate_delegation_optional(&act, Some(&config)).is_ok());
+        }
+
+        #[test]
+        fn test_validate_exchanged_token_lifetime_within_limit() {
+            let config = test_config(); // max 300s
+            let claims = crate::oidc::token::TokenClaims {
+                sub: "alice".into(),
+                preferred_username: Some("alice".into()),
+                iss: "https://idp.example.com".into(),
+                aud: crate::oidc::token::StringOrVec::String("unix-oidc".into()),
+                exp: 1_000_000_200, // 200s lifetime
+                iat: 1_000_000_000,
+                auth_time: None,
+                acr: None,
+                amr: None,
+                jti: None,
+                cnf: None,
+                act: None,
+                extra: Default::default(),
+            };
+            assert!(validate_exchanged_token_lifetime(&claims, &config).is_ok());
+        }
+
+        #[test]
+        fn test_validate_exchanged_token_lifetime_exceeded() {
+            let config = test_config(); // max 300s
+            let claims = crate::oidc::token::TokenClaims {
+                sub: "alice".into(),
+                preferred_username: Some("alice".into()),
+                iss: "https://idp.example.com".into(),
+                aud: crate::oidc::token::StringOrVec::String("unix-oidc".into()),
+                exp: 1_000_000_600, // 600s lifetime — exceeds 300s max
+                iat: 1_000_000_000,
+                auth_time: None,
+                acr: None,
+                amr: None,
+                jti: None,
+                cnf: None,
+                act: None,
+                extra: Default::default(),
+            };
+            let err = validate_exchanged_token_lifetime(&claims, &config).unwrap_err();
+            assert!(matches!(
+                err,
+                ValidationError::ExchangedTokenLifetimeExceeded {
+                    actual_secs: 600,
+                    max_secs: 300,
+                }
+            ));
+        }
     }
 }
