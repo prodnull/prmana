@@ -45,7 +45,11 @@ break_glass:
   enabled: true
   accounts:
     - breakglass       # Must exist as a local Unix account with password set
-  # requires: yubikey_otp  # Optional: require hardware token
+  # Require offline TOTP verification before granting break-glass bypass (Phase 36-02).
+  # When set to "yubikey_otp", the user is prompted for a 6-digit TOTP code verified
+  # against pre-enrolled seeds in /etc/unix-oidc/break-glass-otp.json (no network).
+  # Omit or set to null to allow break-glass without a hardware factor.
+  requires: yubikey_otp
   alert_on_use: true     # Log alert when break-glass access is used
 
 # Host classification affects default security requirements

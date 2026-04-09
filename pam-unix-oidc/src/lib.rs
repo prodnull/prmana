@@ -34,6 +34,7 @@ pub mod ciba;
 pub mod device_flow;
 pub mod identity;
 pub mod oidc;
+pub mod otp;
 pub mod policy;
 pub mod security;
 pub mod session;
@@ -208,6 +209,71 @@ impl PamServiceModule for PamUnixOidc {
         // is in the configured accounts list. Disabled break-glass config = normal OIDC flow.
         if let Ok(policy) = PolicyConfig::from_env() {
             if policy.break_glass.enabled && is_break_glass_user(&pam_user, &policy) {
+                // Phase 36-02: If `requires: yubikey_otp` is set, verify TOTP before bypass.
+                // This adds a hardware-bound factor to break-glass access without any network call.
+                if policy.break_glass.requires.as_deref() == Some("yubikey_otp") {
+                    let otp_path = std::path::Path::new(otp::DEFAULT_OTP_SEEDS_PATH);
+                    match otp::load_seeds(otp_path) {
+                        Ok(store) => {
+                            // Prompt for OTP code via PAM conversation.
+                            let code = match pamh
+                                .conv(Some("Break-glass OTP: "), PamMsgStyle::PROMPT_ECHO_OFF)
+                            {
+                                Ok(Some(c)) => c.to_string_lossy().to_string(),
+                                _ => {
+                                    tracing::warn!(
+                                        username = %pam_user,
+                                        "Break-glass OTP prompt failed or cancelled"
+                                    );
+                                    AuditEvent::ssh_login_failed(
+                                        Some(&pam_user),
+                                        source_ip,
+                                        "break-glass OTP prompt failed",
+                                    )
+                                    .log();
+                                    return PamError::AUTH_ERR;
+                                }
+                            };
+
+                            if let Err(e) = otp::verify_totp(&pam_user, code.trim(), &store) {
+                                tracing::warn!(
+                                    username = %pam_user,
+                                    error = %e,
+                                    "Break-glass OTP verification failed"
+                                );
+                                AuditEvent::ssh_login_failed(
+                                    Some(&pam_user),
+                                    source_ip,
+                                    &format!("break-glass OTP failed: {e}"),
+                                )
+                                .log();
+                                return PamError::AUTH_ERR;
+                            }
+
+                            tracing::info!(
+                                username = %pam_user,
+                                "Break-glass OTP verified — proceeding with bypass"
+                            );
+                        }
+                        Err(e) => {
+                            // OTP seeds not found — log and deny. Operator configured
+                            // yubikey_otp but didn't enroll seeds; fail closed.
+                            tracing::error!(
+                                username = %pam_user,
+                                error = %e,
+                                "Break-glass requires yubikey_otp but seed file is unavailable"
+                            );
+                            AuditEvent::ssh_login_failed(
+                                Some(&pam_user),
+                                source_ip,
+                                &format!("break-glass OTP seed unavailable: {e}"),
+                            )
+                            .log();
+                            return PamError::AUTH_ERR;
+                        }
+                    }
+                }
+
                 // Audit event — severity depends on alert_on_use policy flag (SBUG-02).
                 // When alert_on_use=true (default), severity is CRITICAL so SIEM alerting fires.
                 // When alert_on_use=false, severity is INFO (routine / non-alerting use).
