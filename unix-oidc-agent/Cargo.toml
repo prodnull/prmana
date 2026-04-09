@@ -9,6 +9,10 @@ description = "OIDC authentication agent with DPoP support"
 name = "unix-oidc-agent"
 path = "src/main.rs"
 
+[[bin]]
+name = "unix-oidc-jti-helper"
+path = "src/bin/unix-oidc-jti-helper.rs"
+
 [dependencies]
 # Crypto
 # Note: p256 0.13 does NOT have a `zeroize` feature flag — ZeroizeOnDrop is
