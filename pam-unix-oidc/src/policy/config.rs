@@ -137,7 +137,9 @@ impl<'de> serde::de::Deserialize<'de> for EnforcementMode {
 #[derive(Debug, Clone, Serialize)]
 #[serde(default)]
 pub struct AcrConfig {
-    /// How strictly to enforce the ACR claim. Default: `warn` (log and allow).
+    /// How strictly to enforce ACR *presence* (whether the token has any `acr`
+    /// claim at all). Default: `Warn` — log if absent but allow authentication.
+    /// This does NOT control `required_acr` behavior, which is always hard-fail.
     pub enforcement: EnforcementMode,
     /// Minimum required ACR level string, e.g. `"urn:example:acr:mfa"`. Default: `None`.
     pub minimum_level: Option<String>,
@@ -293,26 +295,22 @@ pub struct AcrMappingConfig {
     /// Map of IdP-specific ACR value → normalized ACR value.
     /// E.g. `{"urn:idp:mfa": "urn:unix-oidc:acr:mfa"}`.
     pub mappings: HashMap<String, String>,
-    /// How to enforce ACR requirements. Default: `warn`.
+    /// How to enforce ACR *presence* on tokens from this issuer. Default: `Warn`
+    /// — log if absent but allow. This does NOT control `required_acr` behavior.
     pub enforcement: EnforcementMode,
     /// The ACR value the operator requires tokens to have (after mapping).
     /// When set, tokens must carry an `acr` claim matching this value
     /// (or an IdP-specific value that maps to it via `mappings`).
-    /// Tokens without a matching `acr` claim are rejected when enforcement is strict/warn.
+    /// **Hard-fail**: tokens without a matching `acr` are always rejected (ADR-012).
     pub required_acr: Option<String>,
 }
 
-/// Source of truth for group membership resolution (MIDP-04).
+/// Source of truth for group membership resolution (MIDP-04, ADR-008).
 ///
-/// - `nss_only`    — resolve groups from NSS/SSSD only (default, most secure)
-/// - `token_claim` — resolve groups from an OIDC token claim (requires `GroupMappingConfig.claim`)
-///
-/// NSS-based resolution is recommended as it uses the Unix realm authority
-/// (FreeIPA/LDAP) rather than IdP-controlled claims, which avoids claim
-/// overage issues (>200 Entra groups) and GUID-vs-name inconsistencies.
-///
-/// Previously included a `TokenClaim` variant, removed in DEBT-03 (Phase 26):
-/// groups are always resolved from SSSD/NSS, never from token claims.
+/// Only `NssOnly` is supported. Groups are always resolved from NSS/SSSD
+/// (FreeIPA/LDAP), never from OIDC token claims. A `TokenClaim` variant
+/// existed prior to DEBT-03 (Phase 26) and was removed — deserializing
+/// `"token_claim"` is a hard error.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupSource {
@@ -327,8 +325,8 @@ pub enum GroupSource {
 pub struct GroupMappingConfig {
     /// Source for group membership. Default: `nss_only`.
     pub source: GroupSource,
-    /// Token claim containing group names. Reserved for future use;
-    /// currently only `NssOnly` source is supported. Default: `"groups"`.
+    /// Token claim name used for audit enrichment only (see `TokenClaims::groups_for_audit`).
+    /// Group authorization always uses NSS/SSSD (ADR-008). Default: `"groups"`.
     #[serde(default = "GroupMappingConfig::default_claim")]
     pub claim: String,
     /// Map of IdP group name → local NSS group name.
@@ -391,7 +389,8 @@ pub struct IssuerConfig {
     /// Username claim extraction and transform pipeline for this issuer.
     /// Default: `IdentityConfig::default()` (uses `preferred_username`, no transforms).
     pub claim_mapping: IdentityConfig,
-    /// ACR claim mapping for this issuer. Default: `None` (no mapping, WARN logged).
+    /// ACR claim mapping for this issuer. Default: `None` (no mapping).
+    /// When `required_acr` is set within, mismatched tokens are hard-rejected (ADR-012).
     pub acr_mapping: Option<AcrMappingConfig>,
     /// Group membership mapping for this issuer. Default: `None` (NSS-only, WARN logged).
     pub group_mapping: Option<GroupMappingConfig>,
@@ -1456,7 +1455,10 @@ impl PolicyConfig {
         Self::load()
     }
 
-    /// Load policy with hot-reload support (MIDP-11).
+    /// Load policy with hot-reload support (MIDP-11, ADR-009).
+    ///
+    /// Applies to the file-backed multi-issuer policy path only. The legacy
+    /// single-issuer env-based path (`from_env()`) does not support hot-reload.
     ///
     /// On each call, stats the policy file. If the file mtime has changed since
     /// the last successful load, the file is re-parsed and the cache updated.
