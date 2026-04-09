@@ -1,9 +1,16 @@
 //! Hardware attestation verification for DPoP proofs (ADR-018).
 //!
 //! Verifies TPM key attestation evidence embedded in the DPoP proof JWT header.
-//! Phase 37 implements structural verification — well-formedness and AK signature
-//! check. Deep TPMS_ATTEST parsing (extracting key Name and matching to JWK) is
-//! deferred to a future phase.
+//! Phase 37 implements structural validation only — base64url decoding,
+//! field presence, ECDSA signature length (64 bytes for P-256 r||s), and
+//! TPMS_ATTEST minimum size (~40 bytes). No cryptographic verification is
+//! performed at this phase.
+//!
+//! Deferred to Phase 38+:
+//! - AK ECDSA signature verification over certify_info
+//! - TPMS_ATTEST parsing to extract certified key Name
+//! - Name matching against DPoP JWK thumbprint
+//! - EK certificate chain verification
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
