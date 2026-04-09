@@ -272,9 +272,44 @@ pub fn global_jti_cache() -> &'static JtiCache {
 ///
 /// Override the backing directory with `UNIX_OIDC_JTI_DIR` for testing.
 pub fn global_jti_store() -> &'static FsAtomicStore {
+    // In test builds, ensure the tempdir env var is set BEFORE the Lazy
+    // evaluates. Without this, a parallel test that calls global_jti_store()
+    // before setup_test_jti_dir() would initialize the Lazy with the default
+    // /run/unix-oidc/jti (which doesn't exist on dev machines), causing all
+    // subsequent JTI checks to fail with ReplayDetected.
+    // Uses `feature = "test-mode"` (not `#[cfg(test)]`) so integration tests
+    // in the `tests/` directory also get the tempdir redirect.
+    #[cfg(any(test, feature = "test-mode"))]
+    setup_test_jti_dir();
+
     static STORE: Lazy<FsAtomicStore> =
         Lazy::new(|| FsAtomicStore::new("/run/unix-oidc/jti", "UNIX_OIDC_JTI_DIR"));
     &STORE
+}
+
+/// Ensure `UNIX_OIDC_JTI_DIR` points to a per-process tempdir before the
+/// `Lazy<FsAtomicStore>` in `global_jti_store()` is first accessed.
+///
+/// All test modules (auth, dpop, etc.) MUST call this single function
+/// instead of setting `UNIX_OIDC_JTI_DIR` independently. The `Lazy` reads
+/// the env var exactly once — if two test modules race to set different
+/// tempdirs, the `Lazy` captures whichever wins, and the other module's
+/// JTIs land in the wrong directory causing spurious `ReplayDetected`.
+///
+/// This function uses a process-global `OnceLock` so the tempdir is created
+/// exactly once and shared by all test modules.
+#[cfg(any(test, feature = "test-mode"))]
+pub fn setup_test_jti_dir() {
+    use std::sync::OnceLock;
+    static TEST_JTI_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    TEST_JTI_DIR.get_or_init(|| {
+        // Use a process-unique subdirectory under the system temp dir.
+        // Avoids depending on the `tempfile` crate outside dev-dependencies.
+        let dir = std::env::temp_dir().join(format!("unix-oidc-jti-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create JTI test tempdir");
+        std::env::set_var("UNIX_OIDC_JTI_DIR", &dir);
+        dir
+    });
 }
 
 /// Check-and-record a JTI with filesystem-based cross-fork replay protection.

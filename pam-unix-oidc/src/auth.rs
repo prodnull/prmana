@@ -1184,18 +1184,10 @@ mod tests {
     use crate::security::nonce_cache::{generate_dpop_nonce, DPoPNonceCache};
 
     // Redirect the filesystem JTI store to a per-process tempdir.
-    // `global_jti_store()` is a Lazy initialised on first access; setting
-    // UNIX_OIDC_JTI_DIR before that first access points it at a writable
-    // tempdir instead of /run/unix-oidc/jti (unwritable in CI / dev).
-    static AUTH_TEST_JTI_DIR: std::sync::OnceLock<tempfile::TempDir> =
-        std::sync::OnceLock::new();
-
+    // Uses the shared setup from jti_cache.rs so all test modules point at the
+    // same tempdir — prevents spurious ReplayDetected from parallel tests.
     fn setup_jti_dir() {
-        AUTH_TEST_JTI_DIR.get_or_init(|| {
-            let tmp = tempfile::tempdir().expect("tempdir for JTI store");
-            std::env::set_var("UNIX_OIDC_JTI_DIR", tmp.path());
-            tmp
-        });
+        crate::security::jti_cache::setup_test_jti_dir();
     }
 
     fn make_test_proof_with_nonce(target: &str, nonce: Option<&str>) -> (String, String) {
@@ -1543,7 +1535,14 @@ timeouts:
             .unwrap_or_default()
             .as_secs();
         let exp = now + 3600;
-        let jti_field = jti.map(|j| format!(r#","jti":"{j}""#)).unwrap_or_default();
+        // Always generate a unique JTI to prevent cross-test ReplayDetected.
+        // The filesystem JTI store persists across parallel tests in the same
+        // process — hardcoded JTIs collide when tests run more than once.
+        let unique_jti = match jti {
+            Some(prefix) => format!("{prefix}-{}", uuid::Uuid::new_v4()),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        let jti_field = format!(r#","jti":"{unique_jti}""#);
         let payload = format!(
             r#"{{"iss":"{iss}","sub":"{sub}","aud":"unix-oidc","exp":{exp},"iat":{now},"preferred_username":"{preferred_username}"{jti_field}}}"#
         );

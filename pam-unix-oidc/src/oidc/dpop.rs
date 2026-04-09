@@ -483,23 +483,14 @@ mod tests {
 
     // ── Test isolation for filesystem JTI store ───────────────────────────────
     //
-    // `global_jti_store()` is a `Lazy<FsAtomicStore>` that reads
-    // `UNIX_OIDC_JTI_DIR` at first access. Tests must redirect it to a
-    // per-process tempdir before any test calls `validate_dpop_proof`.
-    //
-    // `SETUP` is a `OnceLock<tempfile::TempDir>` so the tempdir stays alive
-    // for the lifetime of the test binary and the Lazy is only initialised once.
-    static SETUP: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    // All test modules must use the shared `setup_test_jti_dir()` from
+    // `jti_cache.rs` to avoid racing on `UNIX_OIDC_JTI_DIR`. The Lazy
+    // reads the env var exactly once — independent OnceLock per module
+    // caused spurious `ReplayDetected` when tests ran in parallel.
+    use crate::security::jti_cache::setup_test_jti_dir;
 
     fn setup_jti_dir() {
-        SETUP.get_or_init(|| {
-            let tmp = tempfile::tempdir().expect("tempdir for JTI store");
-            // Set UNIX_OIDC_JTI_DIR before `global_jti_store()` is first accessed.
-            // Safety: tests in the same binary share the env; this is idempotent
-            // because OnceLock guarantees the closure runs exactly once.
-            std::env::set_var("UNIX_OIDC_JTI_DIR", tmp.path());
-            tmp
-        });
+        setup_test_jti_dir();
     }
 
     // Helper to create a test proof.
