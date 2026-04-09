@@ -32,6 +32,23 @@
 //! requires exactly 64 bytes (32 for r, 32 for s). `pad_to_32()` left-pads each
 //! component to exactly 32 bytes before concatenation.
 
+/// TPM key attestation evidence produced by `TPM2_CC_Certify`.
+///
+/// Proves that the DPoP signing key was created by and is resident in
+/// a specific TPM. The PAM module verifies this evidence to enforce
+/// hardware-bound key requirements (ADR-018).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AttestationEvidence {
+    /// TPMS_ATTEST structure (base64url-encoded, no padding).
+    /// Contains TPMS_CERTIFY_INFO with the certified key's Name.
+    pub certify_info: String,
+    /// ECDSA signature over certify_info by the Attestation Key (base64url-encoded).
+    pub signature: String,
+    /// Public area of the transient Attestation Key (base64url-encoded).
+    /// Needed by the verifier to check the signature.
+    pub ak_public: String,
+}
+
 // ── Platform-independent helper (no tss-esapi dependency) ───────────────────
 
 /// Left-pad a P-256 scalar byte slice to exactly 32 bytes.
@@ -78,10 +95,11 @@ mod linux_impl {
             resource_handles::{Hierarchy, Provision},
         },
         structures::{
-            CreatePrimaryKeyResult, Digest as TpmDigest, EccScheme, HashScheme, Public,
-            PublicBuilder, PublicEccParametersBuilder, SignatureScheme,
+            Attest, CreatePrimaryKeyResult, Data, Digest as TpmDigest, EccScheme, HashScheme,
+            Public, PublicBuilder, PublicEccParametersBuilder, SignatureScheme,
         },
         tcti_ldr::{DeviceConfig, NetworkTPMConfig, TabrmdConfig, TctiNameConf},
+        traits::Marshall,
         Context,
     };
 
@@ -317,6 +335,101 @@ mod linux_impl {
                 tcti_conf: tcti,
                 thumbprint,
                 public_key_jwk: jwk,
+            })
+        }
+    }
+
+    impl TpmSigner {
+        /// Produce attestation evidence for this signing key via TPM2_CC_Certify.
+        ///
+        /// Creates a transient Attestation Key (AK) under the Endorsement Hierarchy,
+        /// certifies the persistent signing key, and returns the evidence.
+        ///
+        /// The AK is ephemeral — it's created, used for certification, and dropped.
+        ///
+        /// # Security
+        ///
+        /// The certify_info contains the signing key's `Name` — a hash of its
+        /// public area. The PAM module computes the expected Name from the DPoP
+        /// proof's JWK and verifies it matches. This proves the DPoP key is
+        /// TPM-resident without trusting client software.
+        ///
+        /// # Errors
+        ///
+        /// Returns error if the TPM is unreachable or certification fails.
+        pub fn certify(&self) -> anyhow::Result<super::AttestationEvidence> {
+            let tcti_conf = parse_tcti(&self.tcti_conf)?;
+            let mut ctx = Context::new(tcti_conf)
+                .map_err(|e| TpmSignerError::TpmNotAvailable(e.to_string()))?;
+
+            // Load the persistent signing key (returns ObjectHandle).
+            let persistent_tpm_handle = PersistentTpmHandle::new(self.persistent_handle)
+                .context("Invalid persistent handle for certify")?;
+            let signing_key_handle = ctx
+                .tr_from_tpm_public(TpmHandle::Persistent(persistent_tpm_handle))
+                .context("Failed to load persistent key for certification")?;
+
+            // Create a transient AK under the Endorsement Hierarchy.
+            // Same P-256 key template as the signing key — we just need any key
+            // that can sign the TPMS_ATTEST structure.
+            let ak_template = build_p256_key_public()?;
+            let CreatePrimaryKeyResult {
+                key_handle: ak_handle,
+                out_public: ak_public,
+                ..
+            } = ctx
+                .execute_with_nullauth_session(|ctx| {
+                    ctx.create_primary(Hierarchy::Endorsement, ak_template, None, None, None, None)
+                })
+                .context("Failed to create attestation key under Endorsement hierarchy")?;
+
+            // Certify the signing key using the AK.
+            // SignatureScheme::Null tells the TPM to use the AK's default scheme (ECDSA-SHA256).
+            let qualifying_data = Data::default();
+            let (attest, sig) = ctx
+                .execute_with_nullauth_session(|ctx| {
+                    ctx.certify(
+                        signing_key_handle,
+                        ak_handle,
+                        qualifying_data,
+                        SignatureScheme::Null,
+                    )
+                })
+                .context("TPM2_CC_Certify failed")?;
+
+            // Serialize TPMS_ATTEST via Marshall trait.
+            let attest_bytes = attest.marshall().context("Failed to marshall TPMS_ATTEST")?;
+            let certify_info = URL_SAFE_NO_PAD.encode(&attest_bytes);
+
+            // Serialize AK signature (r||s, padded to 64 bytes).
+            let sig_bytes = match sig {
+                tss_esapi::structures::Signature::EcDsa(ecc_sig) => {
+                    let r = pad_to_32(ecc_sig.signature_r().value())
+                        .map_err(|e| anyhow::anyhow!("Attestation sig r: {e}"))?;
+                    let s = pad_to_32(ecc_sig.signature_s().value())
+                        .map_err(|e| anyhow::anyhow!("Attestation sig s: {e}"))?;
+                    let mut out = [0u8; 64];
+                    out[..32].copy_from_slice(&r);
+                    out[32..].copy_from_slice(&s);
+                    out.to_vec()
+                }
+                other => bail!("Expected EcDsa attestation signature, got {other:?}"),
+            };
+            let signature = URL_SAFE_NO_PAD.encode(&sig_bytes);
+
+            // Serialize AK public area via Marshall trait.
+            let ak_public_bytes = ak_public
+                .marshall()
+                .context("Failed to marshall AK public area")?;
+            let ak_public_b64 = URL_SAFE_NO_PAD.encode(&ak_public_bytes);
+
+            // Flush the transient AK (it was only needed for this certification).
+            let _ = ctx.flush_context(ak_handle.into());
+
+            Ok(super::AttestationEvidence {
+                certify_info,
+                signature,
+                ak_public: ak_public_b64,
             })
         }
     }
@@ -658,6 +771,65 @@ mod linux_impl {
             let parts: Vec<&str> = proof.split('.').collect();
             assert_eq!(parts.len(), 3, "JWT must have 3 parts");
         }
+
+        #[test]
+        #[ignore = "Requires TPM 2.0 or swtpm (set UNIX_OIDC_TPM_TCTI=swtpm for CI)"]
+        fn test_certify_returns_attestation_evidence() {
+            let config = test_config();
+            let signer = TpmSigner::provision(&config).unwrap();
+            let evidence = signer.certify().unwrap();
+
+            // All fields must be non-empty base64url strings.
+            assert!(
+                !evidence.certify_info.is_empty(),
+                "certify_info must not be empty"
+            );
+            assert!(
+                !evidence.signature.is_empty(),
+                "signature must not be empty"
+            );
+            assert!(
+                !evidence.ak_public.is_empty(),
+                "ak_public must not be empty"
+            );
+
+            // Verify base64url decodes successfully.
+            let certify_bytes = URL_SAFE_NO_PAD
+                .decode(&evidence.certify_info)
+                .expect("certify_info must be valid base64url");
+            assert!(
+                certify_bytes.len() > 64,
+                "TPMS_ATTEST should be > 64 bytes, got {}",
+                certify_bytes.len()
+            );
+
+            let sig_bytes = URL_SAFE_NO_PAD
+                .decode(&evidence.signature)
+                .expect("signature must be valid base64url");
+            assert_eq!(
+                sig_bytes.len(),
+                64,
+                "ECDSA P-256 signature should be 64 bytes (r||s)"
+            );
+        }
+
+        #[test]
+        #[ignore = "Requires TPM 2.0 or swtpm (set UNIX_OIDC_TPM_TCTI=swtpm for CI)"]
+        fn test_certify_evidence_serializes_to_json() {
+            let config = test_config();
+            let signer = TpmSigner::provision(&config).unwrap();
+            let evidence = signer.certify().unwrap();
+
+            let json = serde_json::to_string(&evidence).unwrap();
+            assert!(json.contains("certify_info"));
+            assert!(json.contains("signature"));
+            assert!(json.contains("ak_public"));
+
+            // Round-trip.
+            let parsed: super::super::AttestationEvidence = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.certify_info, evidence.certify_info);
+            assert_eq!(parsed.signature, evidence.signature);
+        }
     }
 }
 
@@ -717,5 +889,20 @@ mod tests {
             msg.contains("33 bytes"),
             "error must include actual length: {msg}"
         );
+    }
+
+    /// AttestationEvidence round-trips through JSON without data loss.
+    #[test]
+    fn test_attestation_evidence_serde_roundtrip() {
+        let evidence = AttestationEvidence {
+            certify_info: "dGVzdC1jZXJ0aWZ5LWluZm8".into(),
+            signature: "dGVzdC1zaWduYXR1cmU".into(),
+            ak_public: "dGVzdC1hay1wdWJsaWM".into(),
+        };
+        let json = serde_json::to_string(&evidence).unwrap();
+        let parsed: AttestationEvidence = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.certify_info, evidence.certify_info);
+        assert_eq!(parsed.signature, evidence.signature);
+        assert_eq!(parsed.ak_public, evidence.ak_public);
     }
 }
