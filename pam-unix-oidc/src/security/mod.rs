@@ -15,6 +15,9 @@ pub mod session;
 
 pub use fs_store::{AtomicRecordResult, FsAtomicStore};
 pub use jti_cache::JtiCache;
-pub use nonce_cache::{generate_dpop_nonce, global_nonce_cache, DPoPNonceCache, NonceConsumeError};
+pub use nonce_cache::{
+    consume_nonce_fs, generate_dpop_nonce, global_nonce_cache, global_nonce_store, issue_nonce_fs,
+    DPoPNonceCache, NonceConsumeError,
+};
 pub use rate_limit::{RateLimitError, RateLimiter};
 pub use session::generate_secure_session_id;

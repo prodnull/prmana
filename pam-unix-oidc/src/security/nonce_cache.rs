@@ -18,12 +18,16 @@
 //!   replay check is inherently atomic: either the key is present (consumed) or
 //!   not — there is no secret being compared, only a random server-issued token.
 //!   The security property is single-use, not confidentiality of the nonce value.
+//! - Cross-fork single-use enforcement via `FsAtomicStore` (Phase 30, D-08/D-09).
+//!   Filesystem fallback to moka with WARN log if the tmpfiles directory is absent.
 //!
 //! ## References
 //!
 //! - RFC 9449 §8: DPoP Nonce
 //! - moka docs: https://docs.rs/moka/latest/moka/sync/struct.Cache.html
+//! - POSIX open(2): O_CREAT|O_EXCL atomicity guarantee
 
+use crate::security::fs_store::{AtomicRecordResult, FsAtomicStore};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use once_cell::sync::Lazy;
 use std::time::Duration;
@@ -165,6 +169,95 @@ pub fn generate_dpop_nonce() -> Result<String, getrandom::Error> {
 pub fn global_nonce_cache() -> &'static DPoPNonceCache {
     static CACHE: Lazy<DPoPNonceCache> = Lazy::new(|| DPoPNonceCache::new(100_000, 60));
     &CACHE
+}
+
+// ── Filesystem-backed nonce store (Phase 30, D-08/D-09/D-11) ─────────────────
+
+/// Global filesystem-based nonce store for cross-fork single-use enforcement.
+///
+/// Uses `O_CREAT | O_EXCL` semantics for issue and `remove_file()` for consume
+/// so that exactly one `sshd` worker process can consume a given nonce even
+/// under concurrent load. Directory: `/run/unix-oidc/nonce/`.
+///
+/// Override with `UNIX_OIDC_NONCE_DIR` for testing.
+pub fn global_nonce_store() -> &'static FsAtomicStore {
+    static STORE: Lazy<FsAtomicStore> =
+        Lazy::new(|| FsAtomicStore::new("/run/unix-oidc/nonce", "UNIX_OIDC_NONCE_DIR"));
+    &STORE
+}
+
+/// Issue a nonce via the filesystem store for cross-fork single-use enforcement.
+///
+/// Per D-08: the nonce file is created with `O_CREAT | O_EXCL`. The scope is
+/// `"nonce"` — nonces are server-generated values and do not need issuer
+/// scoping.
+///
+/// Falls back to the moka in-process cache with a `WARN` log if the filesystem
+/// store is unavailable. Unlike JTI enforcement, nonce issue failure is not
+/// a hard-fail: the nonce is not a cross-issuer replay vector and the fallback
+/// preserves the single-use guarantee within the process (D-13: DoS protection).
+///
+/// # Errors
+///
+/// Returns `NonceIssueError::EmptyNonce` if `nonce` is the empty string.
+pub fn issue_nonce_fs(nonce: &str, ttl_seconds: u64) -> Result<(), NonceIssueError> {
+    if nonce.is_empty() {
+        return Err(NonceIssueError::EmptyNonce);
+    }
+
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_add(ttl_seconds);
+
+    let store = global_nonce_store();
+
+    match store.check_and_record("nonce", nonce, expires_at) {
+        AtomicRecordResult::New => Ok(()),
+        // Extremely unlikely for a CSPRNG nonce; treat as already issued (idempotent).
+        AtomicRecordResult::AlreadyExists => Ok(()),
+        AtomicRecordResult::IoError(e) => {
+            tracing::warn!(
+                error = %e,
+                "Nonce filesystem store unavailable — falling back to in-process moka cache"
+            );
+            global_nonce_cache().issue(nonce)
+        }
+    }
+}
+
+/// Consume a nonce via the filesystem store (atomic unlink per D-08).
+///
+/// Returns `Ok(())` on first consumption. Any subsequent call with the same
+/// nonce (or a nonce that was never issued) returns `Err(ConsumedOrExpired)`.
+///
+/// Falls back to the moka in-process cache with a `WARN` log if the filesystem
+/// store is unavailable.
+///
+/// # Errors
+///
+/// - `NonceConsumeError::EmptyNonce` — nonce is the empty string.
+/// - `NonceConsumeError::ConsumedOrExpired` — nonce already consumed, expired,
+///   or never issued.
+pub fn consume_nonce_fs(nonce: &str) -> Result<(), NonceConsumeError> {
+    if nonce.is_empty() {
+        return Err(NonceConsumeError::EmptyNonce);
+    }
+
+    let store = global_nonce_store();
+
+    match store.consume("nonce", nonce) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(NonceConsumeError::ConsumedOrExpired),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Nonce filesystem store unavailable — falling back to in-process moka cache"
+            );
+            global_nonce_cache().consume(nonce)
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

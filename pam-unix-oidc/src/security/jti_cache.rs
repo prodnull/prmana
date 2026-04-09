@@ -295,11 +295,10 @@ pub fn global_jti_store() -> &'static FsAtomicStore {
 ///
 /// # Arguments
 ///
-/// * `jti`         – The JWT ID claim value (may be `None` if the token omits it).
-/// * `issuer`      – The token's `iss` claim. Used as the cross-issuer isolation
-///                   scope (D-02): two issuers sharing a JTI value hash to
-///                   different filenames.
-/// * `username`    – The authenticating username (for logging and the fallback cache).
+/// * `jti` – The JWT ID claim value (may be `None` if the token omits it).
+/// * `issuer` – The token's `iss` claim. Used as the cross-issuer isolation
+///   scope (D-02): two issuers sharing a JTI value hash to different filenames.
+/// * `username` – The authenticating username (for logging and the fallback cache).
 /// * `ttl_seconds` – How long to remember this JTI (should match token lifetime).
 /// * `enforcement` – Enforcement mode from `SecurityModes.jti_enforcement`.
 pub fn check_and_record_fs(

@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::audit::AuditEvent;
 use crate::device_flow::{DeviceFlowClient, DeviceFlowError, TokenResponse};
 use crate::oidc::{TokenValidator, ValidationConfig, ValidationError};
+use crate::policy::config::SecurityModes;
 use crate::policy::{PolicyConfig, PolicyRules, StepUpMethod, SudoStepUpRequirements};
 use crate::sssd::groups::{check_group_policy, GroupPolicyError};
 use crate::sssd::{get_user_info, UserError};
@@ -164,8 +165,9 @@ pub fn authenticate_sudo(
     log_step_up_initiated(ctx, &requirements);
 
     // Perform step-up authentication
+    let security_modes = policy.effective_security_modes();
     let start = std::time::Instant::now();
-    let result = match perform_step_up(ctx, &requirements, display) {
+    let result = match perform_step_up(ctx, &requirements, display, &security_modes) {
         Ok(r) => r,
         Err(e) => {
             // Log failure
@@ -194,16 +196,29 @@ fn perform_step_up(
     ctx: &SudoContext,
     requirements: &SudoStepUpRequirements,
     _display: &dyn StepUpDisplay,
+    security_modes: &SecurityModes,
 ) -> Result<StepUpResult, SudoError> {
     // Prefer Push/Fido2 (CIBA) when available — lower friction than device flow.
     if requirements.allowed_methods.contains(&StepUpMethod::Push) {
         let socket_path = agent_socket_path();
-        return perform_step_up_via_ipc(ctx, requirements, &socket_path, StepUpMethod::Push);
+        return perform_step_up_via_ipc(
+            ctx,
+            requirements,
+            &socket_path,
+            StepUpMethod::Push,
+            security_modes,
+        );
     }
 
     if requirements.allowed_methods.contains(&StepUpMethod::Fido2) {
         let socket_path = agent_socket_path();
-        return perform_step_up_via_ipc(ctx, requirements, &socket_path, StepUpMethod::Fido2);
+        return perform_step_up_via_ipc(
+            ctx,
+            requirements,
+            &socket_path,
+            StepUpMethod::Fido2,
+            security_modes,
+        );
     }
 
     if !requirements
@@ -245,6 +260,7 @@ pub(crate) fn perform_step_up_via_ipc(
     requirements: &SudoStepUpRequirements,
     socket_path: &str,
     method: StepUpMethod,
+    security_modes: &SecurityModes,
 ) -> Result<StepUpResult, SudoError> {
     let method_str = match method {
         StepUpMethod::Push => "push",
@@ -369,8 +385,90 @@ pub(crate) fn perform_step_up_via_ipc(
 
         // Distinguish response type by presence of unique fields.
         if response.get("session_id").is_some() {
-            // StepUpComplete: { acr, session_id }
-            let acr = response["acr"].as_str().map(str::to_string);
+            // StepUpComplete: { acr, session_id, id_token? }
+            //
+            // Phase 30 (D-14 through D-16): validate the CIBA ID token via
+            // TokenValidator before extracting the ACR claim. This eliminates
+            // the unverified base64-decode path that was vulnerable to a
+            // compromised agent injecting arbitrary ACR values (T-30-11).
+            let id_token = response.get("id_token").and_then(|v| v.as_str());
+            let require_id_token = security_modes.step_up_require_id_token;
+
+            let acr = match (id_token, require_id_token) {
+                (Some(token_str), _) => {
+                    // D-14: Validate using existing TokenValidator infrastructure.
+                    // Build ValidationConfig from environment (same pattern as
+                    // perform_device_flow_step_up — reads OIDC_ISSUER / OIDC_CLIENT_ID).
+                    let issuer = std::env::var("OIDC_ISSUER").map_err(|_| {
+                        SudoError::Config("OIDC_ISSUER not set (required for CIBA ID token validation)".to_string())
+                    })?;
+                    let client_id = std::env::var("OIDC_CLIENT_ID")
+                        .unwrap_or_else(|_| "unix-oidc".to_string());
+
+                    let validation_config = ValidationConfig {
+                        issuer,
+                        client_id,
+                        required_acr: None, // ACR check happens after extraction
+                        max_auth_age: None,
+                        jti_enforcement: crate::policy::config::EnforcementMode::Warn,
+                        clock_skew_tolerance_secs: 60,
+                        allowed_algorithms: None,
+                    };
+
+                    #[cfg(feature = "test-mode")]
+                    let validator = {
+                        if is_test_mode_enabled() {
+                            TokenValidator::new_insecure_for_testing(validation_config)
+                        } else {
+                            TokenValidator::new(validation_config)
+                        }
+                    };
+                    #[cfg(not(feature = "test-mode"))]
+                    let validator = TokenValidator::new(validation_config);
+
+                    // D-14: validate signature; D-15: extract ACR only after verification
+                    let claims = validator.validate(token_str).map_err(|e| {
+                        tracing::error!(
+                            error = %e,
+                            "CIBA step-up: ID token validation failed"
+                        );
+                        SudoError::StepUp(format!("CIBA ID token validation failed: {e}"))
+                    })?;
+
+                    // D-15: ACR extracted ONLY after signature verification
+                    claims.acr
+                }
+                (None, true) => {
+                    // D-16: missing ID token when step_up_require_id_token=true — hard-fail
+                    tracing::error!(
+                        "CIBA step-up: id_token absent in agent response, \
+                         step_up_require_id_token=true — hard-failing"
+                    );
+                    emit_ciba_syslog_crit(
+                        "unix-oidc: CIBA step-up failed - id_token required but not \
+                         received from agent; set step_up_require_id_token=false to \
+                         allow unverified ACR fallback (not recommended)"
+                    );
+                    return Err(SudoError::StepUp(
+                        "Step-up ID token required but not received from agent".to_string(),
+                    ));
+                }
+                (None, false) => {
+                    // D-16 permissive: fall back to deprecated agent-asserted ACR.
+                    // LOG_CRIT so the degradation is SIEM-visible.
+                    tracing::error!(
+                        "CIBA step-up: id_token absent, falling back to agent-asserted ACR \
+                         (step_up_require_id_token=false) — LOG_CRIT emitted to syslog"
+                    );
+                    emit_ciba_syslog_crit(
+                        "unix-oidc: CIBA step-up using unverified agent-asserted ACR — \
+                         set step_up_require_id_token=true to enforce cryptographic \
+                         verification (D-16)"
+                    );
+                    response.get("acr").and_then(|v| v.as_str()).map(str::to_string)
+                }
+            };
+
             return Ok(StepUpResult {
                 acr,
                 jti: None, // CIBA does not produce a JTI at the PAM layer.
@@ -389,6 +487,26 @@ pub(crate) fn perform_step_up_via_ipc(
 
         // StepUpPending — still waiting. Continue polling.
         tracing::debug!(correlation_id = %correlation_id, "Step-up pending; will poll again");
+    }
+}
+
+/// Emit a LOG_CRIT message to syslog (`LOG_AUTH` facility) for CIBA step-up
+/// security events that must be SIEM-visible regardless of tracing log level.
+///
+/// Modelled after `emit_syslog_crit` in `security::jti_cache`. Failures are
+/// silently ignored — syslog unavailability must never block authentication.
+fn emit_ciba_syslog_crit(message: &str) {
+    use syslog::{Facility, Formatter3164};
+
+    let formatter = Formatter3164 {
+        facility: Facility::LOG_AUTH,
+        hostname: None,
+        process: "unix-oidc".to_string(),
+        pid: std::process::id(),
+    };
+
+    if let Ok(mut logger) = syslog::unix(formatter) {
+        let _ = logger.crit(message);
     }
 }
 
@@ -711,7 +829,11 @@ mod tests {
         // Point to a non-existent socket.
         let socket_path = "/tmp/unix-oidc-agent-test-nonexistent-12345.sock";
 
-        let result = perform_step_up_via_ipc(&ctx, &reqs, socket_path, StepUpMethod::Push);
+        let modes = crate::policy::config::SecurityModes {
+            step_up_require_id_token: false,
+            ..Default::default()
+        };
+        let result = perform_step_up_via_ipc(&ctx, &reqs, socket_path, StepUpMethod::Push, &modes);
         assert!(
             matches!(result, Err(SudoError::StepUp(_))),
             "Expected SudoError::StepUp on connection refused, got: {result:?}"
@@ -772,11 +894,18 @@ mod tests {
             minimum_acr: None,
         };
 
+        // step_up_require_id_token=false: mock agent returns no id_token, test
+        // verifies the permissive fallback path (agent-asserted ACR).
+        let modes = crate::policy::config::SecurityModes {
+            step_up_require_id_token: false,
+            ..Default::default()
+        };
         let result = perform_step_up_via_ipc(
             &ctx,
             &reqs,
             socket_path.to_str().unwrap(),
             StepUpMethod::Push,
+            &modes,
         );
         assert!(result.is_ok(), "Expected Ok on Complete, got: {result:?}");
     }
@@ -829,11 +958,16 @@ mod tests {
             minimum_acr: None,
         };
 
+        let modes = crate::policy::config::SecurityModes {
+            step_up_require_id_token: false,
+            ..Default::default()
+        };
         let result = perform_step_up_via_ipc(
             &ctx,
             &reqs,
             socket_path.to_str().unwrap(),
             StepUpMethod::Push,
+            &modes,
         );
         assert!(
             matches!(result, Err(SudoError::Timeout)),
@@ -889,11 +1023,16 @@ mod tests {
             minimum_acr: None,
         };
 
+        let modes = crate::policy::config::SecurityModes {
+            step_up_require_id_token: false,
+            ..Default::default()
+        };
         let result = perform_step_up_via_ipc(
             &ctx,
             &reqs,
             socket_path.to_str().unwrap(),
             StepUpMethod::Push,
+            &modes,
         );
         assert!(
             matches!(result, Err(SudoError::Denied)),
