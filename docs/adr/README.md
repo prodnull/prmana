@@ -27,6 +27,7 @@ ADRs document significant architectural decisions made during the project's deve
 | [016](./016-ephemeral-dpop-keys-for-spire.md) | Ephemeral DPoP Keys for SPIRE | Accepted | 2026-04-09 |
 | [017](./017-spire-workload-api-integration.md) | SpireSigner via tonic + Official Workload API Proto | Accepted | 2026-04-09 |
 | [018](./018-hardware-attestation.md) | TPM 2.0 Key Attestation via TPM2_CC_Certify | Accepted | 2026-04-09 |
+| [019](./019-scim-provisioning.md) | SCIM 2.0 Provisioning Architecture | Accepted | 2026-04-09 |
 
 ## ADR Format
 
