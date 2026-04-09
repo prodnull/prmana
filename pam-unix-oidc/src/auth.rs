@@ -59,6 +59,18 @@ fn is_test_mode_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Best-effort username extraction from claims for audit events.
+///
+/// Used in the delegation validation path where the full username mapping
+/// pipeline has not yet run. Falls back through preferred_username → sub.
+fn username_for_audit(claims: &TokenClaims) -> String {
+    claims
+        .preferred_username
+        .as_deref()
+        .unwrap_or(&claims.sub)
+        .to_string()
+}
+
 /// Extract the `iss` (issuer) claim from a raw JWT for pre-validation routing.
 ///
 /// This function decodes the JWT payload WITHOUT signature verification to read
@@ -267,6 +279,57 @@ pub fn authenticate_multi_issuer(
         }
         Err(e) => return Err(AuthError::TokenValidation(e)),
     };
+
+    // Step 6c: RFC 8693 delegation validation (Phase 37).
+    //
+    // If the token contains an `act` claim, it was obtained via token exchange.
+    // Validate the exchanger against the issuer's delegation policy. Fail closed:
+    // if no delegation config exists for this issuer, exchanged tokens are rejected.
+    if let Some(ref act) = claims.act {
+        let delegation_result = crate::oidc::validation::validate_delegation_optional(
+            act,
+            issuer_config.delegation.as_ref(),
+        );
+
+        match &delegation_result {
+            Ok(()) => {
+                // Also check exchanged token lifetime
+                if let Some(ref deleg_config) = issuer_config.delegation {
+                    if let Err(e) =
+                        crate::oidc::validation::validate_exchanged_token_lifetime(&claims, deleg_config)
+                    {
+                        let exchanger_id = act.client_id.as_deref().unwrap_or(&act.sub);
+                        crate::audit::AuditEvent::token_exchange_rejected(
+                            &username_for_audit(&claims),
+                            exchanger_id,
+                            &e.to_string(),
+                        )
+                        .log();
+                        return Err(AuthError::TokenValidation(e));
+                    }
+                }
+
+                let exchanger_id = act.client_id.as_deref().unwrap_or(&act.sub);
+                tracing::info!(
+                    exchanger = %exchanger_id,
+                    depth = claims.delegation_depth(),
+                    issuer = %issuer_config.issuer_url,
+                    "Token exchange delegation accepted"
+                );
+                // Audit event emitted after session_id is generated (below).
+            }
+            Err(e) => {
+                let exchanger_id = act.client_id.as_deref().unwrap_or(&act.sub);
+                crate::audit::AuditEvent::token_exchange_rejected(
+                    &username_for_audit(&claims),
+                    exchanger_id,
+                    &e.to_string(),
+                )
+                .log();
+                return Err(AuthError::TokenValidation(delegation_result.unwrap_err()));
+            }
+        }
+    }
 
     // Step 7: Per-issuer DPoP enforcement (MIDP-02).
     // Overrides the global dpop_required with the per-issuer dpop_enforcement setting.
@@ -680,6 +743,15 @@ pub fn authenticate_with_token(token: &str) -> Result<AuthResult, AuthError> {
 
     let claims = validator.validate(token)?;
 
+    // Fail closed: legacy single-issuer path has no DelegationConfig, so any
+    // token with an `act` claim is rejected. Use authenticate_multi_issuer()
+    // with per-issuer delegation config for token exchange support.
+    if claims.act.is_some() {
+        return Err(AuthError::TokenValidation(
+            ValidationError::DelegationNotAllowed,
+        ));
+    }
+
     // Map username via configured claim + transform pipeline.
     // After .transpose()?, mapper is Option<UsernameMapper> — None when policy is absent.
     let (username_str, mapped_from) = match mapper {
@@ -868,6 +940,13 @@ pub fn authenticate_with_dpop(
     let validator = TokenValidator::new(config);
 
     let claims = validator.validate(token)?;
+
+    // Fail closed: legacy single-issuer path has no DelegationConfig.
+    if claims.act.is_some() {
+        return Err(AuthError::TokenValidation(
+            ValidationError::DelegationNotAllowed,
+        ));
+    }
 
     // Validate DPoP proof and extract result (thumbprint + nonce).
     //
