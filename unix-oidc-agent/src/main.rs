@@ -751,7 +751,7 @@ async fn run_login(
         let spire_signer = unix_oidc_agent::crypto::SpireSigner::new(spire_cfg)
             .map_err(|e| anyhow::anyhow!("Failed to create SpireSigner: {e}"))?;
 
-        let (spiffe_id, svid_token) = spire_signer.fetch_svid().map_err(|e| {
+        let (spiffe_id, svid_token) = spire_signer.fetch_svid_async().await.map_err(|e| {
             anyhow::anyhow!("Failed to fetch JWT-SVID from SPIRE agent: {e}")
         })?;
 

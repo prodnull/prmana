@@ -150,43 +150,76 @@ impl SpireSigner {
         }
     }
 
-    /// Fetch or return a cached JWT-SVID.
+    /// Fetch or return a cached JWT-SVID (sync wrapper).
+    ///
+    /// Uses `block_in_place` to safely bridge from sync to async when called
+    /// within a tokio runtime. For async callers, use `fetch_svid_async()` directly.
     ///
     /// Returns `(spiffe_id, svid_token)`. The token is exposed via `SecretString`
     /// — callers must not log or persist the raw value.
     pub fn fetch_svid(&self) -> Result<(String, String), SignerError> {
-        // Check cache first.
-        {
-            let cache = self.cached_svid.lock().map_err(|e| {
-                SignerError::Storage(format!("SVID cache mutex poisoned: {e}"))
-            })?;
-            if let Some(ref cached) = *cache {
-                if !cached.needs_refresh() {
-                    return Ok((
-                        cached.spiffe_id.clone(),
-                        cached.token.expose_secret().to_string(),
-                    ));
-                }
-            }
+        // Check cache first (no async needed).
+        if let Some(result) = self.try_cache()? {
+            return Ok(result);
         }
 
-        // Cache miss or refresh needed — fetch from SPIRE agent.
-        let svid = self.rt_handle.block_on(self.fetch_svid_async())?;
+        // Cache miss — bridge to async via block_in_place (safe inside tokio runtime).
+        let svid = tokio::task::block_in_place(|| {
+            self.rt_handle.block_on(self.fetch_svid_from_spire())
+        })?;
 
         let spiffe_id = svid.spiffe_id.clone();
         let token = svid.token.expose_secret().to_string();
+        self.update_cache(svid)?;
+        Ok((spiffe_id, token))
+    }
 
-        // Update cache.
+    /// Fetch or return a cached JWT-SVID (async).
+    ///
+    /// Preferred API for callers already in an async context (e.g., `run_login`,
+    /// `run_refresh`). Avoids the sync-over-async bridge entirely.
+    pub async fn fetch_svid_async(&self) -> Result<(String, String), SignerError> {
+        // Check cache first.
+        if let Some(result) = self.try_cache()? {
+            return Ok(result);
+        }
+
+        // Cache miss — fetch directly (already async).
+        let svid = self.fetch_svid_from_spire().await?;
+
+        let spiffe_id = svid.spiffe_id.clone();
+        let token = svid.token.expose_secret().to_string();
+        self.update_cache(svid)?;
+        Ok((spiffe_id, token))
+    }
+
+    /// Check cache for a valid (non-expired) SVID.
+    fn try_cache(&self) -> Result<Option<(String, String)>, SignerError> {
+        let cache = self.cached_svid.lock().map_err(|e| {
+            SignerError::Storage(format!("SVID cache mutex poisoned: {e}"))
+        })?;
+        if let Some(ref cached) = *cache {
+            if !cached.needs_refresh() {
+                return Ok(Some((
+                    cached.spiffe_id.clone(),
+                    cached.token.expose_secret().to_string(),
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Update the SVID cache after a successful fetch.
+    fn update_cache(&self, svid: CachedSvid) -> Result<(), SignerError> {
         let mut cache = self.cached_svid.lock().map_err(|e| {
             SignerError::Storage(format!("SVID cache mutex poisoned: {e}"))
         })?;
         *cache = Some(svid);
-
-        Ok((spiffe_id, token))
+        Ok(())
     }
 
-    /// Async implementation of SVID fetch via gRPC.
-    async fn fetch_svid_async(&self) -> Result<CachedSvid, SignerError> {
+    /// Internal async implementation of SVID fetch via gRPC.
+    async fn fetch_svid_from_spire(&self) -> Result<CachedSvid, SignerError> {
         let socket_path = self.config.socket_path.clone();
         let channel = self.connect_uds(&socket_path).await.map_err(|e| {
             SignerError::Storage(format!(

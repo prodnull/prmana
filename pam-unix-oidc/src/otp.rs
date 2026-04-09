@@ -72,26 +72,36 @@ pub enum OtpError {
 
 /// Load enrolled OTP seeds from the configured path.
 ///
-/// Security (Codex MED-2): validates file ownership and permissions before reading.
-/// Rejects symlinks, non-regular files, and files readable by group/other.
+/// Security (Codex MED-2, LOW round 2): validates file via fd-based fstat to
+/// close the TOCTOU gap between metadata check and read. Opens with O_NOFOLLOW
+/// to reject symlinks atomically at the kernel level.
 pub fn load_seeds(path: &Path) -> Result<OtpSeedStore, OtpError> {
-    use std::os::unix::fs::MetadataExt;
+    use std::fs::File;
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
-    if !path.exists() {
-        return Err(OtpError::SeedFileNotFound(path.display().to_string()));
-    }
+    // Open with O_NOFOLLOW — kernel rejects symlinks atomically (no TOCTOU).
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| {
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                OtpError::SeedFileRead(format!(
+                    "{}: is a symlink (rejected for security)",
+                    path.display()
+                ))
+            } else if e.kind() == std::io::ErrorKind::NotFound {
+                OtpError::SeedFileNotFound(path.display().to_string())
+            } else {
+                OtpError::SeedFileRead(format!("{}: {e}", path.display()))
+            }
+        })?;
 
-    // Security: use lstat (symlink_metadata) to detect symlinks before following.
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| OtpError::SeedFileRead(format!("{}: {e}", path.display())))?;
-
-    // Reject symlinks — prevents TOCTOU redirect to attacker-controlled file.
-    if meta.file_type().is_symlink() {
-        return Err(OtpError::SeedFileRead(format!(
-            "{}: is a symlink (rejected for security)",
-            path.display()
-        )));
-    }
+    // fstat on the fd — no TOCTOU window.
+    let meta = file.metadata().map_err(|e| {
+        OtpError::SeedFileRead(format!("{}: fstat failed: {e}", path.display()))
+    })?;
 
     // Reject non-regular files (FIFOs, devices, etc.).
     if !meta.file_type().is_file() {
@@ -120,8 +130,11 @@ pub fn load_seeds(path: &Path) -> Result<OtpSeedStore, OtpError> {
         )));
     }
 
-    let contents = std::fs::read_to_string(path)
+    // Read from the already-opened fd (same inode we just validated).
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
         .map_err(|e| OtpError::SeedFileRead(format!("{}: {e}", path.display())))?;
+
     let store: OtpSeedStore = serde_json::from_str(&contents)
         .map_err(|e| OtpError::SeedFileParse(format!("{}: {e}", path.display())))?;
     Ok(store)
