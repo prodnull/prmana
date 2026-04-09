@@ -1,0 +1,102 @@
+# FIPS Cryptographic Algorithm Inventory
+
+**Purpose:** Catalog all cryptographic operations in unix-oidc for FIPS 140-3 readiness assessment.
+**Date:** 2026-04-09
+**Status:** Phase 32-02 — inventory complete, no code changes required.
+
+---
+
+## Algorithm Summary
+
+| Algorithm | FIPS Approved | Usage | Crate | Files |
+|-----------|:---:|--------|-------|-------|
+| ECDSA P-256 (ES256) | Yes | DPoP proof signing/verification | `p256`, `jsonwebtoken` | dpop.rs, protected_key.rs, signer.rs |
+| HMAC-SHA256 | Yes | Audit chain tamper-evidence, webhook signing | `hmac`, `sha2` | audit.rs, webhook.rs |
+| SHA-256 | Yes | JTI/nonce key hashing, introspection cache keys | `sha2` | fs_store.rs, introspection.rs, config.rs |
+| ML-DSA-65 (Dilithium) | Yes* | PQC hybrid DPoP (experimental, feature-gated) | `ml-dsa` | pqc_signer.rs |
+| getrandom (CSPRNG) | Yes | Session IDs, request IDs, sweep probability | `getrandom` | session.rs, provider.rs, fs_store.rs |
+| base64url | N/A | JWT encoding (not cryptographic) | `base64` | token.rs |
+
+*ML-DSA-65 is approved under FIPS 204 (August 2024). The `ml-dsa` crate is not yet FIPS-validated.
+
+---
+
+## Detailed Callsite Inventory
+
+### 1. ECDSA P-256 (ES256) — DPoP Proof Signing
+
+**Purpose:** Sign DPoP proofs binding OAuth tokens to ephemeral key pairs (RFC 9449).
+
+| Callsite | Operation | Key Source |
+|----------|-----------|------------|
+| `unix-oidc-agent/src/crypto/protected_key.rs` | Key generation, signing | In-memory (mlock'd, ZeroizeOnDrop) |
+| `unix-oidc-agent/src/crypto/signer.rs` | DPoP proof construction | ProtectedSigningKey |
+| `pam-unix-oidc/src/oidc/dpop.rs` | DPoP proof verification | JWKS (IdP-published) |
+| `pam-unix-oidc/src/auth.rs` | JWT signature verification | JWKS (IdP-published) |
+
+**FIPS status:** ES256 is FIPS-approved (FIPS 186-5). The `p256` crate uses constant-time field arithmetic but is not FIPS-validated. For FIPS compliance, replace with `ring` (BoringCrypto) or AWS-LC.
+
+### 2. HMAC-SHA256 — Audit Chain + Webhook Signing
+
+**Purpose:** Tamper-evident audit log chain; webhook request authentication.
+
+| Callsite | Operation | Key Source |
+|----------|-----------|------------|
+| `pam-unix-oidc/src/audit.rs` | Chain hash computation | `UNIX_OIDC_AUDIT_HMAC_KEY` env var |
+| `pam-unix-oidc/src/bin/audit_verify.rs` | Chain verification | `--key` / `--key-file` CLI arg |
+| `pam-unix-oidc/src/approval/webhook.rs` | Request signature | `UNIX_OIDC_WEBHOOK_HMAC_SECRET` env var |
+
+**FIPS status:** HMAC-SHA256 is FIPS-approved (FIPS 198-1). The `hmac` + `sha2` crates are not FIPS-validated. For FIPS compliance, replace with `ring` or AWS-LC.
+
+### 3. SHA-256 — Hashing
+
+**Purpose:** Deterministic key derivation for filesystem-safe filenames; cache keys.
+
+| Callsite | Operation |
+|----------|-----------|
+| `pam-unix-oidc/src/security/fs_store.rs` | `SHA-256(scope + ":" + value)` → 64-char hex filename |
+| `pam-unix-oidc/src/oidc/introspection.rs` | Cache key hashing |
+| `pam-unix-oidc/src/policy/config.rs` | Issuer URL → filename mapping |
+
+**FIPS status:** SHA-256 is FIPS-approved (FIPS 180-4). Same crate caveat as above.
+
+### 4. ML-DSA-65 (Dilithium) — PQC Hybrid DPoP
+
+**Purpose:** Post-quantum hybrid DPoP signatures (ML-DSA-65 + ES256 composite).
+
+| Callsite | Operation | Feature Gate |
+|----------|-----------|:---:|
+| `unix-oidc-agent/src/crypto/pqc_signer.rs` | Hybrid sign/verify | `pqc` |
+| `pam-unix-oidc/src/oidc/dpop.rs` | PQC verification | `pqc` |
+
+**FIPS status:** ML-DSA is FIPS-approved under FIPS 204. The `ml-dsa` crate (v0.1.0-rc.7) is not FIPS-validated.
+
+### 5. CSPRNG — Random Number Generation
+
+**Purpose:** Session IDs, request IDs, sweep probability gates.
+
+| Callsite | Entropy Source |
+|----------|---------------|
+| `pam-unix-oidc/src/security/session.rs` | `getrandom::fill()` (128-bit) |
+| `pam-unix-oidc/src/approval/provider.rs` | `getrandom::fill()` (128-bit) |
+| `pam-unix-oidc/src/security/fs_store.rs` | `getrandom::fill()` (8-bit, sweep gate) |
+| `unix-oidc-agent/src/storage/secure_delete.rs` | `OsRng` (overwrite passes) |
+
+**FIPS status:** `getrandom` uses `/dev/urandom` (Linux) or `CryptGenRandom` (Windows). The OS CSPRNG is typically FIPS-validated as part of the kernel module.
+
+---
+
+## FIPS Migration Path
+
+For FIPS 140-3 Level 1 compliance:
+
+1. **Replace `p256` + `sha2` + `hmac` with `ring` or `aws-lc-rs`** — both have FIPS-validated builds (BoringCrypto / AWS-LC FIPS module).
+2. **Keep `getrandom`** — it delegates to the OS CSPRNG which is separately validated.
+3. **ML-DSA** — await a FIPS-validated PQC crate or use AWS-LC-RS when ML-DSA support ships.
+4. **Algorithm configuration** — the per-issuer `allowed_algorithms` config (Phase 25) already supports restricting to FIPS-approved algorithms only.
+
+**Estimated effort:** ~2 days for crate swap; main risk is API differences in `ring` vs `p256` for EC key handling.
+
+---
+
+*Generated by Phase 32-02 (FIPS Crypto Inventory). No code changes — documentation only.*
