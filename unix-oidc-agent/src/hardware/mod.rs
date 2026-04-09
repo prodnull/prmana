@@ -187,10 +187,9 @@ pub fn build_signer(
             .spire
             .as_ref()
             .map(|s| crate::crypto::SpireConfig {
-                socket_path: s
-                    .socket_path
-                    .clone()
-                    .unwrap_or_else(|| crate::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()),
+                socket_path: s.socket_path.clone().unwrap_or_else(|| {
+                    crate::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
+                }),
                 audience: s.audience.clone().unwrap_or_default(),
                 spiffe_id: s.spiffe_id.clone(),
             })

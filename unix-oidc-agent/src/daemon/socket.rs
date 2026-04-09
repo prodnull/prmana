@@ -237,9 +237,7 @@ impl std::fmt::Debug for AgentState {
 
 impl AgentState {
     pub fn new() -> Self {
-        Self::with_presence_ttl(
-            crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
-        )
+        Self::with_presence_ttl(crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS)
     }
 
     pub fn with_presence_ttl(presence_cache_ttl_secs: u64) -> Self {
@@ -1015,6 +1013,7 @@ async fn handle_request(
             subject_token,
             audience,
             method,
+            token_endpoint: token_endpoint_override,
         } => {
             let state_read = state.read().await;
 
@@ -1068,13 +1067,83 @@ async fn handle_request(
             // holding the RwLock across an await point.
             drop(state_read);
 
-            // Build the token endpoint URL using Keycloak convention.
-            // TODO: Use OIDC discovery (.well-known/openid-configuration) to find
-            // the token_endpoint. For now, use the Keycloak realm URL convention.
-            let token_endpoint = format!(
-                "{}/protocol/openid-connect/token",
-                issuer.trim_end_matches('/')
-            );
+            // Resolve token endpoint: CLI override > OIDC discovery.
+            let token_endpoint = if let Some(ep) = token_endpoint_override {
+                debug!(token_endpoint = %ep, "Using CLI-provided token endpoint override");
+                ep
+            } else {
+                // Fetch token endpoint from OIDC discovery (RFC 8414 §3).
+                let discovery_url = format!(
+                    "{}/.well-known/openid-configuration",
+                    issuer.trim_end_matches('/')
+                );
+                let http = match reqwest::Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return (
+                            AgentResponse::error(
+                                format!("Failed to create HTTP client for discovery: {e}"),
+                                "INTERNAL_ERROR",
+                            ),
+                            true,
+                        );
+                    }
+                };
+                match http.get(&discovery_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        match resp.json::<serde_json::Value>().await {
+                            Ok(doc) => match doc["token_endpoint"].as_str() {
+                                Some(ep) => {
+                                    debug!(
+                                        token_endpoint = %ep,
+                                        "Discovered token endpoint via OIDC discovery"
+                                    );
+                                    ep.to_string()
+                                }
+                                None => {
+                                    return (
+                                        AgentResponse::error(
+                                            "OIDC discovery response missing token_endpoint",
+                                            "DISCOVERY_ERROR",
+                                        ),
+                                        true,
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                return (
+                                    AgentResponse::error(
+                                        format!("Failed to parse OIDC discovery: {e}"),
+                                        "DISCOVERY_ERROR",
+                                    ),
+                                    true,
+                                );
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        return (
+                            AgentResponse::error(
+                                format!("OIDC discovery returned HTTP {}", resp.status()),
+                                "DISCOVERY_ERROR",
+                            ),
+                            true,
+                        );
+                    }
+                    Err(e) => {
+                        return (
+                            AgentResponse::error(
+                                format!("Failed to fetch OIDC discovery from {discovery_url}: {e}"),
+                                "DISCOVERY_ERROR",
+                            ),
+                            true,
+                        );
+                    }
+                }
+            };
 
             // Generate a DPoP proof bound to the token endpoint (POST method).
             // The proof binds to the IdP token endpoint — not the target audience —
@@ -1138,7 +1207,7 @@ async fn handle_request(
                     )
                 }
             }
-        },
+        }
     }
 }
 
@@ -2257,27 +2326,23 @@ pub(crate) async fn poll_ciba(
                 // We use structural/claims-only validation here because the agent does not
                 // have a JWKS cache warm enough for a full JWKS fetch on the critical path.
                 // Full signature verification happens in PAM.
-                let validated_id_token: Option<String> =
-                    match token_resp.id_token.as_deref() {
-                        None => None,
-                        Some(raw) => {
-                            match validate_id_token_structure(raw) {
-                                Ok(()) => Some(raw.to_string()),
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = %e,
-                                        "CIBA id_token failed agent-side structural validation \
-                                         (D-13 fail-fast); returning id_token_validation_failed"
-                                    );
-                                    return StepUpOutcome::TimedOut {
-                                        reason: "id_token_validation_failed".to_string(),
-                                        user_message:
-                                            "Step-up token failed pre-validation".to_string(),
-                                    };
-                                }
-                            }
+                let validated_id_token: Option<String> = match token_resp.id_token.as_deref() {
+                    None => None,
+                    Some(raw) => match validate_id_token_structure(raw) {
+                        Ok(()) => Some(raw.to_string()),
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "CIBA id_token failed agent-side structural validation \
+                                 (D-13 fail-fast); returning id_token_validation_failed"
+                            );
+                            return StepUpOutcome::TimedOut {
+                                reason: "id_token_validation_failed".to_string(),
+                                user_message: "Step-up token failed pre-validation".to_string(),
+                            };
                         }
-                    };
+                    },
+                };
 
                 // ACR validation — HARD-FAIL invariant (CLAUDE.md).
                 if let Some(ref required) = acr_required {
@@ -3821,9 +3886,8 @@ mod tests {
 
         // exp = far future (year 2100 ≈ 4102444800)
         let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(
-            r#"{"sub":"user1","iss":"https://idp.example.com","exp":4102444800}"#,
-        );
+        let payload = URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"user1","iss":"https://idp.example.com","exp":4102444800}"#);
         let sig = URL_SAFE_NO_PAD.encode(b"fakesig");
         let id_token = format!("{header}.{payload}.{sig}");
 
@@ -3851,10 +3915,7 @@ mod tests {
     #[test]
     fn test_validate_id_token_structure_invalid_base64() {
         let result = validate_id_token_structure("header.!!!invalid_base64!!!.sig");
-        assert!(
-            result.is_err(),
-            "Expected Err for non-base64url payload"
-        );
+        assert!(result.is_err(), "Expected Err for non-base64url payload");
     }
 
     /// validate_id_token_structure rejects a token with invalid JSON payload.
@@ -3902,8 +3963,7 @@ mod tests {
 
         // Build a valid, non-expired id_token for the mock response.
         let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
-        let payload =
-            URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","acr":"urn:mfa","exp":4102444800}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"user1","acr":"urn:mfa","exp":4102444800}"#);
         let sig = URL_SAFE_NO_PAD.encode(b"fakesig");
         let id_token_value = format!("{header}.{payload}.{sig}");
 

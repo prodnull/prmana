@@ -54,24 +54,12 @@ async fn main() -> Result<()> {
     // or explicit bypass flag. This service can call useradd/userdel, so
     // accepting any Bearer token is a production-blocking auth bypass.
     let auth_mode = if args.insecure_no_auth {
-        tracing::error!(
-            "╔══════════════════════════════════════════════════════════════╗"
-        );
-        tracing::error!(
-            "║  CRITICAL: --insecure-no-auth is active.                   ║"
-        );
-        tracing::error!(
-            "║  Bearer token validation is DISABLED.                      ║"
-        );
-        tracing::error!(
-            "║  ANY request with a non-empty Bearer token will be         ║"
-        );
-        tracing::error!(
-            "║  accepted. DO NOT use this in production.                  ║"
-        );
-        tracing::error!(
-            "╚══════════════════════════════════════════════════════════════╝"
-        );
+        tracing::error!("╔══════════════════════════════════════════════════════════════╗");
+        tracing::error!("║  CRITICAL: --insecure-no-auth is active.                   ║");
+        tracing::error!("║  Bearer token validation is DISABLED.                      ║");
+        tracing::error!("║  ANY request with a non-empty Bearer token will be         ║");
+        tracing::error!("║  accepted. DO NOT use this in production.                  ║");
+        tracing::error!("╚══════════════════════════════════════════════════════════════╝");
         AuthMode::Insecure
     } else if config.oidc_issuer.is_empty() {
         bail!(

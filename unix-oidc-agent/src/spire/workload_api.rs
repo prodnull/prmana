@@ -102,9 +102,7 @@ pub mod spiffe_workload_api_client {
                 .map_err(|e| tonic::Status::new(tonic::Code::Unknown, e.into().to_string()))?;
 
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/SpiffeWorkloadAPI/FetchJWTSVID",
-            );
+            let path = http::uri::PathAndQuery::from_static("/SpiffeWorkloadAPI/FetchJWTSVID");
 
             let mut req = request.into_request();
             // Security: SPIRE Workload API mandates this header for workload attestation.

@@ -336,7 +336,9 @@ impl std::fmt::Debug for SpiffeUsernameMapper {
         match &self.strategy {
             SpiffeStrategy::PathSuffix => f.write_str("SpiffeMapper(path_suffix)"),
             SpiffeStrategy::Regex(re) => write!(f, "SpiffeMapper(regex: {})", re.as_str()),
-            SpiffeStrategy::StaticMap(m) => write!(f, "SpiffeMapper(static_map: {} entries)", m.len()),
+            SpiffeStrategy::StaticMap(m) => {
+                write!(f, "SpiffeMapper(static_map: {} entries)", m.len())
+            }
         }
     }
 }
@@ -413,14 +415,9 @@ impl SpiffeUsernameMapper {
                         "SPIFFE ID did not match regex: {spiffe_id}"
                     ))
                 })?,
-            SpiffeStrategy::StaticMap(map) => map
-                .get(spiffe_id)
-                .cloned()
-                .ok_or_else(|| {
-                    IdentityError::TransformFailed(format!(
-                        "SPIFFE ID not in static map: {spiffe_id}"
-                    ))
-                })?,
+            SpiffeStrategy::StaticMap(map) => map.get(spiffe_id).cloned().ok_or_else(|| {
+                IdentityError::TransformFailed(format!("SPIFFE ID not in static map: {spiffe_id}"))
+            })?,
         };
 
         validate_username(&username)?;
@@ -741,8 +738,12 @@ mod tests {
 
         #[test]
         fn test_is_spiffe_id() {
-            assert!(SpiffeUsernameMapper::is_spiffe_id("spiffe://example.com/ns/prod/sa/agent"));
-            assert!(!SpiffeUsernameMapper::is_spiffe_id("https://idp.example.com"));
+            assert!(SpiffeUsernameMapper::is_spiffe_id(
+                "spiffe://example.com/ns/prod/sa/agent"
+            ));
+            assert!(!SpiffeUsernameMapper::is_spiffe_id(
+                "https://idp.example.com"
+            ));
             assert!(!SpiffeUsernameMapper::is_spiffe_id("alice@corp.com"));
         }
 
@@ -751,7 +752,9 @@ mod tests {
             let config = SpiffeMappingConfig::default(); // path_suffix
             let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
             assert_eq!(
-                mapper.map_spiffe_id("spiffe://example.com/ns/prod/sa/ml-agent").unwrap(),
+                mapper
+                    .map_spiffe_id("spiffe://example.com/ns/prod/sa/ml-agent")
+                    .unwrap(),
                 "ml-agent"
             );
         }
@@ -784,7 +787,9 @@ mod tests {
             };
             let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
             assert_eq!(
-                mapper.map_spiffe_id("spiffe://td/ns/prod/sa/etl-worker").unwrap(),
+                mapper
+                    .map_spiffe_id("spiffe://td/ns/prod/sa/etl-worker")
+                    .unwrap(),
                 "etl-worker"
             );
         }
@@ -839,7 +844,9 @@ mod tests {
             };
             let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
             assert_eq!(
-                mapper.map_spiffe_id("spiffe://td/ns/prod/sa/ml-agent").unwrap(),
+                mapper
+                    .map_spiffe_id("spiffe://td/ns/prod/sa/ml-agent")
+                    .unwrap(),
                 "ml-agent"
             );
             assert_eq!(

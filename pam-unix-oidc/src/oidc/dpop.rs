@@ -326,9 +326,8 @@ pub fn validate_dpop_proof(
     // Extract attestation evidence from the `attest` header field (ADR-018).
     // Best-effort: if the field is missing or malformed, attestation is None.
     // The caller (apply_per_issuer_dpop) decides enforcement via verify_attestation_optional().
-    let attestation: Option<crate::oidc::attestation::AttestationEvidence> = header
-        .get("attest")
-        .and_then(|v| {
+    let attestation: Option<crate::oidc::attestation::AttestationEvidence> =
+        header.get("attest").and_then(|v| {
             serde_json::from_value(v.clone())
                 .map_err(|e| {
                     tracing::warn!(

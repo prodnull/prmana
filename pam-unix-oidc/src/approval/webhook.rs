@@ -73,7 +73,10 @@ impl Clone for WebhookConfig {
             auth_header: self.auth_header.clone(),
             timeout_seconds: self.timeout_seconds,
             verify_tls: self.verify_tls,
-            hmac_secret: self.hmac_secret.as_ref().map(|s| SecretString::from(s.expose_secret().to_string())),
+            hmac_secret: self
+                .hmac_secret
+                .as_ref()
+                .map(|s| SecretString::from(s.expose_secret().to_string())),
         }
     }
 }
@@ -83,10 +86,16 @@ impl fmt::Debug for WebhookConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebhookConfig")
             .field("webhook_url", &self.webhook_url)
-            .field("auth_header", &self.auth_header.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "auth_header",
+                &self.auth_header.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("timeout_seconds", &self.timeout_seconds)
             .field("verify_tls", &self.verify_tls)
-            .field("hmac_secret", &self.hmac_secret.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "hmac_secret",
+                &self.hmac_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -433,7 +442,10 @@ mod tests {
     fn test_hmac_signature_changes_with_timestamp() {
         let sig1 = compute_hmac_signature("my-secret", 1700000000, r#"{"foo":"bar"}"#);
         let sig2 = compute_hmac_signature("my-secret", 1700000001, r#"{"foo":"bar"}"#);
-        assert_ne!(sig1, sig2, "Different timestamps must produce different HMACs");
+        assert_ne!(
+            sig1, sig2,
+            "Different timestamps must produce different HMACs"
+        );
     }
 
     #[test]
@@ -463,8 +475,8 @@ mod tests {
 
     #[test]
     fn test_hmac_debug_redacts_secret() {
-        let config = WebhookConfig::new("https://example.com/api")
-            .with_hmac_secret("super-secret-hmac-key");
+        let config =
+            WebhookConfig::new("https://example.com/api").with_hmac_secret("super-secret-hmac-key");
 
         let debug_output = format!("{:?}", config);
         assert!(

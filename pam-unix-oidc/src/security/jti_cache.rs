@@ -389,12 +389,7 @@ pub fn check_and_record_fs(
                     "JTI filesystem store unavailable (strict mode) - hard-failing authentication"
                 );
                 // Emit OCSF audit event: store degraded in strict mode (login rejected).
-                crate::audit::AuditEvent::jti_store_degraded(
-                    &e.to_string(),
-                    "strict",
-                    "jti",
-                )
-                .log();
+                crate::audit::AuditEvent::jti_store_degraded(&e.to_string(), "strict", "jti").log();
                 JtiCheckResult::Replay
             }
             EnforcementMode::Warn | EnforcementMode::Disabled => {
@@ -413,12 +408,8 @@ pub fn check_and_record_fs(
                      set jti_enforcement=strict to hard-fail instead"
                 ));
                 // Emit OCSF audit event: store degraded in permissive mode (fallback active).
-                crate::audit::AuditEvent::jti_store_degraded(
-                    &e.to_string(),
-                    "permissive",
-                    "jti",
-                )
-                .log();
+                crate::audit::AuditEvent::jti_store_degraded(&e.to_string(), "permissive", "jti")
+                    .log();
                 // Fallback to per-process cache to preserve v1.x behaviour (D-07).
                 global_jti_cache().check_and_record(Some(jti), username, ttl_seconds)
             }
@@ -560,9 +551,15 @@ mod tests {
         // Act: serialize — exercises enriched_log_json → OCSF → HMAC chain.
         let json = event.enriched_log_json();
         // Assert: required fields present.
-        assert!(json.contains("JTI_REPLAY_DETECTED"), "event name missing: {json}");
+        assert!(
+            json.contains("JTI_REPLAY_DETECTED"),
+            "event name missing: {json}"
+        );
         assert!(json.contains("test-jti-001"), "jti field missing: {json}");
-        assert!(json.contains("keycloak.test"), "issuer field missing: {json}");
+        assert!(
+            json.contains("keycloak.test"),
+            "issuer field missing: {json}"
+        );
         assert!(json.contains("testuser"), "user field missing: {json}");
     }
 
@@ -577,11 +574,23 @@ mod tests {
                 store_type,
             );
             let json = event.enriched_log_json();
-            assert!(json.contains("JTI_STORE_DEGRADED"), "event name missing [{enforcement}]: {json}");
-            assert!(json.contains(enforcement), "enforcement field missing: {json}");
-            assert!(json.contains(store_type), "store_type field missing: {json}");
+            assert!(
+                json.contains("JTI_STORE_DEGRADED"),
+                "event name missing [{enforcement}]: {json}"
+            );
+            assert!(
+                json.contains(enforcement),
+                "enforcement field missing: {json}"
+            );
+            assert!(
+                json.contains(store_type),
+                "store_type field missing: {json}"
+            );
             // severity_id 5 (Critical) must be present for both enforcement modes.
-            assert!(json.contains("\"severity_id\":5"), "severity_id 5 missing [{enforcement}]: {json}");
+            assert!(
+                json.contains("\"severity_id\":5"),
+                "severity_id 5 missing [{enforcement}]: {json}"
+            );
         }
     }
 }

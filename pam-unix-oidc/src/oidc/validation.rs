@@ -1013,8 +1013,8 @@ mod tests {
     mod delegation_tests {
         use crate::oidc::token::ActClaim;
         use crate::oidc::validation::{
-            validate_delegation, validate_delegation_optional,
-            validate_exchanged_token_lifetime, ValidationError,
+            validate_delegation, validate_delegation_optional, validate_exchanged_token_lifetime,
+            ValidationError,
         };
         use crate::policy::config::DelegationConfig;
 
@@ -1089,7 +1089,10 @@ mod tests {
                 })),
             };
             let err = validate_delegation(&act, &config).unwrap_err();
-            assert!(matches!(err, ValidationError::DelegationDepthExceeded { actual: 2, max: 1 }));
+            assert!(matches!(
+                err,
+                ValidationError::DelegationDepthExceeded { actual: 2, max: 1 }
+            ));
         }
 
         #[test]

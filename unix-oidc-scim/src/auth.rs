@@ -106,7 +106,11 @@ pub async fn auth_middleware(
 
                     // Enforce asymmetric algorithms only — never accept "none" or HMAC
                     match header.alg {
-                        Algorithm::ES256 | Algorithm::ES384 | Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {}
+                        Algorithm::ES256
+                        | Algorithm::ES384
+                        | Algorithm::RS256
+                        | Algorithm::RS384
+                        | Algorithm::RS512 => {}
                         other => {
                             tracing::warn!(algorithm = ?other, "Bearer token uses disallowed algorithm");
                             return unauthorized("Invalid token");
@@ -123,11 +127,9 @@ pub async fn auth_middleware(
                     // Claims (iss, aud, exp) are still enforced.
                     validation.insecure_disable_signature_validation();
 
-                    if let Err(e) = decode::<BearerClaims>(
-                        token,
-                        &DecodingKey::from_secret(&[]),
-                        &validation,
-                    ) {
+                    if let Err(e) =
+                        decode::<BearerClaims>(token, &DecodingKey::from_secret(&[]), &validation)
+                    {
                         tracing::warn!(
                             error = %e,
                             issuer = %issuer,

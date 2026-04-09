@@ -105,7 +105,9 @@ mod linux_impl {
 
     use std::str::FromStr;
 
-    use crate::crypto::dpop::{assemble_dpop_proof, build_dpop_message, build_dpop_message_with_attestation, DPoPError};
+    use crate::crypto::dpop::{
+        assemble_dpop_proof, build_dpop_message, build_dpop_message_with_attestation, DPoPError,
+    };
     use crate::crypto::signer::DPoPSigner;
     use crate::crypto::tpm_signer::pad_to_32;
     use crate::hardware::SignerConfig;
@@ -398,7 +400,9 @@ mod linux_impl {
                 .context("TPM2_CC_Certify failed")?;
 
             // Serialize TPMS_ATTEST via Marshall trait.
-            let attest_bytes = attest.marshall().context("Failed to marshall TPMS_ATTEST")?;
+            let attest_bytes = attest
+                .marshall()
+                .context("Failed to marshall TPMS_ATTEST")?;
             let certify_info = URL_SAFE_NO_PAD.encode(&attest_bytes);
 
             // Serialize AK signature (r||s, padded to 64 bytes).
@@ -685,10 +689,8 @@ mod linux_impl {
         let x_bytes = ecc_point.x().value();
         let y_bytes = ecc_point.y().value();
 
-        let x_padded = pad_to_32(x_bytes)
-            .map_err(|e| anyhow::anyhow!("TPM x-coordinate: {e}"))?;
-        let y_padded = pad_to_32(y_bytes)
-            .map_err(|e| anyhow::anyhow!("TPM y-coordinate: {e}"))?;
+        let x_padded = pad_to_32(x_bytes).map_err(|e| anyhow::anyhow!("TPM x-coordinate: {e}"))?;
+        let y_padded = pad_to_32(y_bytes).map_err(|e| anyhow::anyhow!("TPM y-coordinate: {e}"))?;
 
         let x_b64 = URL_SAFE_NO_PAD.encode(x_padded);
         let y_b64 = URL_SAFE_NO_PAD.encode(y_padded);
@@ -717,8 +719,8 @@ mod linux_impl {
     #[cfg(test)]
     mod integration_tests {
         use super::*;
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use crate::hardware::TpmConfig;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
         fn test_tcti() -> String {
             std::env::var("UNIX_OIDC_TPM_TCTI").unwrap_or_else(|_| "tabrmd".to_string())
@@ -748,8 +750,7 @@ mod linux_impl {
             let config = test_config();
 
             // Provision — returns TpmSigner directly (CRIT-2 fix).
-            let signer = TpmSigner::provision(&config)
-                .expect("TpmSigner::provision failed");
+            let signer = TpmSigner::provision(&config).expect("TpmSigner::provision failed");
 
             let thumbprint = signer.thumbprint();
             assert_eq!(

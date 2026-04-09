@@ -12,8 +12,10 @@ use unix_oidc_agent::crypto::{DPoPSigner, SpireConfig, SpireSigner};
 #[test]
 fn test_spire_signer_as_trait_object() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let signer: Arc<dyn DPoPSigner> =
-        Arc::new(SpireSigner::with_handle(SpireConfig::default(), rt.handle().clone()));
+    let signer: Arc<dyn DPoPSigner> = Arc::new(SpireSigner::with_handle(
+        SpireConfig::default(),
+        rt.handle().clone(),
+    ));
 
     // Thumbprint should be valid SHA-256 base64url (43 chars).
     assert_eq!(signer.thumbprint().len(), 43);
@@ -34,8 +36,7 @@ fn test_spire_signer_unique_keys_per_instance() {
 
     let thumbprints: Vec<String> = signers.iter().map(|s| s.thumbprint()).collect();
     // All thumbprints must be unique.
-    let unique: std::collections::HashSet<&str> =
-        thumbprints.iter().map(|s| s.as_str()).collect();
+    let unique: std::collections::HashSet<&str> = thumbprints.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         unique.len(),
         thumbprints.len(),
@@ -49,7 +50,9 @@ fn test_spire_signer_proof_valid_jwt() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let signer = SpireSigner::with_handle(SpireConfig::default(), rt.handle().clone());
 
-    let proof = signer.sign_proof("SSH", "server.example.com", None).unwrap();
+    let proof = signer
+        .sign_proof("SSH", "server.example.com", None)
+        .unwrap();
     let parts: Vec<&str> = proof.split('.').collect();
     assert_eq!(parts.len(), 3, "DPoP proof must be a 3-part JWT");
 
@@ -101,7 +104,10 @@ fn test_spire_signer_fetch_svid_no_socket() {
     .join()
     .expect("thread should not panic");
 
-    assert!(result.is_err(), "fetch_svid must fail when socket is absent");
+    assert!(
+        result.is_err(),
+        "fetch_svid must fail when socket is absent"
+    );
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("Failed to connect") || err.contains("nonexistent"),
@@ -122,10 +128,7 @@ audience:
 spiffe_id: spiffe://example.com/ns/prod/sa/ml-agent
 "#;
     let cfg: SpireYamlConfig = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(
-        cfg.socket_path.as_deref(),
-        Some("/run/spire/agent.sock")
-    );
+    assert_eq!(cfg.socket_path.as_deref(), Some("/run/spire/agent.sock"));
     assert_eq!(cfg.audience.as_ref().unwrap().len(), 2);
     assert_eq!(
         cfg.spiffe_id.as_deref(),
@@ -164,8 +167,9 @@ spire:
 #[tokio::test]
 #[ignore = "Requires running SPIRE agent"]
 async fn test_spire_live_fetch_svid() {
-    let socket = std::env::var("UNIX_OIDC_SPIRE_SOCKET")
-        .unwrap_or_else(|_| unix_oidc_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string());
+    let socket = std::env::var("UNIX_OIDC_SPIRE_SOCKET").unwrap_or_else(|_| {
+        unix_oidc_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
+    });
 
     let config = SpireConfig {
         socket_path: socket,
@@ -174,16 +178,14 @@ async fn test_spire_live_fetch_svid() {
     };
     let signer = SpireSigner::new(config).expect("SpireSigner::new in tokio runtime");
 
-    let (spiffe_id, token) = signer.fetch_svid().expect("Should fetch SVID from live SPIRE agent");
+    let (spiffe_id, token) = signer
+        .fetch_svid()
+        .expect("Should fetch SVID from live SPIRE agent");
     assert!(
         spiffe_id.starts_with("spiffe://"),
         "SPIFFE ID must start with spiffe://, got: {spiffe_id}"
     );
-    assert_eq!(
-        token.split('.').count(),
-        3,
-        "JWT-SVID must be a 3-part JWT"
-    );
+    assert_eq!(token.split('.').count(), 3, "JWT-SVID must be a 3-part JWT");
 
     // DPoP proof should work independently of the SVID.
     let proof = signer.sign_proof("SSH", "server.test", None).unwrap();
@@ -194,8 +196,9 @@ async fn test_spire_live_fetch_svid() {
 #[tokio::test]
 #[ignore = "Requires running SPIRE agent"]
 async fn test_spire_live_svid_caching() {
-    let socket = std::env::var("UNIX_OIDC_SPIRE_SOCKET")
-        .unwrap_or_else(|_| unix_oidc_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string());
+    let socket = std::env::var("UNIX_OIDC_SPIRE_SOCKET").unwrap_or_else(|_| {
+        unix_oidc_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
+    });
 
     let config = SpireConfig {
         socket_path: socket,

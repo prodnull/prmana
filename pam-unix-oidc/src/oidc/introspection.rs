@@ -470,7 +470,11 @@ mod tests {
     #[test]
     fn test_cache_key_with_jti_is_64_hex() {
         let key = derive_cache_key(EP_A, Some("my-jti-value"), "ignored-token");
-        assert_eq!(key.len(), 64, "issuer-scoped key must be 64-char hex: {key}");
+        assert_eq!(
+            key.len(),
+            64,
+            "issuer-scoped key must be 64-char hex: {key}"
+        );
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
     }
 

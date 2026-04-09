@@ -42,9 +42,15 @@ pub struct OtpSeed {
     pub skew: i64,
 }
 
-fn default_time_step() -> u64 { DEFAULT_TIME_STEP }
-fn default_digits() -> u32 { DEFAULT_DIGITS }
-fn default_skew() -> i64 { DEFAULT_SKEW }
+fn default_time_step() -> u64 {
+    DEFAULT_TIME_STEP
+}
+fn default_digits() -> u32 {
+    DEFAULT_DIGITS
+}
+fn default_skew() -> i64 {
+    DEFAULT_SKEW
+}
 
 /// OTP seed store — maps username to enrolled seed.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
@@ -76,7 +82,6 @@ pub enum OtpError {
 /// close the TOCTOU gap between metadata check and read. Opens with O_NOFOLLOW
 /// to reject symlinks atomically at the kernel level.
 pub fn load_seeds(path: &Path) -> Result<OtpSeedStore, OtpError> {
-    use std::fs::File;
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
@@ -99,9 +104,9 @@ pub fn load_seeds(path: &Path) -> Result<OtpSeedStore, OtpError> {
         })?;
 
     // fstat on the fd — no TOCTOU window.
-    let meta = file.metadata().map_err(|e| {
-        OtpError::SeedFileRead(format!("{}: fstat failed: {e}", path.display()))
-    })?;
+    let meta = file
+        .metadata()
+        .map_err(|e| OtpError::SeedFileRead(format!("{}: fstat failed: {e}", path.display())))?;
 
     // Reject non-regular files (FIFOs, devices, etc.).
     if !meta.file_type().is_file() {
@@ -174,8 +179,7 @@ pub fn verify_totp(username: &str, code: &str, store: &OtpSeedStore) -> Result<(
 /// Generate a TOTP code for a given counter value (RFC 6238 / RFC 4226).
 fn generate_totp_code(secret: &[u8], counter: u64, digits: u32) -> String {
     // RFC 4226 §5.3: HMAC-SHA1(secret, counter_bytes)
-    let mut mac = HmacSha1::new_from_slice(secret)
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha1::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(&counter.to_be_bytes());
     let result = mac.finalize().into_bytes();
 

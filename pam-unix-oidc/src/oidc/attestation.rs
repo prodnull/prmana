@@ -57,9 +57,7 @@ pub enum AttestationError {
 /// - TPMS_ATTEST parsing to extract certified key Name
 /// - Name matching against DPoP JWK thumbprint
 /// - EK certificate chain verification
-pub fn verify_attestation(
-    evidence: &AttestationEvidence,
-) -> Result<(), AttestationError> {
+pub fn verify_attestation(evidence: &AttestationEvidence) -> Result<(), AttestationError> {
     // Decode and validate certify_info
     let certify_bytes = URL_SAFE_NO_PAD
         .decode(&evidence.certify_info)
@@ -83,23 +81,23 @@ pub fn verify_attestation(
     }
 
     // Decode and validate signature (P-256 ECDSA = 64 bytes: 32r + 32s)
-    let sig_bytes = URL_SAFE_NO_PAD
-        .decode(&evidence.signature)
-        .map_err(|e| AttestationError::InvalidEncoding {
+    let sig_bytes = URL_SAFE_NO_PAD.decode(&evidence.signature).map_err(|e| {
+        AttestationError::InvalidEncoding {
             field: "signature".into(),
             reason: e.to_string(),
-        })?;
+        }
+    })?;
     if sig_bytes.len() != 64 {
         return Err(AttestationError::InvalidSignatureLength(sig_bytes.len()));
     }
 
     // Decode and validate ak_public
-    let ak_bytes = URL_SAFE_NO_PAD
-        .decode(&evidence.ak_public)
-        .map_err(|e| AttestationError::InvalidEncoding {
+    let ak_bytes = URL_SAFE_NO_PAD.decode(&evidence.ak_public).map_err(|e| {
+        AttestationError::InvalidEncoding {
             field: "ak_public".into(),
             reason: e.to_string(),
-        })?;
+        }
+    })?;
     if ak_bytes.is_empty() {
         return Err(AttestationError::StructurallyInvalid(
             "ak_public is empty".into(),
@@ -127,25 +125,21 @@ pub fn verify_attestation_optional(
 
     match config.enforcement {
         EnforcementMode::Disabled => Ok(()),
-        EnforcementMode::Warn => {
-            match evidence {
-                Some(ev) => {
-                    if let Err(e) = verify_attestation(ev) {
-                        tracing::warn!(
-                            error = %e,
-                            "Hardware attestation verification failed (warn mode — allowing)"
-                        );
-                    }
-                    Ok(())
-                }
-                None => {
+        EnforcementMode::Warn => match evidence {
+            Some(ev) => {
+                if let Err(e) = verify_attestation(ev) {
                     tracing::warn!(
-                        "No attestation evidence in DPoP proof (warn mode — allowing)"
+                        error = %e,
+                        "Hardware attestation verification failed (warn mode — allowing)"
                     );
-                    Ok(())
                 }
+                Ok(())
             }
-        }
+            None => {
+                tracing::warn!("No attestation evidence in DPoP proof (warn mode — allowing)");
+                Ok(())
+            }
+        },
         EnforcementMode::Strict => match evidence {
             Some(ev) => verify_attestation(ev),
             None => Err(AttestationError::MissingStrict),
@@ -270,7 +264,7 @@ mod tests {
         };
         let mut ev = valid_evidence();
         ev.signature = URL_SAFE_NO_PAD.encode([0u8; 32]); // wrong length
-        // Warn mode: logs but allows
+                                                          // Warn mode: logs but allows
         assert!(verify_attestation_optional(Some(&ev), Some(&config)).is_ok());
     }
 }

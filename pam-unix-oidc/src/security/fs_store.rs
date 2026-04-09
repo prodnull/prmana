@@ -152,7 +152,12 @@ impl FsAtomicStore {
     ///   treat this as a replay.
     /// - `IoError` — unexpected I/O error; caller should log and enforce per
     ///   `jti_enforcement` configuration.
-    pub fn check_and_record(&self, scope: &str, value: &str, expires_at_unix: u64) -> AtomicRecordResult {
+    pub fn check_and_record(
+        &self,
+        scope: &str,
+        value: &str,
+        expires_at_unix: u64,
+    ) -> AtomicRecordResult {
         let path = self.key_path(scope, value);
 
         // Ensure the directory exists in case systemd-tmpfiles hasn't run yet
@@ -400,7 +405,10 @@ mod tests {
 
         store.check_and_record("scope", "nonce-x", expires);
         let consumed = store.consume("scope", "nonce-x").unwrap();
-        assert!(consumed, "consume() after check_and_record() should return true");
+        assert!(
+            consumed,
+            "consume() after check_and_record() should return true"
+        );
     }
 
     #[test]
@@ -532,7 +540,10 @@ mod tests {
 
         let path = store.key_path("scope", "jti-content");
         let contents = std::fs::read_to_string(&path).unwrap();
-        let stored: u64 = contents.trim().parse().expect("file must contain a u64 timestamp");
+        let stored: u64 = contents
+            .trim()
+            .parse()
+            .expect("file must contain a u64 timestamp");
 
         assert_eq!(
             stored, expires,

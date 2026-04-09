@@ -38,10 +38,7 @@ pub enum SudoError {
     Denied,
 
     #[error("Step-up timeout ({method} exceeded {timeout_secs}s)")]
-    Timeout {
-        method: String,
-        timeout_secs: u64,
-    },
+    Timeout { method: String, timeout_secs: u64 },
 
     #[error("Configuration error: {0}")]
     Config(String),
@@ -343,7 +340,9 @@ pub(crate) fn perform_step_up_via_ipc(
     };
 
     let poll_interval_secs = requirements.poll_interval_secs.max(1);
-    let method_timeout = requirements.method_timeouts.timeout_for(&method, requirements.timeout);
+    let method_timeout = requirements
+        .method_timeouts
+        .timeout_for(&method, requirements.timeout);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(method_timeout);
 
     tracing::info!(
@@ -435,10 +434,13 @@ pub(crate) fn perform_step_up_via_ipc(
                     // Build ValidationConfig from environment (same pattern as
                     // perform_device_flow_step_up — reads OIDC_ISSUER / OIDC_CLIENT_ID).
                     let issuer = std::env::var("OIDC_ISSUER").map_err(|_| {
-                        SudoError::Config("OIDC_ISSUER not set (required for CIBA ID token validation)".to_string())
+                        SudoError::Config(
+                            "OIDC_ISSUER not set (required for CIBA ID token validation)"
+                                .to_string(),
+                        )
                     })?;
-                    let client_id = std::env::var("OIDC_CLIENT_ID")
-                        .unwrap_or_else(|_| "unix-oidc".to_string());
+                    let client_id =
+                        std::env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "unix-oidc".to_string());
 
                     let validation_config = ValidationConfig {
                         issuer,
@@ -493,7 +495,7 @@ pub(crate) fn perform_step_up_via_ipc(
                     emit_ciba_syslog_crit(
                         "unix-oidc: CIBA step-up failed - id_token required but not \
                          received from agent; set step_up_require_id_token=false to \
-                         allow unverified ACR fallback (not recommended)"
+                         allow unverified ACR fallback (not recommended)",
                     );
                     return Err(SudoError::StepUp(
                         "Step-up ID token required but not received from agent".to_string(),
@@ -510,9 +512,15 @@ pub(crate) fn perform_step_up_via_ipc(
                     emit_ciba_syslog_crit(
                         "unix-oidc: CIBA step-up using unverified agent-asserted ACR — \
                          set step_up_require_id_token=true to enforce cryptographic \
-                         verification (D-16)"
+                         verification (D-16)",
                     );
-                    (response.get("acr").and_then(|v| v.as_str()).map(str::to_string), false)
+                    (
+                        response
+                            .get("acr")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        false,
+                    )
                 }
             };
 
@@ -527,10 +535,12 @@ pub(crate) fn perform_step_up_via_ipc(
             // StepUpTimedOut: { reason, user_message }
             let reason = response["reason"].as_str().unwrap_or("unknown");
             match reason {
-                "timeout" => return Err(SudoError::Timeout {
-                    method: method_str.to_string(),
-                    timeout_secs: method_timeout,
-                }),
+                "timeout" => {
+                    return Err(SudoError::Timeout {
+                        method: method_str.to_string(),
+                        timeout_secs: method_timeout,
+                    })
+                }
                 "denied" => return Err(SudoError::Denied),
                 _ => return Err(SudoError::StepUp(format!("Step-up failed: {reason}"))),
             }

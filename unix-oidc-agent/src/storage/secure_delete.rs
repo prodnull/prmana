@@ -88,7 +88,9 @@ pub fn secure_remove(path: &Path) -> Result<(), SecureDeleteError> {
         Err(e) => {
             // ELOOP on Linux / ENOENT-like on macOS when path is a symlink
             if e.raw_os_error() == Some(libc::ELOOP) {
-                return Err(SecureDeleteError::SymlinkRejected(path.display().to_string()));
+                return Err(SecureDeleteError::SymlinkRejected(
+                    path.display().to_string(),
+                ));
             }
             return Err(SecureDeleteError::IoError(e));
         }
@@ -100,7 +102,9 @@ pub fn secure_remove(path: &Path) -> Result<(), SecureDeleteError> {
     // Verify the target is a regular file (S_IFREG), not a device, socket, etc.
     let mode = metadata.mode();
     if mode & libc::S_IFMT as u32 != libc::S_IFREG as u32 {
-        return Err(SecureDeleteError::NotRegularFile(path.display().to_string()));
+        return Err(SecureDeleteError::NotRegularFile(
+            path.display().to_string(),
+        ));
     }
 
     // Verify ownership matches current effective UID to prevent overwriting
@@ -413,8 +417,7 @@ mod tests {
         // Create a named pipe (FIFO) — should be rejected by S_IFREG check.
         let dir = TempDir::new().unwrap();
         let fifo_path = dir.path().join("test.fifo");
-        let path_cstr =
-            std::ffi::CString::new(fifo_path.as_os_str().as_encoded_bytes()).unwrap();
+        let path_cstr = std::ffi::CString::new(fifo_path.as_os_str().as_encoded_bytes()).unwrap();
         unsafe {
             libc::mkfifo(path_cstr.as_ptr(), 0o600);
         }

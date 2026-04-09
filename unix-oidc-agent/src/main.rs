@@ -18,8 +18,8 @@ use unix_oidc_agent::config::AgentConfig;
 use unix_oidc_agent::crypto::protected_key::mlock_probe;
 use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
 use unix_oidc_agent::daemon::{
-    acquire_listener, spawn_refresh_task, AgentClient, AgentResponse, AgentResponseData,
-    AgentServer, AgentState,
+    acquire_listener, spawn_refresh_task, AgentClient, AgentRequest, AgentResponse,
+    AgentResponseData, AgentServer, AgentState,
 };
 use unix_oidc_agent::hardware::{build_signer, provision_signer, SignerConfig};
 use unix_oidc_agent::sanitize::sanitize_terminal_output;
@@ -256,6 +256,25 @@ enum Commands {
     /// On macOS, runs `launchctl unload` and removes the plist from ~/Library/LaunchAgents/.
     Uninstall,
 
+    /// Exchange a subject token for a new DPoP-bound token targeting a different audience.
+    ///
+    /// Used for multi-hop SSH: a jump host exchanges the user's token for a new
+    /// token bound to the jump host's DPoP key, targeting the next hop.
+    /// Implements RFC 8693 (Token Exchange) with DPoP rebinding per ADR-005.
+    Exchange {
+        /// The subject token to exchange (from the connecting user's SSH session).
+        #[arg(long)]
+        subject_token: String,
+
+        /// Target audience (hostname of the next hop).
+        #[arg(long)]
+        audience: String,
+
+        /// IdP token endpoint URL override. If not specified, discovered from stored issuer config.
+        #[arg(long)]
+        token_endpoint: Option<String>,
+    },
+
     /// Handle SSH keyboard-interactive prompts (invoked as SSH_ASKPASS).
     ///
     /// SSH spawns this binary once per prompt with the prompt string as argv[1].
@@ -323,6 +342,40 @@ async fn main() -> anyhow::Result<()> {
         Commands::Install { binary_path } => run_install(binary_path).await,
 
         Commands::Uninstall => run_uninstall().await,
+
+        Commands::Exchange {
+            subject_token,
+            audience,
+            token_endpoint,
+        } => {
+            let client = AgentClient::default();
+            let response = client
+                .send(AgentRequest::ExchangeToken {
+                    subject_token,
+                    audience,
+                    method: "SSH".to_string(),
+                    token_endpoint,
+                })
+                .await;
+            match response {
+                Ok(AgentResponse::Success(data)) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&data).unwrap_or_else(|_| "{}".to_string())
+                    );
+                    Ok(())
+                }
+                Ok(AgentResponse::Error { message, code }) => {
+                    eprintln!("Exchange failed: {message} ({code})");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error: Could not connect to agent: {e}");
+                    eprintln!("Start the agent with: unix-oidc-agent serve");
+                    Err(anyhow::anyhow!("Agent connection error: {e}"))
+                }
+            }
+        }
 
         Commands::SshAskpass { prompt } => askpass::run_ssh_askpass(prompt).await,
     }
@@ -603,7 +656,10 @@ async fn run_get_proof(
 ) -> anyhow::Result<()> {
     let client = AgentClient::default();
 
-    match client.get_proof(&target, &method, nonce.as_deref(), None).await {
+    match client
+        .get_proof(&target, &method, nonce.as_deref(), None)
+        .await
+    {
         Ok(AgentResponse::Success(AgentResponseData::Proof {
             token,
             dpop_proof,
@@ -751,9 +807,10 @@ async fn run_login(
         let spire_signer = unix_oidc_agent::crypto::SpireSigner::new(spire_cfg)
             .map_err(|e| anyhow::anyhow!("Failed to create SpireSigner: {e}"))?;
 
-        let (spiffe_id, svid_token) = spire_signer.fetch_svid_async().await.map_err(|e| {
-            anyhow::anyhow!("Failed to fetch JWT-SVID from SPIRE agent: {e}")
-        })?;
+        let (spiffe_id, svid_token) = spire_signer
+            .fetch_svid_async()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch JWT-SVID from SPIRE agent: {e}"))?;
 
         println!("SPIFFE ID: {spiffe_id}");
         println!("JWT-SVID acquired from SPIRE agent");
@@ -1218,9 +1275,10 @@ async fn run_refresh() -> anyhow::Result<()> {
         let spire_signer = unix_oidc_agent::crypto::SpireSigner::new(spire_cfg)
             .map_err(|e| anyhow::anyhow!("Failed to create SpireSigner: {e}"))?;
 
-        let (spiffe_id, svid_token) = spire_signer.fetch_svid_async().await.map_err(|e| {
-            anyhow::anyhow!("Failed to refresh JWT-SVID from SPIRE agent: {e}")
-        })?;
+        let (spiffe_id, svid_token) = spire_signer
+            .fetch_svid_async()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to refresh JWT-SVID from SPIRE agent: {e}"))?;
 
         let svid_exp = unix_oidc_agent::crypto::spire_signer::parse_jwt_exp_secs(&svid_token);
         let token_expires = svid_exp.unwrap_or_else(|| {

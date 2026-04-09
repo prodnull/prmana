@@ -64,8 +64,8 @@ impl CachedSvid {
                 let total = exp
                     .duration_since(self.fetched_at)
                     .unwrap_or(Duration::ZERO);
-                let refresh_at =
-                    self.fetched_at + Duration::from_secs_f64(total.as_secs_f64() * SVID_REFRESH_FRACTION);
+                let refresh_at = self.fetched_at
+                    + Duration::from_secs_f64(total.as_secs_f64() * SVID_REFRESH_FRACTION);
                 now >= refresh_at
             }
             // No parseable expiry — always refresh.
@@ -164,9 +164,8 @@ impl SpireSigner {
         }
 
         // Cache miss — bridge to async via block_in_place (safe inside tokio runtime).
-        let svid = tokio::task::block_in_place(|| {
-            self.rt_handle.block_on(self.fetch_svid_from_spire())
-        })?;
+        let svid =
+            tokio::task::block_in_place(|| self.rt_handle.block_on(self.fetch_svid_from_spire()))?;
 
         let spiffe_id = svid.spiffe_id.clone();
         let token = svid.token.expose_secret().to_string();
@@ -195,9 +194,10 @@ impl SpireSigner {
 
     /// Check cache for a valid (non-expired) SVID.
     fn try_cache(&self) -> Result<Option<(String, String)>, SignerError> {
-        let cache = self.cached_svid.lock().map_err(|e| {
-            SignerError::Storage(format!("SVID cache mutex poisoned: {e}"))
-        })?;
+        let cache = self
+            .cached_svid
+            .lock()
+            .map_err(|e| SignerError::Storage(format!("SVID cache mutex poisoned: {e}")))?;
         if let Some(ref cached) = *cache {
             if !cached.needs_refresh() {
                 return Ok(Some((
@@ -211,9 +211,10 @@ impl SpireSigner {
 
     /// Update the SVID cache after a successful fetch.
     fn update_cache(&self, svid: CachedSvid) -> Result<(), SignerError> {
-        let mut cache = self.cached_svid.lock().map_err(|e| {
-            SignerError::Storage(format!("SVID cache mutex poisoned: {e}"))
-        })?;
+        let mut cache = self
+            .cached_svid
+            .lock()
+            .map_err(|e| SignerError::Storage(format!("SVID cache mutex poisoned: {e}")))?;
         *cache = Some(svid);
         Ok(())
     }
@@ -241,9 +242,7 @@ impl SpireSigner {
                     "Timeout ({GRPC_TIMEOUT:?}) fetching JWT-SVID from SPIRE agent"
                 ))
             })?
-            .map_err(|e| {
-                SignerError::Storage(format!("SPIRE FetchJWTSVID failed: {e}"))
-            })?;
+            .map_err(|e| SignerError::Storage(format!("SPIRE FetchJWTSVID failed: {e}")))?;
 
         let svids = response.into_inner().svids;
         let svid = svids.into_iter().next().ok_or_else(|| {
@@ -460,7 +459,9 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let signer = SpireSigner::with_handle(SpireConfig::default(), rt.handle().clone());
 
-        let proof = signer.sign_proof("SSH", "server.example.com", None).unwrap();
+        let proof = signer
+            .sign_proof("SSH", "server.example.com", None)
+            .unwrap();
         assert_eq!(proof.split('.').count(), 3, "DPoP proof must be valid JWT");
     }
 

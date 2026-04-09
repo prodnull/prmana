@@ -1795,7 +1795,10 @@ mod tests {
         assert_eq!(modes.amr_enforcement, EnforcementMode::Disabled);
         assert_eq!(modes.acr.enforcement, EnforcementMode::Warn);
         assert!(modes.acr.minimum_level.is_none());
-        assert!(modes.step_up_require_id_token, "step_up_require_id_token must default to true (D-16)");
+        assert!(
+            modes.step_up_require_id_token,
+            "step_up_require_id_token must default to true (D-16)"
+        );
     }
 
     #[test]

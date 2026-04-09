@@ -101,7 +101,10 @@ impl fmt::Debug for TokenClaims {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TokenClaims")
             .field("sub", &"[REDACTED]")
-            .field("preferred_username", &self.preferred_username.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "preferred_username",
+                &self.preferred_username.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("iss", &self.iss)
             .field("aud", &self.aud)
             .field("exp", &self.exp)

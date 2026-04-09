@@ -525,6 +525,48 @@ pub enum AuditEvent {
         store_type: String,
         host: String,
     },
+
+    /// RFC 8693 token exchange accepted — delegated token validated successfully.
+    ///
+    /// Emitted when a token with an `act` claim passes all delegation checks:
+    /// exchanger is authorized, depth within limits, lifetime acceptable.
+    ///
+    /// OCSF: Authentication / Logon (activity_id 1), severity Info.
+    #[serde(rename = "TOKEN_EXCHANGE_ACCEPTED")]
+    TokenExchangeAccepted {
+        timestamp: String,
+        session_id: String,
+        /// The original subject (end user) from the token's `sub` claim.
+        username: String,
+        /// The top-level actor (exchanger) from the `act.sub` or `act.client_id` claim.
+        exchanger: String,
+        /// Number of delegation hops in the `act` chain.
+        delegation_depth: usize,
+        /// Target audience the exchanged token was issued for.
+        target_audience: String,
+        host: String,
+    },
+
+    /// RFC 8693 token exchange rejected — delegated token failed validation.
+    ///
+    /// Emitted when a token with an `act` claim fails delegation checks:
+    /// unauthorized exchanger, depth exceeded, no delegation config, or
+    /// excessive token lifetime.
+    ///
+    /// OCSF: Authentication / Logon (activity_id 1), severity High.
+    /// SIEM operators should alert on this event — it may indicate a
+    /// compromised jump host or misconfigured delegation policy.
+    #[serde(rename = "TOKEN_EXCHANGE_REJECTED")]
+    TokenExchangeRejected {
+        timestamp: String,
+        /// The original subject (end user) from the token's `sub` claim.
+        username: String,
+        /// The top-level actor that attempted the exchange.
+        exchanger: String,
+        /// Reason for rejection (maps to ValidationError variant message).
+        reason: String,
+        host: String,
+    },
 }
 
 impl AuditEvent {
@@ -855,6 +897,43 @@ impl AuditEvent {
         }
     }
 
+    /// Create a token exchange accepted event (RFC 8693 delegation validated).
+    ///
+    /// Emitted when a token with an `act` claim passes all delegation checks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn token_exchange_accepted(
+        session_id: &str,
+        username: &str,
+        exchanger: &str,
+        delegation_depth: usize,
+        target_audience: &str,
+    ) -> Self {
+        Self::TokenExchangeAccepted {
+            timestamp: iso_timestamp(),
+            session_id: session_id.to_string(),
+            username: username.to_string(),
+            exchanger: exchanger.to_string(),
+            delegation_depth,
+            target_audience: target_audience.to_string(),
+            host: get_hostname(),
+        }
+    }
+
+    /// Create a token exchange rejected event (RFC 8693 delegation failed).
+    ///
+    /// Emitted when a token with an `act` claim fails delegation validation.
+    /// SIEM operators should alert on this event — it may indicate a compromised
+    /// jump host or misconfigured delegation policy.
+    pub fn token_exchange_rejected(username: &str, exchanger: &str, reason: &str) -> Self {
+        Self::TokenExchangeRejected {
+            timestamp: iso_timestamp(),
+            username: username.to_string(),
+            exchanger: exchanger.to_string(),
+            reason: reason.to_string(),
+            host: get_hostname(),
+        }
+    }
+
     /// Log this event to the configured audit destinations.
     ///
     /// When `UNIX_OIDC_AUDIT_HMAC_KEY` is set, the output JSON is augmented with
@@ -935,6 +1014,8 @@ impl AuditEvent {
             Self::IssuerRecovered { .. } => "ISSUER_RECOVERED",
             Self::JtiReplayDetected { .. } => "JTI_REPLAY_DETECTED",
             Self::JtiStoreDegraded { .. } => "JTI_STORE_DEGRADED",
+            Self::TokenExchangeAccepted { .. } => "TOKEN_EXCHANGE_ACCEPTED",
+            Self::TokenExchangeRejected { .. } => "TOKEN_EXCHANGE_REJECTED",
         }
     }
 
@@ -972,7 +1053,9 @@ impl AuditEvent {
             | Self::TokenRevoked { .. }
             | Self::StepUpInitiated { .. }
             | Self::StepUpSuccess { .. }
-            | Self::IssuerRecovered { .. } => AuditSeverity::Info,
+            | Self::IssuerRecovered { .. }
+            | Self::TokenExchangeAccepted { .. } => AuditSeverity::Info,
+            Self::TokenExchangeRejected { .. } => AuditSeverity::Warning,
         }
     }
 
@@ -1039,6 +1122,11 @@ impl AuditEvent {
             // JTI store degraded — activity_id 99 (Other), severity_id 5 (Critical)
             // Security infrastructure failure: cross-fork replay protection degraded or rejected.
             Self::JtiStoreDegraded { .. } => (99, 5),
+
+            // Token exchange — activity_id 1 (Logon)
+            // Accepted: Info (1); Rejected: High (4) — potential attack indicator
+            Self::TokenExchangeAccepted { .. } => (1, 1),
+            Self::TokenExchangeRejected { .. } => (1, 4),
         };
 
         let class_uid: u32 = 3002;
@@ -2049,8 +2137,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ocsf_all_16_variants_have_fields() {
-        // OBS-07 Test 7: All 16 event variants have OCSF fields in enriched_log_json
+    fn test_ocsf_all_variants_have_fields() {
+        // OBS-07 Test 7: All event variants have OCSF fields in enriched_log_json
         let events: Vec<AuditEvent> = vec![
             AuditEvent::ssh_login_success("s", "u", None, None, None, None, None, None),
             AuditEvent::ssh_login_failed(None, None, "reason"),
@@ -2068,6 +2156,10 @@ mod tests {
             AuditEvent::session_close_failed("s", "u", "err"),
             AuditEvent::issuer_degraded("https://idp.example.com/realm", 3),
             AuditEvent::issuer_recovered("https://idp.example.com/realm"),
+            AuditEvent::jti_replay_detected("jti-1", None, "access_token", None, None),
+            AuditEvent::jti_store_degraded("disk full", "strict", "jti"),
+            AuditEvent::token_exchange_accepted("s", "u", "jump-host", 1, "target"),
+            AuditEvent::token_exchange_rejected("u", "evil-host", "unauthorized"),
         ];
 
         for event in &events {
@@ -2133,13 +2225,22 @@ mod tests {
         );
         assert_eq!(event.event_type(), "JTI_REPLAY_DETECTED");
         let json = event.enriched_log_json();
-        assert!(json.contains("\"jti\":\"abc-123\""), "jti field missing: {json}");
+        assert!(
+            json.contains("\"jti\":\"abc-123\""),
+            "jti field missing: {json}"
+        );
         assert!(
             json.contains("\"token_type\":\"access_token\""),
             "token_type field missing: {json}"
         );
-        assert!(json.contains("\"severity_id\":4"), "severity_id 4 (High) missing: {json}");
-        assert!(json.contains("\"class_uid\":3002"), "class_uid 3002 missing: {json}");
+        assert!(
+            json.contains("\"severity_id\":4"),
+            "severity_id 4 (High) missing: {json}"
+        );
+        assert!(
+            json.contains("\"class_uid\":3002"),
+            "class_uid 3002 missing: {json}"
+        );
         assert!(
             json.contains("\"issuer\":\"https://idp.example.com\""),
             "issuer field missing: {json}"
@@ -2151,17 +2252,25 @@ mod tests {
     fn test_jti_replay_detected_ocsf_severity_high() {
         let event = AuditEvent::jti_replay_detected("x", None, "dpop_proof", None, None);
         let ocsf = event.ocsf_fields();
-        assert_eq!(ocsf.severity_id, 4, "JTI replay must be High (severity_id 4)");
-        assert_eq!(ocsf.activity_id, 1, "JTI replay must be Logon (activity_id 1)");
+        assert_eq!(
+            ocsf.severity_id, 4,
+            "JTI replay must be High (severity_id 4)"
+        );
+        assert_eq!(
+            ocsf.activity_id, 1,
+            "JTI replay must be Logon (activity_id 1)"
+        );
         assert_eq!(ocsf.class_uid, 3002, "Must use Authentication class (3002)");
-        assert_eq!(ocsf.type_uid, 300201, "type_uid must be class_uid*100+activity_id");
+        assert_eq!(
+            ocsf.type_uid, 300201,
+            "type_uid must be class_uid*100+activity_id"
+        );
     }
 
     /// JTI_STORE_DEGRADED event serializes with required fields and correct OCSF values.
     #[test]
     fn test_jti_store_degraded_fields() {
-        let event =
-            AuditEvent::jti_store_degraded("No space left on device", "permissive", "jti");
+        let event = AuditEvent::jti_store_degraded("No space left on device", "permissive", "jti");
         assert_eq!(event.event_type(), "JTI_STORE_DEGRADED");
         let json = event.enriched_log_json();
         assert!(
@@ -2172,7 +2281,10 @@ mod tests {
             json.contains("\"store_type\":\"jti\""),
             "store_type field missing: {json}"
         );
-        assert!(json.contains("\"severity_id\":5"), "severity_id 5 (Critical) missing: {json}");
+        assert!(
+            json.contains("\"severity_id\":5"),
+            "severity_id 5 (Critical) missing: {json}"
+        );
         assert!(
             json.contains("No space left on device"),
             "reason field missing: {json}"
@@ -2182,12 +2294,20 @@ mod tests {
     /// JTI_STORE_DEGRADED OCSF fields: severity_id 5 (Critical), activity_id 99 (Other).
     #[test]
     fn test_jti_store_degraded_ocsf_critical() {
-        let event =
-            AuditEvent::jti_store_degraded("Permission denied", "strict", "nonce");
+        let event = AuditEvent::jti_store_degraded("Permission denied", "strict", "nonce");
         let ocsf = event.ocsf_fields();
-        assert_eq!(ocsf.severity_id, 5, "JTI store degraded must be Critical (severity_id 5)");
-        assert_eq!(ocsf.activity_id, 99, "JTI store degraded must be Other (activity_id 99)");
-        assert_eq!(ocsf.type_uid, 300299, "type_uid must be class_uid*100+activity_id");
+        assert_eq!(
+            ocsf.severity_id, 5,
+            "JTI store degraded must be Critical (severity_id 5)"
+        );
+        assert_eq!(
+            ocsf.activity_id, 99,
+            "JTI store degraded must be Other (activity_id 99)"
+        );
+        assert_eq!(
+            ocsf.type_uid, 300299,
+            "type_uid must be class_uid*100+activity_id"
+        );
     }
 
     /// StepUpSuccess with id_token_verified=true serializes the field correctly.
@@ -2223,6 +2343,119 @@ mod tests {
         assert!(
             json.contains("\"verification_failure\":\"signature verification failed\""),
             "verification_failure field missing: {json}"
+        );
+    }
+
+    // ── Phase 37-01: Token exchange audit event tests ────────────────────────
+
+    #[test]
+    fn test_token_exchange_accepted_serialization() {
+        let event = AuditEvent::TokenExchangeAccepted {
+            timestamp: "2026-04-09T12:00:00Z".into(),
+            session_id: "sess-123".into(),
+            username: "alice@example.com".into(),
+            exchanger: "jump-host-a".into(),
+            delegation_depth: 1,
+            target_audience: "target-host-b".into(),
+            host: "server.example.com".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("TOKEN_EXCHANGE_ACCEPTED"), "json: {json}");
+        assert!(json.contains("jump-host-a"), "json: {json}");
+        assert!(json.contains("delegation_depth"), "json: {json}");
+    }
+
+    #[test]
+    fn test_token_exchange_rejected_serialization() {
+        let event = AuditEvent::TokenExchangeRejected {
+            timestamp: "2026-04-09T12:00:00Z".into(),
+            username: "alice@example.com".into(),
+            exchanger: "evil-host".into(),
+            reason: "Unauthorized exchanger: evil-host not in allowed_exchangers list".into(),
+            host: "server.example.com".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("TOKEN_EXCHANGE_REJECTED"), "json: {json}");
+        assert!(json.contains("evil-host"), "json: {json}");
+    }
+
+    #[test]
+    fn test_token_exchange_ocsf_fields() {
+        let accepted = AuditEvent::TokenExchangeAccepted {
+            timestamp: String::new(),
+            session_id: String::new(),
+            username: String::new(),
+            exchanger: String::new(),
+            delegation_depth: 0,
+            target_audience: String::new(),
+            host: String::new(),
+        };
+        let ocsf = accepted.ocsf_fields();
+        assert_eq!(
+            ocsf.activity_id, 1,
+            "Accepted must be Logon (activity_id 1)"
+        );
+        assert_eq!(ocsf.severity_id, 1, "Accepted must be Info (severity_id 1)");
+
+        let rejected = AuditEvent::TokenExchangeRejected {
+            timestamp: String::new(),
+            username: String::new(),
+            exchanger: String::new(),
+            reason: String::new(),
+            host: String::new(),
+        };
+        let ocsf = rejected.ocsf_fields();
+        assert_eq!(
+            ocsf.activity_id, 1,
+            "Rejected must be Logon (activity_id 1)"
+        );
+        assert_eq!(ocsf.severity_id, 4, "Rejected must be High (severity_id 4)");
+    }
+
+    #[test]
+    fn test_token_exchange_accepted_constructor() {
+        let event =
+            AuditEvent::token_exchange_accepted("sess-1", "alice", "jump-host", 2, "target-svc");
+        assert_eq!(event.event_type(), "TOKEN_EXCHANGE_ACCEPTED");
+        assert_eq!(event.syslog_severity(), AuditSeverity::Info);
+        let json = event.enriched_log_json();
+        assert!(json.contains("alice"), "username missing: {json}");
+        assert!(json.contains("jump-host"), "exchanger missing: {json}");
+        assert!(
+            json.contains("target-svc"),
+            "target_audience missing: {json}"
+        );
+        assert!(
+            json.contains("\"delegation_depth\":2"),
+            "delegation_depth missing: {json}"
+        );
+    }
+
+    #[test]
+    fn test_token_exchange_rejected_constructor() {
+        let event =
+            AuditEvent::token_exchange_rejected("bob", "evil-host", "depth exceeded: 4 > 3");
+        assert_eq!(event.event_type(), "TOKEN_EXCHANGE_REJECTED");
+        assert_eq!(event.syslog_severity(), AuditSeverity::Warning);
+        let json = event.enriched_log_json();
+        assert!(json.contains("bob"), "username missing: {json}");
+        assert!(json.contains("evil-host"), "exchanger missing: {json}");
+        assert!(json.contains("depth exceeded"), "reason missing: {json}");
+    }
+
+    #[test]
+    fn test_token_exchange_rejected_enriched_severity_high() {
+        // Verify the enriched JSON has OCSF severity_id 4 (High) — SIEM alert trigger
+        let event =
+            AuditEvent::token_exchange_rejected("user", "attacker", "unauthorized exchanger");
+        let json = event.enriched_log_json();
+        assert!(
+            json.contains("\"severity_id\":4"),
+            "severity_id 4 (High) missing in enriched JSON: {json}"
+        );
+        assert!(
+            json.contains("\"activity_id\":1"),
+            "activity_id 1 (Logon) missing in enriched JSON: {json}"
         );
     }
 }

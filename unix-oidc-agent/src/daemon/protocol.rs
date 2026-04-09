@@ -96,6 +96,10 @@ pub enum AgentRequest {
         /// HTTP method for DPoP proof binding. Default: "SSH".
         #[serde(default = "default_ssh_method")]
         method: String,
+        /// Optional token endpoint override. When set, skips OIDC discovery and
+        /// uses this URL directly. Plumbed from the CLI `--token-endpoint` flag.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        token_endpoint: Option<String>,
     },
 }
 
@@ -466,7 +470,13 @@ mod tests {
 
     #[test]
     fn test_response_serialization() {
-        let resp = AgentResponse::proof("token123".to_string(), "proof456".to_string(), 300, None, None);
+        let resp = AgentResponse::proof(
+            "token123".to_string(),
+            "proof456".to_string(),
+            300,
+            None,
+            None,
+        );
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""status":"success""#));
@@ -509,7 +519,8 @@ mod tests {
     /// TDD: storage_backend field is omitted from JSON when None (skip_serializing_if).
     #[test]
     fn test_status_response_omits_storage_fields_when_none() {
-        let resp = AgentResponse::status(false, None, None, None, None, None, None, None, None, None);
+        let resp =
+            AgentResponse::status(false, None, None, None, None, None, None, None, None, None);
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -667,7 +678,8 @@ mod tests {
     /// Status response omits refresh_failed field when None (backward compat).
     #[test]
     fn test_status_response_refresh_failed_absent_when_none() {
-        let resp = AgentResponse::status(false, None, None, None, None, None, None, None, None, None);
+        let resp =
+            AgentResponse::status(false, None, None, None, None, None, None, None, None, None);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             !json.contains("refresh_failed"),
@@ -1028,8 +1040,7 @@ mod tests {
     /// StepUpComplete with id_token=None serializes WITHOUT "id_token" key (skip_serializing_if).
     #[test]
     fn test_step_up_complete_no_id_token_omitted_from_json() {
-        let resp =
-            AgentResponse::step_up_complete(None, "sess-456".to_string(), None, None);
+        let resp = AgentResponse::step_up_complete(None, "sess-456".to_string(), None, None);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
             !json.contains("id_token"),
@@ -1067,19 +1078,39 @@ mod tests {
             subject_token: "eyJhbGciOiJSUzI1NiJ9.test".into(),
             audience: "target-host-b".into(),
             method: "SSH".into(),
+            token_endpoint: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""action":"exchange_token"#));
+        // token_endpoint should be omitted when None
+        assert!(!json.contains("token_endpoint"));
         let parsed: AgentRequest = serde_json::from_str(&json).unwrap();
         match parsed {
             AgentRequest::ExchangeToken {
                 subject_token,
                 audience,
                 method,
+                token_endpoint,
             } => {
                 assert_eq!(subject_token, "eyJhbGciOiJSUzI1NiJ9.test");
                 assert_eq!(audience, "target-host-b");
                 assert_eq!(method, "SSH");
+                assert!(token_endpoint.is_none());
+            }
+            _ => panic!("Expected ExchangeToken"),
+        }
+    }
+
+    #[test]
+    fn test_exchange_token_with_token_endpoint_override() {
+        let json = r#"{"action":"exchange_token","subject_token":"tok","audience":"host","token_endpoint":"https://idp.example.com/token"}"#;
+        let parsed: AgentRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            AgentRequest::ExchangeToken { token_endpoint, .. } => {
+                assert_eq!(
+                    token_endpoint.as_deref(),
+                    Some("https://idp.example.com/token")
+                );
             }
             _ => panic!("Expected ExchangeToken"),
         }

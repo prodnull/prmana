@@ -93,6 +93,70 @@ pub fn build_dpop_message(
     Ok(format!("{header_b64}.{claims_b64}"))
 }
 
+/// Build a DPoP JWT message with optional attestation evidence in the header.
+///
+/// When `attestation` is `Some`, the DPoP JWT header gains an `attest` field
+/// containing the TPM key certification evidence (ADR-018):
+///
+/// ```json
+/// {
+///   "typ": "dpop+jwt",
+///   "alg": "ES256",
+///   "jwk": { ... },
+///   "attest": {
+///     "certify_info": "base64url...",
+///     "signature": "base64url...",
+///     "ak_public": "base64url..."
+///   }
+/// }
+/// ```
+///
+/// When `attestation` is `None`, this is identical to `build_dpop_message()`.
+///
+/// # Errors
+///
+/// Returns `DPoPError::ClockError` if the system clock is before the Unix epoch.
+/// Returns `DPoPError::Json` if serialisation fails.
+#[instrument(skip(public_key_jwk, nonce, attestation), fields(method, target))]
+pub fn build_dpop_message_with_attestation(
+    public_key_jwk: &serde_json::Value,
+    method: &str,
+    target: &str,
+    nonce: Option<&str>,
+    attestation: Option<&serde_json::Value>,
+) -> Result<String, DPoPError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| DPoPError::ClockError)?
+        .as_secs() as i64;
+
+    let claims = DPoPClaims {
+        jti: Uuid::new_v4().to_string(),
+        htm: method.to_string(),
+        htu: target.to_string(),
+        iat: now,
+        nonce: nonce.map(String::from),
+    };
+
+    let mut header_json = serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": "ES256",
+        "jwk": public_key_jwk
+    });
+
+    if let Some(attest) = attestation {
+        header_json
+            .as_object_mut()
+            .expect("header is always an object")
+            .insert("attest".to_string(), attest.clone());
+    }
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
+    let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims)?.as_bytes());
+
+    Ok(format!("{header_b64}.{claims_b64}"))
+}
+
 /// Assemble a DPoP JWT from a signed message and raw r‖s signature bytes.
 ///
 /// `message` is the `header_b64.claims_b64` string returned by `build_dpop_message`.
@@ -511,6 +575,68 @@ mod tests {
             matches!(result, Err(DPoPError::UnsupportedAlgorithm(ref a)) if a.is_empty()),
             "Empty algorithm must be rejected: {result:?}"
         );
+    }
+
+    // ── ADR-018: attestation evidence in DPoP header ──────────────────────
+
+    #[test]
+    fn test_build_dpop_message_with_attestation_includes_attest() {
+        let jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "test_x",
+            "y": "test_y"
+        });
+        let attestation = serde_json::json!({
+            "certify_info": "dGVzdC1jZXJ0aWZ5",
+            "signature": "dGVzdC1zaWc",
+            "ak_public": "dGVzdC1haw"
+        });
+        let message = build_dpop_message_with_attestation(
+            &jwk,
+            "SSH",
+            "target.example.com",
+            None,
+            Some(&attestation),
+        )
+        .unwrap();
+
+        // Decode header and verify attest field is present
+        let parts: Vec<&str> = message.split('.').collect();
+        assert_eq!(parts.len(), 2);
+        let header_bytes = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert!(
+            header.get("attest").is_some(),
+            "header must contain attest field"
+        );
+        assert_eq!(header["attest"]["certify_info"], "dGVzdC1jZXJ0aWZ5");
+        assert_eq!(header["attest"]["signature"], "dGVzdC1zaWc");
+        assert_eq!(header["attest"]["ak_public"], "dGVzdC1haw");
+    }
+
+    #[test]
+    fn test_build_dpop_message_with_attestation_none_matches_original() {
+        let jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "test_x",
+            "y": "test_y"
+        });
+        let message =
+            build_dpop_message_with_attestation(&jwk, "SSH", "target.example.com", None, None)
+                .unwrap();
+
+        // Decode header and verify no attest field
+        let parts: Vec<&str> = message.split('.').collect();
+        let header_bytes = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert!(
+            header.get("attest").is_none(),
+            "header must not contain attest field when None"
+        );
+        assert_eq!(header["typ"], "dpop+jwt");
+        assert_eq!(header["alg"], "ES256");
     }
 
     #[test]

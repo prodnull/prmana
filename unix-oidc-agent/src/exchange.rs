@@ -15,8 +15,7 @@ use thiserror::Error;
 use tracing::info;
 
 /// Token exchange grant type (RFC 8693 §2.1).
-pub const GRANT_TYPE_TOKEN_EXCHANGE: &str =
-    "urn:ietf:params:oauth:grant-type:token-exchange";
+pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 
 /// Subject token type for access tokens (RFC 8693 §3).
 const SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
@@ -240,7 +239,10 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("invalid_grant"), "Error should contain 'invalid_grant': {err}");
+        assert!(
+            err.contains("invalid_grant"),
+            "Error should contain 'invalid_grant': {err}"
+        );
     }
 
     #[tokio::test]

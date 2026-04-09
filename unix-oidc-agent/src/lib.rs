@@ -5,12 +5,12 @@
 pub mod config;
 pub mod crypto;
 pub mod daemon;
+pub mod exchange;
 pub mod hardware;
 pub mod metrics;
 pub mod sanitize;
 pub mod security;
 pub mod storage;
-pub mod exchange;
 
 #[cfg(feature = "spire")]
 pub mod spire;

@@ -115,6 +115,40 @@ fn test_exchange_rejected_unauthorized_exchanger() {
     }
 }
 
+/// 4b. Missing client_id falls back to act.sub for exchanger authorization.
+///
+/// This locks in the intended fallback behavior when IdPs omit client_id from
+/// the `act` claim. A non-allowlisted sub must still be rejected.
+#[test]
+fn test_exchange_rejected_unauthorized_exchanger_by_sub_fallback() {
+    let config = standard_config();
+    let act = ActClaim {
+        sub: "evil-host".into(),
+        client_id: None,
+        act: None,
+    };
+    let err = validate_delegation(&act, &config).unwrap_err();
+    match err {
+        ValidationError::UnauthorizedExchanger { exchanger } => {
+            assert_eq!(exchanger, "evil-host");
+        }
+        other => panic!("Expected UnauthorizedExchanger, got: {other:?}"),
+    }
+}
+
+/// 4c. Missing client_id + allowlisted sub is accepted.
+#[test]
+fn test_exchange_accepted_authorized_exchanger_by_sub_fallback() {
+    let mut config = standard_config();
+    config.allowed_exchangers.push("jump-host-sub-only".into());
+    let act = ActClaim {
+        sub: "jump-host-sub-only".into(),
+        client_id: None,
+        act: None,
+    };
+    assert!(validate_delegation(&act, &config).is_ok());
+}
+
 /// 5. Token with nested act exceeding max_depth -> rejected.
 ///
 /// Config allows max_depth=1 (single hop), but the act chain has depth=2
@@ -149,7 +183,7 @@ fn test_exchange_rejected_depth_exceeded() {
 #[test]
 fn test_exchange_rejected_lifetime_exceeded() {
     let config = standard_config(); // max 300s
-    // Token with 600s lifetime (iat=0, exp=600)
+                                    // Token with 600s lifetime (iat=0, exp=600)
     let claims = make_claims(
         "alice",
         0,
@@ -171,6 +205,26 @@ fn test_exchange_rejected_lifetime_exceeded() {
         }
         other => panic!("Expected ExchangedTokenLifetimeExceeded, got: {other:?}"),
     }
+}
+
+/// 6b. Malformed tokens with exp < iat clamp to zero lifetime safely.
+///
+/// The validation logic uses `(exp - iat).max(0) as u64`; this test locks in
+/// that malformed tokens do not underflow to a huge lifetime and spuriously fail.
+#[test]
+fn test_exchange_negative_lifetime_clamps_to_zero() {
+    let config = standard_config();
+    let claims = make_claims(
+        "alice",
+        600,
+        300,
+        Some(ActClaim {
+            sub: "jump-host-a".into(),
+            client_id: Some("jump-host-a".into()),
+            act: None,
+        }),
+    );
+    assert!(validate_exchanged_token_lifetime(&claims, &config).is_ok());
 }
 
 // ── Adversarial edge cases ─────────────────────────────────────────────────
@@ -215,11 +269,7 @@ fn test_adversarial_deep_nesting_no_stack_overflow() {
     for i in 1..100 {
         innermost = ActClaim {
             sub: format!("hop-{i}"),
-            client_id: if i == 99 {
-                Some("hop-99".into())
-            } else {
-                None
-            },
+            client_id: if i == 99 { Some("hop-99".into()) } else { None },
             act: Some(Box::new(innermost)),
         };
     }

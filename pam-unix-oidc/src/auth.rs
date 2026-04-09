@@ -302,9 +302,10 @@ pub fn authenticate_multi_issuer(
             Ok(()) => {
                 // Also check exchanged token lifetime
                 if let Some(ref deleg_config) = issuer_config.delegation {
-                    if let Err(e) =
-                        crate::oidc::validation::validate_exchanged_token_lifetime(&claims, deleg_config)
-                    {
+                    if let Err(e) = crate::oidc::validation::validate_exchanged_token_lifetime(
+                        &claims,
+                        deleg_config,
+                    ) {
                         let exchanger_id = act.client_id.as_deref().unwrap_or(&act.sub);
                         crate::audit::AuditEvent::token_exchange_rejected(
                             &username_for_audit(&claims),
@@ -369,52 +370,63 @@ pub fn authenticate_multi_issuer(
     // Phase 35: SPIFFE ID → username mapping.
     // When the token's `sub` is a SPIFFE ID and the issuer has spiffe_mapping configured,
     // use SpiffeUsernameMapper instead of the standard claim_mapping pipeline.
-    let (username_str, raw_claim, mapped_from) = if let Some(ref spiffe_cfg) =
-        issuer_config.spiffe_mapping
-    {
-        if crate::identity::mapper::SpiffeUsernameMapper::is_spiffe_id(&claims.sub) {
-            let spiffe_mapper =
-                crate::identity::mapper::SpiffeUsernameMapper::from_config(spiffe_cfg)
+    let (username_str, _raw_claim, mapped_from) =
+        if let Some(ref spiffe_cfg) = issuer_config.spiffe_mapping {
+            if crate::identity::mapper::SpiffeUsernameMapper::is_spiffe_id(&claims.sub) {
+                let spiffe_mapper =
+                    crate::identity::mapper::SpiffeUsernameMapper::from_config(spiffe_cfg)
+                        .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+                let raw = claims.sub.clone();
+                let username = spiffe_mapper
+                    .map_spiffe_id(&claims.sub)
                     .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
-            let raw = claims.sub.clone();
-            let username = spiffe_mapper
-                .map_spiffe_id(&claims.sub)
-                .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
-            tracing::info!(
-                spiffe_id = %claims.sub,
-                username = %username,
-                strategy = %spiffe_cfg.strategy,
-                "SPIFFE ID mapped to Unix username"
-            );
-            let mapped = if username != raw { Some(raw.clone()) } else { None };
-            (username, raw, mapped)
+                tracing::info!(
+                    spiffe_id = %claims.sub,
+                    username = %username,
+                    strategy = %spiffe_cfg.strategy,
+                    "SPIFFE ID mapped to Unix username"
+                );
+                let mapped = if username != raw {
+                    Some(raw.clone())
+                } else {
+                    None
+                };
+                (username, raw, mapped)
+            } else {
+                // Non-SPIFFE token on a SPIFFE-configured issuer — fall through to standard mapping.
+                let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
+                    .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+                let raw = claims
+                    .get_claim_str(&issuer_config.claim_mapping.username_claim)
+                    .unwrap_or_default();
+                let username = mapper
+                    .map(&claims)
+                    .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
+                let mapped = if username != raw {
+                    Some(raw.clone())
+                } else {
+                    None
+                };
+                (username, raw, mapped)
+            }
         } else {
-            // Non-SPIFFE token on a SPIFFE-configured issuer — fall through to standard mapping.
             let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
                 .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+
+            // SBUG-03: Use the configured username_claim to populate raw_claim for the audit trail.
             let raw = claims
                 .get_claim_str(&issuer_config.claim_mapping.username_claim)
                 .unwrap_or_default();
             let username = mapper
                 .map(&claims)
                 .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
-            let mapped = if username != raw { Some(raw.clone()) } else { None };
+            let mapped = if username != raw {
+                Some(raw.clone())
+            } else {
+                None
+            };
             (username, raw, mapped)
-        }
-    } else {
-        let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
-            .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
-
-        // SBUG-03: Use the configured username_claim to populate raw_claim for the audit trail.
-        let raw = claims
-            .get_claim_str(&issuer_config.claim_mapping.username_claim)
-            .unwrap_or_default();
-        let username = mapper
-            .map(&claims)
-            .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
-        let mapped = if username != raw { Some(raw.clone()) } else { None };
-        (username, raw, mapped)
-    };
+        };
 
     // Step 8: JTI replay prevention with issuer-scoped keys (MIDP-07).
     //
@@ -527,6 +539,24 @@ pub fn authenticate_multi_issuer(
     // Step 11: Generate session ID and return result.
     let session_id = generate_ssh_session_id()
         .map_err(|e| AuthError::Config(format!("Session ID generation failed: {e}")))?;
+
+    if let Some(ref act) = claims.act {
+        let exchanger_id = act.client_id.as_deref().unwrap_or(&act.sub);
+        let target_audience = match &claims.aud {
+            crate::oidc::token::StringOrVec::String(aud) => aud.as_str(),
+            crate::oidc::token::StringOrVec::Vec(auds) => {
+                auds.first().map(String::as_str).unwrap_or("unknown")
+            }
+        };
+        crate::audit::AuditEvent::token_exchange_accepted(
+            &session_id,
+            &user_info.username,
+            exchanger_id,
+            claims.delegation_depth(),
+            target_audience,
+        )
+        .log();
+    }
 
     Ok(AuthResult {
         username: user_info.username,
@@ -1357,6 +1387,53 @@ mod tests {
         (proof, target.to_string())
     }
 
+    fn make_test_proof_with_attestation(
+        target: &str,
+        attestation: Option<serde_json::Value>,
+    ) -> (String, String) {
+        setup_jti_dir();
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        use p256::elliptic_curve::rand_core::OsRng;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let point = verifying_key.to_encoded_point(false);
+
+        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
+        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let claims = serde_json::json!({
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "htm": "SSH",
+            "htu": target,
+            "iat": now,
+        });
+
+        let mut header = serde_json::json!({
+            "typ": "dpop+jwt",
+            "alg": "ES256",
+            "jwk": { "kty": "EC", "crv": "P-256", "x": x, "y": y }
+        });
+        if let Some(attest) = attestation {
+            header["attest"] = attest;
+        }
+
+        let h = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
+        let c = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
+        let msg = format!("{h}.{c}");
+        let sig: Signature = signing_key.sign(msg.as_bytes());
+        let proof = format!("{}.{}", msg, URL_SAFE_NO_PAD.encode(sig.to_bytes()));
+        (proof, target.to_string())
+    }
+
     /// Replicate the cache-backed nonce enforcement logic from authenticate_with_dpop
     /// so we can test it in isolation without SSSD.
     fn apply_cache_nonce_enforcement(
@@ -1652,9 +1729,26 @@ timeouts:
 
     #[cfg(feature = "test-mode")]
     fn make_test_jwt(iss: &str, sub: &str, preferred_username: &str, jti: Option<&str>) -> String {
+        make_test_jwt_with_extra_claims(
+            iss,
+            sub,
+            preferred_username,
+            jti,
+            serde_json::Value::Object(serde_json::Map::new()),
+        )
+    }
+
+    #[cfg(feature = "test-mode")]
+    fn make_test_jwt_with_extra_claims(
+        iss: &str,
+        sub: &str,
+        preferred_username: &str,
+        jti: Option<&str>,
+        extra_claims: serde_json::Value,
+    ) -> String {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
-        let header = r#"{"alg":"ES256","typ":"JWT"}"#;
+        let header = serde_json::json!({"alg":"ES256","typ":"JWT"});
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1667,12 +1761,22 @@ timeouts:
             Some(prefix) => format!("{prefix}-{}", uuid::Uuid::new_v4()),
             None => uuid::Uuid::new_v4().to_string(),
         };
-        let jti_field = format!(r#","jti":"{unique_jti}""#);
-        let payload = format!(
-            r#"{{"iss":"{iss}","sub":"{sub}","aud":"unix-oidc","exp":{exp},"iat":{now},"preferred_username":"{preferred_username}"{jti_field}}}"#
-        );
-        let h = URL_SAFE_NO_PAD.encode(header.as_bytes());
-        let p = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let mut payload = serde_json::json!({
+            "iss": iss,
+            "sub": sub,
+            "aud": "unix-oidc",
+            "exp": exp,
+            "iat": now,
+            "preferred_username": preferred_username,
+            "jti": unique_jti,
+        });
+        if let (serde_json::Value::Object(payload_map), serde_json::Value::Object(extra_map)) =
+            (&mut payload, extra_claims)
+        {
+            payload_map.extend(extra_map);
+        }
+        let h = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
+        let p = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
         format!("{h}.{p}.dummysig")
     }
 
@@ -1845,6 +1949,242 @@ timeouts:
         assert!(
             matches!(result, Err(AuthError::DPoPRequired)),
             "Strict DPoP enforcement must require proof, got: {result:?}"
+        );
+    }
+
+    #[cfg(feature = "test-mode")]
+    #[test]
+    fn test_auth_path_rejects_act_claim_without_delegation_config() {
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt_with_extra_claims(
+            "https://keycloak.example.com/realms/test",
+            "alice",
+            "alice",
+            Some("jti-deleg-none"),
+            serde_json::json!({
+                "act": { "sub": "jump-host-a", "client_id": "jump-host-a" }
+            }),
+        );
+        let policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Disabled,
+            false,
+        );
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        assert!(
+            matches!(
+                result,
+                Err(AuthError::TokenValidation(
+                    ValidationError::DelegationNotAllowed
+                ))
+            ),
+            "Expected DelegationNotAllowed from auth path, got: {result:?}"
+        );
+    }
+
+    #[cfg(feature = "test-mode")]
+    #[test]
+    fn test_auth_path_rejects_unauthorized_exchanger() {
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt_with_extra_claims(
+            "https://keycloak.example.com/realms/test",
+            "alice",
+            "alice",
+            Some("jti-deleg-unauth"),
+            serde_json::json!({
+                "act": { "sub": "evil-host", "client_id": "evil-host" }
+            }),
+        );
+        let mut policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Disabled,
+            false,
+        );
+        policy.issuers[0].delegation = Some(crate::policy::config::DelegationConfig {
+            allowed_exchangers: vec!["jump-host-a".into()],
+            max_depth: 2,
+            exchanged_token_max_lifetime_secs: 300,
+        });
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        assert!(
+            matches!(
+                result,
+                Err(AuthError::TokenValidation(
+                    ValidationError::UnauthorizedExchanger { .. }
+                ))
+            ),
+            "Expected UnauthorizedExchanger from auth path, got: {result:?}"
+        );
+    }
+
+    #[cfg(feature = "test-mode")]
+    #[test]
+    fn test_auth_path_rejects_delegation_depth_exceeded() {
+        let _guard = MULTI_ISSUER_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("UNIX_OIDC_TEST_MODE", "1");
+        let token = make_test_jwt_with_extra_claims(
+            "https://keycloak.example.com/realms/test",
+            "alice",
+            "alice",
+            Some("jti-deleg-depth"),
+            serde_json::json!({
+                "act": {
+                    "sub": "jump-host-b",
+                    "client_id": "jump-host-b",
+                    "act": {
+                        "sub": "jump-host-a",
+                        "client_id": "jump-host-a"
+                    }
+                }
+            }),
+        );
+        let mut policy = make_two_issuer_policy(
+            "https://keycloak.example.com/realms/test",
+            "https://entra.example.com",
+            EnforcementMode::Disabled,
+            false,
+        );
+        policy.issuers[0].delegation = Some(crate::policy::config::DelegationConfig {
+            allowed_exchangers: vec!["jump-host-b".into()],
+            max_depth: 1,
+            exchanged_token_max_lifetime_secs: 300,
+        });
+        let registry = crate::oidc::jwks::IssuerJwksRegistry::new();
+        let dpop_config = DPoPAuthConfig::default();
+        let result = authenticate_multi_issuer(&token, None, &dpop_config, &policy, &registry);
+        std::env::remove_var("UNIX_OIDC_TEST_MODE");
+        assert!(
+            matches!(
+                result,
+                Err(AuthError::TokenValidation(
+                    ValidationError::DelegationDepthExceeded { actual: 2, max: 1 }
+                ))
+            ),
+            "Expected DelegationDepthExceeded from auth path, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_per_issuer_dpop_strict_rejects_missing_attestation() {
+        let claims = crate::oidc::token::TokenClaims {
+            sub: "alice".into(),
+            preferred_username: Some("alice".into()),
+            iss: "https://idp.example.com".into(),
+            aud: crate::oidc::token::StringOrVec::String("unix-oidc".into()),
+            exp: 9_999_999_999,
+            iat: 1_700_000_000,
+            auth_time: None,
+            acr: None,
+            amr: None,
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            cnf: None,
+            act: None,
+            extra: std::collections::HashMap::new(),
+        };
+        let (proof, target) = make_test_proof_with_attestation("attest-test.example.com", None);
+        let dpop_config = DPoPAuthConfig {
+            max_proof_age: 60,
+            clock_skew_future_secs: 5,
+            require_nonce: false,
+            expected_nonce: None,
+            target_host: target,
+            require_dpop_for_bound_tokens: true,
+        };
+        let attestation_config = crate::policy::config::AttestationConfig {
+            enforcement: EnforcementMode::Strict,
+        };
+
+        let result = apply_per_issuer_dpop(
+            Some(&proof),
+            &dpop_config,
+            &claims,
+            EnforcementMode::Warn,
+            EnforcementMode::Disabled,
+            Some(&attestation_config),
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(AuthError::AttestationFailed(
+                    crate::oidc::attestation::AttestationError::MissingStrict
+                ))
+            ),
+            "Expected strict attestation failure, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_per_issuer_dpop_strict_rejects_malformed_attestation() {
+        let claims = crate::oidc::token::TokenClaims {
+            sub: "alice".into(),
+            preferred_username: Some("alice".into()),
+            iss: "https://idp.example.com".into(),
+            aud: crate::oidc::token::StringOrVec::String("unix-oidc".into()),
+            exp: 9_999_999_999,
+            iat: 1_700_000_000,
+            auth_time: None,
+            acr: None,
+            amr: None,
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            cnf: None,
+            act: None,
+            extra: std::collections::HashMap::new(),
+        };
+        let malformed_attestation = serde_json::json!({
+            "certify_info": "!!!not-base64!!!",
+            "signature": "AQID",
+            "ak_public": "AQID"
+        });
+        let (proof, target) = make_test_proof_with_attestation(
+            "attest-malformed.example.com",
+            Some(malformed_attestation),
+        );
+        let dpop_config = DPoPAuthConfig {
+            max_proof_age: 60,
+            clock_skew_future_secs: 5,
+            require_nonce: false,
+            expected_nonce: None,
+            target_host: target,
+            require_dpop_for_bound_tokens: true,
+        };
+        let attestation_config = crate::policy::config::AttestationConfig {
+            enforcement: EnforcementMode::Strict,
+        };
+
+        let result = apply_per_issuer_dpop(
+            Some(&proof),
+            &dpop_config,
+            &claims,
+            EnforcementMode::Warn,
+            EnforcementMode::Disabled,
+            Some(&attestation_config),
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(AuthError::AttestationFailed(
+                    crate::oidc::attestation::AttestationError::InvalidEncoding { .. }
+                ))
+            ),
+            "Expected malformed attestation failure, got: {result:?}"
         );
     }
 

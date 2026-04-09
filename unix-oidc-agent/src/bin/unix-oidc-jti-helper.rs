@@ -34,10 +34,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!(
-            "Usage: {} <check|check-permissive> <issuer> <jti>",
-            args[0]
-        );
+        eprintln!("Usage: {} <check|check-permissive> <issuer> <jti>", args[0]);
         return ExitCode::from(3);
     }
 

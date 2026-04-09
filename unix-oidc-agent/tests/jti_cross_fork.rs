@@ -58,7 +58,10 @@ fn test_cross_fork_sequential_replay() {
         .env("UNIX_OIDC_JTI_DIR", jti_dir.path())
         .status()
         .expect("spawn process A");
-    assert!(status_a.success(), "First use must succeed (exit 0), got: {status_a:?}");
+    assert!(
+        status_a.success(),
+        "First use must succeed (exit 0), got: {status_a:?}"
+    );
 
     // Process B: replay — must be rejected.
     let status_b = Command::new(helper_bin())
@@ -105,10 +108,7 @@ fn test_concurrent_race_one_wins() {
     let status_c = child_c.wait().expect("wait process C");
     let status_d = child_d.wait().expect("wait process D");
 
-    let success_count = [status_c, status_d]
-        .iter()
-        .filter(|s| s.success())
-        .count();
+    let success_count = [status_c, status_d].iter().filter(|s| s.success()).count();
     let replay_count = [status_c, status_d]
         .iter()
         .filter(|s| s.code() == Some(1))
@@ -215,7 +215,11 @@ fn test_permissive_unwritable_fallback() {
         .expect("set permissions to 000");
 
     let output = Command::new(helper_bin())
-        .args(["check-permissive", "https://idp.example.com", "jti-permissive-001"])
+        .args([
+            "check-permissive",
+            "https://idp.example.com",
+            "jti-permissive-001",
+        ])
         .env("UNIX_OIDC_JTI_DIR", &dir_path)
         .output()
         .expect("spawn process");
