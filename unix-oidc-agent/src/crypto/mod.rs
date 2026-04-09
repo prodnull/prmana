@@ -24,6 +24,9 @@ pub mod tpm_signer;
 #[cfg(feature = "pqc")]
 pub mod pqc_signer;
 
+#[cfg(feature = "spire")]
+pub mod spire_signer;
+
 pub use dpop::{
     assemble_dpop_proof, assemble_dpop_proof_composite, build_dpop_message,
     build_dpop_message_with_alg, generate_dpop_proof, DPoPClaims, DPoPError,
@@ -40,3 +43,6 @@ pub use tpm_signer::TpmSigner;
 
 #[cfg(feature = "pqc")]
 pub use pqc_signer::HybridPqcSigner;
+
+#[cfg(feature = "spire")]
+pub use spire_signer::{SpireConfig, SpireSigner};

@@ -15,6 +15,17 @@ ADRs document significant architectural decisions made during the project's deve
 | [005](./005-dpop-token-exchange.md) | DPoP-Chained Token Exchange for Multi-Hop SSH | Proposed | 2026-01-18 |
 | [005-alignment](./005-dpop-token-exchange-alignment.md) | ADR-005 Alignment with IETF OAuth WG Direction | Proposed | 2026-01-18 |
 | [006](./006-agent-ssh-introspection.md) | Agent SSH Config Introspection for Automatic Audience Discovery | Proposed | 2026-01-18 |
+| [007](./007-pqc-hybrid-dpop.md) | Post-Quantum Hybrid DPoP Signatures (ML-DSA-65+ES256) | Accepted (experimental, behind `pqc` feature flag) | 2026-03-12 |
+| [008](./008-sssd-group-resolution.md) | SSSD-Only Group Resolution | Accepted | 2026-04-09 |
+| [009](./009-stat-based-config-hot-reload.md) | Stat-Based Config Hot-Reload | Accepted | 2026-04-09 |
+| [010](./010-hmac-audit-chain-composition.md) | HMAC Audit Chain Composition | Accepted | 2026-04-09 |
+| [011](./011-per-issuer-jwks-configuration.md) | Per-Issuer JWKS Configuration | Accepted | 2026-04-09 |
+| [012](./012-acr-enforcement-hard-fail.md) | ACR Enforcement as Hard-Fail | Accepted | 2026-04-09 |
+| [013](./013-same-uid-ipc-trust-model.md) | Same-UID IPC Trust Model | Accepted | 2026-04-09 |
+| [014](./014-tpm-object-attributes.md) | TPM 2.0 Object Attributes | Accepted | 2026-04-09 |
+| [015](./015-spiffe-trust-via-oidc-discovery.md) | SPIFFE Trust via OIDC Discovery | Accepted | 2026-04-09 |
+| [016](./016-ephemeral-dpop-keys-for-spire.md) | Ephemeral DPoP Keys for SPIRE | Accepted | 2026-04-09 |
+| [017](./017-spire-workload-api-integration.md) | SpireSigner via tonic + Official Workload API Proto | Accepted | 2026-04-09 |
 
 ## ADR Format
 

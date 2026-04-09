@@ -180,8 +180,9 @@ enum Commands {
         #[arg(long, hide = true)]
         client_secret: Option<String>,
 
-        /// Signer backend: software (default), yubikey:<slot> (e.g. yubikey:9a), tpm.
-        /// Hardware signers must be provisioned first with `unix-oidc-agent provision --signer <spec>`.
+        /// Signer backend: software (default), yubikey:<slot> (e.g. yubikey:9a), tpm, spire.
+        /// Hardware signers (yubikey, tpm) must be provisioned first with `provision --signer <spec>`.
+        /// SPIRE signer fetches JWT-SVIDs from local SPIRE agent (requires --features spire).
         #[arg(long, default_value = "software")]
         signer: String,
     },

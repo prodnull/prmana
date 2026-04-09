@@ -28,6 +28,20 @@ pub struct SignerConfig {
     pub yubikey: Option<YubiKeyConfig>,
     /// TPM 2.0 backend configuration (Plan 03-02).
     pub tpm: Option<TpmConfig>,
+    /// SPIRE Workload API configuration (Phase 35, ADR-017).
+    pub spire: Option<SpireYamlConfig>,
+}
+
+/// SPIRE Workload API configuration (deserialized from signer.yaml).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpireYamlConfig {
+    /// Path to the SPIRE agent Workload API Unix domain socket.
+    /// Default: `/tmp/spire-agent/public/api.sock`.
+    pub socket_path: Option<String>,
+    /// Audience(s) to request in JWT-SVIDs.
+    pub audience: Option<Vec<String>>,
+    /// Optional: request SVIDs for a specific SPIFFE ID only.
+    pub spiffe_id: Option<String>,
 }
 
 /// YubiKey-specific signer configuration.
@@ -167,8 +181,32 @@ pub fn build_signer(
         anyhow::bail!("TPM support not compiled in. Rebuild with `cargo build --features tpm`.");
     }
 
+    #[cfg(feature = "spire")]
+    if signer_spec == "spire" {
+        let spire_cfg = config
+            .spire
+            .as_ref()
+            .map(|s| crate::crypto::SpireConfig {
+                socket_path: s
+                    .socket_path
+                    .clone()
+                    .unwrap_or_else(|| crate::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()),
+                audience: s.audience.clone().unwrap_or_default(),
+                spiffe_id: s.spiffe_id.clone(),
+            })
+            .unwrap_or_default();
+        return Ok(Arc::new(crate::crypto::SpireSigner::new(spire_cfg)));
+    }
+
+    #[cfg(not(feature = "spire"))]
+    if signer_spec == "spire" {
+        anyhow::bail!(
+            "SPIRE support not compiled in. Rebuild with `cargo build --features spire`."
+        );
+    }
+
     anyhow::bail!(
-        "Unknown signer: '{signer_spec}'. Valid options: software, yubikey:<slot> (e.g. yubikey:9a), tpm"
+        "Unknown signer: '{signer_spec}'. Valid options: software, yubikey:<slot> (e.g. yubikey:9a), tpm, spire"
     )
 }
 
@@ -229,6 +267,13 @@ pub fn provision_signer(
     #[cfg(not(feature = "tpm"))]
     if signer_spec == "tpm" {
         anyhow::bail!("TPM support not compiled in. Rebuild with `cargo build --features tpm`.");
+    }
+
+    if signer_spec == "spire" {
+        anyhow::bail!(
+            "SPIRE signer uses ephemeral DPoP keys — no provisioning needed.\n\
+             Run `unix-oidc-agent login --signer spire` to authenticate."
+        );
     }
 
     anyhow::bail!(

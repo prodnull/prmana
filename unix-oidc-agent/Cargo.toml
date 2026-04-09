@@ -81,6 +81,32 @@ tpm = ["dep:tss-esapi", "dep:rpassword"]
 # Experimental hybrid PQC DPoP: ML-DSA-65+ES256 composite signatures
 # per draft-ietf-jose-pq-composite-sigs-01. Pre-release, unaudited crate.
 pqc = ["dep:ml-dsa", "pam-unix-oidc/pqc"]
+# SPIFFE/SPIRE integration: fetch JWT-SVIDs via SPIRE Workload API (gRPC over UDS).
+# ADR-017: tonic + official proto chosen over spiffe crate or hand-rolled protobuf.
+spire = ["dep:tonic", "dep:prost", "dep:hyper-util", "dep:tower"]
+
+# SPIRE Workload API client (gRPC over UDS). Only pulled in by --features spire.
+# channel: gRPC client transport (includes hyper-util for UDS connector).
+# prost: protobuf codec. codegen: not needed (stubs are checked in).
+[dependencies.tonic]
+version = "0.12"
+optional = true
+default-features = false
+features = ["channel", "prost", "codegen"]
+
+[dependencies.prost]
+version = "0.13"
+optional = true
+
+# UDS transport for tonic (SPIRE Workload API socket).
+[dependencies.hyper-util]
+version = "0.1"
+optional = true
+features = ["tokio"]
+
+[dependencies.tower]
+version = "0.4"
+optional = true
 
 [dependencies.cryptoki]
 version = "0.7"
