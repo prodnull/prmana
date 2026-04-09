@@ -188,26 +188,30 @@ fn global_http_client() -> &'static reqwest::blocking::Client {
 
 // ── Cache key derivation ───────────────────────────────────────────────────────
 
-/// Derive a safe cache key from a JTI claim or a SHA-256 prefix of the token.
+/// Derive an issuer-scoped cache key from a JTI claim or token hash.
 ///
 /// Security: raw bearer tokens MUST NOT appear as cache keys (they would be
 /// stored in a process-global `HashMap`, expanding the attack surface for memory
-/// forensics). Instead:
+/// forensics).
 ///
-/// - If `token_jti` is provided: use it directly. JTIs are already opaque
-///   identifiers with no secret value.
-/// - Otherwise: SHA-256 hash of the first 32 bytes of the token, hex-encoded.
-///   This leaks no bearer value while still producing a deterministic key.
-pub fn derive_cache_key(token_jti: Option<&str>, token: &str) -> String {
-    if let Some(jti) = token_jti {
-        return jti.to_string();
-    }
-    // No JTI — derive key from SHA-256(token[..32]).
-    let slice_len = token.len().min(32);
+/// The `endpoint` parameter provides cross-issuer isolation: two issuers that
+/// happen to share a JTI value (JTIs are only unique per-issuer, not globally)
+/// will produce different cache keys because their introspection endpoints differ.
+///
+/// Key derivation:
+/// - With JTI: `SHA-256(endpoint + ":" + jti)` — issuer-scoped, collision-resistant.
+/// - Without JTI: `SHA-256(endpoint + ":" + token)` — full token hash, issuer-scoped.
+///   Uses the entire token (not just first 32 bytes) to eliminate prefix collisions.
+pub fn derive_cache_key(endpoint: &str, token_jti: Option<&str>, token: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(&token.as_bytes()[..slice_len]);
+    hasher.update(endpoint.as_bytes());
+    hasher.update(b":");
+    if let Some(jti) = token_jti {
+        hasher.update(jti.as_bytes());
+    } else {
+        hasher.update(token.as_bytes());
+    }
     let digest = hasher.finalize();
-    // Encode as lowercase hex without external dependency.
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -274,8 +278,9 @@ pub fn introspect_token(
         None => return Err(IntrospectionError::NotConfigured),
     };
 
-    // Derive cache key — never stores raw bearer credential.
-    let cache_key = derive_cache_key(token_jti, token);
+    // Derive issuer-scoped cache key — never stores raw bearer credential.
+    // The endpoint URL provides cross-issuer isolation (Codex finding 1 fix).
+    let cache_key = derive_cache_key(&endpoint, token_jti, token);
 
     // Capture values for the closure (config.enforcement is used in the caller,
     // but session/username are captured here for audit events emitted inside the closure).
@@ -459,17 +464,20 @@ mod tests {
 
     // ── Cache key derivation ──────────────────────────────────────────────
 
+    const EP_A: &str = "https://issuer-a.example.com/introspect";
+    const EP_B: &str = "https://issuer-b.example.com/introspect";
+
     #[test]
-    fn test_cache_key_uses_jti_when_present() {
-        let key = derive_cache_key(Some("my-jti-value"), "token_that_should_be_ignored");
-        assert_eq!(key, "my-jti-value");
+    fn test_cache_key_with_jti_is_64_hex() {
+        let key = derive_cache_key(EP_A, Some("my-jti-value"), "ignored-token");
+        assert_eq!(key.len(), 64, "issuer-scoped key must be 64-char hex: {key}");
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn test_cache_key_sha256_fallback_when_no_jti() {
         let token = "eyJhbGciOiJFUzI1NiJ9.abc.def";
-        let key = derive_cache_key(None, token);
-        // Must be a 64-char hex string (SHA-256 = 32 bytes = 64 hex chars)
+        let key = derive_cache_key(EP_A, None, token);
         assert_eq!(key.len(), 64, "cache key must be 64-char hex: {key}");
         assert!(
             key.chars().all(|c| c.is_ascii_hexdigit()),
@@ -480,15 +488,15 @@ mod tests {
     #[test]
     fn test_cache_key_sha256_fallback_deterministic() {
         let token = "test_token_value";
-        let key1 = derive_cache_key(None, token);
-        let key2 = derive_cache_key(None, token);
+        let key1 = derive_cache_key(EP_A, None, token);
+        let key2 = derive_cache_key(EP_A, None, token);
         assert_eq!(key1, key2, "cache key must be deterministic for same token");
     }
 
     #[test]
     fn test_cache_key_sha256_fallback_different_tokens() {
-        let key1 = derive_cache_key(None, "token_a");
-        let key2 = derive_cache_key(None, "token_b");
+        let key1 = derive_cache_key(EP_A, None, "token_a");
+        let key2 = derive_cache_key(EP_A, None, "token_b");
         assert_ne!(
             key1, key2,
             "different tokens must produce different cache keys"
@@ -498,8 +506,40 @@ mod tests {
     #[test]
     fn test_cache_key_sha256_short_token() {
         // Token shorter than 32 bytes must not panic.
-        let key = derive_cache_key(None, "abc");
+        let key = derive_cache_key(EP_A, None, "abc");
         assert_eq!(key.len(), 64);
+    }
+
+    // ── Cross-issuer isolation (Codex finding 1) ────────────────────────
+
+    #[test]
+    fn test_cache_key_same_jti_different_issuer_produces_different_keys() {
+        let key_a = derive_cache_key(EP_A, Some("shared-jti"), "token");
+        let key_b = derive_cache_key(EP_B, Some("shared-jti"), "token");
+        assert_ne!(
+            key_a, key_b,
+            "Same JTI from different issuers must produce different cache keys"
+        );
+    }
+
+    #[test]
+    fn test_cache_key_same_token_different_issuer_produces_different_keys() {
+        let key_a = derive_cache_key(EP_A, None, "identical-token-bytes");
+        let key_b = derive_cache_key(EP_B, None, "identical-token-bytes");
+        assert_ne!(
+            key_a, key_b,
+            "Same token from different issuers must produce different cache keys"
+        );
+    }
+
+    #[test]
+    fn test_cache_key_same_issuer_same_jti_is_stable() {
+        let key1 = derive_cache_key(EP_A, Some("jti-x"), "token-1");
+        let key2 = derive_cache_key(EP_A, Some("jti-x"), "token-2");
+        assert_eq!(
+            key1, key2,
+            "Same issuer + JTI must produce same key regardless of token body"
+        );
     }
 
     // ── Cache hit/miss ─────────────────────────────────────────────────────

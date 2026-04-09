@@ -807,13 +807,23 @@ fn notify_agent_session_closed(session_id: &str) {
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
-    // Resolve agent socket path.  Use the same env variable the agent daemon exports.
-    let socket_path = std::env::var("UNIX_OIDC_AGENT_SOCKET").unwrap_or_else(|_| {
-        // Fallback: use XDG_RUNTIME_DIR if available (user sessions under systemd),
-        // otherwise root runtime dir.
-        let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/0".to_string());
-        format!("{xdg}/unix-oidc-agent.sock")
-    });
+    // Resolve agent socket path from UID, not environment variables.
+    // Security (Codex finding 3): session-close runs as root; env vars are
+    // user-influenced and could redirect root to a malicious socket.
+    let socket_path = {
+        #[cfg(feature = "test-mode")]
+        if let Ok(path) = std::env::var("UNIX_OIDC_AGENT_SOCKET") {
+            path
+        } else {
+            let uid = uzers::get_current_uid();
+            format!("/run/user/{uid}/unix-oidc-agent.sock")
+        }
+        #[cfg(not(feature = "test-mode"))]
+        {
+            let uid = uzers::get_current_uid();
+            format!("/run/user/{uid}/unix-oidc-agent.sock")
+        }
+    };
 
     let stream = match UnixStream::connect(&socket_path) {
         Ok(s) => s,
@@ -1266,6 +1276,9 @@ mod tests {
         );
     }
 
+    // Requires test-mode: UNIX_OIDC_POLICY_YAML is gated behind #[cfg(feature = "test-mode")]
+    // per Codex finding 4 (env-policy injection prevention).
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_dpop_mode_from_inline_yaml_disabled() {
         let _guard = ENV_MUTEX.lock();
@@ -1280,6 +1293,7 @@ mod tests {
         assert_eq!(dpop_mode, EnforcementMode::Disabled);
     }
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_dpop_mode_from_inline_yaml_warn() {
         let _guard = ENV_MUTEX.lock();
@@ -1360,7 +1374,10 @@ mod tests {
     }
 
     // ── SessionClosed IPC newline test (Phase 14-01) ─────────────────────────
+    // Requires test-mode: production builds derive socket path from UID,
+    // not UNIX_OIDC_AGENT_SOCKET env var, so the test socket can't be reached.
 
+    #[cfg(feature = "test-mode")]
     #[test]
     fn test_notify_agent_session_closed_sends_newline_framed_json() {
         // Verify that notify_agent_session_closed writes JSON + '\n' so that the

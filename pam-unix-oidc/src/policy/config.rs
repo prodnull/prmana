@@ -1154,6 +1154,47 @@ impl Default for PamTimeoutsConfig {
     }
 }
 
+// ── AuditConfig ──────────────────────────────────────────────────────────────
+
+/// Audit logging configuration.
+///
+/// Controls where audit events are written and how tamper-evidence is configured.
+///
+/// Environment variable override pattern (double-underscore nesting):
+/// - `UNIX_OIDC_AUDIT__LOG_FILE=/var/log/unix-oidc-audit.log`
+/// - `UNIX_OIDC_AUDIT__SYSLOG_ENABLED=true`
+/// - `UNIX_OIDC_AUDIT__HMAC_KEY_FILE=/etc/unix-oidc/audit-hmac.key`
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AuditConfig {
+    /// Path to the dedicated audit log file. JSON-lines format, one event per line.
+    /// Set to empty string to disable file logging.
+    /// Default: `/var/log/unix-oidc-audit.log`
+    pub log_file: String,
+    /// Whether to send audit events to syslog (AUTH facility, RFC 3164).
+    /// Default: `true`
+    pub syslog_enabled: bool,
+    /// Path to a file containing the HMAC-SHA256 key for tamper-evident audit chains.
+    /// The key is read at startup; the file must be readable by the PAM module.
+    /// When empty, falls back to `UNIX_OIDC_AUDIT_HMAC_KEY` environment variable.
+    /// Default: empty (env var fallback)
+    pub hmac_key_file: String,
+    /// Whether to write audit events to stderr (useful for debugging/testing).
+    /// Default: `true`
+    pub stderr_enabled: bool,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            log_file: "/var/log/unix-oidc-audit.log".to_string(),
+            syslog_enabled: true,
+            hmac_key_file: String::new(),
+            stderr_enabled: true,
+        }
+    }
+}
+
 // ── PolicyConfig ──────────────────────────────────────────────────────────────
 
 /// Complete policy configuration.
@@ -1200,6 +1241,9 @@ pub struct PolicyConfig {
     /// Duplicate `issuer_url` values hard-fail at load time (detected by `load_from()`).
     #[serde(default)]
     pub issuers: Vec<IssuerConfig>,
+    /// Audit logging configuration (Phase 32+).
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 impl PolicyConfig {
@@ -1301,17 +1345,26 @@ impl PolicyConfig {
     /// Load policy from environment variables (for testing / runtime override).
     ///
     /// Priority:
-    /// 1. `UNIX_OIDC_POLICY_FILE` — path to a YAML file
-    /// 2. `UNIX_OIDC_POLICY_YAML` — inline YAML string
+    /// 1. `UNIX_OIDC_POLICY_FILE` — path to a YAML file (validated via `load_from`)
+    /// 2. `UNIX_OIDC_POLICY_YAML` — inline YAML string (**test-mode only**, Codex finding 4)
     /// 3. `UNIX_OIDC_TEST_MODE=true|1` — return `Default::default()`
     /// 4. Default file location `/etc/unix-oidc/policy.yaml`
+    ///
+    /// # Security
+    ///
+    /// `UNIX_OIDC_POLICY_YAML` is restricted to test-mode builds to prevent
+    /// environment injection attacks from silently overriding security policy.
+    /// Production policy MUST come from the validated file path.
     pub fn from_env() -> Result<Self, PolicyError> {
-        // Check for test policy file path
+        // Check for test policy file path — goes through load_from() validation.
         if let Ok(path) = std::env::var("UNIX_OIDC_POLICY_FILE") {
             return Self::load_from(&path);
         }
 
-        // Check for inline YAML config
+        // Security (Codex finding 4): Inline YAML config is restricted to test-mode
+        // builds. In production, environment injection of UNIX_OIDC_POLICY_YAML cannot
+        // override security policy. Even in test-mode, the config is validated.
+        #[cfg(feature = "test-mode")]
         if let Ok(yaml) = std::env::var("UNIX_OIDC_POLICY_YAML") {
             let config: PolicyConfig = Figment::from(Serialized::defaults(PolicyConfig::default()))
                 .merge(Yaml::string(&yaml))
@@ -1323,6 +1376,7 @@ impl PolicyConfig {
                     "session",
                     "timeouts",
                     "issuers",
+                    "audit",
                 ]))
                 .extract()
                 .map_err(|e| PolicyError::ParseError(e.to_string()))?;

@@ -136,11 +136,17 @@ pub fn write_session_record(dir: &str, session_id: &str, record: &SessionRecord)
         )
     })?;
 
-    // Write to temp file
+    // Write to temp file with 0600 permissions set atomically at creation.
+    // Security (Codex finding 5): Using OpenOptions with mode 0600 eliminates
+    // the TOCTOU race between File::create() and set_permissions().
     {
-        let mut file = fs::File::create(&tmp_path)?;
-        // Set 0600 permissions before writing data
-        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
         file.write_all(json.as_bytes())?;
         file.flush()?;
     }

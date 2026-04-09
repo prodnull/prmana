@@ -195,6 +195,41 @@ struct ChainedAuditEvent {
 
 // ── End HMAC chain state ──────────────────────────────────────────────────────
 
+// ── Audit settings (Phase 32) ────────────────────────────────────────────────
+
+/// Resolved audit settings, cached for the lifetime of the process.
+///
+/// Reads from `PolicyConfig::audit` if available, falling back to env vars
+/// and hardcoded defaults. Initialized once per process via `Lazy`.
+struct AuditSettings {
+    log_file: String,
+    syslog_enabled: bool,
+    stderr_enabled: bool,
+}
+
+static AUDIT_SETTINGS: Lazy<AuditSettings> = Lazy::new(|| {
+    // Try loading from PolicyConfig first (Phase 32+).
+    if let Ok(policy) = crate::policy::config::PolicyConfig::load_fresh() {
+        return AuditSettings {
+            log_file: if policy.audit.log_file.is_empty() {
+                String::new() // disabled
+            } else {
+                policy.audit.log_file
+            },
+            syslog_enabled: policy.audit.syslog_enabled,
+            stderr_enabled: policy.audit.stderr_enabled,
+        };
+    }
+
+    // Fallback: env vars and defaults (backward compat with v1.0).
+    AuditSettings {
+        log_file: std::env::var("UNIX_OIDC_AUDIT_LOG")
+            .unwrap_or_else(|_| DEFAULT_AUDIT_LOG.to_string()),
+        syslog_enabled: true,
+        stderr_enabled: true,
+    }
+});
+
 /// Global syslog writer
 static SYSLOG_WRITER: Lazy<Mutex<Option<syslog::Logger<syslog::LoggerBackend, Formatter3164>>>> =
     Lazy::new(|| {
@@ -862,15 +897,21 @@ impl AuditEvent {
             base_json
         };
 
-        // Step 3: Emit to all audit destinations.
+        // Step 3: Emit to configured audit destinations (Phase 32).
+        let settings = &*AUDIT_SETTINGS;
         let severity = self.syslog_severity();
-        log_to_syslog(&output_json, severity);
 
-        let log_path =
-            std::env::var("UNIX_OIDC_AUDIT_LOG").unwrap_or_else(|_| DEFAULT_AUDIT_LOG.to_string());
-        let _ = append_to_file(&log_path, &output_json);
+        if settings.syslog_enabled {
+            log_to_syslog(&output_json, severity);
+        }
 
-        eprintln!("unix-oidc-audit: {output_json}");
+        if !settings.log_file.is_empty() {
+            let _ = append_to_file(&settings.log_file, &output_json);
+        }
+
+        if settings.stderr_enabled {
+            eprintln!("unix-oidc-audit: {output_json}");
+        }
     }
 
     /// Get the event type as a string.

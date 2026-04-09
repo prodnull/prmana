@@ -233,15 +233,30 @@ fn perform_step_up(
     perform_device_flow_step_up(ctx, requirements, _display)
 }
 
-/// Resolve the agent socket path from environment (same convention as Phase 09 session IPC).
+/// Resolve the agent socket path for privileged PAM paths (sudo, session close).
 ///
-/// Checks `UNIX_OIDC_AGENT_SOCKET`, then `XDG_RUNTIME_DIR/unix-oidc-agent.sock`,
-/// then falls back to `/run/user/0/unix-oidc-agent.sock` (root sessions).
+/// Security (Codex finding 3): In root-context PAM paths, environment variables
+/// (`UNIX_OIDC_AGENT_SOCKET`, `XDG_RUNTIME_DIR`) are user-influenced and MUST NOT
+/// be trusted — an attacker could redirect root to a malicious socket.
+///
+/// Resolution order:
+/// 1. **Test-mode only**: `UNIX_OIDC_AGENT_SOCKET` env var (for integration tests).
+/// 2. `/run/user/{uid}/unix-oidc-agent.sock` — canonical path derived from the
+///    target user's UID, not from environment variables.
+///
+/// The UID-based path matches the agent daemon's socket creation convention and
+/// does not depend on any user-controllable input.
 fn agent_socket_path() -> String {
-    std::env::var("UNIX_OIDC_AGENT_SOCKET").unwrap_or_else(|_| {
-        let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/0".to_string());
-        format!("{xdg}/unix-oidc-agent.sock")
-    })
+    // In test-mode, allow env override for integration tests.
+    #[cfg(feature = "test-mode")]
+    if let Ok(path) = std::env::var("UNIX_OIDC_AGENT_SOCKET") {
+        return path;
+    }
+
+    // Production: derive from real UID of the calling process.
+    // In sudo context, EUID is root but RUID is the original user.
+    let uid = uzers::get_current_uid();
+    format!("/run/user/{uid}/unix-oidc-agent.sock")
 }
 
 /// Perform CIBA step-up authentication via agent IPC.
