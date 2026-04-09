@@ -295,27 +295,54 @@ pub fn authenticate_multi_issuer(
         crate::identity::collision::check_collision_safety(&issuer_config.claim_mapping)
             .map_err(|e| AuthError::Config(e.to_string()))?;
     }
-    let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
-        .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
-
-    // SBUG-03: Use the configured username_claim to populate raw_claim for the audit trail.
-    //
-    // Previously this was `preferred_username.clone().unwrap_or_default()`, which
-    // produces "" when preferred_username is absent but the configured claim is e.g. "email".
-    // After the fix: raw_claim reflects the ACTUAL claim the mapper will use, so the
-    // `mapped_from` audit field accurately records what was fed into the mapping pipeline.
-    // If the configured claim is also absent, raw_claim is "" — that is correct/honest,
-    // and the mapper's MissingClaim error fires immediately below.
-    let raw_claim = claims
-        .get_claim_str(&issuer_config.claim_mapping.username_claim)
-        .unwrap_or_default();
-    let username_str = mapper
-        .map(&claims)
-        .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
-    let mapped_from = if username_str != raw_claim {
-        Some(raw_claim)
+    // Phase 35: SPIFFE ID → username mapping.
+    // When the token's `sub` is a SPIFFE ID and the issuer has spiffe_mapping configured,
+    // use SpiffeUsernameMapper instead of the standard claim_mapping pipeline.
+    let (username_str, raw_claim, mapped_from) = if let Some(ref spiffe_cfg) =
+        issuer_config.spiffe_mapping
+    {
+        if crate::identity::mapper::SpiffeUsernameMapper::is_spiffe_id(&claims.sub) {
+            let spiffe_mapper =
+                crate::identity::mapper::SpiffeUsernameMapper::from_config(spiffe_cfg)
+                    .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+            let raw = claims.sub.clone();
+            let username = spiffe_mapper
+                .map_spiffe_id(&claims.sub)
+                .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+            tracing::info!(
+                spiffe_id = %claims.sub,
+                username = %username,
+                strategy = %spiffe_cfg.strategy,
+                "SPIFFE ID mapped to Unix username"
+            );
+            let mapped = if username != raw { Some(raw.clone()) } else { None };
+            (username, raw, mapped)
+        } else {
+            // Non-SPIFFE token on a SPIFFE-configured issuer — fall through to standard mapping.
+            let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
+                .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+            let raw = claims
+                .get_claim_str(&issuer_config.claim_mapping.username_claim)
+                .unwrap_or_default();
+            let username = mapper
+                .map(&claims)
+                .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
+            let mapped = if username != raw { Some(raw.clone()) } else { None };
+            (username, raw, mapped)
+        }
     } else {
-        None
+        let mapper = UsernameMapper::from_config(&issuer_config.claim_mapping)
+            .map_err(|e| AuthError::IdentityMapping(e.to_string()))?;
+
+        // SBUG-03: Use the configured username_claim to populate raw_claim for the audit trail.
+        let raw = claims
+            .get_claim_str(&issuer_config.claim_mapping.username_claim)
+            .unwrap_or_default();
+        let username = mapper
+            .map(&claims)
+            .map_err(|e: IdentityError| AuthError::IdentityMapping(e.to_string()))?;
+        let mapped = if username != raw { Some(raw.clone()) } else { None };
+        (username, raw, mapped)
     };
 
     // Step 8: JTI replay prevention with issuer-scoped keys (MIDP-07).

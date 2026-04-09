@@ -5,10 +5,11 @@ on:
     tags:
       - 'v*'
 
-# Permissions for creating releases and uploading artifacts
+# Permissions for creating releases, signing, and SLSA attestation
 permissions:
   contents: write
-  id-token: write  # For signing
+  id-token: write    # For Sigstore keyless signing
+  attestations: write  # For SLSA build provenance
 
 env:
   CARGO_TERM_COLOR: always
@@ -134,6 +135,11 @@ jobs:
             shasum -a 256 "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz" > "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz.sha256"
           fi
 
+      - name: Generate SLSA provenance (per-build attestation)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: unix-oidc-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -171,7 +177,6 @@ jobs:
     permissions:
       contents: write
       id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@v6
 
@@ -209,11 +214,6 @@ jobs:
             --output-signature "SHA256SUMS.sig" \
             --output-certificate "SHA256SUMS.pem" \
             "SHA256SUMS"
-
-      - name: Generate SLSA provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: release-files/*.tar.gz
 
       - name: Generate release notes
         env:

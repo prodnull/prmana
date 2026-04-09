@@ -195,13 +195,85 @@ impl UsernameMapper {
 
 // ── Username validation ────────────────────────────────────────────────────────
 
-/// Validate a candidate username against basic Unix sanity rules.
+/// Reserved/system account names that must never be mapped from OIDC claims
+/// or SPIFFE IDs. An attacker who controls their IdP `preferred_username` or
+/// SPIFFE path could otherwise map to a privileged local account.
+///
+/// This list covers accounts that exist by default on Linux (Ubuntu/RHEL) and
+/// have elevated privileges or special capabilities. It is intentionally
+/// conservative — false positives are acceptable because legitimate users
+/// should never have these usernames in their IdP.
+const RESERVED_USERNAMES: &[&str] = &[
+    "root",
+    "daemon",
+    "bin",
+    "sys",
+    "sync",
+    "games",
+    "man",
+    "lp",
+    "mail",
+    "news",
+    "uucp",
+    "proxy",
+    "www-data",
+    "backup",
+    "list",
+    "irc",
+    "gnats",
+    "nobody",
+    "systemd-network",
+    "systemd-resolve",
+    "messagebus",
+    "sshd",
+    "polkitd",
+    "tss",
+    // Service accounts
+    "mysql",
+    "postgres",
+    "redis",
+    "nginx",
+    "apache",
+    "http",
+    "named",
+    "dbus",
+    "avahi",
+    "colord",
+    "geoclue",
+    "pulse",
+    "rtkit",
+    "gdm",
+    "lightdm",
+    "sddm",
+    // RHEL/Fedora specifics
+    "adm",
+    "shutdown",
+    "halt",
+    "operator",
+    "ftp",
+    "nfsnobody",
+    "chrony",
+    "unbound",
+    "cockpit-ws",
+    "cockpit-wsinstance",
+    "sssd",
+    "setroubleshoot",
+    "pesign",
+    "radvd",
+    "rpc",
+    "rpcuser",
+    "ntp",
+    "abrt",
+];
+
+/// Validate a candidate username against Unix sanity rules and reserved accounts.
 ///
 /// Rejects:
 /// - Empty strings (transform pipeline produced nothing useful)
 /// - Strings containing null bytes (C string terminator injection)
 /// - Strings containing `/` (path traversal in home-dir construction)
 /// - Strings exceeding 256 bytes (beyond POSIX `LOGIN_NAME_MAX` on Linux/macOS)
+/// - Reserved/system account names (privilege escalation via IdP claim control)
 fn validate_username(username: &str) -> Result<(), IdentityError> {
     if username.is_empty() {
         return Err(IdentityError::InvalidUsername(
@@ -225,6 +297,15 @@ fn validate_username(username: &str) -> Result<(), IdentityError> {
         return Err(IdentityError::InvalidUsername(
             format!("[{} bytes]", username.len()),
             "username exceeds 256-byte limit (POSIX LOGIN_NAME_MAX)".to_string(),
+        ));
+    }
+    // Security: reject reserved/system accounts to prevent privilege escalation
+    // via attacker-controlled IdP claims or SPIFFE IDs mapping to root/daemon/etc.
+    if RESERVED_USERNAMES.contains(&username) {
+        return Err(IdentityError::InvalidUsername(
+            username.to_string(),
+            "reserved system account — OIDC/SPIFFE identity must not map to privileged accounts"
+                .to_string(),
         ));
     }
     Ok(())
@@ -522,6 +603,37 @@ mod tests {
     }
 
     #[test]
+    fn test_reserved_username_root_rejected() {
+        let config = make_config("preferred_username", &[]);
+        let mapper = UsernameMapper::from_config(&config).unwrap();
+        let mut claims = make_claims("root");
+        claims.preferred_username = Some("root".to_string());
+        let result = mapper.map(&claims);
+        assert!(
+            matches!(result, Err(IdentityError::InvalidUsername(_, _))),
+            "reserved account 'root' must be rejected: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_reserved_username_nobody_rejected() {
+        let config = make_config("preferred_username", &[]);
+        let mapper = UsernameMapper::from_config(&config).unwrap();
+        let mut claims = make_claims("nobody");
+        claims.preferred_username = Some("nobody".to_string());
+        let result = mapper.map(&claims);
+        assert!(matches!(result, Err(IdentityError::InvalidUsername(_, _))));
+    }
+
+    #[test]
+    fn test_non_reserved_username_accepted() {
+        let config = make_config("preferred_username", &[]);
+        let mapper = UsernameMapper::from_config(&config).unwrap();
+        let claims = make_claims("alice");
+        assert!(mapper.map(&claims).is_ok());
+    }
+
+    #[test]
     fn test_overlong_username_rejected() {
         let long = "a".repeat(257);
         let config = make_config("preferred_username", &[]);
@@ -766,6 +878,32 @@ mod tests {
                 mappings: HashMap::new(),
             };
             assert!(SpiffeUsernameMapper::from_config(&config).is_err());
+        }
+
+        #[test]
+        fn test_path_suffix_rejects_root() {
+            let config = SpiffeMappingConfig::default();
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            let result = mapper.map_spiffe_id("spiffe://evil.com/root");
+            assert!(
+                matches!(result, Err(IdentityError::InvalidUsername(_, _))),
+                "SPIFFE path_suffix mapping to 'root' must be rejected: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_regex_rejects_sshd() {
+            let config = SpiffeMappingConfig {
+                strategy: "regex".to_string(),
+                pattern: Some(r"spiffe://[^/]+/(?P<username>[a-z]+)".to_string()),
+                mappings: HashMap::new(),
+            };
+            let mapper = SpiffeUsernameMapper::from_config(&config).unwrap();
+            let result = mapper.map_spiffe_id("spiffe://evil.com/sshd");
+            assert!(
+                matches!(result, Err(IdentityError::InvalidUsername(_, _))),
+                "SPIFFE regex mapping to 'sshd' must be rejected: {result:?}"
+            );
         }
 
         #[test]
