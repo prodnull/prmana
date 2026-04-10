@@ -1,0 +1,8 @@
+{
+  "_comment": "Flipped byte in certify_info — AK signature MUST fail",
+  "attestation_evidence": {
+    "ak_public": "ACMACwAGAPIAAAAQABgACwADABAAIA_mmK47us8JN4XdSoh-2x-fvwrhRkTFpz3c7Zl1tUiMACAxn3PZVJizRQnx0NgH9UDIfYZQiA0Zvq42Tpf_yVoQMA",
+    "certify_info": "_1RDR4AXACIAC1FKCkkNzfep0zwyYVlpIXxCBySedlM6hhAptJhX2Q5DAAAAAAAAAAD86AAAAAAAAAAAAQAAAAAABwACACIACx1H0mYGc2FQCFd666MK7iu8azj1r-AJGRkvTdq2GdoMACIACx1H0mYGc2FQCFd666MK7iu8azj1r-AJGRkvTdq2GdoM",
+    "signature": "B2AdfKQ3LwkAUK8HgAf8b1F2oh-0fDYqYsz9jsnnJ7g_arG2fueBXLdddjFLizzGIZV9O_-0wZK2LPPmf9Iosg"
+  }
+}

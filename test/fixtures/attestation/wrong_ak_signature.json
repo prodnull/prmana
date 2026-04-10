@@ -1,0 +1,8 @@
+{
+  "_comment": "Valid certify_info but signed by WRONG AK — signature mismatch",
+  "attestation_evidence": {
+    "ak_public": "ACMACwAGAPIAAAAQABgACwADABAAIA_mmK47us8JN4XdSoh-2x-fvwrhRkTFpz3c7Zl1tUiMACAxn3PZVJizRQnx0NgH9UDIfYZQiA0Zvq42Tpf_yVoQMA",
+    "certify_info": "_1RDR4AXACIAC1FKCkkNzfep0zwyYVlpIXxCBySedlM6hhAptJhX2Q5DAAAAAAAAAAAD6AAAAAAAAAAAAQAAAAAABwACACIACx1H0mYGc2FQCFd666MK7iu8azj1r-AJGRkvTdq2GdoMACIACx1H0mYGc2FQCFd666MK7iu8azj1r-AJGRkvTdq2GdoM",
+    "signature": "W8ljSSAWS8o15vPpprlC5q9lmMIqxWf0S9BGHtqJMzok7_NrxcA-uYG4T4RV6snTf3OtAd9vIy_zSBYpVpb1YQ"
+  }
+}

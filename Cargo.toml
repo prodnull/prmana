@@ -6,7 +6,7 @@ members = [
     "unix-oidc-scim",
     "examples/webhook-server",
 ]
-exclude = ["fuzz"]
+exclude = ["fuzz", "test/fixtures/attestation/gen"]
 resolver = "2"
 
 [workspace.package]
