@@ -868,66 +868,265 @@ async fn run_login(
         return Ok(());
     }
 
-    let discovery = fetch_oidc_discovery(&issuer, device_flow_timeout_secs).await?;
+    // ── Failover-aware login (Phase 41) ──────────────────────────────────
+    //
+    // Check if the requested issuer has a failover pair configured. If so,
+    // attempt login against the primary; on availability failure, retry with
+    // the secondary. In-flight requests are never switched mid-stream — if
+    // a flow fails, the entire attempt against that issuer fails and the next
+    // attempt uses the failover target.
+    use unix_oidc_agent::failover::{FailoverPairConfig, FailoverRuntime};
 
-    let token_result = if flow == "authcode" {
-        println!("Starting authorization code + PKCE flow with: {issuer}");
-        println!("Client ID: {client_id}");
-        println!();
+    let failover_pair: Option<FailoverPairConfig> = agent_config
+        .failover_pairs
+        .iter()
+        .find(|p| {
+            p.primary_issuer_url.trim_end_matches('/') == issuer.trim_end_matches('/')
+                || p.secondary_issuer_url.trim_end_matches('/') == issuer.trim_end_matches('/')
+        })
+        .cloned();
 
-        let authorization_endpoint = discovery
-            .authorization_endpoint
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("IdP does not advertise authorization_endpoint"))?;
+    // Attempt login against a single issuer. Returns typed error to distinguish
+    // availability failures from policy/protocol failures.
+    let attempt_login = |target_issuer: String,
+                         flow_type: String,
+                         cid: String,
+                         csecret: Option<SecretString>,
+                         signer: Arc<dyn DPoPSigner>,
+                         attestation: ClientAttestationConfig,
+                         timeout: u64| async move {
+        let discovery = match fetch_oidc_discovery(&target_issuer, timeout).await {
+            Ok(d) => d,
+            Err(e) => {
+                // Classify discovery failure: if the error message contains typical
+                // availability indicators, treat as availability failure.
+                let is_availability = e.to_string().contains("Failed to fetch OIDC discovery")
+                    || e.to_string().contains("HTTP 5");
+                return Err((e, is_availability));
+            }
+        };
 
-        if let Some(methods) = &discovery.code_challenge_methods_supported {
-            if !methods.iter().any(|m| m == "S256") {
-                anyhow::bail!("IdP does not advertise PKCE S256 support");
+        let result = if flow_type == "authcode" {
+            let authorization_endpoint = discovery
+                .authorization_endpoint
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("IdP does not advertise authorization_endpoint"));
+            let authorization_endpoint = match authorization_endpoint {
+                Ok(ep) => ep,
+                Err(e) => return Err((e, false)),
+            };
+
+            if let Some(methods) = &discovery.code_challenge_methods_supported {
+                if !methods.iter().any(|m| m == "S256") {
+                    return Err((
+                        anyhow::anyhow!("IdP does not advertise PKCE S256 support"),
+                        false,
+                    ));
+                }
+            }
+
+            run_auth_code_flow(
+                authorization_endpoint,
+                &discovery.token_endpoint,
+                discovery.revocation_endpoint.clone(),
+                &cid,
+                csecret.as_ref(),
+                signer.as_ref(),
+                &attestation,
+                timeout,
+            )
+            .await
+        } else {
+            let device_endpoint = match discovery.device_authorization_endpoint.clone() {
+                Some(ep) => ep,
+                None => {
+                    return Err((
+                        anyhow::anyhow!("IdP does not support device authorization"),
+                        false,
+                    ))
+                }
+            };
+
+            run_device_flow(
+                &device_endpoint,
+                &discovery.token_endpoint,
+                discovery.revocation_endpoint.clone(),
+                &cid,
+                csecret,
+                signer,
+                attestation,
+                timeout,
+            )
+            .await
+        };
+
+        match result {
+            Ok(token_result) => Ok((token_result, target_issuer, discovery.token_endpoint)),
+            Err(e) => {
+                // Classify the login flow error for failover purposes.
+                let err_str = e.to_string();
+                let is_availability = err_str.contains("request failed")
+                    || err_str.contains("timed out")
+                    || err_str.contains("connection")
+                    || err_str.contains("connect")
+                    || err_str.contains("DNS")
+                    || err_str.contains("HTTP 5");
+                Err((e, is_availability))
             }
         }
+    };
 
-        run_auth_code_flow(
-            authorization_endpoint,
-            &discovery.token_endpoint,
-            discovery.revocation_endpoint.clone(),
-            &client_id,
-            client_secret.as_ref(),
-            signer_arc.as_ref(),
-            &agent_config.client_attestation,
-            device_flow_timeout_secs,
-        )
-        .await?
-    } else {
-        println!("Starting device authorization flow with: {issuer}");
+    let (token_result, effective_issuer, token_endpoint) = if let Some(ref pair) = failover_pair {
+        let mut runtime = FailoverRuntime::new(pair.clone());
+        let resolved = runtime.resolve_issuer();
+        let target = resolved.issuer_url.clone();
+
+        println!("Starting {flow} flow with: {target} (failover pair configured)");
         println!("Client ID: {client_id}");
         println!();
 
-        let device_endpoint = discovery
-            .device_authorization_endpoint
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("IdP does not support device authorization"))?;
-
-        run_device_flow(
-            &device_endpoint,
-            &discovery.token_endpoint,
-            discovery.revocation_endpoint.clone(),
-            &client_id,
+        match attempt_login(
+            target.clone(),
+            flow.clone(),
+            client_id.clone(),
             client_secret.clone(),
             Arc::clone(&signer_arc),
             agent_config.client_attestation.clone(),
-            device_flow_timeout_secs,
+            pair.request_timeout_secs,
         )
-        .await?
+        .await
+        {
+            Ok(result) => {
+                runtime.record_success(&target);
+                result
+            }
+            Err((primary_err, is_availability)) => {
+                if !is_availability {
+                    // Policy/protocol failure — no failover.
+                    return Err(primary_err);
+                }
+
+                // Availability failure — record and try secondary.
+                if let Some(event) =
+                    runtime.record_failure(&target, &primary_err.to_string())
+                {
+                    warn!("Failover event: {event:?}");
+                }
+
+                let fallback = runtime.resolve_issuer();
+                if fallback.issuer_url.trim_end_matches('/')
+                    == target.trim_end_matches('/')
+                {
+                    // No different issuer to try (already exhausted or same).
+                    return Err(primary_err.context(
+                        "Primary issuer unavailable and no failover target available",
+                    ));
+                }
+
+                println!();
+                warn!(
+                    primary = %target,
+                    secondary = %fallback.issuer_url,
+                    "Primary issuer unavailable — failing over to secondary"
+                );
+                println!("Retrying with: {}", fallback.issuer_url);
+                println!();
+
+                match attempt_login(
+                    fallback.issuer_url.clone(),
+                    flow.clone(),
+                    client_id.clone(),
+                    client_secret.clone(),
+                    Arc::clone(&signer_arc),
+                    agent_config.client_attestation.clone(),
+                    pair.request_timeout_secs,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        runtime.record_success(&fallback.issuer_url);
+                        info!(
+                            secondary = %fallback.issuer_url,
+                            "Login succeeded via secondary issuer"
+                        );
+                        result
+                    }
+                    Err((secondary_err, _)) => {
+                        runtime.record_failure(
+                            &fallback.issuer_url,
+                            &secondary_err.to_string(),
+                        );
+                        Err(secondary_err.context(
+                            "Both primary and secondary issuers unavailable",
+                        ))?
+                    }
+                }
+            }
+        }
+    } else {
+        // No failover pair — standard single-issuer login.
+        println!("Starting {flow} flow with: {issuer}");
+        println!("Client ID: {client_id}");
+        println!();
+
+        let discovery = fetch_oidc_discovery(&issuer, device_flow_timeout_secs).await?;
+
+        let result = if flow == "authcode" {
+            let authorization_endpoint = discovery
+                .authorization_endpoint
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("IdP does not advertise authorization_endpoint"))?;
+
+            if let Some(methods) = &discovery.code_challenge_methods_supported {
+                if !methods.iter().any(|m| m == "S256") {
+                    anyhow::bail!("IdP does not advertise PKCE S256 support");
+                }
+            }
+
+            run_auth_code_flow(
+                authorization_endpoint,
+                &discovery.token_endpoint,
+                discovery.revocation_endpoint.clone(),
+                &client_id,
+                client_secret.as_ref(),
+                signer_arc.as_ref(),
+                &agent_config.client_attestation,
+                device_flow_timeout_secs,
+            )
+            .await?
+        } else {
+            let device_endpoint = discovery
+                .device_authorization_endpoint
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("IdP does not support device authorization"))?;
+
+            run_device_flow(
+                &device_endpoint,
+                &discovery.token_endpoint,
+                discovery.revocation_endpoint.clone(),
+                &client_id,
+                client_secret.clone(),
+                Arc::clone(&signer_arc),
+                agent_config.client_attestation.clone(),
+                device_flow_timeout_secs,
+            )
+            .await?
+        };
+
+        (result, issuer.clone(), discovery.token_endpoint.clone())
     };
 
     println!();
     println!("Authentication successful!");
 
+    // token_result is (json_response, token_endpoint_used, revocation_endpoint)
+    // effective_issuer is the issuer URL that was actually used (may differ from CLI if failover)
+    // token_endpoint is the token endpoint from discovery of the effective issuer
     persist_login_tokens(
         &mut storage,
         &token_result.0,
-        &issuer,
-        &token_result.1,
+        &effective_issuer,
+        &token_endpoint,
         &client_id,
         client_secret.as_ref(),
         &signer_type,
