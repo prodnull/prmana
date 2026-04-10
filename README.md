@@ -68,6 +68,19 @@ SSH key management at scale is painful. Keys get copied, shared, never rotated, 
 | Self-hosted option | ✅ | ✅ | ✅ | ✅ |
 | Open source | ✅ | ✅ | Partial | Partial |
 
+### Why This Matters Now
+
+Recent attacks prove that static credentials and bearer tokens are no longer defensible:
+
+| Attack | CVE | What happened | What unix-oidc changes |
+|--------|-----|---------------|----------------------|
+| **xz/liblzma backdoor** | [CVE-2024-3094](https://nvd.nist.gov/vuln/detail/cve-2024-3094) | Supply chain backdoor in a compression library hijacked OpenSSH's `RSA_public_decrypt`, enabling remote auth bypass. Static SSH keys meant the backdoor granted persistent access to any server the key was authorized for. | DPoP-bound tokens expire. Even a backdoored sshd that intercepts a token cannot reuse it — the attacker lacks the DPoP private key. Blast radius is bounded by token lifetime, not key lifetime. |
+| **GitHub Actions secret leak** | [CVE-2025-30066](https://github.com/advisories/GHSA-mrrh-fwg8-r2c3) | Compromised GitHub Action exfiltrated SSH keys and access tokens from 23,000+ repo CI pipelines to workflow logs. Any bearer token in those logs was immediately usable. | DPoP-bound tokens leaked to logs are inert — they require a corresponding private key to use. The key never appears in logs. |
+| **PuTTY key recovery** | [CVE-2024-31497](https://nvd.nist.gov/vuln/detail/cve-2024-31497) | Biased ECDSA nonces in PuTTY allowed private key recovery from ~60 signatures. A rogue SSH server could harvest enough signatures during normal logins to steal the key permanently. | unix-oidc tokens are short-lived — stolen credentials have a bounded window. TPM-backed DPoP keys (hardware non-exportable) cannot be recovered even with full nonce bias exploitation. |
+| **JWT algorithm confusion** | [CVE-2023-48223](https://github.com/advisories/GHSA-c2ff-88x2-x9pg) | JWT libraries accepted HMAC signatures verified with RSA public keys, enabling token forgery with zero knowledge of private keys. | unix-oidc enforces an asymmetric-only algorithm allowlist and pins the token's algorithm to the JWKS-advertised algorithm. HMAC algorithms are rejected at every verification point. |
+
+**What we honestly cannot prevent:** If the PAM module binary itself is backdoored (analogous to xz targeting our `.so`), the attacker controls verification. DPoP cannot help if the verifier is compromised. Mitigations: code signing, SLSA provenance, reproducible builds. These are tracked in our [security roadmap](docs/security-guide.md).
+
 **unix-oidc** was built to address these gaps:
 
 - **[DPoP token binding](https://datatracker.ietf.org/doc/html/rfc9449)** (RFC 9449): Tokens are cryptographically bound to a key pair. Even if an attacker intercepts a token, they can't use it without the private key. This is the same security model used by modern banking APIs.
