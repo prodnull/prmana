@@ -26,10 +26,12 @@ htmlcov/
 # Docker
 .docker-data/
 
-# Environment
+# Environment and secrets
 .env
 .env.local
 .venv/
+.auth0
+.entra
 
 # Marketing materials (keep most local, track presentation)
 docs/marketing/*.md
