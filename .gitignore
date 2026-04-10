@@ -55,3 +55,10 @@ agent-coord/
 
 # Local Website Development
 website/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+crash.log
