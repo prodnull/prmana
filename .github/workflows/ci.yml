@@ -640,7 +640,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
 
       - name: Check MSRV
         run: cargo check --all-features
@@ -660,7 +660,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
 
       - name: Build docs
         run: cargo doc --no-deps --all-features
@@ -684,7 +684,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
