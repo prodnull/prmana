@@ -672,6 +672,7 @@ fn apply_per_issuer_dpop(
             // ADR-018: Verify hardware attestation evidence from the DPoP proof header.
             crate::oidc::attestation::verify_attestation_optional(
                 result.attestation.as_ref(),
+                Some(&result.public_key_jwk),
                 attestation_config,
             )?;
             return Ok(Some(result.thumbprint));
@@ -686,6 +687,7 @@ fn apply_per_issuer_dpop(
             // ADR-018: Verify hardware attestation evidence from the DPoP proof header.
             crate::oidc::attestation::verify_attestation_optional(
                 result.attestation.as_ref(),
+                Some(&result.public_key_jwk),
                 attestation_config,
             )?;
             Ok(Some(result.thumbprint))

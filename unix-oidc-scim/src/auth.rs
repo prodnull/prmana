@@ -330,10 +330,33 @@ fn find_decoding_key(
             }
             k.common
                 .key_algorithm
-                .map(|ka| format!("{ka:?}") == format!("{algorithm:?}"))
+                .and_then(key_algorithm_to_algorithm)
+                .map(|key_alg| key_alg == algorithm)
                 .unwrap_or(false)
         })
         .and_then(|jwk| DecodingKey::from_jwk(jwk).ok())
+}
+
+fn key_algorithm_to_algorithm(
+    key_algorithm: jsonwebtoken::jwk::KeyAlgorithm,
+) -> Option<Algorithm> {
+    use jsonwebtoken::jwk::KeyAlgorithm;
+
+    match key_algorithm {
+        KeyAlgorithm::HS256 => Some(Algorithm::HS256),
+        KeyAlgorithm::HS384 => Some(Algorithm::HS384),
+        KeyAlgorithm::HS512 => Some(Algorithm::HS512),
+        KeyAlgorithm::ES256 => Some(Algorithm::ES256),
+        KeyAlgorithm::ES384 => Some(Algorithm::ES384),
+        KeyAlgorithm::RS256 => Some(Algorithm::RS256),
+        KeyAlgorithm::RS384 => Some(Algorithm::RS384),
+        KeyAlgorithm::RS512 => Some(Algorithm::RS512),
+        KeyAlgorithm::PS256 => Some(Algorithm::PS256),
+        KeyAlgorithm::PS384 => Some(Algorithm::PS384),
+        KeyAlgorithm::PS512 => Some(Algorithm::PS512),
+        KeyAlgorithm::EdDSA => Some(Algorithm::EdDSA),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -360,6 +383,24 @@ mod tests {
             }]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn test_key_algorithm_mapping_is_explicit() {
+        use jsonwebtoken::jwk::KeyAlgorithm;
+
+        assert_eq!(
+            key_algorithm_to_algorithm(KeyAlgorithm::RS256),
+            Some(Algorithm::RS256)
+        );
+        assert_eq!(
+            key_algorithm_to_algorithm(KeyAlgorithm::ES256),
+            Some(Algorithm::ES256)
+        );
+        assert_eq!(
+            key_algorithm_to_algorithm(KeyAlgorithm::EdDSA),
+            Some(Algorithm::EdDSA)
+        );
     }
 
     async fn ok_handler() -> &'static str {
