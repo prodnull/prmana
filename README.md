@@ -93,6 +93,14 @@ Teleport and StrongDM issue short-lived x509 certificates. These are bearer cred
 | Open source | ✅ | Partial | ❌ | ❌ |
 | Deployment | PAM module | Gateway cluster | SaaS + relay | On-prem vault |
 
+### Sudo step-up: the gap nobody else fills
+
+Gateway products gate who can *connect*. Vault products gate who can *check out credentials*. Neither re-verifies identity at the moment of privilege escalation. Once you're in the SSH session, `sudo` just works.
+
+unix-oidc is the only solution that challenges at the point of `sudo`. Via [CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) (Client-Initiated Backchannel Authentication), your phone receives a push notification with the specific command — "Approve `sudo apt install nginx` on server-01" — and the command only executes after you confirm. Per-command, real-time, no session-level blanket approval.
+
+This closes the privilege escalation window that every other approach leaves open: a compromised session that can sudo without re-authentication.
+
 ### Why This Matters Now
 
 Recent attacks prove that static credentials and bearer tokens are no longer defensible:
