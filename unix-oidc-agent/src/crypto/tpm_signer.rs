@@ -95,8 +95,8 @@ mod linux_impl {
             resource_handles::{Hierarchy, Provision},
         },
         structures::{
-            Attest, CreatePrimaryKeyResult, Data, Digest as TpmDigest, EccScheme, HashScheme,
-            Public, PublicBuilder, PublicEccParametersBuilder, SignatureScheme,
+            CreatePrimaryKeyResult, Data, Digest as TpmDigest, EccScheme, HashScheme, Public,
+            PublicBuilder, PublicEccParametersBuilder, SignatureScheme,
         },
         tcti_ldr::{DeviceConfig, NetworkTPMConfig, TabrmdConfig, TctiNameConf},
         traits::Marshall,
@@ -106,7 +106,7 @@ mod linux_impl {
     use std::str::FromStr;
 
     use crate::crypto::dpop::{
-        assemble_dpop_proof, build_dpop_message, build_dpop_message_with_attestation, DPoPError,
+        assemble_dpop_proof, build_dpop_message_with_attestation, DPoPError,
     };
     use crate::crypto::signer::DPoPSigner;
     use crate::crypto::tpm_signer::pad_to_32;
@@ -755,14 +755,12 @@ mod linux_impl {
             // Verify thumbprint matches independent computation from JWK.
             // Reconstruct VerifyingKey from JWK x,y coordinates for cross-check.
             let jwk = signer.public_key_jwk();
-            let x_bytes =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(jwk["x"].as_str().unwrap())
-                    .unwrap();
-            let y_bytes =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(jwk["y"].as_str().unwrap())
-                    .unwrap();
+            let x_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(jwk["x"].as_str().unwrap())
+                .unwrap();
+            let y_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(jwk["y"].as_str().unwrap())
+                .unwrap();
             // Build SEC1 uncompressed point: 0x04 || x || y
             let mut sec1 = vec![0x04];
             sec1.extend_from_slice(&x_bytes);

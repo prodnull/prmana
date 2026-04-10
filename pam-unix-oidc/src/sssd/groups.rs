@@ -59,7 +59,7 @@ pub enum GroupPolicyError {
 }
 
 impl GroupPolicyError {
-    /// Construct a [`GroupDenied`] error, pre-formatting the display strings.
+    /// Construct a [`GroupPolicyError::GroupDenied`] error, pre-formatting the display strings.
     pub fn group_denied(
         username: impl Into<String>,
         user_groups: Vec<String>,
