@@ -15,6 +15,8 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::failover::FailoverPairConfig;
+
 /// Operator-tunable timeout and skew parameters.
 ///
 /// All values represent seconds unless the field name specifies otherwise.
@@ -170,6 +172,14 @@ pub struct AgentConfig {
     /// OAuth client attestation header configuration.
     #[serde(default)]
     pub client_attestation: ClientAttestationConfig,
+
+    /// Failover pairs for primary/secondary OIDC issuer redundancy (Phase 41).
+    ///
+    /// Each pair references two issuer URLs. The agent uses active-passive failover:
+    /// availability failures on the primary trigger automatic switch to the secondary.
+    /// Recovery is lazy and cooldown-based — no background probing.
+    #[serde(default)]
+    pub failover_pairs: Vec<FailoverPairConfig>,
 }
 
 fn default_issuer() -> String {
@@ -189,6 +199,7 @@ impl Default for AgentConfig {
             crypto: CryptoConfig::default(),
             timeouts: TimeoutsConfig::default(),
             client_attestation: ClientAttestationConfig::default(),
+            failover_pairs: Vec::new(),
         }
     }
 }
@@ -257,6 +268,7 @@ impl AgentConfig {
             crypto: CryptoConfig::default(),
             timeouts: TimeoutsConfig::default(),
             client_attestation: ClientAttestationConfig::default(),
+            failover_pairs: Vec::new(),
         })
     }
 
@@ -568,5 +580,79 @@ client_attestation:
 
         env::remove_var("UNIX_OIDC_CLIENT_ATTESTATION__ENABLED");
         env::remove_var("UNIX_OIDC_CLIENT_ATTESTATION__LIFETIME_SECS");
+    }
+
+    #[test]
+    fn test_failover_pairs_from_yaml() {
+        let _guard = ENV_MUTEX.lock();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+issuer: https://idp.example.com
+failover_pairs:
+  - primary_issuer_url: "https://primary.example.com/realms/corp"
+    secondary_issuer_url: "https://secondary.example.com/realms/corp"
+    request_timeout_secs: 15
+    cooldown_secs: 120
+"#,
+        )
+        .unwrap();
+
+        env::remove_var("UNIX_OIDC_FAILOVER_PAIRS");
+
+        let config = AgentConfig::load_from_path(&config_path).unwrap();
+        assert_eq!(config.failover_pairs.len(), 1);
+        assert_eq!(
+            config.failover_pairs[0].primary_issuer_url,
+            "https://primary.example.com/realms/corp"
+        );
+        assert_eq!(
+            config.failover_pairs[0].secondary_issuer_url,
+            "https://secondary.example.com/realms/corp"
+        );
+        assert_eq!(config.failover_pairs[0].request_timeout_secs, 15);
+        assert_eq!(config.failover_pairs[0].cooldown_secs, 120);
+    }
+
+    #[test]
+    fn test_failover_pairs_defaults_when_absent() {
+        let _guard = ENV_MUTEX.lock();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+
+        std::fs::write(&config_path, "issuer: https://idp.example.com\n").unwrap();
+
+        env::remove_var("UNIX_OIDC_FAILOVER_PAIRS");
+
+        let config = AgentConfig::load_from_path(&config_path).unwrap();
+        assert!(config.failover_pairs.is_empty());
+    }
+
+    #[test]
+    fn test_failover_pairs_default_timeout_and_cooldown() {
+        let _guard = ENV_MUTEX.lock();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+issuer: https://idp.example.com
+failover_pairs:
+  - primary_issuer_url: "https://primary.example.com"
+    secondary_issuer_url: "https://secondary.example.com"
+"#,
+        )
+        .unwrap();
+
+        env::remove_var("UNIX_OIDC_FAILOVER_PAIRS");
+
+        let config = AgentConfig::load_from_path(&config_path).unwrap();
+        assert_eq!(config.failover_pairs.len(), 1);
+        assert_eq!(config.failover_pairs[0].request_timeout_secs, 10);
+        assert_eq!(config.failover_pairs[0].cooldown_secs, 60);
     }
 }

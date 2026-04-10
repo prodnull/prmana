@@ -7,6 +7,7 @@ pub mod config;
 pub mod crypto;
 pub mod daemon;
 pub mod exchange;
+pub mod failover;
 pub mod hardware;
 pub mod metrics;
 pub mod sanitize;
