@@ -99,26 +99,28 @@ sudo chown root:root /etc/unix-oidc/env
 Create `/etc/unix-oidc/policy.yaml`:
 
 ```yaml
-# Host classification: standard, elevated, or critical
-host_classification: elevated
+host:
+  classification: elevated
 
 # SSH login requirements
-ssh:
+ssh_login:
   require_oidc: true
   minimum_acr: null
   max_auth_age: 3600
 
-# Sudo step-up requirements
+# Sudo privilege policy
 sudo:
   step_up_required: true
+  default_action: step_up
   allowed_methods:
     - device_flow
-  timeout_seconds: 300
-  required_acr: null
+  challenge_timeout: 300
+  grace_period_secs: 0
+  dry_run: false
   commands: []
 ```
 
-See [examples/policy.yaml](../examples/policy.yaml) for a complete example with command-specific rules.
+See [examples/policy.yaml](../examples/policy.yaml) for a complete example, and [Sudo Step-Up](sudo-step-up.md) for Phase 44 command-specific `allow` / `step_up` / `deny` rules, grace windows, and dry-run rollout guidance.
 
 ### 5. Configure Break-Glass Access (MANDATORY)
 

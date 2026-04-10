@@ -1,23 +1,23 @@
 # Sudo Step-Up Authentication
 
-This document describes how to configure and use step-up authentication for sudo commands with unix-oidc.
+This document describes how to configure and use sudo step-up authentication with unix-oidc, including the Phase 44 risk-aware privilege policy model.
 
 ## Overview
 
 Step-up authentication requires users to perform additional authentication (beyond their initial SSH login) when executing privileged commands via sudo. This provides defense-in-depth against session hijacking and credential theft.
 
-The step-up flow uses the OAuth 2.0 Device Authorization Grant (RFC 8628), which allows authentication to complete on a separate device such as a mobile phone.
+The step-up flow can use the OAuth 2.0 Device Authorization Grant (RFC 8628) or IdP-native push/FIDO2 methods when configured. Phase 44 adds per-command policy actions (`allow`, `step_up`, `deny`), optional host-class matching, and time-bounded reuse of a recent successful challenge.
 
 ## How It Works
 
-1. User executes a sudo command
-2. PAM module checks policy configuration
-3. If step-up is required, device flow is initiated
-4. User sees a verification URL and code on their terminal
-5. User visits the URL and enters the code on their phone/browser
-6. User authenticates (optionally with MFA) in the IdP
-7. PAM module polls for completion and validates the resulting token
-8. If successful, sudo command proceeds
+1. User executes a sudo command.
+2. PAM module evaluates the command against the sudo privilege policy.
+3. Policy returns one of three actions: `allow`, `step_up`, or `deny`.
+4. If `step_up` is required and no grace-window record satisfies the policy, a fresh IdP challenge is initiated.
+5. User completes the device-flow or push-based challenge.
+6. PAM validates the resulting token and records the successful challenge for optional grace-window reuse.
+7. If policy says `allow` or a valid grace record exists, the command proceeds without a fresh challenge.
+8. If policy says `deny`, the command is rejected before execution.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -40,45 +40,56 @@ The step-up flow uses the OAuth 2.0 Device Authorization Grant (RFC 8628), which
 Create `/etc/unix-oidc/policy.yaml`:
 
 ```yaml
-# Host classification affects default requirements
-# Options: standard, elevated, critical
-host_classification: elevated
+# Host classification affects default SSH and sudo policy decisions.
+host:
+  classification: elevated
 
 # SSH login requirements
-ssh:
+ssh_login:
   require_oidc: true
   minimum_acr: null  # Any ACR accepted for SSH
   max_auth_age: 3600  # Maximum age of authentication (seconds)
 
-# Sudo step-up requirements
+# Sudo privilege policy
 sudo:
+  # Backward-compatible fallback when no command rule matches.
+  # New configs should prefer default_action.
   step_up_required: true
+  default_action: step_up
   allowed_methods:
-    - device_flow  # OAuth 2.0 Device Flow
-    - webhook      # Custom webhook approval (see examples/webhook-server/)
-    # - push       # Future: Push notification
-    # - fido2      # Future: FIDO2/WebAuthn
-  timeout_seconds: 300  # 5 minutes to complete step-up
-  required_acr: urn:keycloak:acr:loa2  # Require MFA for step-up
+    - push
+    - device_flow
+  challenge_timeout: 300
+  poll_interval_secs: 5
+  grace_period_secs: 300
+  dry_run: false
 
-  # Optional: Command-specific rules
+  # Optional: first-match command rules
   commands:
-    # Package management always requires step-up
-    - pattern: "/usr/bin/apt*"
-      step_up_required: true
-    - pattern: "/usr/bin/yum*"
-      step_up_required: true
-    # System administration
-    - pattern: "/usr/sbin/shutdown*"
-      step_up_required: true
-    - pattern: "/usr/bin/systemctl*"
-      step_up_required: true
-    # Allow read-only commands without step-up
-    - pattern: "/usr/bin/cat *"
-      step_up_required: false
-    - pattern: "/bin/ls *"
-      step_up_required: false
+    - name: service-restart
+      pattern: "/usr/bin/systemctl restart *"
+      action: step_up
+      required_acr: phr
+      grace_period_secs: 60
+      host_classification: elevated
+
+    - name: read-only-observability
+      pattern: "/usr/bin/journalctl *"
+      action: allow
+
+    - name: destructive-account-change
+      pattern: "/usr/bin/userdel *"
+      action: deny
 ```
+
+### Policy Semantics
+
+- Rules are evaluated top-to-bottom.
+- The first matching rule wins.
+- If no rule matches, `sudo.default_action` applies.
+- `dry_run: true` logs the Phase 44 decision but falls back to the legacy boolean `step_up_required` behavior.
+- `grace_period_secs` allows a recent successful step-up to satisfy a later matching `step_up` decision without re-challenging.
+- `host_classification` on a rule scopes that rule to `standard`, `elevated`, or `critical` hosts only.
 
 ### Environment Variables
 
@@ -121,9 +132,9 @@ Enable Device Authorization Grant for your client:
 
 | Classification | Description | Default Behavior |
 |---------------|-------------|------------------|
-| `standard` | Regular workstations | No step-up required |
-| `elevated` | Development/staging servers | Step-up for system changes |
-| `critical` | Production/sensitive systems | Step-up for all sudo |
+| `standard` | Regular workstations | Usually `allow` for low-risk commands; step-up only where explicitly configured |
+| `elevated` | Development/staging servers | Common place to start command-specific step-up rules |
+| `critical` | Production/sensitive systems | Often paired with stricter rules, shorter grace windows, and `phr` requirements |
 
 ## ACR Levels
 
@@ -138,11 +149,12 @@ The `required_acr` setting specifies the minimum Authentication Context Class Re
 
 ## Audit Logging
 
-Step-up events are logged for security monitoring:
+Policy decisions and step-up events are logged for security monitoring:
 
 ```json
+{"event":"PRIVILEGE_POLICY_DECISION","timestamp":"2026-04-10T10:30:00Z","user":"alice","command":"/usr/bin/systemctl restart nginx","host":"server1","policy_action":"step_up","matched_rule":"service-restart","host_classification":"critical","grace_period_secs":300,"grace_period_applied":false,"dry_run":false}
 {"event":"STEP_UP_INITIATED","timestamp":"2024-01-17T10:30:00Z","user":"alice","command":"/usr/bin/systemctl restart nginx","host":"server1","method":"device_flow"}
-{"event":"STEP_UP_SUCCESS","timestamp":"2024-01-17T10:30:45Z","user":"alice","command":"/usr/bin/systemctl restart nginx","host":"server1","method":"device_flow","session_id":"sudo-abc123","oidc_acr":"urn:keycloak:acr:loa2"}
+{"event":"STEP_UP_SUCCESS","timestamp":"2024-01-17T10:30:45Z","user":"alice","command":"/usr/bin/systemctl restart nginx","host":"server1","method":"device_flow","session_id":"sudo-abc123","oidc_acr":"urn:keycloak:acr:loa2","matched_rule":"service-restart","policy_action":"step_up","host_classification":"critical","grace_period_secs":300,"grace_period_applied":false,"dry_run":false}
 ```
 
 Events are written to:
@@ -161,7 +173,7 @@ The policy requires a step-up method not available. Ensure `device_flow` is in t
 
 ### "Timeout waiting for authentication"
 
-User did not complete authentication within the timeout period. Increase `timeout_seconds` in the policy or ensure network connectivity to the IdP.
+User did not complete authentication within the timeout period. Increase `challenge_timeout` in the policy or ensure network connectivity to the IdP.
 
 ### "Access denied by user"
 
@@ -171,10 +183,28 @@ User explicitly denied the authentication request in the IdP interface.
 
 The user who authenticated in the IdP does not match the user running sudo. Ensure the correct account is used.
 
+### "Privilege policy denied command"
+
+The matching sudo rule returned `action: deny`. Check the `PRIVILEGE_POLICY_DECISION` audit event to see:
+
+- `matched_rule`
+- `policy_action`
+- `host_classification`
+- `dry_run`
+
+### "Why didn't sudo re-challenge?"
+
+Check for:
+
+- a matching `action: allow` rule
+- a recent successful step-up that satisfied `grace_period_secs`
+- `dry_run: true`, which logs the Phase 44 decision but preserves legacy behavior
+
 ## Security Considerations
 
 1. **Token Binding**: Tokens are validated to ensure the authenticated user matches the sudo user
-2. **Freshness**: Step-up authentication always requires fresh authentication (no max_auth_age)
-3. **ACR Enforcement**: Required ACR levels are validated against the token
-4. **Audit Trail**: All step-up events are logged with timestamps and session IDs
-5. **Timeout**: Requests automatically expire to prevent hanging sessions
+2. **Freshness**: `grace_period_secs` defaults to `0`, so fresh step-up is still the default unless operators explicitly allow short reuse windows.
+3. **ACR Enforcement**: Rule-level `required_acr` values are validated against the step-up token.
+4. **Deny Before Execution**: `action: deny` blocks high-risk commands before sudo runs them.
+5. **Audit Trail**: Both policy decisions and step-up outcomes are logged with rule metadata and grace-window context.
+6. **Dry-Run Safety**: `dry_run` lets operators observe new rules before enforcement, reducing rollout risk.

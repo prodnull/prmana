@@ -303,6 +303,21 @@ pub enum AuditEvent {
         host: String,
     },
 
+    /// Phase 44 privilege-policy decision for a sudo command.
+    #[serde(rename = "PRIVILEGE_POLICY_DECISION")]
+    PrivilegePolicyDecision {
+        timestamp: String,
+        user: String,
+        command: String,
+        host: String,
+        policy_action: String,
+        matched_rule: Option<String>,
+        host_classification: String,
+        grace_period_secs: u64,
+        grace_period_applied: bool,
+        dry_run: bool,
+    },
+
     /// Sudo step-up authentication initiated
     #[serde(rename = "STEP_UP_INITIATED")]
     StepUpInitiated {
@@ -312,6 +327,11 @@ pub enum AuditEvent {
         host: String,
         method: String,
         device_code: Option<String>,
+        matched_rule: Option<String>,
+        policy_action: Option<String>,
+        host_classification: Option<String>,
+        grace_period_secs: Option<u64>,
+        dry_run: bool,
     },
 
     /// Sudo step-up authentication succeeded
@@ -329,6 +349,12 @@ pub enum AuditEvent {
         /// `true` = signature, issuer, audience, expiry all checked.
         /// `false` = legacy path (agent-asserted ACR without ID token).
         id_token_verified: bool,
+        matched_rule: Option<String>,
+        policy_action: Option<String>,
+        host_classification: Option<String>,
+        grace_period_secs: Option<u64>,
+        grace_period_applied: bool,
+        dry_run: bool,
     },
 
     /// Sudo step-up authentication failed
@@ -344,6 +370,11 @@ pub enum AuditEvent {
         /// validation failure (e.g., "signature mismatch", "expired", "wrong audience").
         /// `None` for non-ID-token failures (e.g., timeout, user denied).
         verification_failure: Option<String>,
+        matched_rule: Option<String>,
+        policy_action: Option<String>,
+        host_classification: Option<String>,
+        grace_period_secs: Option<u64>,
+        dry_run: bool,
     },
 
     /// Break-glass emergency access used.
@@ -699,11 +730,17 @@ impl AuditEvent {
     }
 
     /// Create a step-up initiated event.
+    #[allow(clippy::too_many_arguments)]
     pub fn step_up_initiated(
         user: &str,
         command: Option<&str>,
         method: &str,
         device_code: Option<&str>,
+        matched_rule: Option<&str>,
+        policy_action: Option<&str>,
+        host_classification: Option<&str>,
+        grace_period_secs: Option<u64>,
+        dry_run: bool,
     ) -> Self {
         Self::StepUpInitiated {
             timestamp: iso_timestamp(),
@@ -712,6 +749,11 @@ impl AuditEvent {
             host: get_hostname(),
             method: method.to_string(),
             device_code: device_code.map(String::from),
+            matched_rule: matched_rule.map(String::from),
+            policy_action: policy_action.map(String::from),
+            host_classification: host_classification.map(String::from),
+            grace_period_secs,
+            dry_run,
         }
     }
 
@@ -729,6 +771,12 @@ impl AuditEvent {
         oidc_acr: Option<&str>,
         oidc_auth_time: Option<i64>,
         id_token_verified: bool,
+        matched_rule: Option<&str>,
+        policy_action: Option<&str>,
+        host_classification: Option<&str>,
+        grace_period_secs: Option<u64>,
+        grace_period_applied: bool,
+        dry_run: bool,
     ) -> Self {
         Self::StepUpSuccess {
             timestamp: iso_timestamp(),
@@ -740,6 +788,12 @@ impl AuditEvent {
             oidc_acr: oidc_acr.map(String::from),
             oidc_auth_time,
             id_token_verified,
+            matched_rule: matched_rule.map(String::from),
+            policy_action: policy_action.map(String::from),
+            host_classification: host_classification.map(String::from),
+            grace_period_secs,
+            grace_period_applied,
+            dry_run,
         }
     }
 
@@ -748,12 +802,18 @@ impl AuditEvent {
     /// `verification_failure` must be `Some(reason)` when the failure was caused by
     /// ID token validation (e.g., `"signature mismatch"`, `"expired"`, `"wrong audience"`),
     /// and `None` for non-validation failures (e.g., timeout, user denied).
+    #[allow(clippy::too_many_arguments)]
     pub fn step_up_failed(
         user: &str,
         command: Option<&str>,
         method: &str,
         reason: &str,
         verification_failure: Option<&str>,
+        matched_rule: Option<&str>,
+        policy_action: Option<&str>,
+        host_classification: Option<&str>,
+        grace_period_secs: Option<u64>,
+        dry_run: bool,
     ) -> Self {
         Self::StepUpFailed {
             timestamp: iso_timestamp(),
@@ -763,6 +823,37 @@ impl AuditEvent {
             method: method.to_string(),
             reason: reason.to_string(),
             verification_failure: verification_failure.map(String::from),
+            matched_rule: matched_rule.map(String::from),
+            policy_action: policy_action.map(String::from),
+            host_classification: host_classification.map(String::from),
+            grace_period_secs,
+            dry_run,
+        }
+    }
+
+    /// Create a privilege-policy decision event for a sudo command.
+    #[allow(clippy::too_many_arguments)]
+    pub fn privilege_policy_decision(
+        user: &str,
+        command: &str,
+        policy_action: &str,
+        matched_rule: Option<&str>,
+        host_classification: &str,
+        grace_period_secs: u64,
+        grace_period_applied: bool,
+        dry_run: bool,
+    ) -> Self {
+        Self::PrivilegePolicyDecision {
+            timestamp: iso_timestamp(),
+            user: user.to_string(),
+            command: command.to_string(),
+            host: get_hostname(),
+            policy_action: policy_action.to_string(),
+            matched_rule: matched_rule.map(String::from),
+            host_classification: host_classification.to_string(),
+            grace_period_secs,
+            grace_period_applied,
+            dry_run,
         }
     }
 
@@ -1114,6 +1205,7 @@ impl AuditEvent {
             Self::SshLoginFailed { .. } => "SSH_LOGIN_FAILED",
             Self::TokenValidationFailed { .. } => "TOKEN_VALIDATION_FAILED",
             Self::UserNotFound { .. } => "USER_NOT_FOUND",
+            Self::PrivilegePolicyDecision { .. } => "PRIVILEGE_POLICY_DECISION",
             Self::StepUpInitiated { .. } => "STEP_UP_INITIATED",
             Self::StepUpSuccess { .. } => "STEP_UP_SUCCESS",
             Self::StepUpFailed { .. } => "STEP_UP_FAILED",
@@ -1168,6 +1260,7 @@ impl AuditEvent {
             | Self::SessionOpened { .. }
             | Self::SessionClosed { .. }
             | Self::TokenRevoked { .. }
+            | Self::PrivilegePolicyDecision { .. }
             | Self::StepUpInitiated { .. }
             | Self::StepUpSuccess { .. }
             | Self::IssuerRecovered { .. }
@@ -1219,9 +1312,10 @@ impl AuditEvent {
             Self::TokenRevoked { .. } => (2, 1),  // Info: revocation
 
             // Authentication challenge — activity_id 3
-            Self::StepUpInitiated { .. } => (3, 1), // Info: challenge started
-            Self::StepUpSuccess { .. } => (3, 1),   // Info: challenge passed
-            Self::StepUpFailed { .. } => (3, 3),    // Medium: challenge denied
+            Self::PrivilegePolicyDecision { .. } => (3, 1), // Info: policy evaluated
+            Self::StepUpInitiated { .. } => (3, 1),         // Info: challenge started
+            Self::StepUpSuccess { .. } => (3, 1),           // Info: challenge passed
+            Self::StepUpFailed { .. } => (3, 3),            // Medium: challenge denied
 
             // Break-glass — activity_id 1, severity depends on alert_on_use
             Self::BreakGlassAuth { alert_on_use, .. } => {
@@ -2081,7 +2175,9 @@ mod tests {
         let not_found = AuditEvent::user_not_found("alice");
         assert_eq!(not_found.syslog_severity(), AuditSeverity::Warning);
 
-        let step_failed = AuditEvent::step_up_failed("u", None, "ciba", "timeout", None);
+        let step_failed = AuditEvent::step_up_failed(
+            "u", None, "ciba", "timeout", None, None, None, None, None, false,
+        );
         assert_eq!(step_failed.syslog_severity(), AuditSeverity::Warning);
 
         let intro_failed = AuditEvent::introspection_failed(None, None, "err", "strict");
@@ -2099,10 +2195,13 @@ mod tests {
         let revoked = AuditEvent::token_revoked("s", "u", "success", None);
         assert_eq!(revoked.syslog_severity(), AuditSeverity::Info);
 
-        let initiated = AuditEvent::step_up_initiated("u", None, "ciba", None);
+        let initiated =
+            AuditEvent::step_up_initiated("u", None, "ciba", None, None, None, None, None, false);
         assert_eq!(initiated.syslog_severity(), AuditSeverity::Info);
 
-        let step_ok = AuditEvent::step_up_success("u", None, "ciba", "s", None, None, false);
+        let step_ok = AuditEvent::step_up_success(
+            "u", None, "ciba", "s", None, None, false, None, None, None, None, false, false,
+        );
         assert_eq!(step_ok.syslog_severity(), AuditSeverity::Info);
 
         // OBS-07: new variants must also be Warning
@@ -2274,9 +2373,13 @@ mod tests {
             AuditEvent::ssh_login_failed(None, None, "reason"),
             AuditEvent::token_validation_failed(None, "reason", None, None),
             AuditEvent::user_not_found("user"),
-            AuditEvent::step_up_initiated("u", None, "ciba", None),
-            AuditEvent::step_up_success("u", None, "ciba", "s", None, None, false),
-            AuditEvent::step_up_failed("u", None, "ciba", "timeout", None),
+            AuditEvent::step_up_initiated("u", None, "ciba", None, None, None, None, None, false),
+            AuditEvent::step_up_success(
+                "u", None, "ciba", "s", None, None, false, None, None, None, None, false, false,
+            ),
+            AuditEvent::step_up_failed(
+                "u", None, "ciba", "timeout", None, None, None, None, None, false,
+            ),
             AuditEvent::break_glass_auth("u", None, true),
             AuditEvent::session_opened("s", "u", None, 0),
             AuditEvent::session_closed("s", "u", 0),
@@ -2451,6 +2554,12 @@ mod tests {
             Some("urn:mace:incommon:iap:silver"),
             Some(1_700_000_000),
             true,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
         );
         let json = event.enriched_log_json();
         assert!(
@@ -2468,12 +2577,98 @@ mod tests {
             "ciba",
             "ID token signature mismatch",
             Some("signature verification failed"),
+            None,
+            None,
+            None,
+            None,
+            false,
         );
         let json = event.enriched_log_json();
         assert!(
             json.contains("\"verification_failure\":\"signature verification failed\""),
             "verification_failure field missing: {json}"
         );
+    }
+
+    #[test]
+    fn test_privilege_policy_decision_serializes_phase44_fields() {
+        let event = AuditEvent::privilege_policy_decision(
+            "alice",
+            "/usr/bin/systemctl restart nginx",
+            "step_up",
+            Some("service-restart"),
+            "critical",
+            300,
+            true,
+            false,
+        );
+        let json = event.enriched_log_json();
+        assert!(json.contains("\"event\":\"PRIVILEGE_POLICY_DECISION\""));
+        assert!(json.contains("\"policy_action\":\"step_up\""));
+        assert!(json.contains("\"matched_rule\":\"service-restart\""));
+        assert!(json.contains("\"host_classification\":\"critical\""));
+        assert!(json.contains("\"grace_period_secs\":300"));
+        assert!(json.contains("\"grace_period_applied\":true"));
+        assert!(json.contains("\"dry_run\":false"));
+        assert!(json.contains("\"activity_id\":3"));
+        assert!(json.contains("\"severity_id\":1"));
+    }
+
+    #[test]
+    fn test_step_up_events_serialize_phase44_context_fields() {
+        let initiated = AuditEvent::step_up_initiated(
+            "alice",
+            Some("/usr/bin/systemctl restart nginx"),
+            "push",
+            None,
+            Some("service-restart"),
+            Some("step_up"),
+            Some("critical"),
+            Some(300),
+            false,
+        );
+        let success = AuditEvent::step_up_success(
+            "alice",
+            Some("/usr/bin/systemctl restart nginx"),
+            "push",
+            "sess-1",
+            Some("urn:example:acr:phr"),
+            Some(1_700_000_000),
+            true,
+            Some("service-restart"),
+            Some("step_up"),
+            Some("critical"),
+            Some(300),
+            true,
+            false,
+        );
+        let failed = AuditEvent::step_up_failed(
+            "alice",
+            Some("/usr/bin/systemctl restart nginx"),
+            "push",
+            "timeout",
+            None,
+            Some("service-restart"),
+            Some("step_up"),
+            Some("critical"),
+            Some(300),
+            true,
+        );
+
+        let initiated_json = initiated.enriched_log_json();
+        assert!(initiated_json.contains("\"matched_rule\":\"service-restart\""));
+        assert!(initiated_json.contains("\"policy_action\":\"step_up\""));
+        assert!(initiated_json.contains("\"host_classification\":\"critical\""));
+        assert!(initiated_json.contains("\"grace_period_secs\":300"));
+
+        let success_json = success.enriched_log_json();
+        assert!(success_json.contains("\"grace_period_applied\":true"));
+        assert!(success_json.contains("\"dry_run\":false"));
+        assert!(success_json.contains("\"id_token_verified\":true"));
+
+        let failed_json = failed.enriched_log_json();
+        assert!(failed_json.contains("\"dry_run\":true"));
+        assert!(failed_json.contains("\"reason\":\"timeout\""));
     }
 
     // ── Phase 37-01: Token exchange audit event tests ────────────────────────

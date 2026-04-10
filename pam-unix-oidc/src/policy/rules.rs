@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::config::{HostClassification, PolicyConfig};
+use super::config::{CommandRule, HostClassification, PolicyConfig, SudoPolicyAction};
 
 /// Authentication action determined by policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,19 +56,72 @@ impl<'a> PolicyRules<'a> {
 
     /// Check if sudo command requires step-up authentication.
     ///
-    /// Returns the step-up requirements, or None if step-up not required.
-    pub fn check_sudo(&self, command: &str) -> Option<SudoStepUpRequirements> {
-        if !self.policy.command_requires_step_up(command) {
-            return None;
-        }
+    /// Returns the full policy decision, including matched-rule metadata and
+    /// step-up requirements when the action is `step_up`.
+    pub fn evaluate_sudo(&self, command: &str) -> SudoPolicyDecision {
+        let host_classification = self.policy.host.classification;
+        let matched_rule = self
+            .policy
+            .sudo
+            .commands
+            .iter()
+            .find(|rule| self.rule_matches(rule, command, host_classification));
 
-        Some(SudoStepUpRequirements {
+        let action = matched_rule
+            .map(CommandRule::effective_action)
+            .unwrap_or_else(|| self.policy.default_sudo_action());
+
+        let required_acr = matched_rule
+            .and_then(|rule| rule.required_acr.clone())
+            .or_else(|| self.get_minimum_acr_for_classification());
+
+        let grace_period_secs = matched_rule
+            .and_then(|rule| rule.grace_period_secs)
+            .unwrap_or(self.policy.sudo.grace_period_secs);
+
+        let matched_rule_name = matched_rule
+            .and_then(|rule| rule.name.clone())
+            .or_else(|| matched_rule.map(|rule| rule.pattern.clone()));
+
+        let step_up = (action == SudoPolicyAction::StepUp).then(|| SudoStepUpRequirements {
             allowed_methods: self.policy.sudo.allowed_methods.clone(),
             timeout: self.policy.sudo.challenge_timeout,
             method_timeouts: self.policy.sudo.method_timeouts.clone(),
             poll_interval_secs: self.policy.sudo.poll_interval_secs,
-            minimum_acr: self.get_minimum_acr_for_classification(),
-        })
+            minimum_acr: required_acr.clone(),
+            grace_period_secs,
+        });
+
+        SudoPolicyDecision {
+            action,
+            matched_rule_name,
+            host_classification,
+            grace_period_secs,
+            dry_run: self.policy.sudo.dry_run,
+            step_up,
+        }
+    }
+
+    fn rule_matches(
+        &self,
+        rule: &CommandRule,
+        command: &str,
+        host_classification: HostClassification,
+    ) -> bool {
+        if let Some(required_host_class) = rule.host_classification {
+            let required: HostClassification = required_host_class.into();
+            if required != host_classification {
+                return false;
+            }
+        }
+
+        super::config::pattern_matches(&rule.pattern, command)
+    }
+
+    /// Compatibility wrapper that preserves the pre-Phase-44 API shape for
+    /// older callers/tests. New code should use `evaluate_sudo`.
+    pub fn check_sudo(&self, command: &str) -> Option<SudoStepUpRequirements> {
+        self.evaluate_sudo(command).step_up
     }
 
     /// Get the minimum ACR level based on host classification.
@@ -109,6 +162,26 @@ pub struct SudoStepUpRequirements {
     pub poll_interval_secs: u64,
     /// Minimum ACR level for the step-up token
     pub minimum_acr: Option<String>,
+    /// Time-bounded elevation window for reusing a recent successful step-up.
+    pub grace_period_secs: u64,
+}
+
+/// Result of evaluating sudo policy for a specific command.
+#[derive(Debug, Clone)]
+pub struct SudoPolicyDecision {
+    /// Final policy action for the command.
+    pub action: SudoPolicyAction,
+    /// Rule identifier used for audit/explain output.
+    pub matched_rule_name: Option<String>,
+    /// Effective host classification used during evaluation.
+    pub host_classification: HostClassification,
+    /// Grace window that would apply to this decision when action = `step_up`.
+    pub grace_period_secs: u64,
+    /// Whether the decision is observational only and should fall back to the
+    /// legacy boolean behavior.
+    pub dry_run: bool,
+    /// Step-up requirements when action = `step_up`.
+    pub step_up: Option<SudoStepUpRequirements>,
 }
 
 #[cfg(test)]
@@ -158,6 +231,7 @@ sudo:
             .unwrap();
         assert_eq!(req.allowed_methods, vec![StepUpMethod::DeviceFlow]);
         assert_eq!(req.timeout, 60);
+        assert_eq!(req.grace_period_secs, 0);
 
         // Command that doesn't require step-up
         let req = rules.check_sudo("/usr/bin/less /var/log/syslog");
@@ -202,5 +276,62 @@ ssh_login:
             rules.check_ssh_login().unwrap().minimum_acr,
             Some("urn:example:acr:phishing-resistant".to_string())
         );
+    }
+
+    #[test]
+    fn test_evaluate_sudo_deny_and_host_class_filtering() {
+        let yaml = r#"
+host:
+  classification: critical
+sudo:
+  step_up_required: true
+  grace_period_secs: 90
+  commands:
+    - name: destructive-prod
+      pattern: "/usr/bin/rm -rf *"
+      action: deny
+      host_classification: critical
+    - name: read-only
+      pattern: "/usr/bin/less *"
+      action: allow
+"#;
+        let policy: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let rules = PolicyRules::new(&policy);
+
+        let deny = rules.evaluate_sudo("/usr/bin/rm -rf /tmp/x");
+        assert_eq!(deny.action, SudoPolicyAction::Deny);
+        assert_eq!(deny.matched_rule_name.as_deref(), Some("destructive-prod"));
+        assert!(deny.step_up.is_none());
+
+        let allow = rules.evaluate_sudo("/usr/bin/less /var/log/syslog");
+        assert_eq!(allow.action, SudoPolicyAction::Allow);
+        assert_eq!(allow.matched_rule_name.as_deref(), Some("read-only"));
+        assert!(allow.step_up.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_sudo_required_acr_and_grace_override() {
+        let yaml = r#"
+host:
+  classification: elevated
+sudo:
+  step_up_required: true
+  grace_period_secs: 300
+  commands:
+    - name: restart
+      pattern: "/usr/bin/systemctl restart *"
+      action: step_up
+      required_acr: "urn:example:acr:phr"
+      grace_period_secs: 30
+"#;
+        let policy: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let rules = PolicyRules::new(&policy);
+
+        let decision = rules.evaluate_sudo("/usr/bin/systemctl restart nginx");
+        assert_eq!(decision.action, SudoPolicyAction::StepUp);
+        assert_eq!(decision.grace_period_secs, 30);
+        let step_up = decision.step_up.expect("step-up required");
+        assert_eq!(step_up.minimum_acr.as_deref(), Some("urn:example:acr:phr"));
+        assert_eq!(step_up.grace_period_secs, 30);
     }
 }

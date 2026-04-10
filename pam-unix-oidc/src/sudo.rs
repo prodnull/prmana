@@ -1,18 +1,25 @@
 //! Sudo step-up authentication.
 //!
 //! This module provides step-up authentication for sudo commands using
-//! the OAuth 2.0 Device Authorization Grant flow.
+//! OIDC step-up flows plus Phase 44 risk-aware privilege policy decisions.
 
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crate::audit::AuditEvent;
 use crate::device_flow::{DeviceFlowClient, DeviceFlowError, TokenResponse};
 use crate::oidc::{TokenValidator, ValidationConfig, ValidationError};
 use crate::policy::config::SecurityModes;
-use crate::policy::{PolicyConfig, PolicyRules, StepUpMethod, SudoStepUpRequirements};
+use crate::policy::{
+    config::SudoPolicyAction, rules::SudoPolicyDecision, PolicyConfig, PolicyRules, StepUpMethod,
+    SudoStepUpRequirements,
+};
 use crate::sssd::groups::{check_group_policy, GroupPolicyError};
 use crate::sssd::{get_user_info, UserError};
 use thiserror::Error;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// Check if test mode is explicitly enabled.
 /// Security: Only accepts explicit "true" or "1" values, not just presence of the variable.
@@ -36,6 +43,9 @@ pub enum SudoError {
 
     #[error("Step-up denied by user")]
     Denied,
+
+    #[error("Privilege policy denied command: {reason}")]
+    PolicyDenied { reason: String },
 
     #[error("Step-up timeout ({method} exceeded {timeout_secs}s)")]
     Timeout { method: String, timeout_secs: u64 },
@@ -99,6 +109,21 @@ pub struct SudoAuthResult {
     pub response_time_ms: u64,
 }
 
+/// File-backed record of a recent successful sudo step-up.
+///
+/// This is intentionally simple and per-process agnostic: PAM runs in forked
+/// sshd/sudo processes, so in-memory grace windows would not survive across
+/// invocations. A tiny root-owned cache in `/run` is sufficient and avoids
+/// introducing a new daemon just for Phase 44 grace-period reuse.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RecentStepUpRecord {
+    username: String,
+    host_classification: String,
+    matched_rule_name: Option<String>,
+    command: String,
+    completed_at_unix_secs: u64,
+}
+
 /// Callback for displaying step-up prompts to the user.
 pub trait StepUpDisplay {
     /// Display the device flow prompt to the user.
@@ -125,15 +150,51 @@ pub fn authenticate_sudo(
     display: &dyn StepUpDisplay,
 ) -> Result<Option<SudoAuthResult>, SudoError> {
     let rules = PolicyRules::new(policy);
+    let decision = rules.evaluate_sudo(&ctx.command);
 
-    // Check if step-up is required for this command
-    let requirements = match rules.check_sudo(&ctx.command) {
-        Some(req) => req,
-        None => {
-            // No step-up required
+    // Dry-run lets operators observe richer Phase 44 policy logic while the
+    // runtime still follows the legacy boolean model. This is the safest way to
+    // roll out deny and grace-window policy without surprise production impact.
+    if decision.dry_run {
+        log_privilege_policy_decision(ctx, &decision, false);
+        return authenticate_sudo_legacy(ctx, policy, display);
+    }
+
+    let requirements = match decision.action {
+        SudoPolicyAction::Allow => {
+            log_privilege_policy_decision(ctx, &decision, false);
             return Ok(None);
         }
+        SudoPolicyAction::Deny => {
+            log_privilege_policy_decision(ctx, &decision, false);
+            let reason = format!(
+                "matched deny rule {}",
+                decision
+                    .matched_rule_name
+                    .as_deref()
+                    .unwrap_or("<unnamed-rule>")
+            );
+            return Err(SudoError::PolicyDenied { reason });
+        }
+        SudoPolicyAction::StepUp => decision.step_up.clone().ok_or_else(|| {
+            SudoError::Config(
+                "phase-44 policy evaluation bug: step_up action missing requirements".to_string(),
+            )
+        })?,
     };
+
+    if requirements.grace_period_secs > 0
+        && recent_step_up_satisfies(
+            &ctx.user,
+            &ctx.command,
+            decision.matched_rule_name.as_deref(),
+            decision.host_classification,
+            requirements.grace_period_secs,
+        )
+    {
+        log_privilege_policy_decision(ctx, &decision, true);
+        return Ok(None);
+    }
 
     // Enforce sudo_groups policy before initiating step-up.
     //
@@ -156,13 +217,20 @@ pub fn authenticate_sudo(
                 error = %e,
                 "Sudo group policy denied step-up"
             );
-            log_step_up_failed(ctx, "device_flow", "user not in sudo_groups");
+            log_step_up_failed(
+                ctx,
+                "device_flow",
+                "user not in sudo_groups",
+                Some(&decision),
+            );
             SudoError::GroupDenied(e.to_string())
         })?;
     }
 
+    log_privilege_policy_decision(ctx, &decision, false);
+
     // Log step-up initiation
-    log_step_up_initiated(ctx, &requirements);
+    log_step_up_initiated(ctx, &requirements, Some(&decision));
 
     // Perform step-up authentication
     let security_modes = policy.effective_security_modes();
@@ -171,14 +239,74 @@ pub fn authenticate_sudo(
         Ok(r) => r,
         Err(e) => {
             // Log failure
-            log_step_up_failed(ctx, "device_flow", &e.to_string());
+            log_step_up_failed(ctx, "device_flow", &e.to_string(), Some(&decision));
             return Err(e);
         }
     };
     let response_time_ms = start.elapsed().as_millis() as u64;
 
     // Log success
-    log_step_up_success(ctx, &result, response_time_ms);
+    log_step_up_success(ctx, &result, response_time_ms, Some(&decision));
+    record_recent_step_up(
+        &ctx.user,
+        &ctx.command,
+        decision.matched_rule_name.as_deref(),
+        decision.host_classification,
+        SystemTime::now(),
+    );
+
+    Ok(Some(SudoAuthResult {
+        session_id: ctx.session_id.clone(),
+        acr: result.acr,
+        response_time_ms,
+    }))
+}
+
+/// Legacy pre-Phase-44 behavior retained for dry-run mode and compatibility.
+fn authenticate_sudo_legacy(
+    ctx: &SudoContext,
+    policy: &PolicyConfig,
+    display: &dyn StepUpDisplay,
+) -> Result<Option<SudoAuthResult>, SudoError> {
+    let rules = PolicyRules::new(policy);
+    let requirements = match rules.check_sudo(&ctx.command) {
+        Some(req) => req,
+        None => return Ok(None),
+    };
+
+    if !policy.sudo.sudo_groups.is_empty() {
+        let user_info = get_user_info(&ctx.user)?;
+        let modes = policy.effective_security_modes();
+
+        check_group_policy(
+            &ctx.user,
+            user_info.gid,
+            &policy.sudo.sudo_groups,
+            modes.groups_enforcement,
+        )
+        .map_err(|e: GroupPolicyError| {
+            tracing::warn!(
+                username = %ctx.user,
+                error = %e,
+                "Sudo group policy denied step-up"
+            );
+            log_step_up_failed(ctx, "device_flow", "user not in sudo_groups", None);
+            SudoError::GroupDenied(e.to_string())
+        })?;
+    }
+
+    log_step_up_initiated(ctx, &requirements, None);
+    let security_modes = policy.effective_security_modes();
+    let start = std::time::Instant::now();
+    let result = match perform_step_up(ctx, &requirements, display, policy, &security_modes) {
+        Ok(r) => r,
+        Err(e) => {
+            log_step_up_failed(ctx, "device_flow", &e.to_string(), None);
+            return Err(e);
+        }
+    };
+    let response_time_ms = start.elapsed().as_millis() as u64;
+    log_step_up_success(ctx, &result, response_time_ms, None);
 
     Ok(Some(SudoAuthResult {
         session_id: ctx.session_id.clone(),
@@ -260,6 +388,135 @@ fn agent_socket_path() -> String {
     // In sudo context, EUID is root but RUID is the original user.
     let uid = uzers::get_current_uid();
     format!("/run/user/{uid}/unix-oidc-agent.sock")
+}
+
+/// Resolve the directory for recent sudo step-up cache entries.
+///
+/// The default location is `/run/unix-oidc/sudo-step-up-cache`, which keeps the
+/// state ephemeral across reboot and root-owned across users. Tests can
+/// override it with `UNIX_OIDC_SUDO_STEPUP_CACHE_DIR`.
+fn recent_step_up_cache_dir() -> PathBuf {
+    std::env::var("UNIX_OIDC_SUDO_STEPUP_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/run/unix-oidc/sudo-step-up-cache"))
+}
+
+/// Best-effort ensure the cache directory exists with restrictive permissions.
+fn ensure_recent_step_up_cache_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        let perms = std::fs::Permissions::from_mode(0o700);
+        let _ = std::fs::set_permissions(dir, perms);
+    }
+    Ok(())
+}
+
+/// Build a stable cache key for a user + host class + matched policy rule.
+fn recent_step_up_cache_key(
+    username: &str,
+    command: &str,
+    matched_rule_name: Option<&str>,
+    host_classification: crate::policy::config::HostClassification,
+) -> String {
+    use sha2::Digest;
+
+    // We deliberately key by matched rule first and command second. This lets
+    // a rule such as "service_restart" share a grace window across multiple
+    // concrete service names when the operator chooses a broad pattern.
+    let input = format!(
+        "{username}\n{:?}\n{}\n{command}",
+        host_classification,
+        matched_rule_name.unwrap_or("<no-rule>")
+    );
+    let digest = sha2::Sha256::digest(input.as_bytes());
+    hex::encode(&digest[..16])
+}
+
+fn recent_step_up_cache_path(
+    username: &str,
+    command: &str,
+    matched_rule_name: Option<&str>,
+    host_classification: crate::policy::config::HostClassification,
+) -> PathBuf {
+    recent_step_up_cache_dir().join(format!(
+        "{}.json",
+        recent_step_up_cache_key(username, command, matched_rule_name, host_classification)
+    ))
+}
+
+/// Return `true` when a recent successful step-up still satisfies the grace window.
+fn recent_step_up_satisfies(
+    username: &str,
+    command: &str,
+    matched_rule_name: Option<&str>,
+    host_classification: crate::policy::config::HostClassification,
+    grace_period_secs: u64,
+) -> bool {
+    if grace_period_secs == 0 {
+        return false;
+    }
+
+    let path = recent_step_up_cache_path(username, command, matched_rule_name, host_classification);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return false;
+    };
+    let Ok(record) = serde_json::from_slice::<RecentStepUpRecord>(&bytes) else {
+        tracing::warn!(path = %path.display(), "Ignoring corrupt recent step-up cache record");
+        return false;
+    };
+    let Ok(now) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) else {
+        return false;
+    };
+
+    now.as_secs().saturating_sub(record.completed_at_unix_secs) <= grace_period_secs
+}
+
+/// Persist a successful step-up completion for future grace-window reuse.
+fn record_recent_step_up(
+    username: &str,
+    command: &str,
+    matched_rule_name: Option<&str>,
+    host_classification: crate::policy::config::HostClassification,
+    completed_at: SystemTime,
+) {
+    let dir = recent_step_up_cache_dir();
+    if let Err(e) = ensure_recent_step_up_cache_dir(&dir) {
+        tracing::warn!(dir = %dir.display(), error = %e, "Could not prepare recent step-up cache directory");
+        return;
+    }
+
+    let completed_at_unix_secs = match completed_at.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(ts) => ts.as_secs(),
+        Err(_) => return,
+    };
+
+    let record = RecentStepUpRecord {
+        username: username.to_string(),
+        host_classification: format!("{host_classification:?}"),
+        matched_rule_name: matched_rule_name.map(str::to_string),
+        command: command.to_string(),
+        completed_at_unix_secs,
+    };
+    let Ok(json) = serde_json::to_vec(&record) else {
+        return;
+    };
+    let path = recent_step_up_cache_path(username, command, matched_rule_name, host_classification);
+    let tmp = path.with_extension("json.tmp");
+
+    if let Err(e) = std::fs::write(&tmp, json) {
+        tracing::warn!(path = %tmp.display(), error = %e, "Could not write recent step-up cache tmp file");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let perms = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(&tmp, perms);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        tracing::warn!(path = %path.display(), error = %e, "Could not persist recent step-up cache record");
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// Perform CIBA step-up authentication via agent IPC.
@@ -494,6 +751,11 @@ pub(crate) fn perform_step_up_via_ipc(
                             "ciba",
                             &format!("CIBA ID token validation failed: {e}"),
                             Some(&e.to_string()),
+                            None,
+                            Some("step_up"),
+                            None,
+                            Some(requirements.grace_period_secs),
+                            false,
                         )
                         .log();
                         SudoError::StepUp(format!("CIBA ID token validation failed: {e}"))
@@ -544,6 +806,7 @@ pub(crate) fn perform_step_up_via_ipc(
             return Ok(StepUpResult {
                 acr,
                 jti: None, // CIBA does not produce a JTI at the PAM layer.
+                method: method_str,
                 id_token_verified,
             });
         }
@@ -732,6 +995,7 @@ fn perform_device_flow_step_up(
     Ok(StepUpResult {
         acr: claims.acr,
         jti: claims.jti,
+        method: "device_flow",
         // Device-flow always validates the token via TokenValidator before reaching here.
         id_token_verified: true,
     })
@@ -743,6 +1007,8 @@ pub(crate) struct StepUpResult {
     /// JTI from device-flow token; unused at the PAM layer post-validation.
     #[allow(dead_code)]
     jti: Option<String>,
+    /// Step-up method that completed the authentication.
+    method: &'static str,
     /// Whether the CIBA ID token was cryptographically verified via `TokenValidator`.
     /// `true` = signature, issuer, audience, expiry all checked.
     /// `false` = legacy agent-asserted ACR path (step_up_require_id_token=false).
@@ -827,7 +1093,37 @@ fn poll_with_display(
     }
 }
 
-fn log_step_up_initiated(ctx: &SudoContext, requirements: &SudoStepUpRequirements) {
+fn log_privilege_policy_decision(
+    ctx: &SudoContext,
+    decision: &SudoPolicyDecision,
+    grace_period_applied: bool,
+) {
+    AuditEvent::privilege_policy_decision(
+        &ctx.user,
+        &ctx.command,
+        match decision.action {
+            SudoPolicyAction::Allow => "allow",
+            SudoPolicyAction::StepUp => "step_up",
+            SudoPolicyAction::Deny => "deny",
+        },
+        decision.matched_rule_name.as_deref(),
+        match decision.host_classification {
+            crate::policy::config::HostClassification::Standard => "standard",
+            crate::policy::config::HostClassification::Elevated => "elevated",
+            crate::policy::config::HostClassification::Critical => "critical",
+        },
+        decision.grace_period_secs,
+        grace_period_applied,
+        decision.dry_run,
+    )
+    .log();
+}
+
+fn log_step_up_initiated(
+    ctx: &SudoContext,
+    requirements: &SudoStepUpRequirements,
+    decision: Option<&SudoPolicyDecision>,
+) {
     // Priority matches perform_step_up() dispatch order: Push > Fido2 > DeviceFlow.
     let method = if requirements.allowed_methods.contains(&StepUpMethod::Push) {
         "push"
@@ -842,26 +1138,89 @@ fn log_step_up_initiated(ctx: &SudoContext, requirements: &SudoStepUpRequirement
         "unknown"
     };
 
-    AuditEvent::step_up_initiated(&ctx.user, Some(&ctx.command), method, None).log();
-}
-
-fn log_step_up_success(ctx: &SudoContext, result: &StepUpResult, _response_time_ms: u64) {
-    AuditEvent::step_up_success(
+    AuditEvent::step_up_initiated(
         &ctx.user,
         Some(&ctx.command),
-        "device_flow",
-        &ctx.session_id,
-        result.acr.as_deref(),
-        None, // auth_time is in the token claims, not passed here
-        result.id_token_verified,
+        method,
+        None,
+        decision.and_then(|d| d.matched_rule_name.as_deref()),
+        decision.map(|d| match d.action {
+            SudoPolicyAction::Allow => "allow",
+            SudoPolicyAction::StepUp => "step_up",
+            SudoPolicyAction::Deny => "deny",
+        }),
+        decision.map(|d| match d.host_classification {
+            crate::policy::config::HostClassification::Standard => "standard",
+            crate::policy::config::HostClassification::Elevated => "elevated",
+            crate::policy::config::HostClassification::Critical => "critical",
+        }),
+        Some(requirements.grace_period_secs),
+        decision.is_some_and(|d| d.dry_run),
     )
     .log();
 }
 
-fn log_step_up_failed(ctx: &SudoContext, method: &str, reason: &str) {
+fn log_step_up_success(
+    ctx: &SudoContext,
+    result: &StepUpResult,
+    _response_time_ms: u64,
+    decision: Option<&SudoPolicyDecision>,
+) {
+    AuditEvent::step_up_success(
+        &ctx.user,
+        Some(&ctx.command),
+        result.method,
+        &ctx.session_id,
+        result.acr.as_deref(),
+        None, // auth_time is in the token claims, not passed here
+        result.id_token_verified,
+        decision.and_then(|d| d.matched_rule_name.as_deref()),
+        decision.map(|d| match d.action {
+            SudoPolicyAction::Allow => "allow",
+            SudoPolicyAction::StepUp => "step_up",
+            SudoPolicyAction::Deny => "deny",
+        }),
+        decision.map(|d| match d.host_classification {
+            crate::policy::config::HostClassification::Standard => "standard",
+            crate::policy::config::HostClassification::Elevated => "elevated",
+            crate::policy::config::HostClassification::Critical => "critical",
+        }),
+        decision.map(|d| d.grace_period_secs),
+        false,
+        decision.is_some_and(|d| d.dry_run),
+    )
+    .log();
+}
+
+fn log_step_up_failed(
+    ctx: &SudoContext,
+    method: &str,
+    reason: &str,
+    decision: Option<&SudoPolicyDecision>,
+) {
     // verification_failure is None here — CIBA ID token validation failures emit their
     // own audit event with the specific reason at the callsite (perform_step_up_via_ipc).
-    AuditEvent::step_up_failed(&ctx.user, Some(&ctx.command), method, reason, None).log();
+    AuditEvent::step_up_failed(
+        &ctx.user,
+        Some(&ctx.command),
+        method,
+        reason,
+        None,
+        decision.and_then(|d| d.matched_rule_name.as_deref()),
+        decision.map(|d| match d.action {
+            SudoPolicyAction::Allow => "allow",
+            SudoPolicyAction::StepUp => "step_up",
+            SudoPolicyAction::Deny => "deny",
+        }),
+        decision.map(|d| match d.host_classification {
+            crate::policy::config::HostClassification::Standard => "standard",
+            crate::policy::config::HostClassification::Elevated => "elevated",
+            crate::policy::config::HostClassification::Critical => "critical",
+        }),
+        decision.map(|d| d.grace_period_secs),
+        decision.is_some_and(|d| d.dry_run),
+    )
+    .log();
 }
 
 fn generate_session_id() -> Result<String, getrandom::Error> {
@@ -872,6 +1231,11 @@ fn generate_session_id() -> Result<String, getrandom::Error> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::ui::terminal::QuietDisplay;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static SUDO_TEST_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     // ── TDD RED: CIBA step-up via agent IPC ───────────────────────────────────
 
@@ -907,13 +1271,26 @@ mod tests {
             method_timeouts: crate::policy::config::MethodTimeouts::default(),
             poll_interval_secs: 5,
             minimum_acr: None,
+            grace_period_secs: 0,
         };
         // Must not panic; method is extracted from allowed_methods.
-        log_step_up_initiated(&ctx, &reqs);
+        log_step_up_initiated(&ctx, &reqs, None);
     }
 
     fn test_policy() -> PolicyConfig {
         PolicyConfig::default()
+    }
+
+    fn sudo_ctx(command: &str) -> SudoContext {
+        SudoContext::new("alice", command, None).unwrap()
+    }
+
+    fn test_display() -> QuietDisplay {
+        QuietDisplay::new()
+    }
+
+    fn phase44_policy(yaml: &str) -> PolicyConfig {
+        serde_yaml::from_str(yaml).unwrap()
     }
 
     /// perform_step_up_via_ipc returns SudoError::StepUp on IPC connection failure.
@@ -926,6 +1303,7 @@ mod tests {
             method_timeouts: crate::policy::config::MethodTimeouts::default(),
             poll_interval_secs: 5,
             minimum_acr: None,
+            grace_period_secs: 0,
         };
         // Point to a non-existent socket.
         let socket_path = "/tmp/unix-oidc-agent-test-nonexistent-12345.sock";
@@ -1002,6 +1380,7 @@ mod tests {
             method_timeouts: crate::policy::config::MethodTimeouts::default(),
             poll_interval_secs: 5,
             minimum_acr: None,
+            grace_period_secs: 0,
         };
 
         // step_up_require_id_token=false: mock agent returns no id_token, test
@@ -1069,6 +1448,7 @@ mod tests {
             method_timeouts: crate::policy::config::MethodTimeouts::default(),
             poll_interval_secs: 5,
             minimum_acr: None,
+            grace_period_secs: 0,
         };
 
         let modes = crate::policy::config::SecurityModes {
@@ -1137,6 +1517,7 @@ mod tests {
             method_timeouts: crate::policy::config::MethodTimeouts::default(),
             poll_interval_secs: 5,
             minimum_acr: None,
+            grace_period_secs: 0,
         };
 
         let modes = crate::policy::config::SecurityModes {
@@ -1297,5 +1678,137 @@ mod tests {
         assert_eq!(result.session_id, "sudo-123");
         assert_eq!(result.acr, Some("urn:mfa".to_string()));
         assert_eq!(result.response_time_ms, 5000);
+    }
+
+    #[test]
+    fn test_authenticate_sudo_policy_allow_skips_step_up() {
+        let policy = phase44_policy(
+            r#"
+sudo:
+  step_up_required: true
+  default_action: allow
+"#,
+        );
+
+        let result = authenticate_sudo(&sudo_ctx("/usr/bin/id"), &policy, &test_display()).unwrap();
+        assert!(result.is_none(), "allow action must not initiate step-up");
+    }
+
+    #[test]
+    fn test_authenticate_sudo_policy_deny_blocks_command() {
+        let policy = phase44_policy(
+            r#"
+sudo:
+  step_up_required: true
+  default_action: deny
+  commands:
+    - name: "destructive"
+      pattern: "/usr/bin/userdel *"
+      action: deny
+"#,
+        );
+
+        let err = authenticate_sudo(
+            &sudo_ctx("/usr/bin/userdel alice"),
+            &policy,
+            &test_display(),
+        )
+        .expect_err("deny action must fail closed");
+        match err {
+            SudoError::PolicyDenied { reason } => {
+                assert!(reason.contains("destructive") || reason.contains("deny"));
+            }
+            other => panic!("expected PolicyDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_authenticate_sudo_dry_run_falls_back_to_legacy_behavior() {
+        let policy = phase44_policy(
+            r#"
+sudo:
+  step_up_required: false
+  default_action: deny
+  dry_run: true
+"#,
+        );
+
+        let result = authenticate_sudo(&sudo_ctx("/usr/bin/id"), &policy, &test_display()).unwrap();
+        assert!(
+            result.is_none(),
+            "dry-run must preserve legacy no-step-up behavior instead of enforcing deny"
+        );
+    }
+
+    #[test]
+    fn test_recent_step_up_grace_window_satisfies_matching_rule() {
+        let _guard = SUDO_TEST_ENV_MUTEX.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        std::env::set_var("UNIX_OIDC_SUDO_STEPUP_CACHE_DIR", temp.path());
+
+        let policy = phase44_policy(
+            r#"
+host:
+  classification: critical
+sudo:
+  step_up_required: true
+  commands:
+    - name: "service-restart"
+      pattern: "/usr/bin/systemctl restart *"
+      action: step_up
+      grace_period_secs: 300
+      host_classification: critical
+"#,
+        );
+
+        record_recent_step_up(
+            "alice",
+            "/usr/bin/systemctl restart nginx",
+            Some("service-restart"),
+            crate::policy::config::HostClassification::Critical,
+            SystemTime::now(),
+        );
+
+        let result = authenticate_sudo(
+            &sudo_ctx("/usr/bin/systemctl restart nginx"),
+            &policy,
+            &test_display(),
+        )
+        .unwrap();
+
+        std::env::remove_var("UNIX_OIDC_SUDO_STEPUP_CACHE_DIR");
+        assert!(
+            result.is_none(),
+            "fresh grace record must suppress repeat step-up"
+        );
+    }
+
+    #[test]
+    fn test_recent_step_up_grace_zero_never_satisfies() {
+        let _guard = SUDO_TEST_ENV_MUTEX.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        std::env::set_var("UNIX_OIDC_SUDO_STEPUP_CACHE_DIR", temp.path());
+
+        record_recent_step_up(
+            "alice",
+            "/usr/bin/systemctl restart nginx",
+            Some("service-restart"),
+            crate::policy::config::HostClassification::Critical,
+            SystemTime::now(),
+        );
+
+        let satisfied = recent_step_up_satisfies(
+            "alice",
+            "/usr/bin/systemctl restart nginx",
+            Some("service-restart"),
+            crate::policy::config::HostClassification::Critical,
+            0,
+        );
+
+        std::env::remove_var("UNIX_OIDC_SUDO_STEPUP_CACHE_DIR");
+        assert!(
+            !satisfied,
+            "zero grace period must force a fresh challenge every time"
+        );
     }
 }

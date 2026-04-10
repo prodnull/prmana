@@ -1201,8 +1201,20 @@ impl Default for SshConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SudoConfig {
-    /// Whether step-up authentication is required
+    /// Legacy global default: whether step-up authentication is required.
+    ///
+    /// Backward compatibility:
+    /// - Older policy files only have `step_up_required`.
+    /// - Phase 44 introduces `default_action`, which is more expressive.
+    /// - When `default_action` is absent, this boolean is still used to derive
+    ///   the fallback policy action (`true` => `step_up`, `false` => `allow`).
     pub step_up_required: bool,
+    /// Default action when no command-specific rule matches.
+    ///
+    /// This supersedes the old `step_up_required` boolean for new configs.
+    /// When absent, `step_up_required` is used to preserve legacy behavior.
+    #[serde(default)]
+    pub default_action: Option<SudoPolicyAction>,
     /// Allowed step-up methods
     pub allowed_methods: Vec<StepUpMethod>,
     /// Default timeout for step-up challenge in seconds.
@@ -1224,6 +1236,19 @@ pub struct SudoConfig {
     /// Enforcement behaviour is governed by `security_modes.groups_enforcement`.
     #[serde(default)]
     pub sudo_groups: Vec<String>,
+    /// Default grace window for reusing a recent successful sudo step-up.
+    ///
+    /// `0` means no reuse: every `step_up` policy decision requires a fresh
+    /// IdP challenge. Rules can override this per-command.
+    #[serde(default)]
+    pub grace_period_secs: u64,
+    /// When `true`, Phase 44 privilege-policy evaluation is logged but not
+    /// enforced. Runtime behavior falls back to the legacy boolean model.
+    ///
+    /// This lets operators observe how new allow/deny/step-up rules would
+    /// behave before making them authoritative in production.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_poll_interval() -> u64 {
@@ -1260,6 +1285,7 @@ impl Default for SudoConfig {
     fn default() -> Self {
         Self {
             step_up_required: true,
+            default_action: None,
             allowed_methods: vec![StepUpMethod::DeviceFlow],
             // STP-07: step-up timeout defaults to 120s (covers CIBA poll window
             // with typical IdP push delivery; configurable via policy.yaml).
@@ -1268,17 +1294,90 @@ impl Default for SudoConfig {
             poll_interval_secs: 5,
             commands: Vec::new(),
             sudo_groups: Vec::new(),
+            grace_period_secs: 0,
+            dry_run: false,
+        }
+    }
+}
+
+/// Policy action for sudo privilege rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SudoPolicyAction {
+    /// Allow the sudo command without a fresh step-up challenge.
+    Allow,
+    /// Require a fresh or grace-window-satisfied step-up challenge.
+    StepUp,
+    /// Deny the sudo command before execution.
+    Deny,
+}
+
+/// Operator-controlled host sensitivity selector for a command rule.
+///
+/// Phase 44 intentionally reuses the existing host-classification model instead
+/// of inventing a second sensitivity vocabulary. This keeps the new privilege
+/// policy aligned with the host-level SSH policy plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SudoRuleHostClass {
+    Standard,
+    Elevated,
+    Critical,
+}
+
+impl From<SudoRuleHostClass> for HostClassification {
+    fn from(value: SudoRuleHostClass) -> Self {
+        match value {
+            SudoRuleHostClass::Standard => HostClassification::Standard,
+            SudoRuleHostClass::Elevated => HostClassification::Elevated,
+            SudoRuleHostClass::Critical => HostClassification::Critical,
         }
     }
 }
 
 /// Rule for specific sudo commands.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct CommandRule {
+    /// Optional rule name used in audit output and policy explanations.
+    pub name: Option<String>,
     /// Glob pattern for matching commands
     pub pattern: String,
-    /// Whether step-up is required for this command
-    pub step_up_required: bool,
+    /// Explicit policy action for this command.
+    ///
+    /// New configs should prefer `action`. The legacy `step_up_required` field
+    /// is still accepted and mapped to `allow`/`step_up` for backward
+    /// compatibility.
+    pub action: Option<SudoPolicyAction>,
+    /// Legacy boolean kept for backward compatibility with pre-Phase-44 YAML.
+    #[serde(default)]
+    pub step_up_required: Option<bool>,
+    /// Optional per-rule minimum ACR override for step-up decisions.
+    #[serde(default)]
+    pub required_acr: Option<String>,
+    /// Optional per-rule grace period override.
+    ///
+    /// When absent, `sudo.grace_period_secs` is used.
+    #[serde(default)]
+    pub grace_period_secs: Option<u64>,
+    /// Optional host-sensitivity selector for this rule.
+    ///
+    /// When absent, the rule applies to any host classification.
+    #[serde(default)]
+    pub host_classification: Option<SudoRuleHostClass>,
+}
+
+impl CommandRule {
+    /// Resolve the effective action for this rule with legacy compatibility.
+    pub fn effective_action(&self) -> SudoPolicyAction {
+        if let Some(action) = self.action {
+            return action;
+        }
+        match self.step_up_required.unwrap_or(true) {
+            true => SudoPolicyAction::StepUp,
+            false => SudoPolicyAction::Allow,
+        }
+    }
 }
 
 /// Break-glass configuration.
@@ -1714,8 +1813,27 @@ impl PolicyConfig {
             .find(|issuer| issuer.issuer_url.trim_end_matches('/') == normalized_query)
     }
 
-    /// Check if a command matches any pattern that requires step-up.
-    pub fn command_requires_step_up(&self, command: &str) -> bool {
+    /// Resolve the legacy global/default sudo action.
+    ///
+    /// Phase 44 introduces `sudo.default_action`. When absent, the legacy
+    /// `sudo.step_up_required` boolean still defines the fallback behavior.
+    pub fn default_sudo_action(&self) -> SudoPolicyAction {
+        self.sudo.default_action.unwrap_or({
+            if self.sudo.step_up_required {
+                SudoPolicyAction::StepUp
+            } else {
+                SudoPolicyAction::Allow
+            }
+        })
+    }
+
+    /// Legacy helper retained for dry-run fallback and backward-compatible tests.
+    ///
+    /// This mirrors the pre-Phase-44 behavior exactly:
+    /// - ordered command matches
+    /// - boolean `step_up_required` rule outcome
+    /// - fallback to global `sudo.step_up_required`
+    pub fn legacy_command_requires_step_up(&self, command: &str) -> bool {
         // If no command rules, use the default sudo config
         if self.sudo.commands.is_empty() {
             return self.sudo.step_up_required;
@@ -1724,19 +1842,27 @@ impl PolicyConfig {
         // Check command rules in order
         for rule in &self.sudo.commands {
             if pattern_matches(&rule.pattern, command) {
-                return rule.step_up_required;
+                return rule.step_up_required.unwrap_or(self.sudo.step_up_required);
             }
         }
 
         // Default to the sudo config setting
         self.sudo.step_up_required
     }
+
+    /// Compatibility wrapper around the legacy boolean helper.
+    ///
+    /// New policy evaluation should prefer `PolicyRules::evaluate_sudo`, which
+    /// can express allow/step-up/deny and rule metadata.
+    pub fn command_requires_step_up(&self, command: &str) -> bool {
+        self.legacy_command_requires_step_up(command)
+    }
 }
 
 // ── Glob pattern matching ─────────────────────────────────────────────────────
 
 /// Simple glob pattern matching (supports * wildcard).
-fn pattern_matches(pattern: &str, text: &str) -> bool {
+pub(crate) fn pattern_matches(pattern: &str, text: &str) -> bool {
     let pattern_parts: Vec<&str> = pattern.split('*').collect();
 
     if pattern_parts.len() == 1 {
@@ -2060,6 +2186,75 @@ sudo:
 
         // Not matched by any rule - uses default
         assert!(policy.command_requires_step_up("/usr/bin/rm -rf /"));
+    }
+
+    #[test]
+    fn test_sudo_policy_action_fields_parse() {
+        let yaml = r#"
+sudo:
+  default_action: allow
+  grace_period_secs: 120
+  dry_run: true
+  commands:
+    - name: restart
+      pattern: "/usr/bin/systemctl restart *"
+      action: step_up
+      required_acr: "urn:example:acr:phr"
+      grace_period_secs: 30
+      host_classification: elevated
+    - name: destructive
+      pattern: "/usr/bin/rm -rf *"
+      action: deny
+"#;
+
+        let policy: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(policy.sudo.default_action, Some(SudoPolicyAction::Allow));
+        assert_eq!(policy.sudo.grace_period_secs, 120);
+        assert!(policy.sudo.dry_run);
+        assert_eq!(policy.sudo.commands.len(), 2);
+
+        let restart = &policy.sudo.commands[0];
+        assert_eq!(restart.name.as_deref(), Some("restart"));
+        assert_eq!(restart.action, Some(SudoPolicyAction::StepUp));
+        assert_eq!(restart.required_acr.as_deref(), Some("urn:example:acr:phr"));
+        assert_eq!(restart.grace_period_secs, Some(30));
+        assert_eq!(
+            restart.host_classification,
+            Some(SudoRuleHostClass::Elevated)
+        );
+    }
+
+    #[test]
+    fn test_command_rule_legacy_step_up_required_maps_to_action() {
+        let yaml = r#"
+sudo:
+  commands:
+    - pattern: "/usr/bin/less *"
+      step_up_required: false
+    - pattern: "/usr/bin/systemctl restart *"
+      step_up_required: true
+"#;
+
+        let policy: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            policy.sudo.commands[0].effective_action(),
+            SudoPolicyAction::Allow
+        );
+        assert_eq!(
+            policy.sudo.commands[1].effective_action(),
+            SudoPolicyAction::StepUp
+        );
+    }
+
+    #[test]
+    fn test_default_sudo_action_uses_legacy_boolean_when_default_action_absent() {
+        let yaml = r#"
+sudo:
+  step_up_required: false
+"#;
+
+        let policy: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(policy.default_sudo_action(), SudoPolicyAction::Allow);
     }
 
     #[test]
