@@ -17,9 +17,8 @@ use reqwest::Url;
 use serde_json::json;
 use tracing::info;
 
-mod control;
-mod fault;
-mod proxy;
+// The library crate exposes all modules; reference them via the crate name.
+use idp_proxy::proxy;
 
 #[derive(Debug, Parser)]
 #[command(name = "idp-proxy")]
