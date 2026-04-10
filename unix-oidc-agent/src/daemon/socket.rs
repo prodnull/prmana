@@ -170,6 +170,12 @@ pub struct AgentState {
     /// Each entry holds a Tokio JoinHandle for the async poll loop plus the
     /// username and expiry instant for the concurrent-user guard.
     pub pending_step_ups: HashMap<String, PendingStepUp>,
+    /// Failover runtimes for configured failover pairs (Phase 41).
+    ///
+    /// Keyed by primary issuer URL (normalized, trailing slash stripped).
+    /// Initialized at daemon startup from AgentConfig.failover_pairs.
+    /// Protected by parking_lot::Mutex for synchronous access within async handlers.
+    pub failover_runtimes: HashMap<String, parking_lot::Mutex<crate::failover::FailoverRuntime>>,
 }
 
 /// A CIBA step-up poll loop running as a Tokio task.
@@ -261,6 +267,32 @@ impl AgentState {
                 presence_cache_ttl_secs,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
+        }
+    }
+
+    /// Initialize failover runtimes from agent configuration.
+    ///
+    /// Call after constructing `AgentState` to populate the failover map
+    /// from `AgentConfig.failover_pairs`. Each pair creates a `FailoverRuntime`
+    /// keyed by the normalized primary issuer URL.
+    pub fn init_failover(&mut self, pairs: &[crate::failover::FailoverPairConfig]) {
+        for pair in pairs {
+            let key = pair.primary_issuer_url.trim_end_matches('/').to_string();
+            self.failover_runtimes.insert(
+                key,
+                parking_lot::Mutex::new(crate::failover::FailoverRuntime::new(pair.clone())),
+            );
+        }
+        // Also index by secondary URL so lookups from either direction work.
+        for pair in pairs {
+            let secondary_key = pair.secondary_issuer_url.trim_end_matches('/').to_string();
+            // Only insert if not already present (primary takes precedence).
+            self.failover_runtimes
+                .entry(secondary_key)
+                .or_insert_with(|| {
+                    parking_lot::Mutex::new(crate::failover::FailoverRuntime::new(pair.clone()))
+                });
         }
     }
 
@@ -1075,81 +1107,23 @@ async fn handle_request(
             // holding the RwLock across an await point.
             drop(state_read);
 
-            // Resolve token endpoint: CLI override > OIDC discovery.
+            // Resolve token endpoint: CLI override > failover-aware OIDC discovery.
             let token_endpoint = if let Some(ep) = token_endpoint_override {
                 debug!(token_endpoint = %ep, "Using CLI-provided token endpoint override");
                 ep
             } else {
-                // Fetch token endpoint from OIDC discovery (RFC 8414 §3).
-                let discovery_url = format!(
-                    "{}/.well-known/openid-configuration",
-                    issuer.trim_end_matches('/')
-                );
-                let http = match reqwest::Client::builder()
-                    .timeout(Duration::from_secs(10))
-                    .build()
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return (
-                            AgentResponse::error(
-                                format!("Failed to create HTTP client for discovery: {e}"),
-                                "INTERNAL_ERROR",
-                            ),
-                            true,
-                        );
-                    }
-                };
-                match http.get(&discovery_url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        match resp.json::<serde_json::Value>().await {
-                            Ok(doc) => match doc["token_endpoint"].as_str() {
-                                Some(ep) => {
-                                    debug!(
-                                        token_endpoint = %ep,
-                                        "Discovered token endpoint via OIDC discovery"
-                                    );
-                                    ep.to_string()
-                                }
-                                None => {
-                                    return (
-                                        AgentResponse::error(
-                                            "OIDC discovery response missing token_endpoint",
-                                            "DISCOVERY_ERROR",
-                                        ),
-                                        true,
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                return (
-                                    AgentResponse::error(
-                                        format!("Failed to parse OIDC discovery: {e}"),
-                                        "DISCOVERY_ERROR",
-                                    ),
-                                    true,
-                                );
-                            }
+                // Phase 41: failover-aware discovery tries primary, falls back to secondary.
+                match failover_aware_discovery(&issuer, state, 10).await {
+                    Ok(result) => {
+                        if result.failover_active {
+                            info!(
+                                effective_issuer = %result.effective_issuer,
+                                "Token exchange using failover issuer"
+                            );
                         }
+                        result.token_endpoint
                     }
-                    Ok(resp) => {
-                        return (
-                            AgentResponse::error(
-                                format!("OIDC discovery returned HTTP {}", resp.status()),
-                                "DISCOVERY_ERROR",
-                            ),
-                            true,
-                        );
-                    }
-                    Err(e) => {
-                        return (
-                            AgentResponse::error(
-                                format!("Failed to fetch OIDC discovery from {discovery_url}: {e}"),
-                                "DISCOVERY_ERROR",
-                            ),
-                            true,
-                        );
-                    }
+                    Err(err_resp) => return (err_resp, true),
                 }
             };
 
@@ -1250,6 +1224,315 @@ fn extract_attestation_from_proof(proof: &str) -> Option<serde_json::Value> {
 /// Does NOT validate the token — that is the PAM module's responsibility.
 /// This is only for populating the IPC response metadata so the caller can
 /// log/display delegation chain information without a full validation round-trip.
+/// Result of failover-aware OIDC discovery (Phase 41).
+struct FailoverDiscoveryResult {
+    /// The token endpoint discovered from the effective issuer.
+    token_endpoint: String,
+    /// The issuer URL that was actually used (may differ from input if failover).
+    effective_issuer: String,
+    /// Whether failover was active when this discovery succeeded.
+    failover_active: bool,
+}
+
+/// Perform OIDC discovery with failover awareness (Phase 41).
+///
+/// If the issuer has a failover pair in the agent state, this function:
+/// 1. Resolves the current active issuer from the failover runtime
+/// 2. Attempts discovery against it
+/// 3. On availability failure, records the failure and retries with the failover target
+/// 4. On policy/protocol failure, returns the error without failover
+///
+/// Returns the token endpoint and effective issuer URL on success.
+async fn failover_aware_discovery(
+    issuer: &str,
+    state: &Arc<RwLock<AgentState>>,
+    timeout_secs: u64,
+) -> Result<FailoverDiscoveryResult, AgentResponse> {
+    let issuer_normalized = issuer.trim_end_matches('/').to_string();
+
+    // Check if this issuer has a failover pair.
+    let has_failover = {
+        let state_read = state.read().await;
+        state_read.failover_runtimes.contains_key(&issuer_normalized)
+    };
+
+    if !has_failover {
+        // No failover pair — standard single-issuer discovery.
+        let ep = discover_token_endpoint(issuer, timeout_secs).await?;
+        return Ok(FailoverDiscoveryResult {
+            token_endpoint: ep,
+            effective_issuer: issuer.to_string(),
+            failover_active: false,
+        });
+    }
+
+    // Resolve current active issuer from failover state.
+    let resolved = {
+        let state_read = state.read().await;
+        if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+            runtime.lock().resolve_issuer()
+        } else {
+            // Race: failover pair disappeared between check and resolution.
+            let ep = discover_token_endpoint(issuer, timeout_secs).await?;
+            return Ok(FailoverDiscoveryResult {
+                token_endpoint: ep,
+                effective_issuer: issuer.to_string(),
+                failover_active: false,
+            });
+        }
+    };
+
+    // Attempt discovery against the resolved issuer.
+    match discover_token_endpoint(&resolved.issuer_url, timeout_secs).await {
+        Ok(ep) => {
+            // Record success.
+            let state_read = state.read().await;
+            if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                let event = runtime.lock().record_success(&resolved.issuer_url);
+                if let Some(evt) = event {
+                    tracing::info!("Failover recovery: {evt:?}");
+                }
+            }
+            Ok(FailoverDiscoveryResult {
+                token_endpoint: ep,
+                effective_issuer: resolved.issuer_url,
+                failover_active: resolved.failover_active,
+            })
+        }
+        Err(err_resp) => {
+            // Check if this is an availability error (worth retrying via failover).
+            // AgentResponse errors from discover_token_endpoint have error_code "DISCOVERY_ERROR".
+            let is_availability = matches!(&err_resp, AgentResponse::Error { code, .. }
+                if code == "DISCOVERY_ERROR");
+
+            if !is_availability {
+                return Err(err_resp);
+            }
+
+            // Record failure and get the failover target.
+            let fallback = {
+                let state_read = state.read().await;
+                if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                    let mut rt = runtime.lock();
+                    let err_msg = format!("Discovery failed for {}", resolved.issuer_url);
+                    if let Some(evt) = rt.record_failure(&resolved.issuer_url, &err_msg) {
+                        tracing::warn!("Failover event: {evt:?}");
+                    }
+                    rt.resolve_issuer()
+                } else {
+                    return Err(err_resp);
+                }
+            };
+
+            // If we're still pointed at the same issuer, failover can't help.
+            if fallback.issuer_url.trim_end_matches('/')
+                == resolved.issuer_url.trim_end_matches('/')
+            {
+                return Err(err_resp);
+            }
+
+            tracing::warn!(
+                primary = %resolved.issuer_url,
+                secondary = %fallback.issuer_url,
+                "Discovery failover: retrying with secondary issuer"
+            );
+
+            // Retry with the failover target.
+            match discover_token_endpoint(&fallback.issuer_url, timeout_secs).await {
+                Ok(ep) => {
+                    let state_read = state.read().await;
+                    if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                        runtime.lock().record_success(&fallback.issuer_url);
+                    }
+                    Ok(FailoverDiscoveryResult {
+                        token_endpoint: ep,
+                        effective_issuer: fallback.issuer_url,
+                        failover_active: true,
+                    })
+                }
+                Err(secondary_err) => {
+                    // Both issuers failed — record exhaustion.
+                    let state_read = state.read().await;
+                    if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                        let mut rt = runtime.lock();
+                        let err_msg = format!("Discovery failed for {}", fallback.issuer_url);
+                        if let Some(evt) = rt.record_failure(&fallback.issuer_url, &err_msg) {
+                            tracing::warn!("Failover exhausted: {evt:?}");
+                        }
+                    }
+                    Err(secondary_err)
+                }
+            }
+        }
+    }
+}
+
+/// Discover the token endpoint from an OIDC issuer's well-known configuration.
+///
+/// Returns the token_endpoint URL on success, or an AgentResponse error.
+async fn discover_token_endpoint(
+    issuer: &str,
+    timeout_secs: u64,
+) -> Result<String, AgentResponse> {
+    let doc = fetch_oidc_discovery_doc(issuer, timeout_secs).await?;
+    match doc["token_endpoint"].as_str() {
+        Some(ep) => {
+            tracing::debug!(
+                token_endpoint = %ep,
+                "Discovered token endpoint via OIDC discovery"
+            );
+            Ok(ep.to_string())
+        }
+        None => Err(AgentResponse::error(
+            "OIDC discovery response missing token_endpoint",
+            "DISCOVERY_ERROR",
+        )),
+    }
+}
+
+/// Fetch the full OIDC discovery document as raw JSON.
+///
+/// Used by both `discover_token_endpoint` (exchange) and the CIBA step-up handler
+/// which needs the full `OidcDiscovery` struct.
+async fn fetch_oidc_discovery_doc(
+    issuer: &str,
+    timeout_secs: u64,
+) -> Result<serde_json::Value, AgentResponse> {
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let http = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(AgentResponse::error(
+                format!("Failed to create HTTP client for discovery: {e}"),
+                "INTERNAL_ERROR",
+            ));
+        }
+    };
+    match http.get(&discovery_url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(doc) => Ok(doc),
+            Err(e) => Err(AgentResponse::error(
+                format!("Failed to parse OIDC discovery: {e}"),
+                "DISCOVERY_ERROR",
+            )),
+        },
+        Ok(resp) => Err(AgentResponse::error(
+            format!("OIDC discovery returned HTTP {}", resp.status()),
+            "DISCOVERY_ERROR",
+        )),
+        Err(e) => Err(AgentResponse::error(
+            format!("Failed to fetch OIDC discovery from {discovery_url}: {e}"),
+            "DISCOVERY_ERROR",
+        )),
+    }
+}
+
+/// Perform failover-aware full OIDC discovery (Phase 41).
+///
+/// Like `failover_aware_discovery` but returns the full discovery JSON document,
+/// needed by the CIBA step-up handler which constructs a CibaClient from it.
+async fn failover_aware_full_discovery(
+    issuer: &str,
+    state: &Arc<RwLock<AgentState>>,
+    timeout_secs: u64,
+) -> Result<(serde_json::Value, String, bool), AgentResponse> {
+    let issuer_normalized = issuer.trim_end_matches('/').to_string();
+
+    let has_failover = {
+        let state_read = state.read().await;
+        state_read.failover_runtimes.contains_key(&issuer_normalized)
+    };
+
+    if !has_failover {
+        let doc = fetch_oidc_discovery_doc(issuer, timeout_secs).await?;
+        return Ok((doc, issuer.to_string(), false));
+    }
+
+    let resolved = {
+        let state_read = state.read().await;
+        if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+            runtime.lock().resolve_issuer()
+        } else {
+            let doc = fetch_oidc_discovery_doc(issuer, timeout_secs).await?;
+            return Ok((doc, issuer.to_string(), false));
+        }
+    };
+
+    match fetch_oidc_discovery_doc(&resolved.issuer_url, timeout_secs).await {
+        Ok(doc) => {
+            let state_read = state.read().await;
+            if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                let event = runtime.lock().record_success(&resolved.issuer_url);
+                if let Some(evt) = event {
+                    tracing::info!("Failover recovery: {evt:?}");
+                }
+            }
+            Ok((doc, resolved.issuer_url, resolved.failover_active))
+        }
+        Err(err_resp) => {
+            let is_availability = matches!(&err_resp, AgentResponse::Error { code, .. }
+                if code == "DISCOVERY_ERROR");
+
+            if !is_availability {
+                return Err(err_resp);
+            }
+
+            let fallback = {
+                let state_read = state.read().await;
+                if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                    let mut rt = runtime.lock();
+                    let err_msg = format!("Discovery failed for {}", resolved.issuer_url);
+                    if let Some(evt) = rt.record_failure(&resolved.issuer_url, &err_msg) {
+                        tracing::warn!("Failover event: {evt:?}");
+                    }
+                    rt.resolve_issuer()
+                } else {
+                    return Err(err_resp);
+                }
+            };
+
+            if fallback.issuer_url.trim_end_matches('/')
+                == resolved.issuer_url.trim_end_matches('/')
+            {
+                return Err(err_resp);
+            }
+
+            tracing::warn!(
+                primary = %resolved.issuer_url,
+                secondary = %fallback.issuer_url,
+                "CIBA discovery failover: retrying with secondary issuer"
+            );
+
+            match fetch_oidc_discovery_doc(&fallback.issuer_url, timeout_secs).await {
+                Ok(doc) => {
+                    let state_read = state.read().await;
+                    if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                        runtime.lock().record_success(&fallback.issuer_url);
+                    }
+                    Ok((doc, fallback.issuer_url, true))
+                }
+                Err(secondary_err) => {
+                    let state_read = state.read().await;
+                    if let Some(runtime) = state_read.failover_runtimes.get(&issuer_normalized) {
+                        let mut rt = runtime.lock();
+                        let err_msg = format!("Discovery failed for {}", fallback.issuer_url);
+                        if let Some(evt) = rt.record_failure(&fallback.issuer_url, &err_msg) {
+                            tracing::warn!("Failover exhausted: {evt:?}");
+                        }
+                    }
+                    Err(secondary_err)
+                }
+            }
+        }
+    }
+}
+
 fn extract_exchange_claims(token: &str) -> (String, usize) {
     use base64::Engine;
 
@@ -1994,44 +2277,25 @@ async fn handle_step_up(
         (issuer, client_id, client_secret_opt, access_token, signer)
     };
 
-    // ── Fetch OIDC discovery ──────────────────────────────────────────────────
-    let http = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
+    // ── Fetch OIDC discovery (Phase 41: failover-aware) ────────────────────────
+    let (discovery_json, _effective_issuer, failover_active) =
+        match failover_aware_full_discovery(&issuer, state, 10).await {
+            Ok(result) => result,
+            Err(err_resp) => return err_resp,
+        };
+
+    if failover_active {
+        info!(
+            effective_issuer = %_effective_issuer,
+            "CIBA step-up using failover issuer"
+        );
+    }
+
+    let discovery: OidcDiscovery = match serde_json::from_value(discovery_json) {
+        Ok(d) => d,
         Err(e) => {
             return AgentResponse::error(
-                format!("Failed to create HTTP client: {e}"),
-                "INTERNAL_ERROR",
-            );
-        }
-    };
-
-    let discovery_url = format!(
-        "{}/.well-known/openid-configuration",
-        issuer.trim_end_matches('/')
-    );
-
-    let discovery: OidcDiscovery = match http.get(&discovery_url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.json().await {
-            Ok(d) => d,
-            Err(e) => {
-                return AgentResponse::error(
-                    format!("Failed to parse OIDC discovery: {e}"),
-                    "DISCOVERY_ERROR",
-                );
-            }
-        },
-        Ok(resp) => {
-            return AgentResponse::error(
-                format!("OIDC discovery returned {}", resp.status()),
-                "DISCOVERY_ERROR",
-            );
-        }
-        Err(e) => {
-            return AgentResponse::error(
-                format!("Failed to fetch OIDC discovery: {e}"),
+                format!("Failed to parse OIDC discovery as OidcDiscovery: {e}"),
                 "DISCOVERY_ERROR",
             );
         }
@@ -2083,6 +2347,18 @@ async fn handle_step_up(
         .collect::<Vec<_>>();
 
     // ── POST backchannel auth request ─────────────────────────────────────────
+    let http = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return AgentResponse::error(
+                format!("Failed to create HTTP client for CIBA: {e}"),
+                "INTERNAL_ERROR",
+            );
+        }
+    };
     let bc_response = match http
         .post(&backchannel_endpoint)
         .form(&auth_params)
@@ -2678,6 +2954,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         }));
 
         // Start server in background
@@ -2732,6 +3009,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         }));
 
         let server = AgentServer::new(socket_path.clone(), state);
@@ -2898,6 +3176,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         };
         let debug_output = format!("{state:?}");
         assert!(
@@ -2934,6 +3213,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         };
         let exposed = state.access_token.as_ref().unwrap().expose_secret();
         assert_eq!(exposed, raw);
@@ -3077,6 +3357,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         }));
 
         let server = AgentServer::new(socket_path.clone(), Arc::clone(&state));
@@ -3129,6 +3410,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         }));
 
         // Run cleanup (will attempt revocation but find no metadata — WARN and continue).
@@ -3770,6 +4052,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         }));
 
         // Short idle timeout (200ms) so the test runs quickly.
@@ -3847,6 +4130,7 @@ mod tests {
                 crate::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
             ),
             pending_step_ups: HashMap::new(),
+            failover_runtimes: HashMap::new(),
         }));
 
         let server = AgentServer::new(socket_path.clone(), Arc::clone(&state));

@@ -1985,6 +1985,7 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
             unix_oidc_agent::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
         ),
         pending_step_ups: std::collections::HashMap::new(),
+        failover_runtimes: std::collections::HashMap::new(),
     })
 }
 
