@@ -2,11 +2,14 @@
 #
 # Enables IdP-native step-up authentication for sudo via CIBA.
 # When a user runs sudo, their phone receives a push notification
-# with the command context.
+# with the command context (when the IdP renders binding_message).
 #
 # Prerequisites:
 # - IdP must support CIBA (Keycloak does natively; others vary)
 # - Users must have a registered device for push notifications
+#
+# This template uses Phase 44 command rules for granular control.
+# For a simpler config without per-command rules, see single-issuer.yaml.
 #
 # Usage: Copy to /etc/unix-oidc/policy.yaml and fill in your values.
 
@@ -32,10 +35,38 @@ ssh_login:
     - ops
 
 sudo:
-  step_up:
-    enabled: true
-    method: device  # device | ciba
-    timeout_secs: 120
+  step_up_required: true
+  default_action: step_up
+
+  # Grace period: 5 minutes after a successful step-up
+  grace_period_secs: 300
+
+  allowed_methods:
+    - push       # CIBA push notification
+    - device_flow  # Fallback for IdPs without CIBA
+
+  challenge_timeout: 120
+
+  method_timeouts:
+    push: 60
+    device_flow: 120
+
+  # Per-command overrides (Phase 44)
+  commands:
+    # Safe read-only commands: allow without step-up
+    - name: "safe-status-checks"
+      pattern: "systemctl status *"
+      action: allow
+
+    - name: "safe-log-viewing"
+      pattern: "journalctl *"
+      action: allow
+
+    # Destructive commands: always require fresh challenge (no grace period)
+    - name: "service-management"
+      pattern: "systemctl restart *"
+      action: step_up
+      grace_period_secs: 0
 
 break_glass:
   enabled: true
