@@ -134,6 +134,7 @@ Complete this checklist before deploying unix-oidc to production:
 - [ ] Client configured as confidential (not public) if supported
 - [ ] Enabled PKCE for authorization code flow
 - [ ] Restricted redirect URIs to localhost only
+- [ ] If using SCIM, configured `oidc_issuer` and did **not** enable `--insecure-no-auth`
 - [ ] Set appropriate token lifetimes:
   - Access token: 5-15 minutes recommended
   - Refresh token: 8-24 hours max for interactive sessions

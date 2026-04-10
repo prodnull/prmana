@@ -2,6 +2,8 @@
 
 This document summarizes the security findings from the research analysis and tracks the implementation status of security hardening measures.
 
+> Historical note: this file is a roadmap and milestone tracker, not the authoritative source for the current shipped posture. For source-aligned current status, see [docs/security-guide.md](security-guide.md) and [docs/threat-model.md](threat-model.md).
+
 ## Current Security Status
 
 ### Implemented
@@ -121,7 +123,7 @@ This document summarizes the security findings from the research analysis and tr
    - Demo webhook server with web UI (`examples/webhook-server/`)
 2. Push notification step-up method (Planned)
 3. FIDO2/WebAuthn step-up method (Planned)
-4. Break-glass with offline YubiKey OTP (Planned)
+4. Break-glass with offline YubiKey OTP / TOTP ✅
 
 ### Phase 5: Client-Side Agent with DPoP (Implemented)
 
@@ -149,7 +151,8 @@ User Machine                          SSH Server
 
 **CLI Interface:**
 ```bash
-unix-oidc-agent login      # Browser auth, get DPoP-bound tokens
+unix-oidc-agent login      # Device flow by default
+unix-oidc-agent login --flow authcode  # Authorization code + PKCE on localhost
 unix-oidc-agent status     # Show token expiry, key thumbprint
 unix-oidc-agent logout     # Revoke tokens, keep keypair
 unix-oidc-agent reset      # Delete everything including keypair

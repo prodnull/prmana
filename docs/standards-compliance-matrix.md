@@ -4,7 +4,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 **Scope:** Only standards actually referenced in implementation code (`*.rs`), documentation (`*.md`), configuration (`*.yaml`, `*.toml`), or test files are listed. Hypothetical or aspirational references are excluded.
 
-**Last updated:** 2026-03-16
+**Last updated:** 2026-04-09
 
 ---
 
@@ -20,6 +20,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 | RFC 7517 | JSON Web Key (JWK) | SS4.5 (kid hint) | `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/oidc/dpop.rs` | Full | JWKS fetch and key selection |
 | RFC 6749 | OAuth 2.0 Authorization Framework | SS5.2 (error response), SS6 (refresh) | `unix-oidc-agent/src/daemon/socket.rs:1017`, `pam-unix-oidc/src/ciba/types.rs:90` | Full | Token endpoint interactions, refresh flow |
 | RFC 8628 | OAuth 2.0 Device Authorization Grant | SS3.2 (verification URI) | `unix-oidc-agent/src/askpass.rs`, `pam-unix-oidc/src/device_flow/client.rs`, `pam-unix-oidc/src/device_flow/types.rs` | Full | Step-up sudo authentication; `slow_down` backoff implemented |
+| RFC 7636 | Proof Key for Code Exchange (PKCE) | SS4.1 (code_verifier), SS4.2 (code_challenge), SS4.3 (S256) | `unix-oidc-agent/src/auth_code.rs`, `unix-oidc-agent/src/main.rs`, `pam-unix-oidc/src/oidc/jwks.rs` | Full | Authorization code login flow with localhost callback, state validation, and S256 PKCE |
 | RFC 7009 | OAuth 2.0 Token Revocation | SS2.1 (revocation request) | `unix-oidc-agent/src/daemon/socket.rs:1154-1287`, `unix-oidc-agent/src/daemon/protocol.rs:44` | Full | Best-effort revocation on session close (5s timeout) |
 | RFC 7662 | OAuth 2.0 Token Introspection | SS2.1 (authentication), SS4 | `pam-unix-oidc/src/policy/config.rs:271-305`, `pam-unix-oidc/src/oidc/introspection.rs` | Full | Opt-in with TTL-bounded caching; fail-open/fail-closed configurable |
 | RFC 8414 | OAuth 2.0 Authorization Server Metadata | -- | `pam-unix-oidc/src/oidc/discovery.rs` | Full | OIDC discovery; issuer validation post-fetch |
@@ -35,7 +36,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 |-----|-------|---------------------|----------------------|--------|-------|
 | RFC 8693 | OAuth 2.0 Token Exchange | SS2.1 (request params), SS2.2 (response), SS4.1 (`act` claim) | `unix-oidc-agent/src/exchange.rs`, `unix-oidc-agent/src/daemon/socket.rs`, `pam-unix-oidc/src/oidc/token.rs`, `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/policy/config.rs`, `test/tests/test_token_exchange.sh`, `test/tests/test_token_exchange.py`, `test/tests/test_attested_exchange.sh` | Implemented (Phase 37) | Token exchange with DPoP rebinding, `act` claim validation, delegation chain depth limits, attestation evidence in DPoP header |
 | RFC 7643 | SCIM: Core Schema | SS3.1 (metadata), SS4.1 (User resource), SS5 (ServiceProviderConfig), SS8 (schema URIs) | `unix-oidc-scim/src/schema.rs`, `unix-oidc-scim/src/lib.rs` | Implemented (Phase 37) | User resource, name/email sub-attributes, list responses, error responses, ServiceProviderConfig |
-| RFC 7644 | SCIM: Protocol | SS3.4.2 (list response), SS3.12 (error response) | `unix-oidc-scim/src/routes.rs`, `unix-oidc-scim/src/main.rs`, `unix-oidc-scim/src/schema.rs` | Implemented (Phase 37) | CRUD endpoints for User resources, filtering, pagination, bearer token auth |
+| RFC 7644 | SCIM: Protocol | SS3.4.2 (list response), SS3.12 (error response) | `unix-oidc-scim/src/routes.rs`, `unix-oidc-scim/src/main.rs`, `unix-oidc-scim/src/schema.rs`, `unix-oidc-scim/src/auth.rs` | Implemented (Phase 37/38) | CRUD endpoints for User resources, filtering, pagination, JWT Bearer auth with JWKS validation and TTL-based refresh |
 | RFC 4648 | Base16/32/64 Encodings | SS5 (base64url) | `test/tests/test_token_exchange.sh:87` | Full | Base64URL encoding in DPoP proof construction |
 | RFC 5480 | ECC SubjectPublicKeyInfo ASN.1 | P-256 curve OID `1.2.840.10045.3.1.7` | `docs/hardware-key-setup.md:82` | Full | PKCS#11 key generation uses this OID |
 | RFC 5785 | Well-Known URIs | -- | `pam-unix-oidc/src/oidc/discovery.rs` | Full | `/.well-known/openid-configuration` endpoint |

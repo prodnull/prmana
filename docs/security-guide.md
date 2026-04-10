@@ -1,590 +1,664 @@
 # Security Guide
 
-This guide covers security best practices for deploying and operating unix-oidc in production environments. It aligns with NIST SP 800-63 Digital Identity Guidelines and industry security standards.
+This guide documents the security posture of `unix-oidc` as it exists in the codebase today. It has two goals:
+
+1. Explain the security features the project provides.
+2. Explain why key architectural decisions were made, especially where the design trades convenience for stronger security properties.
+
+It is intentionally explicit about what is implemented, what is feature-gated, what is partially wired, and what is not ready for production.
 
 ## Table of Contents
 
-- [Security Architecture](#security-architecture)
-- [Authentication Assurance Levels](#authentication-assurance-levels)
-- [Token Security](#token-security)
-- [DPoP Protection](#dpop-protection)
+- [Status Legend](#status-legend)
+- [System Security Model](#system-security-model)
+- [Security Features](#security-features)
+- [Security Architecture Decisions](#security-architecture-decisions)
+- [Trust Boundaries](#trust-boundaries)
 - [Deployment Hardening](#deployment-hardening)
-- [Audit and Monitoring](#audit-and-monitoring)
-- [Incident Response](#incident-response)
-- [Compliance Mapping](#compliance-mapping)
-- [Cross-Server and Replay Protection Analysis](#cross-server-and-replay-protection-analysis)
-- [Implementation Hardening](#implementation-hardening)
-- [Acknowledged Limitations](#acknowledged-limitations)
+- [Current Limitations](#current-limitations)
+- [Security Review Checklist](#security-review-checklist)
+- [Standards and References](#standards-and-references)
 
 ---
 
-## Security Architecture
+## Status Legend
 
-### Defense in Depth
+This guide uses the following labels:
 
-unix-oidc implements multiple layers of security:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Layer 1: Network                            │
-│  • TLS 1.3 for IdP communication                               │
-│  • Network segmentation                                         │
-│  • Firewall rules                                               │
-├─────────────────────────────────────────────────────────────────┤
-│                     Layer 2: Authentication                     │
-│  • OIDC token validation                                        │
-│  • DPoP proof-of-possession                                     │
-│  • Step-up MFA for privileged actions                          │
-├─────────────────────────────────────────────────────────────────┤
-│                     Layer 3: Authorization                      │
-│  • Policy-based access control                                  │
-│  • ACR (Authentication Context Class Reference)                 │
-│  • Host classification                                          │
-├─────────────────────────────────────────────────────────────────┤
-│                     Layer 4: Audit                              │
-│  • Structured JSON audit logs                                   │
-│  • Session correlation                                          │
-│  • Tamper-evident logging                                       │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Trust Boundaries
-
-| Boundary | Trust Level | Controls |
-|----------|-------------|----------|
-| User ↔ PAM | Untrusted | Input validation, rate limiting |
-| PAM ↔ IdP | Semi-trusted | TLS, token validation, DPoP |
-| PAM ↔ SSSD | Trusted | Local Unix socket |
-| PAM ↔ Policy | Trusted | File permissions (root:root 600) |
+- `Implemented`: present and enforced in the main path
+- `Implemented, feature-gated`: present but only when the corresponding build feature is enabled
+- `Partially wired`: code exists, but the main end-to-end enforcement path is incomplete
+- `Planned`: design or roadmap only
+- `Not production-ready`: present for development or testing, but unsafe to deploy as-is
 
 ---
 
-## Authentication Assurance Levels
+## System Security Model
 
-unix-oidc supports NIST SP 800-63B Authentication Assurance Levels through ACR claims.
+`unix-oidc` has three main security-sensitive components:
 
-### AAL Mapping
+1. `pam-unix-oidc`
+   - Server-side authentication enforcement
+   - Validates JWTs, DPoP proofs, issuer/audience/expiry, replay protections, and local identity mapping
+2. `unix-oidc-agent`
+   - Client-side broker for token acquisition and proof generation
+   - Holds user credentials and signer state behind a same-UID Unix socket boundary
+3. `unix-oidc-scim`
+   - Separate provisioning service for SCIM user lifecycle management
+   - Deliberately isolated from the PAM module because it mutates local system accounts
 
-| NIST AAL | Description | Typical ACR Values | Use Case |
-|----------|-------------|-------------------|----------|
-| AAL1 | Single-factor | `urn:*:acr:1`, `password` | Low-risk access |
-| AAL2 | Multi-factor | `urn:*:acr:loa2`, `mfa` | Standard access |
-| AAL3 | Hardware MFA | `phr`, `phrh` | High-security access |
+The core security thesis is:
 
-### Configuring ACR Requirements
+- federated identity comes from OIDC,
+- proof-of-possession comes from DPoP,
+- local authorization comes from Unix and directory state,
+- and higher assurance comes from hardware-backed signers and auditable policy enforcement.
 
-```yaml
-# /etc/unix-oidc/policy.yaml
-defaults:
-  # Minimum AAL2 for all access
-  required_acr: urn:ietf:params:acr:aal2
-
-hosts:
-  production-*:
-    classification: critical
-    # AAL3 for production systems
-    required_acr: urn:ietf:params:acr:aal3
-
-commands:
-  /usr/bin/sudo:
-    # Step-up to AAL2 for sudo
-    step_up_required: true
-    required_acr: urn:ietf:params:acr:aal2
-```
-
-### Provider-Specific ACR Values
-
-| Provider | AAL1 | AAL2 | AAL3 |
-|----------|------|------|------|
-| Azure AD | `pwd` | `mfa` | `windowsHello` |
-| Auth0 | (none) | `http://schemas.openid.net/pape/policies/2007/06/multi-factor` | - |
-| Keycloak | `urn:keycloak:acr:0` | `urn:keycloak:acr:loa2` | - |
-| Okta | `pwd` | `mfa` | `phr` |
+`unix-oidc` is not a generic remote access fabric. Today it secures SSH and PAM-mediated privileged access on Unix-like systems.
 
 ---
 
-## Token Security
+## Security Features
 
-### Token Validation
+### 1. OIDC Token Validation
 
-unix-oidc performs comprehensive token validation:
+Status: `Implemented`
 
-1. **Signature verification** - JWKS-based, supports RS256/ES256/EdDSA
-2. **Issuer validation** - Must match configured OIDC_ISSUER
-3. **Audience validation** - Must include OIDC_CLIENT_ID
-4. **Expiration check** - Rejects expired tokens
-5. **Not-before check** - Rejects tokens used before nbf
-6. **DPoP binding** - When enabled, validates proof-of-possession
+The PAM module validates:
 
-### Token Lifetime Recommendations
+- JWT signature against issuer JWKS
+- issuer exact match
+- audience match
+- expiration
+- `nbf` when present
+- per-issuer allowed algorithm policy
 
-| Token Type | Recommended Lifetime | Rationale |
-|------------|---------------------|-----------|
-| Access Token | 5-15 minutes | Limits exposure window |
-| Refresh Token | 8-24 hours | Balance security/usability |
-| DPoP Proof | 60 seconds | Replay protection |
+Why this matters:
 
-### Configuring in IdP
+- signature verification prevents forged tokens
+- issuer and audience checks prevent cross-tenant and wrong-client token reuse
+- algorithm allowlisting and JWKS/header algorithm cross-checking reduce algorithm confusion risk
 
-**Azure AD:**
-```json
-{
-  "accessTokenAcceptedVersion": 2,
-  "accessTokenLifetime": "00:15:00"
-}
-```
+Relevant code:
 
-**Keycloak:**
-- Realm Settings → Tokens → Access Token Lifespan: 15 minutes
-- Realm Settings → Tokens → SSO Session Max: 8 hours
+- `pam-unix-oidc/src/oidc/validation.rs`
+- `pam-unix-oidc/src/auth.rs`
+
+The agent currently supports interactive token acquisition via:
+
+- OAuth device authorization grant
+- OAuth authorization code + PKCE on localhost
+- SPIRE Workload API for JWT-SVID acquisition when `spire` is enabled
+
+### 2. DPoP Proof-of-Possession
+
+Status: `Implemented`
+
+DPoP binds access tokens to a client-held signing key. The server validates:
+
+- DPoP proof signature
+- proof freshness (`iat`)
+- `htu` / `htm` target binding
+- replay protections (`jti`, nonce)
+- token `cnf.jkt` to proof JWK thumbprint binding
+
+Why this matters:
+
+- stolen tokens are not enough without the matching private key
+- proofs are target-specific and short-lived
+- replay windows are reduced by `jti`, nonce, and proof age enforcement
+
+Important limitation:
+
+- DPoP reduces blast radius; it does not protect against full client compromise.
+- if an attacker can extract both token and key material from the client, they can act as that client until expiry or revocation
+
+Relevant code:
+
+- `pam-unix-oidc/src/oidc/dpop.rs`
+- `unix-oidc-agent/src/crypto/dpop.rs`
+
+### 3. Replay Protection
+
+Status: `Implemented`
+
+The project uses multiple replay defenses:
+
+- DPoP `jti` replay detection
+- server-issued nonce support
+- short DPoP proof age windows
+- issuer-scoped JTI handling
+- filesystem-backed cross-fork JTI state for the PAM-side token replay path
+
+Why this matters:
+
+- PAM runs in a multi-process environment
+- replay defenses that only work in a single thread or process are not enough for real SSH/PAM deployments
+
+Relevant code:
+
+- `pam-unix-oidc/src/security/jti_cache.rs`
+- `unix-oidc-agent/tests/jti_cross_fork.rs`
+
+### 4. Same-UID Agent IPC with Peer Credential Checks
+
+Status: `Implemented`
+
+The agent daemon accepts connections from the same UID and rejects cross-UID IPC using:
+
+- `SO_PEERCRED` on Linux
+- `getpeereid` on macOS
+- restrictive Unix socket permissions
+
+Why this matters:
+
+- this blocks other local users from using or interrogating the agent
+- it matches the long-established `ssh-agent` trust model
+
+Important limitation:
+
+- same-UID malware is inside the trust boundary
+- hardware-backed signers can prevent raw key export, but not use of the agent as a signing oracle
+
+Relevant code:
+
+- `unix-oidc-agent/src/daemon/socket.rs`
+- `unix-oidc-agent/src/daemon/peer_cred.rs`
+
+### 5. Hardware-Backed Signers
+
+Status:
+
+- Software signer: `Implemented`
+- YubiKey signer: `Implemented, feature-gated`
+- TPM signer: `Implemented, feature-gated`
+- SPIRE signer: `Implemented, feature-gated`
+
+The agent supports multiple signer backends:
+
+- software P-256 keys for portability
+- YubiKey-backed signing for user-held hardware
+- TPM 2.0-backed signing for non-exportable local keys
+- SPIRE-backed token acquisition with independent ephemeral DPoP keys
+
+Why this matters:
+
+- hardware-backed signers reduce raw key extraction risk
+- TPM-backed keys can make remote-use credentials non-exportable from the host
+- SPIRE integration bridges workload identity into SSH/PAM without static SSH keys
+
+Important limitation:
+
+- same-UID clients can still request signatures from the agent
+- hardware backing protects key export better than it protects against a trusted local broker being used on behalf of the same user
+
+Relevant code:
+
+- `unix-oidc-agent/src/crypto/tpm_signer.rs`
+- `unix-oidc-agent/src/crypto/yubikey_signer.rs`
+- `unix-oidc-agent/src/crypto/spire_signer.rs`
+
+### 6. Step-Up Authentication for Privileged Actions
+
+Status: `Implemented`
+
+The project supports CIBA-based step-up authentication for `sudo` and similar privileged operations.
+
+Current posture:
+
+- agent initiates and polls CIBA flows
+- PAM can require an ID token from the agent response and validate it
+- ACR policy can hard-fail if required assurance is not met
+
+Why this matters:
+
+- elevating privileges can require stronger authentication than initial SSH login
+- separates baseline login from privileged action approval
+
+Relevant code:
+
+- `pam-unix-oidc/src/sudo.rs`
+- `unix-oidc-agent/src/daemon/socket.rs`
+
+### 7. Break-Glass Resilience
+
+Status: `Implemented`
+
+Break-glass access supports:
+
+- explicitly configured local emergency accounts
+- optional offline TOTP / OTP gating
+- audit signaling for break-glass use
+
+Why this matters:
+
+- IdP outages should not necessarily equal total administrative lockout
+- emergency access must be explicit, narrow, and auditable
+
+Relevant code:
+
+- `pam-unix-oidc/src/otp.rs`
+- `pam-unix-oidc/src/policy/config.rs`
+
+### 8. Audit Integrity and OCSF Enrichment
+
+Status: `Implemented`
+
+Audit events support:
+
+- structured JSON output
+- OCSF enrichment
+- HMAC chaining over the enriched event payload
+- offline verification tooling
+
+Why this matters:
+
+- tamper-evidence is most useful when it protects the actual emitted event format
+- verification should be possible after collection, not only at write time
+
+Relevant code:
+
+- `pam-unix-oidc/src/audit.rs`
+- `pam-unix-oidc/src/bin/audit_verify.rs`
+
+### 9. SPIFFE / SPIRE Bridge
+
+Status:
+
+- SPIFFE trust via OIDC discovery: `Implemented`
+- SPIFFE username mapping: `Implemented`
+- SPIRE signer backend: `Implemented, feature-gated`
+
+Why this matters:
+
+- workloads can use existing SPIFFE identity to access Unix systems
+- PAM stays on the existing JWT/JWKS trust path instead of adding a second SPIFFE-specific verifier
+
+Relevant code:
+
+- `pam-unix-oidc/src/identity/mapper.rs`
+- `pam-unix-oidc/src/auth.rs`
+- `unix-oidc-agent/src/crypto/spire_signer.rs`
+
+### 10. Token Exchange / Delegation
+
+Status: `Implemented`
+
+What exists:
+
+- parsing recursive `act` claims
+- exchanger allowlists
+- delegation depth limits
+- exchanged-token lifetime limits
+- PAM-side enforcement in the main authentication path
+- dedicated token-exchange IPC and agent-side exchange handling
+
+Current scope:
+
+- exchanged tokens are accepted only when the issuer explicitly configures delegation policy
+- the `act` chain is bounded by policy depth and exchanger allowlists
+- excessive exchanged-token lifetime is rejected
+
+Relevant code:
+
+- `pam-unix-oidc/src/auth.rs`
+- `pam-unix-oidc/src/oidc/token.rs`
+- `pam-unix-oidc/src/oidc/validation.rs`
+- `unix-oidc-agent/src/exchange.rs`
+
+### 11. TPM Attestation
+
+Status: `Implemented`
+
+What exists:
+
+- TPM attestation evidence generation primitives
+- DPoP header support for attestation payloads
+- TPM-backed proof generation that includes attestation when available
+- PAM-side cryptographic attestation verification in the DPoP auth path
+- issuer policy for attestation enforcement
+
+Current guarantees:
+
+- AK signature verification over `certify_info`
+- TPM `Name` extraction and matching against the DPoP proof JWK
+- attestation policy enforcement (`strict` / `warn` / `disabled`)
+
+Current limitation:
+
+- this is key attestation, not full platform attestation
+- EK certificate chain verification and platform PCR policy are still future work
+- attestation freshness still relies on the DPoP proof's normal time checks rather than a separate server-provided attestation nonce
+
+### 12. SCIM Provisioning Service
+
+Status: `Implemented`
+
+What exists:
+
+- separate SCIM binary and crate
+- SCIM schemas and CRUD endpoints
+- username validation and reserved-account denylist
+- subprocess-based account provisioning
+- JWT Bearer validation against issuer JWKS with TTL-based cache refresh
+- secure startup refusal unless OIDC validation is configured or the explicit dev-only bypass is used
+
+Current limitation:
+
+- `--insecure-no-auth` still exists as an explicit development-only bypass and must not be used in production
+- the current service model is single-issuer per process
+- provisioning semantics are synchronous and local-account oriented, not a full distributed identity control plane
 
 ---
 
-## DPoP Protection
+## Security Architecture Decisions
 
-DPoP (Demonstrating Proof of Possession) binds tokens to cryptographic keys, preventing token theft attacks.
+This section explains the most important security-oriented design choices.
 
-### How DPoP Works
+### Groups Come From SSSD / NSS, Not Token Claims
 
-```
-┌──────────┐    ┌──────────┐    ┌──────────┐
-│  Client  │    │   IdP    │    │  Server  │
-└────┬─────┘    └────┬─────┘    └────┬─────┘
-     │               │               │
-     │ Generate keypair              │
-     │──────────────>│               │
-     │               │               │
-     │ DPoP proof + auth request     │
-     │──────────────>│               │
-     │               │               │
-     │ DPoP-bound access token       │
-     │<──────────────│               │
-     │               │               │
-     │ Token + fresh DPoP proof      │
-     │──────────────────────────────>│
-     │               │               │
-     │               │ Validate:     │
-     │               │ - Token sig   │
-     │               │ - DPoP proof  │
-     │               │ - cnf.jkt     │
-     │               │               │
-```
+Rationale:
 
-### Security Properties
+- IdP group claims are federation input, not authoritative Unix authorization state
+- directory-backed local resolution avoids split-brain authorization
+- FreeIPA / LDAP / directory state should be the source of truth for local group membership
 
-| Property | Protection |
-|----------|------------|
-| Token theft | Stolen tokens unusable without private key; if both stolen, damage is time-limited |
-| Replay attack | jti + iat validation with time window |
-| Key confusion | cnf.jkt binding in token |
+Outcome:
 
-> **Honest limitation:** DPoP reduces blast radius, not eliminates risk. If an attacker can extract tokens from memory, they can likely extract the DPoP key too. The value is time-limited damage (tokens expire), centralized revocation (IdP controls access), and audit trails. For maximum protection, use hardware-backed key storage (TPM, Secure Enclave).
+- tokens authenticate identity
+- local directory state authorizes Unix group membership
 
-### Enabling DPoP
+Related ADR:
 
-```yaml
-# /etc/unix-oidc/policy.yaml — DPoP is controlled via security_modes
-security_modes:
-  dpop_required: strict  # strict (default) | warn | disabled
-```
+- ADR-008
 
-DPoP uses ES256 (P-256 ECDSA) exclusively. The algorithm is enforced at the code level — there is no configuration to change it, preventing algorithm downgrade attacks. Max proof age defaults to 60 seconds.
+### Config Hot Reload Uses `stat(2)`, Not Signals
 
-### Post-Quantum Readiness
+Rationale:
 
-> **Status: Planned (not yet implemented).** The configuration schema includes an `enable_pqc` flag for forward compatibility, but ML-DSA-65 support is not yet available. ES256 (P-256 ECDSA) is the only supported DPoP algorithm today. Post-quantum algorithm support will be added when mature Rust PQC libraries are available and OIDC ecosystem support emerges. See NIST FIPS 204 for the ML-DSA specification.
+- signal-driven reloads are fragile in PAM-adjacent code and containerized deployments
+- stat-based reloading is simpler, stateless, and avoids signal-handler complexity
+
+Outcome:
+
+- file-backed policy updates can be detected without depending on process-management integrations
+
+Related ADR:
+
+- ADR-009
+
+### Audit HMAC Covers OCSF-Enriched Events
+
+Rationale:
+
+- operators and forensic tooling verify the final emitted event, not a pre-enrichment internal representation
+- if the chain covered only the bare event, enrichment could break verification semantics
+
+Outcome:
+
+- the chain protects the event as actually logged
+
+Related ADR:
+
+- ADR-010
+
+### Per-Issuer JWKS and HTTP Settings
+
+Rationale:
+
+- issuers rotate keys and behave operationally at different cadences
+- global TTLs force either over-fetching or stale-key risk
+
+Outcome:
+
+- each issuer can tune cache and network behavior independently
+
+Related ADR:
+
+- ADR-011
+
+### `required_acr` Is a Hard Fail
+
+Rationale:
+
+- if an operator declares a minimum authentication assurance, accepting a weaker token defeats the policy
+
+Outcome:
+
+- explicit required assurance is enforced, not advisory
+
+Related ADR:
+
+- ADR-012
+
+### Same-UID IPC Trust Is Deliberate
+
+Rationale:
+
+- the agent is a per-user credential broker
+- same-UID trust matches `ssh-agent` and similar local-agent models
+- cross-UID isolation is enforced now; finer-grained same-UID isolation is a later enhancement
+
+Outcome:
+
+- realistic local trust boundary for Unix user processes
+- no false promise that the agent protects against same-user malware
+
+Related ADR:
+
+- ADR-013
+
+### TPM Object Attributes Favor Non-Exportable Signing
+
+Rationale:
+
+- the TPM key is for signing only
+- attributes are chosen to make the key TPM-generated, non-exportable, and usable without accidentally enabling unrelated operations
+
+Outcome:
+
+- hardware-backed DPoP key constrained to the needed capability set
+
+Related ADR:
+
+- ADR-014
+
+### SPIFFE Trust Uses Existing OIDC/JWKS Validation
+
+Rationale:
+
+- the PAM module should not grow a second trust-verification path unless necessary
+- SPIRE OIDC Discovery Provider lets SPIFFE workloads enter through the same JWT validation pipeline
+
+Outcome:
+
+- leaner PAM trust boundary
+- less duplicated verifier logic
+
+Related ADR:
+
+- ADR-015
+
+### SPIRE DPoP Keys Are Independent of SVID Keys
+
+Rationale:
+
+- DPoP proof should bind the session attempt, not reuse the workload’s long-lived identity key
+- SPIRE-managed keys may not be directly accessible
+- independent ephemeral keys improve isolation
+
+Outcome:
+
+- JWT-SVID acts as access token
+- DPoP proof uses an independent ephemeral key pair
+
+Related ADR:
+
+- ADR-016
+
+### SCIM Runs as a Separate Binary
+
+Rationale:
+
+- provisioning code that mutates local users should not live in the PAM process
+- HTTP request handling and account mutation logic deserve isolation from login-time authentication code
+
+Outcome:
+
+- cleaner privilege and failure boundary
+- easier to harden separately
+
+Related ADR:
+
+- ADR-019
+
+---
+
+## Trust Boundaries
+
+| Boundary | Trust Level | Main Controls |
+|----------|-------------|---------------|
+| Agent ↔ IdP | Semi-trusted remote | TLS, issuer pinning, token validation |
+| PAM ↔ IdP JWKS/discovery | Semi-trusted remote | HTTPS, issuer matching, JWKS cache controls |
+| Agent ↔ same-UID client | Trusted by design | socket permissions, peer credential checks |
+| Agent ↔ other local users | Untrusted | `SO_PEERCRED` / `getpeereid`, 0600 socket |
+| SSH transport | Protected channel | SSH encryption plus DPoP target binding |
+| PAM ↔ local OS / NSS / SSSD | Trusted local boundary | process isolation, local directory authority |
+| SCIM ↔ external caller | Untrusted network input | HTTP auth, route validation, subprocess argument safety |
+
+The most important non-obvious trust statement is:
+
+- `unix-oidc-agent` is not designed to defend against same-UID malware.
+- it is designed to defend against cross-user access, token replay, raw key export in stronger signer modes, and unauthenticated remote use.
 
 ---
 
 ## Deployment Hardening
 
-### DPoP Enforcement (CRITICAL)
+### Production Requirements
 
-> **Production deployments MUST set `dpop_required: strict` in policy.yaml.**
-
-DPoP (proof-of-possession) is the primary defense against token theft. Without it, stolen bearer tokens grant full access. The default is `strict`, but operators who set `warn` or `disabled` during migration MUST re-enable strict enforcement before production use.
-
-```yaml
-# /etc/unix-oidc/policy.yaml
-security_modes:
-  dpop_required: strict   # REQUIRED for production — rejects non-DPoP tokens
-```
-
-Running with `dpop_required: warn` or `disabled` in production is a **documented residual risk** (R-6 in the threat model) and leaves the deployment vulnerable to bearer token replay.
+- use HTTPS-only issuers and endpoints
+- keep DPoP enforcement strict in production
+- protect policy and audit files with root ownership and restrictive permissions
+- prefer hardware-backed signers where operationally feasible
+- use keyring-backed storage over file fallback where available
+- configure and test break-glass deliberately, not implicitly
 
 ### File Permissions
 
+Suggested baseline:
+
 ```bash
-# PAM module
 chmod 755 /lib/security/pam_unix_oidc.so
 chown root:root /lib/security/pam_unix_oidc.so
 
-# Configuration
 chmod 600 /etc/unix-oidc/policy.yaml
 chown root:root /etc/unix-oidc/policy.yaml
 
-# Audit logs
 chmod 640 /var/log/unix-oidc/audit.log
 chown root:adm /var/log/unix-oidc/audit.log
 ```
 
-### SELinux Policy
+### Break-Glass Seed Protection
 
-```
-# /etc/selinux/local/unix-oidc.te
-module unix_oidc 1.0;
+If offline OTP break-glass is used:
 
-require {
-    type pam_t;
-    type http_port_t;
-    class tcp_socket { connect };
-}
+- keep the seed file root-owned
+- reject symlinks and non-regular files
+- keep permissions restrictive (`0400` or `0600`)
 
-# Allow PAM to connect to IdP
-allow pam_t http_port_t:tcp_socket connect;
-```
+This is enforced in code, but deployment should still treat the file as highly sensitive.
 
-### Network Security
+### System Hardening
 
-```bash
-# Firewall rules (allow only IdP egress)
-iptables -A OUTPUT -p tcp -d <idp-ip> --dport 443 -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 443 -j DROP
+Recommended controls:
 
-# Or with security groups / network policies
-# Only allow egress to IdP endpoints
-```
+- SELinux / AppArmor confinement where available
+- network egress limited to IdP and approved endpoints
+- full-disk encryption for systems that may use file-backed storage
+- careful control of debugging and monitoring tools on shared desktops
 
-### Environment Variables
+### Observability
 
-```bash
-# Secure environment configuration
-# Set in /etc/unix-oidc/env (chmod 600, root:root)
+Operators should monitor:
 
-# Required
-OIDC_ISSUER="https://auth.example.com/realms/production"
-OIDC_CLIENT_ID="unix-oidc"
-
-# Optional: Override policy file location (default: /etc/unix-oidc/policy.yaml)
-# UNIX_OIDC_POLICY_FILE="/etc/unix-oidc/policy.yaml"
-
-# Optional: Audit log file path
-# UNIX_OIDC_AUDIT_LOG="/var/log/unix-oidc/audit.log"
-```
-
-> **Note:** TLS verification is always enabled and cannot be disabled via configuration. This is by design — all IdP communication must use HTTPS with proper certificate validation.
+- auth failures and spikes
+- replay detections
+- degraded JTI store events
+- break-glass usage
+- step-up failures
+- audit-chain verification failures
 
 ---
 
-## Audit and Monitoring
+## Current Limitations
 
-### Audit Log Format
+This section is intentionally blunt.
 
-unix-oidc produces structured JSON audit logs:
+### Same-UID Processes Can Use the Agent
 
-```json
-{
-  "timestamp": "2026-01-18T10:30:45.123Z",
-  "event": "AUTH_SUCCESS",
-  "session_id": "sess-abc123",
-  "user": "alice",
-  "host": "prod-web-01",
-  "source_ip": "10.1.2.3",
-  "oidc_sub": "auth0|abc123",
-  "oidc_iss": "https://auth.example.com/",
-  "oidc_acr": "mfa",
-  "dpop_jkt": "sha256-xyz...",
-  "service": "sshd",
-  "result": "success"
-}
-```
+This is by design. The agent follows an `ssh-agent`-style trust model. Hardware-backed keys reduce raw extraction risk but do not prevent the agent from signing on behalf of same-UID clients.
 
-### Event Types
+### DPoP Does Not Defend Against Full Client Compromise
 
-| Event | Description | Severity |
-|-------|-------------|----------|
-| `AUTH_SUCCESS` | Successful authentication | Info |
-| `AUTH_FAILURE` | Failed authentication | Warning |
-| `TOKEN_EXPIRED` | Token validation failed (expired) | Warning |
-| `TOKEN_INVALID` | Token validation failed (signature) | Alert |
-| `DPOP_REPLAY` | DPoP replay attack detected | Critical |
-| `STEP_UP_REQUIRED` | Step-up authentication triggered | Info |
-| `STEP_UP_SUCCESS` | Step-up completed | Info |
-| `STEP_UP_FAILURE` | Step-up failed | Warning |
+If attacker control extends to the running client process or same-user context, DPoP does not save the session by itself. It primarily protects against token theft without the matching key.
 
-### SIEM Integration
+### TPM Attestation Is Not Yet Full Platform Attestation
 
-```yaml
-# Fluent Bit configuration
-[INPUT]
-    Name tail
-    Path /var/log/unix-oidc/audit.log
-    Parser json
-    Tag unix-oidc.audit
+Current TPM attestation verifies the AK signature and the certified key `Name`, which is a meaningful security property. It does not yet verify EK certificate chains, platform state, or a dedicated attestation-freshness nonce.
 
-[OUTPUT]
-    Name splunk
-    Match unix-oidc.*
-    Host splunk.example.com
-    Port 8088
-    TLS On
-```
+### Token Exchange Expands Privilege By Design
 
-### Alerting Rules
+Token exchange is now enforced in the main PAM auth path, but it still widens privilege by allowing selected exchangers to mint audience-scoped delegated tokens. Keep exchanger allowlists and delegation depth deliberately narrow.
 
-```yaml
-# Example Prometheus alerting rules
-groups:
-  - name: unix-oidc
-    rules:
-      - alert: DPoPReplayDetected
-        expr: increase(unix_oidc_dpop_replay_total[5m]) > 0
-        labels:
-          severity: critical
-        annotations:
-          summary: "DPoP replay attack detected"
+### SCIM Has an Explicit Unsafe Development Mode
 
-      - alert: AuthFailureSpike
-        expr: rate(unix_oidc_auth_failures_total[5m]) > 10
-        labels:
-          severity: warning
-        annotations:
-          summary: "High authentication failure rate"
-```
+The SCIM service now performs real JWT validation by default and propagates provisioning failures. However, `--insecure-no-auth` remains intentionally available for development. Production deployments must not enable it.
+
+### Same-UID Local Threats Are a Known Residual Risk
+
+The project raises the bar for cross-host token theft, replay, and key export. It does not claim to fully solve same-user endpoint compromise.
 
 ---
 
-## Incident Response
+## Security Review Checklist
 
-### Token Compromise
+Before calling a feature production-ready, confirm:
 
-If you suspect token compromise:
+- the security property is enforced in the main path, not only in helper functions
+- the protocol shape is covered by round-trip tests
+- the feature is documented with the right status label
+- the failure mode is fail-closed for explicit security policy
+- logs and audit events reflect both acceptance and rejection paths
 
-1. **Immediate**: Revoke refresh tokens in IdP
-2. **Short-term**: Reduce token lifetime
-3. **Investigation**: Correlate audit logs by session_id
-4. **Remediation**: Rotate client secrets if applicable
+Questions maintainers should ask:
 
-```bash
-# Keycloak: Revoke all sessions for user
-kcadm.sh delete users/<user-id>/sessions -r production
-
-# Azure AD: Revoke refresh tokens
-az ad user update --id <user-id> --force-change-password-next-sign-in
-```
-
-### DPoP Key Compromise
-
-If a client's DPoP key is compromised:
-
-1. The key only works for that specific client
-2. Token theft is still prevented (attacker needs both)
-3. Rotate the key via agent restart or key rotation API
-
-### Break-Glass Procedure
-
-For emergency access when IdP is unavailable:
-
-```yaml
-# /etc/unix-oidc/policy.yaml
-break_glass:
-  enabled: true
-  accounts:
-    - breakglass       # Pre-authorized emergency accounts
-    - emergency-admin
-  requires: yubikey_otp  # Optional: require hardware token for break-glass
-  alert_on_use: true     # Log alert when break-glass is used
-```
-
-> **Note:** Break-glass accounts must exist as local Unix accounts with password authentication configured. See the [installation guide](installation.md) for setup instructions.
+1. Is this check actually called from the main auth or proof path?
+2. Does a regression test prove the invariant end-to-end?
+3. Are we documenting an aspiration as if it were implemented?
+4. Does the feature widen trust boundaries or privilege without equivalent enforcement?
 
 ---
 
-## Compliance Mapping
+## Standards and References
 
-### NIST SP 800-63 Alignment
+Primary standards:
 
-| Requirement | unix-oidc Implementation |
-|-------------|-------------------------|
-| 800-63A: Identity Proofing | Delegated to IdP |
-| 800-63B: Authentication | ACR-based AAL enforcement |
-| 800-63C: Federation | OIDC with DPoP binding |
+- RFC 9449: DPoP
+- RFC 7638: JWK Thumbprint
+- RFC 7519: JWT
+- RFC 7517 / RFC 7518 / RFC 7515: JOSE / JWK / JWA / JWS
+- RFC 8693: OAuth 2.0 Token Exchange
+- RFC 7643 / RFC 7644: SCIM 2.0
+- NIST SP 800-63B: Digital Identity Guidelines
+- NIST SP 800-88 Rev. 1: Media Sanitization
 
-### SOC 2 Controls
+Related project documents:
 
-| Control | Implementation |
-|---------|----------------|
-| CC6.1: Logical Access | Policy-based authorization |
-| CC6.2: Auth Mechanisms | MFA via OIDC, DPoP |
-| CC6.3: Access Removal | Token expiration, IdP revocation |
-| CC7.2: System Monitoring | Structured audit logs |
-
-### CIS Controls
-
-| Control | Implementation |
-|---------|----------------|
-| 5.2: Use MFA | ACR enforcement |
-| 6.3: Require MFA for Admin | Step-up for sudo |
-| 8.5: Centralized Log Collection | JSON audit logs |
+- `docs/threat-model.md`
+- `docs/standards-compliance-matrix.md`
+- `docs/adr/`
 
 ---
 
-## Security Checklist
-
-### Pre-Deployment
-
-- [ ] TLS certificates valid and trusted
-- [ ] Token lifetimes configured appropriately
-- [ ] DPoP enabled if available
-- [ ] ACR requirements match security policy
-- [ ] File permissions hardened
-- [ ] Audit logging configured and tested
-- [ ] SIEM integration verified
-- [ ] Break-glass procedure documented and tested
-
-### Ongoing Operations
-
-- [ ] Regular security updates applied
-- [ ] JWKS cache functioning (check TTL)
-- [ ] Audit logs reviewed
-- [ ] Token lifetime appropriate for threat model
-- [ ] IdP health monitored
-- [ ] Incident response procedures current
-
----
-
-## D-Bus and Secret Service Transport Security
-
-### Advisory: D-Bus Session Bus Snooping
-
-The Linux agent uses the [Secret Service API](https://specifications.freedesktop.org/secret-service/latest/) (via the `keyring` crate and `libdbus-sys`) to store DPoP keys and OAuth tokens in GNOME Keyring or KDE Wallet.
-
-**D-Bus itself provides no wire encryption.** The session bus uses Unix domain sockets with `SCM_CREDENTIALS` (peer UID verification) for authentication, but message payloads are plaintext. Any process running as the same UID can call `dbus-monitor` or `busctl monitor` to observe all session bus traffic.
-
-**The Secret Service API mitigates this** by negotiating an encrypted session (`dh-ietf1024-sha256-aes128-cbc-pkcs7`) via `org.freedesktop.secrets.Session.OpenSession`. When an encrypted session is active, credential values are encrypted in transit over D-Bus even though D-Bus itself is unencrypted.
-
-### Residual Risks
-
-| Risk | Severity | Mitigation |
-|------|----------|------------|
-| Same-user D-Bus snooping | Medium | Secret Service session encryption protects credential payloads |
-| Root-level bus interception | High | Root access is a complete compromise regardless; out of scope |
-| Secret Service `plain` session fallback | Medium | If the daemon negotiates `plain` instead of `dh-ietf1024-*`, credentials transit D-Bus unencrypted. The `keyring` crate delegates session negotiation to the daemon — there is no application-level control to reject `plain` sessions |
-| `libdbus-sys` supply chain | Low | Well-maintained, mirrors the C `libdbus` API; pinned in `Cargo.lock` |
-
-### Recommendations for Operators
-
-1. **Ensure a Secret Service daemon is running** (GNOME Keyring, KDE Wallet, or `keepassxc`). Without one, the agent falls back to file-based storage.
-2. **Prefer keyring backends over file storage** — the keyring provides memory protection, access control, and (with encrypted sessions) transport encryption that file storage cannot.
-3. **Restrict D-Bus monitor access** in hardened environments: remove `dbus-monitor` from production images, or apply AppArmor/SELinux policy to restrict `org.freedesktop.DBus.Monitoring` interface access.
-4. **Full-disk encryption** remains the primary defense for at-rest credential material on CoW filesystems and SSDs (NIST SP 800-88 Rev 1, §2.5).
-
----
-
-## Cross-Server and Replay Protection Analysis
-
-This section documents the threat model for token and DPoP proof replay across servers and connections, including known limitations and compensating controls.
-
-### Cross-server replay: Blocked by DPoP `htu` binding
-
-Each DPoP proof is bound to the target server's hostname via the `htu` (HTTP Target URI) claim. When a user SSHs to multiple servers simultaneously, the agent generates a fresh proof per server with that server's hostname. The PAM module on each server compares the proof's `htu` against its own hostname — a proof generated for `serverA` is rejected on `serverB` with a target mismatch error.
-
-Additionally, each proof contains a unique `jti` (UUID v4), a fresh `iat` timestamp, and the `cnf` thumbprint binding. Even the same OIDC token requires a server-specific, freshly-signed DPoP proof for each target.
-
-### Same-server replay: Requires SSH transport compromise
-
-Within a single SSH connection, the in-memory JTI cache prevents proof reuse. Across connections to the same server, each forked sshd child has an independent JTI cache (known limitation — see below). However, exploiting this requires:
-
-1. Intercepting the DPoP proof, which travels inside SSH-encrypted keyboard-interactive data
-2. Replaying it to the same server within the proof's `iat` window (default 60s)
-3. The proof's `cnf` thumbprint must match the token's binding — both are tied to the agent's ephemeral private key
-
-An attacker with SSH MITM capability already has a shell. DPoP replay is moot at that point.
-
-### Nonce protocol: Proactive delivery avoids cross-fork issues
-
-The standard HTTP DPoP nonce pattern (server rejects with 401 → client retries with nonce in a new request) would create an auth loop in sshd's forking model. unix-oidc avoids this by using proactive nonce delivery within a single SSH connection:
-
-1. **Round 1**: PAM module generates nonce, stores in process-local cache, delivers to client via `PROMPT_ECHO_ON`
-2. **Round 2**: Client binds nonce into DPoP proof, returns via `PROMPT_ECHO_OFF`
-3. PAM module consumes nonce from the same process's cache
-
-All steps occur within a single forked sshd child. No cross-process nonce handoff is needed.
-
-### Known limitation: Per-fork JTI cache
-
-The JTI and nonce caches are in-memory `Lazy` singletons, initialized fresh in each forked sshd child. This means replay protection applies within a connection but not across connections. This is a deliberate design tradeoff:
-
-- **Why not shared state**: PAM modules run in-process within sshd children. Shared-memory IPC or external daemon coordination adds complexity and failure modes to a security-critical authentication path.
-- **Compensating controls**: (1) DPoP proof `iat` window defaults to 60s. (2) Token `exp` limits replay window. (3) DPoP `cnf` binding renders tokens useless without the ephemeral private key. (4) SSH encryption protects the proof in transit. (5) Documented in `jti-cache-architecture.md`.
-
----
-
-## Implementation Hardening
-
-The following code-level protections are enforced across the codebase. These were verified in a multi-reviewer security audit (April 2026) and hardened where gaps were found.
-
-### File operations
-
-- **Atomic file permissions**: All credential files are created with `OpenOptions::mode(0o600)` via `OpenOptionsExt`, setting permissions at creation time. This prevents TOCTOU race conditions where a file could be briefly world-readable between creation and a subsequent `chmod`.
-- **Secure deletion**: On-disk credentials are overwritten with a three-pass pattern (random → complement → random → unlink) per NIST SP 800-88 Rev 1. Limitations on CoW filesystems and SSDs are logged as warnings; full-disk encryption is the recommended defense for those environments.
-
-### Rate limiting
-
-- **Capacity cap**: The rate limiter enforces a maximum of 100,000 entries with automatic cleanup triggered on each failure recording. This prevents memory exhaustion from credential-stuffing attacks with millions of unique usernames.
-- **Configuration bounds**: Environment-configurable rate limit parameters are clamped to safe ranges (`max_attempts` to 1–1000). Out-of-range values are corrected with a logged warning, preventing accidental or malicious disabling of rate limiting.
-- **Success resets**: On successful authentication, the user's failure history is fully cleared. This prevents a subtle re-lockout DoS where an attacker's prior failures could cause a legitimate user to be locked out after a single subsequent failure.
-
-### DPoP and cryptographic protections
-
-- **JWK thumbprint canonicalization**: Thumbprint computation uses hardcoded `"P-256"` and `"EC"` values in the canonical JSON (RFC 7638), not user-supplied `kty`/`crv` fields. This prevents an attacker from manipulating the thumbprint by supplying alternative key type identifiers.
-- **Algorithm enforcement**: Server-side validation uses an asymmetric-only allowlist (ES256, EdDSA, RS256, RS384, RS512, PS256, PS384, PS512). Client-side proof generation additionally enforces `["ES256", "ML-DSA-65-ES256"]` only. Symmetric algorithms and `"none"` are rejected at both layers.
-- **JTI cache limits**: Both the PAM module and the rust-oauth-dpop library enforce 100,000-entry capacity limits on JTI caches to prevent memory exhaustion from DPoP proof flooding.
-- **Nonce single-use enforcement**: Nonces are consumed atomically via `moka::Cache::remove()`, preventing TOCTOU races in the consume path.
-
-### IPC and daemon security
-
-- **Message size limits**: The agent daemon enforces a 64 KiB maximum on IPC messages. Oversized messages receive an error response without being parsed.
-- **Peer credential verification**: All Unix socket IPC validates the connecting process's UID via `SO_PEERCRED` (Linux) or `getpeereid` (macOS). Cross-user IPC is rejected.
-- **JSON serialization**: IPC messages use `serde_json` structured serialization instead of string interpolation, preventing JSON injection through crafted session IDs or other dynamic values.
-- **Lock poison recovery**: All `RwLock` operations in the DPoP library use `unwrap_or_else(|e| e.into_inner())` to recover from poisoned locks instead of panicking. A panic in a PAM module can lock users out of their system.
-
-### Input validation and safety
-
-- **UTF-8 safe truncation**: CIBA binding messages are truncated using character boundary detection (`char_indices()`), not byte slicing. This prevents panics when non-ASCII hostnames push the message past the 64-byte CIBA limit.
-- **Webhook TLS enforcement**: The ability to disable TLS certificate verification for webhook endpoints is gated behind the `test-mode` compile-time feature flag. Production binaries cannot disable certificate verification via environment variables.
-- **Session and request IDs**: All security-relevant identifiers (session IDs, approval request IDs) use `getrandom` for CSPRNG-based generation. Nanosecond-timestamp-only identifiers were replaced to prevent prediction attacks.
-- **Client secret protection**: The `--client-secret` CLI argument is hidden from help output and produces a deprecation warning at runtime directing users to the `OIDC_CLIENT_SECRET` environment variable, which is not visible in process listings.
-
----
-
-## Acknowledged Limitations
-
-The following are known design constraints with documented compensating controls. They are tracked for future mitigation.
-
-### CIBA step-up trusts agent IPC
-
-The PAM module trusts the `StepUpComplete` response from the agent daemon without independently validating an OIDC token. The agent performs full OIDC validation internally, and the IPC channel is protected by UID-based peer credential verification (socket permissions 0600, `SO_PEERCRED`/`getpeereid`). An attacker who can spoof IPC responses already has the target user's UID and equivalent access to SSH keys, browser cookies, etc.
-
-**Future mitigation**: Return the CIBA ID token from the agent and validate it in the PAM module for defense-in-depth.
-
-### PAM module does not zeroize bearer tokens
-
-The PAM module handles OIDC tokens as standard `String` types without `SecretString` or `Zeroizing` wrappers. The agent daemon uses full memory protection (SecretString, mlock, ZeroizeOnDrop) because it holds long-lived keys. The PAM module handles tokens transiently in a short-lived forked process that exits after authentication. Core dumps are disabled at startup.
-
-**Future mitigation**: Add `Zeroizing<String>` wrappers for token handling in the PAM module for defense-in-depth against swap-based exposure.
-
-### Webhook approval lacks request/response signing
-
-The webhook approval provider relies on TLS for transport security but does not include HMAC signatures on request or response bodies. In environments where TLS termination occurs at a load balancer with unencrypted internal traffic, this could allow approval spoofing.
-
-**Future mitigation**: Add HMAC-based request signing and response verification.
-
----
-
-## Additional Resources
-
-- [NIST SP 800-63 Digital Identity Guidelines](https://pages.nist.gov/800-63-3/)
-- [RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP)](https://www.rfc-editor.org/rfc/rfc9449)
-- [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)
-- [CIS Controls](https://www.cisecurity.org/controls)
+Last updated: 2026-04-09

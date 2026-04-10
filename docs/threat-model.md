@@ -1,7 +1,7 @@
 # Threat Model: unix-oidc
 
-> **Version:** 3.0
-> **Date:** 2026-03-12
+> **Version:** 3.1
+> **Date:** 2026-04-09
 > **Classification:** Public
 > **Method:** STRIDE per trust boundary (Microsoft SDL)
 
@@ -13,7 +13,7 @@ STRIDE-based threat model for the unix-oidc project -- a PAM module bridging Ope
 
 ## 1. System Overview
 
-unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`pam-unix-oidc`). A client-side agent daemon (`unix-oidc-agent`) acquires tokens from an Identity Provider (IdP), generates ephemeral DPoP key pairs for proof-of-possession binding (RFC 9449), and delivers signed proofs over a Unix domain socket to an SSH client. The SSH session transports the token and DPoP proof to the server, where the PAM module validates the token signature against the IdP's JWKS, enforces issuer/audience/expiration checks, verifies the DPoP proof signature and binding, checks JTI replay caches, and maps the `preferred_username` claim to a local Unix account via SSSD/NSS. Trust boundaries exist at six points: (1) the TLS-protected channel between agent and IdP, (2) the Unix domain socket IPC between agent and SSH client, (3) the SSH-encrypted channel carrying credentials to the server, (4) the PAM module's interface with sshd and the local OS, (5) the credential storage backends (keyrings, files) on the client, and (6) the PAM module's JWKS fetch channel to the IdP.
+unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`pam-unix-oidc`). A client-side agent daemon (`unix-oidc-agent`) acquires tokens from an Identity Provider (IdP) via device flow, authorization code + PKCE, or SPIRE JWT-SVID acquisition, generates DPoP proofs for proof-of-possession binding (RFC 9449), and delivers signed proofs over a Unix domain socket to an SSH client. The SSH session transports the token and DPoP proof to the server, where the PAM module validates the token signature against the IdP's JWKS, enforces issuer/audience/expiration checks, verifies the DPoP proof signature and binding, checks replay protections, optionally enforces delegation (`act`) and TPM attestation policy, and maps the validated identity to a local Unix account via SSSD/NSS. Trust boundaries exist at six points: (1) the TLS-protected channel between agent and IdP, (2) the Unix domain socket IPC between agent and SSH client, (3) the SSH-encrypted channel carrying credentials to the server, (4) the PAM module's interface with sshd and the local OS, (5) the credential storage backends (keyrings, files) on the client, and (6) the PAM module's JWKS fetch channel to the IdP.
 
 ---
 
@@ -125,7 +125,7 @@ unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`p
 2. **Server-issued nonce**: `DPoPNonceCache` (`nonce_cache.rs:66-134`) enforces single-use nonces via moka's atomic `remove()` -- no TOCTOU window. 256-bit CSPRNG nonces (`nonce_cache.rs:147-151`).
 3. **Proof freshness**: `iat` checked against `max_proof_age` (default 60s) and `clock_skew_future_secs` (default 5s) at `dpop.rs:309-324`.
 
-**Residual risk**: JTI cache is process-local (in-memory `HashMap`). In a multi-process PAM deployment (e.g., sshd prefork), each process has its own cache. A proof replayed to a different sshd worker process within the TTL window could bypass JTI deduplication. The nonce cache (moka-backed singleton) has the same process-scoping limitation.
+**Residual risk**: DPoP proof replay state remains process-local. In a multi-process PAM deployment (e.g., sshd prefork), a proof replayed to a different sshd worker within the TTL window could bypass DPoP-proof JTI deduplication. Token-level replay handling and newer PAM-side JTI paths are stronger than this older in-process proof cache model, but DPoP proof replay is still bounded by per-process state plus freshness/nonce checks.
 
 ### 4.4 Algorithm Confusion
 
@@ -184,8 +184,8 @@ unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`p
 
 | ID | Risk | Severity | Acceptance Rationale |
 |----|------|----------|---------------------|
-| R-1 | **Process-local JTI/nonce caches** -- multi-process sshd deployments have per-process replay caches; a proof could be replayed to a sibling worker within the TTL window | Medium | sshd typically uses a single process for the authentication phase of each connection. Shared external cache adds operational complexity disproportionate to threat likelihood. DPoP proof freshness (`max_proof_age=60s`) and server-issued nonce binding limit the replay window. |
-| R-2 | **Root-level key extraction** -- a compromised root can read agent memory despite `mlock`/`ZeroizeOnDrop` | High | Protecting against compromised root is out of scope (NIST SP 800-63B assumes trusted OS). Ephemeral DPoP keys and short token lifetimes limit exposure duration. HSM/TPM-backed keys are a planned future enhancement. |
+| R-1 | **Process-local DPoP proof replay state** -- multi-process sshd deployments still have per-process DPoP-proof JTI/nonce state; a proof could be replayed to a sibling worker within the TTL window | Medium | DPoP proof freshness (`max_proof_age=60s`) and server-issued nonce binding limit the replay window. Shared replay state is still a hardening opportunity for high-scale multi-process deployments. |
+| R-2 | **Root-level key extraction** -- a compromised root can read agent memory despite `mlock`/`ZeroizeOnDrop` | High | Protecting against compromised root is out of scope (NIST SP 800-63B assumes trusted OS). Ephemeral DPoP keys and short token lifetimes limit exposure duration. Hardware-backed signers (TPM, YubiKey) are available for stronger extraction resistance. |
 | R-3 | **CoW/SSD secure deletion** -- three-pass overwrite may not destroy original blocks on APFS/btrfs or SSD with wear leveling | Medium | Documented advisory at startup per NIST SP 800-88 Rev 1, section 2.5. Full-disk encryption is the recommended mitigation. Keyring backends are preferred over file fallback. |
 | R-4 | **IdP compromise** -- a compromised IdP can issue arbitrary valid tokens | Critical | Out of scope for the relying party. Mitigated by audience restriction, DPoP binding (limits token to possessing client), and short token lifetimes. Organizations should monitor IdP security posture independently. |
 | R-5 | **Clock skew exploitation** -- `max_proof_age` (60s) + `clock_skew_future_secs` (5s) creates a 65-second window for proof acceptance | Low | Configurable by operator. Tighter values available for high-security deployments. NTP synchronization is a deployment prerequisite. |
@@ -223,7 +223,7 @@ Prioritized by risk reduction impact.
 
 ### P3 -- Low (backlog / future hardening)
 
-9. **Evaluate HSM/TPM-backed DPoP key storage** to close R-2 for high-security deployments. PKCS#11 integration would prevent key extraction even by root.
+9. **Prefer hardware-backed DPoP key storage for high-security deployments** and extend attestation coverage. TPM and YubiKey signers already reduce extraction risk; future work is stronger attestation and hardware-policy enforcement rather than first introducing hardware storage.
 
 10. **Add structured threat model identifiers to audit log events** so SOC analysts can correlate detections to specific threat scenarios (e.g., `threat_id: T3.5` in a DPoP binding failure log entry).
 
@@ -290,4 +290,4 @@ The agent daemon treats any process running as the same UID as fully trusted. Th
 
 ---
 
-*Last updated: 2026-04-09. Revision required when new trust boundaries, authentication flows (e.g., CIBA production deployment), or storage backends are introduced.*
+*Last updated: 2026-04-09. Revision required when new trust boundaries, authentication flows, or storage backends are introduced.*
