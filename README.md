@@ -32,7 +32,9 @@
 
 ## Why unix-oidc?
 
-SSH key management at scale is painful. Keys get copied, shared, never rotated, and rarely audited. When someone leaves, do you really know all the servers they had access to?
+A senior engineer leaves. They had SSH keys on dozens of servers — production, staging, internal tools. Nobody knows where all the keys are. Finding them is archaeology: grepping `authorized_keys` files across every host, hoping you don't miss one. Meanwhile, those keys still work.
+
+This isn't a hypothetical. It's the norm. SSH keys get copied, shared, never rotated, and rarely audited. When someone leaves, their access doesn't leave with them — it lingers until someone finds it. unix-oidc fixes this: authentication flows through your IdP (Okta, Entra, Keycloak). Disable the user in your IdP, and their server access dies instantly. No key hunting.
 
 **[OpenID Connect (OIDC)](https://openid.net/specs/openid-connect-core-1_0.html)** solves identity, but existing tools have significant limitations:
 
