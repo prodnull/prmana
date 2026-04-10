@@ -713,7 +713,7 @@ mod linux_impl {
     mod integration_tests {
         use super::*;
         use crate::hardware::TpmConfig;
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
         fn test_tcti() -> String {
             std::env::var("UNIX_OIDC_TPM_TCTI").unwrap_or_else(|_| "tabrmd".to_string())
@@ -753,11 +753,23 @@ mod linux_impl {
             );
 
             // Verify thumbprint matches independent computation from JWK.
+            // Reconstruct VerifyingKey from JWK x,y coordinates for cross-check.
             let jwk = signer.public_key_jwk();
-            let recomputed = crate::crypto::thumbprint::compute_ec_thumbprint(
-                jwk["x"].as_str().unwrap(),
-                jwk["y"].as_str().unwrap(),
-            );
+            let x_bytes =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(jwk["x"].as_str().unwrap())
+                    .unwrap();
+            let y_bytes =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(jwk["y"].as_str().unwrap())
+                    .unwrap();
+            // Build SEC1 uncompressed point: 0x04 || x || y
+            let mut sec1 = vec![0x04];
+            sec1.extend_from_slice(&x_bytes);
+            sec1.extend_from_slice(&y_bytes);
+            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1)
+                .expect("reconstruct VerifyingKey from JWK");
+            let recomputed = crate::crypto::thumbprint::compute_ec_thumbprint(&vk);
             assert_eq!(
                 thumbprint, recomputed,
                 "TPM thumbprint must match compute_ec_thumbprint"

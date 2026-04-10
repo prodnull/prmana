@@ -85,6 +85,10 @@ pqc = ["dep:ml-dsa", "pam-unix-oidc/pqc"]
 # SPIFFE/SPIRE integration: fetch JWT-SVIDs via SPIRE Workload API (gRPC over UDS).
 # ADR-017: tonic + official proto chosen over spiffe crate or hand-rolled protobuf.
 spire = ["dep:tonic", "dep:prost", "dep:hyper-util", "dep:tower"]
+# WARNING: test-mode skips JWT signature verification in pam-unix-oidc.
+# Used in tpm_signer.rs to gate swtpm/mssim TCTI backends behind test builds.
+# NEVER enable in production binaries.
+test-mode = ["pam-unix-oidc/test-mode"]
 
 # SPIRE Workload API client (gRPC over UDS). Only pulled in by --features spire.
 # channel: gRPC client transport (includes hyper-util for UDS connector).
