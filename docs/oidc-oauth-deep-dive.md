@@ -36,6 +36,7 @@ Every concept introduced in the theory sections is immediately grounded with a c
 14. [User Lifecycle: SCIM Provisioning](#14-scim)
 15. [IdP Resilience: Failover, DNS, and Multi-Issuer Chains](#15-failover)
 16. [The Full Authentication Flow, Step by Step](#16-full-flow)
+17. [Provider-Specific Behavior: Lessons from Live Testing](#14-provider-quirks)
 
 ---
 
@@ -1247,6 +1248,112 @@ Every concept in this guide maps to specific source files. This appendix provide
 | `unix-oidc-agent/src/daemon/socket.rs` | `AgentState.failover_runtimes` — persistent runtime state |
 | `pam-unix-oidc/src/audit.rs` | `IdpFailoverActivated`, `IdpFailoverRecovered`, `IdpFailoverExhausted` |
 | `docs/adr/020-active-passive-idp-redundancy.md` | ADR with DNS and N-issuer chain evolution |
+
+---
+
+## 14. Provider-Specific Behavior: Lessons from Live Testing {#14-provider-quirks}
+
+OIDC is a standard, but every IdP implements it with its own edges. This section documents behavior observed during live E2E testing against Keycloak, Auth0, and Entra ID — the three providers validated in CI.
+
+### Token Format Differences
+
+| Behavior | Keycloak | Auth0 | Entra ID |
+|----------|----------|-------|----------|
+| **Token signature algorithm** | RS256 (configurable) | RS256 | RS256 |
+| **JWKS `alg` field** | Present (`RS256`) | Present (`RS256`) | **Absent** — only `kty=RSA` + `use=sig`. RFC 7517 §4.4 says `alg` is OPTIONAL. Consumers must infer algorithm from the token header, not the JWKS key. |
+| **DPoP support** | Full RFC 9449 | **Not on Device Auth Grant** — bearer-only for ROPC/device flow. DPoP works on Auth Code + PKCE. | **Not RFC 9449** — Entra implements SHR (Signed HTTP Requests), a different proof-of-possession mechanism. `dpop_enforcement: disabled` required. |
+| **JTI claim** | Standard `jti` | Standard `jti` | **`uti` instead of `jti`** — Entra emits "unique token identifier" in a non-standard claim. `jti_enforcement: warn` required (strict rejects all Entra tokens). |
+| **Issuer URL format** | `https://keycloak.example/realms/{realm}` | `https://{domain}.auth0.com/` (trailing slash) | `https://login.microsoftonline.com/{tenant-id}/v2.0` (requires `requestedAccessTokenVersion: 2` in app manifest) |
+| **Token version** | N/A | N/A | **Defaults to v1.0** — emits `iss: https://sts.windows.net/{tid}/` unless manifest sets `requestedAccessTokenVersion: 2`. v1.0 tokens use a different issuer URL and claim format. |
+
+### Audience (`aud`) Gotchas
+
+| Provider | Gotcha | Fix |
+|----------|--------|-----|
+| **Keycloak** | `aud` defaults to `account` if no audience mapper is configured | Add a protocol mapper: "Audience" → "Hardcoded audience" → your client ID |
+| **Auth0** | `aud` must be explicitly set via the `audience` parameter in the token request | Set `AUTH0_AUDIENCE` in the ROPC request. Without it, Auth0 returns an opaque token (not a JWT). |
+| **Entra ID** | `openid profile email` scopes without a resource default to Graph API audience (`00000003-...`) | Expose an API in the app registration, add a custom scope (e.g., `access`), and request `api://{client_id}/access openid profile email` |
+
+### Claim Availability
+
+| Claim | Keycloak | Auth0 | Entra ID |
+|-------|----------|-------|----------|
+| `preferred_username` | Always present with `profile` scope | **Requires custom claim rule** — Auth0 namespaces custom claims (e.g., `https://unix-oidc.dev/preferred_username`) | Present with `profile` scope + optional claims config |
+| `email` | Present with `email` scope | Present with `email` scope | **Requires both** `email` scope AND the user must have a `mail` attribute in the directory. Test users on `@onmicrosoft.com` domains often lack this. Enterprise users synced from AD/Exchange have it. |
+| `sub` | Always present | Always present | Always present |
+| `acr` / `amr` | Present (configurable) | `amr` present | `acr` present, `amr` present |
+
+### Authentication Flow Support
+
+| Flow | Keycloak | Auth0 | Entra ID |
+|------|----------|-------|----------|
+| **Device Authorization Grant** | Supported | Supported | Supported |
+| **ROPC** | Supported (direct access grants enabled) | Supported (Database Connection required) | Supported but **deprecated by Microsoft**. Requires "Allow public client flows" and MFA exclusion. Use for CI only. |
+| **Auth Code + PKCE** | Supported | Supported (required for DPoP) | Supported |
+| **CIBA** | Supported (with Keycloak CIBA provider) | Not supported | Not supported |
+| **Token Exchange (RFC 8693)** | Supported (with token-exchange feature) | Not supported | Supported (on-behalf-of flow, similar but not identical to RFC 8693) |
+
+### JWKS and Discovery
+
+| Behavior | Keycloak | Auth0 | Entra ID |
+|----------|----------|-------|----------|
+| **JWKS key rotation** | Manual or scheduled | Automatic (roughly every 6 hours) | Automatic (keys published days before activation) |
+| **Discovery URL** | `{issuer}/.well-known/openid-configuration` | `{issuer}/.well-known/openid-configuration` | `https://login.microsoftonline.com/{tenant}/v2.0/.well-known/openid-configuration` |
+| **JWKS caching** | Standard HTTP cache headers | Standard HTTP cache headers | Long-lived keys; cache-control headers present |
+| **Multiple keys in JWKS** | Typically 1-2 | Typically 2 | **4-5 keys** including keys for different cloud instances (commercial + government). Filter by `issuer` field in the key to avoid false matches. |
+
+### Configuration Patterns per Provider
+
+**Keycloak (recommended for development and self-hosted):**
+```yaml
+issuers:
+  - issuer_url: "https://keycloak.example/realms/unix-oidc"
+    client_id: "unix-oidc"
+    dpop_enforcement: strict  # Full DPoP support
+    jti_enforcement: strict   # Standard jti claim
+    claim_mapping:
+      username_claim: "preferred_username"
+```
+
+**Auth0 (bearer-only, custom claim namespace):**
+```yaml
+issuers:
+  - issuer_url: "https://dev-xxxx.us.auth0.com/"  # trailing slash required
+    client_id: "your-auth0-client-id"
+    dpop_enforcement: disabled  # No DPoP on Device Auth Grant
+    jti_enforcement: strict     # Standard jti
+    claim_mapping:
+      username_claim: "https://unix-oidc.dev/preferred_username"  # namespaced
+```
+
+**Entra ID (bearer-only, UPN mapping):**
+```yaml
+issuers:
+  - issuer_url: "https://login.microsoftonline.com/{tenant-id}/v2.0"
+    client_id: "your-entra-client-id"
+    dpop_enforcement: disabled  # Entra uses SHR, not DPoP
+    jti_enforcement: warn       # Entra emits uti, not jti
+    allow_unsafe_identity_pipeline: true  # single-tenant, IdP enforces domain
+    claim_mapping:
+      username_claim: "email"   # or preferred_username with strip_domain
+      transforms:
+        - strip_domain
+        - lowercase
+```
+
+### Key Takeaways
+
+1. **No commercial IdP supports DPoP on Device Authorization Grant.** DPoP is only available via Auth Code + PKCE (Auth0) or not at all (Entra uses SHR). Bearer-only mode is required for Entra and Auth0 device flows.
+
+2. **`alg` in JWKS is optional per RFC 7517.** Do not require it. Use `kty` + `use` to identify signing keys, and match the algorithm from the token header.
+
+3. **Audience configuration is the #1 setup failure.** Each provider has a different mechanism for controlling `aud` — and the default is wrong for all three if you just request `openid profile email`.
+
+4. **Test your token claims before writing policy.** Decode the actual JWT from each provider and verify `iss`, `aud`, `preferred_username`, `email` are what you expect. The `jq` and `base64` pipeline in the setup guides makes this trivial.
+
+5. **`email` is not universally reliable.** Keycloak and Auth0 emit it consistently. Entra requires a directory `mail` attribute. Design claim mapping to fall back to `preferred_username` when `email` is absent.
+
+**In unix-oidc:** Provider-specific behavior is handled through per-issuer configuration in `policy.yaml`. The multi-issuer pipeline (`authenticate_multi_issuer` in `pam-unix-oidc/src/auth.rs`) routes tokens by `iss` claim and applies issuer-specific DPoP enforcement, JTI handling, and claim mapping. See `test/fixtures/policy/` for working examples of each provider configuration.
 
 ---
 
