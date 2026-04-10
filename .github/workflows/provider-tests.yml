@@ -120,19 +120,9 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Install Rust toolchain
+      - name: Install dependencies
         if: steps.check-auth0.outputs.skip != 'true'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system dependencies
-        if: steps.check-auth0.outputs.skip != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config jq
-
-      - name: Build
-        if: steps.check-auth0.outputs.skip != 'true'
-        run: cargo build --release
+        run: sudo apt-get update && sudo apt-get install -y curl jq python3
 
       - name: Run Auth0 E2E Tests
         if: steps.check-auth0.outputs.skip != 'true'
