@@ -93,13 +93,11 @@ Teleport and StrongDM issue short-lived x509 certificates. These are bearer cred
 | Open source | ✅ | Partial | ❌ | ❌ |
 | Deployment | PAM module | Gateway cluster | SaaS + relay | On-prem vault |
 
-### Sudo step-up: the gap nobody else fills
+### Sudo step-up: per-command MFA without agents
 
-Gateway products gate who can *connect*. Vault products gate who can *check out credentials*. Neither re-verifies identity at the moment of privilege escalation. Once you're in the SSH session, `sudo` just works.
+Gateway products (Teleport, StrongDM) gate who can *connect* but don't re-verify at `sudo` — [Teleport's sudo integration is an open feature request](https://github.com/gravitational/teleport/issues/13258). Agent-based PAM solutions (CyberArk EPM, Delinea `dzdo`, BeyondTrust EPM-UL) can do elevation MFA, but require proprietary agents and custom commands.
 
-unix-oidc is the only solution that challenges at the point of `sudo`. Via [CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) (Client-Initiated Backchannel Authentication), your phone receives a push notification with the specific command — "Approve `sudo apt install nginx` on server-01" — and the command only executes after you confirm. Per-command, real-time, no session-level blanket approval.
-
-This closes the privilege escalation window that every other approach leaves open: a compromised session that can sudo without re-authentication.
+unix-oidc does it with native `sudo` via standard PAM — no agent, no command replacement. Via [CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) (Client-Initiated Backchannel Authentication), your phone receives a push notification with the **specific command** — "Approve `sudo apt install nginx` on server-01" — and the command only executes after you confirm. The MFA challenge flows through your existing IdP, not a separate integration. Per-command, real-time, phishing-resistant.
 
 ### Why This Matters Now
 
