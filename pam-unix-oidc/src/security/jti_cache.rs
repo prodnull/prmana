@@ -306,6 +306,7 @@ pub fn setup_test_jti_dir() {
         // Use a process-unique subdirectory under the system temp dir.
         // Avoids depending on the `tempfile` crate outside dev-dependencies.
         let dir = std::env::temp_dir().join(format!("unix-oidc-jti-test-{}", std::process::id()));
+        #[allow(clippy::expect_used)]
         std::fs::create_dir_all(&dir).expect("create JTI test tempdir");
         std::env::set_var("UNIX_OIDC_JTI_DIR", &dir);
         dir
