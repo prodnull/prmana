@@ -1788,6 +1788,7 @@ mod tests {
 
     /// Module-level mutex to serialize tests that manipulate environment variables.
     /// Rust test threads share process memory, so concurrent env-var mutations cause races.
+    #[allow(dead_code)]
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     // ── New-type tests ──────────────────────────────────────────────────────

@@ -2119,6 +2119,7 @@ mod tests {
     ///
     /// This calls `ocsf_fields()` directly to produce a JSON-serialisable
     /// `OcsfFields` struct, then checks that the expected fields are present.
+    #[allow(dead_code)]
     fn ocsf_json(event: &AuditEvent) -> String {
         let fields = event.ocsf_fields();
         // We test via serde_json::to_string of the AuditEvent alongside the OcsfFields

@@ -1221,8 +1221,8 @@ mod tests {
         );
 
         // Even the random suffix alone must differ (not just the timestamp)
-        let random1 = id1.split('-').last().unwrap();
-        let random2 = id2.split('-').last().unwrap();
+        let random1 = id1.split('-').next_back().unwrap();
+        let random2 = id2.split('-').next_back().unwrap();
         assert_ne!(
             random1, random2,
             "random components must differ with 64 bits of entropy"

@@ -989,7 +989,7 @@ mod tests {
     /// Per-issuer allowed_algorithms restricts accepted algorithms.
     #[test]
     fn test_allowlist_restricts_algorithms() {
-        let custom_allowlist = vec![Algorithm::ES256];
+        let custom_allowlist = [Algorithm::ES256];
         assert!(!custom_allowlist.contains(&Algorithm::RS256));
         assert!(custom_allowlist.contains(&Algorithm::ES256));
     }

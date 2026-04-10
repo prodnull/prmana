@@ -101,6 +101,7 @@ pub fn secure_remove(path: &Path) -> Result<(), SecureDeleteError> {
 
     // Verify the target is a regular file (S_IFREG), not a device, socket, etc.
     let mode = metadata.mode();
+    #[allow(clippy::unnecessary_cast)] // libc constants are u16 on macOS, u32 on Linux
     if mode & libc::S_IFMT as u32 != libc::S_IFREG as u32 {
         return Err(SecureDeleteError::NotRegularFile(
             path.display().to_string(),

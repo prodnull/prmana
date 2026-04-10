@@ -330,6 +330,45 @@ impl ApprovalProvider for WebhookApprovalProvider {
     }
 }
 
+/// RAII guard for temporarily setting/removing environment variables in tests.
+/// Restores the original value on drop.
+#[cfg(test)]
+struct TempEnvGuard {
+    key: String,
+    original: Option<String>,
+}
+
+#[cfg(test)]
+impl TempEnvGuard {
+    fn set(key: &str, value: &str) -> Self {
+        let original = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self {
+            key: key.to_string(),
+            original,
+        }
+    }
+
+    fn remove(key: &str) -> Self {
+        let original = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self {
+            key: key.to_string(),
+            original,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempEnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(val) => std::env::set_var(&self.key, val),
+            None => std::env::remove_var(&self.key),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,44 +556,5 @@ mod tests {
             config.hmac_secret.is_none(),
             "empty HMAC secret env var must not set hmac_secret"
         );
-    }
-}
-
-/// RAII guard for temporarily setting/removing environment variables in tests.
-/// Restores the original value on drop.
-#[cfg(test)]
-struct TempEnvGuard {
-    key: String,
-    original: Option<String>,
-}
-
-#[cfg(test)]
-impl TempEnvGuard {
-    fn set(key: &str, value: &str) -> Self {
-        let original = std::env::var(key).ok();
-        std::env::set_var(key, value);
-        Self {
-            key: key.to_string(),
-            original,
-        }
-    }
-
-    fn remove(key: &str) -> Self {
-        let original = std::env::var(key).ok();
-        std::env::remove_var(key);
-        Self {
-            key: key.to_string(),
-            original,
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for TempEnvGuard {
-    fn drop(&mut self) {
-        match &self.original {
-            Some(val) => std::env::set_var(&self.key, val),
-            None => std::env::remove_var(&self.key),
-        }
     }
 }

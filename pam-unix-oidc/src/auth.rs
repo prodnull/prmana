@@ -1727,6 +1727,7 @@ timeouts:
     //
     // ENV_MUTEX serializes tests that manipulate UNIX_OIDC_TEST_MODE to prevent
     // races between parallel test threads (same pattern as Plan 01 / config.rs tests).
+    #[cfg(feature = "test-mode")]
     static MULTI_ISSUER_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[cfg(feature = "test-mode")]
