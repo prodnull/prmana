@@ -47,7 +47,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config jq
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev jq
 
       - name: Build
         run: cargo build --release
@@ -202,7 +202,7 @@ jobs:
         if: steps.check-entra.outputs.skip != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config jq
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev jq
 
       - name: Build
         if: steps.check-entra.outputs.skip != 'true'
