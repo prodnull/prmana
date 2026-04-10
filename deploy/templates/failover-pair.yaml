@@ -1,0 +1,28 @@
+# Prmana Policy Template: Failover Pair
+#
+# High-availability configuration with primary/secondary IdP failover.
+# The agent automatically switches to secondary on availability failures.
+# See ADR-020 and docs/dns-failover-guide.md.
+#
+# Usage: Copy to /etc/unix-oidc/policy.yaml and fill in your values.
+# Agent config also needs failover_pairs — see agent-failover.yaml.
+
+issuers:
+  - issuer_url: "https://idp-primary.example.com/realms/corp"
+    client_id: "unix-oidc"
+    dpop_enforcement: strict
+
+  - issuer_url: "https://idp-secondary.example.com/realms/corp"
+    client_id: "unix-oidc"
+    dpop_enforcement: strict
+
+break_glass:
+  enabled: true
+  users:
+    - username: breakglass
+      password_hash: "$6$rounds=656000$CHANGE_ME"
+  alert_on_use: true
+
+security_modes:
+  jti_enforcement: warn
+  dpop_required: strict

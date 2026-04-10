@@ -1,0 +1,49 @@
+# Prmana Policy Template: CIBA Sudo Step-Up
+#
+# Enables IdP-native step-up authentication for sudo via CIBA.
+# When a user runs sudo, their phone receives a push notification
+# with the command context.
+#
+# Prerequisites:
+# - IdP must support CIBA (Keycloak does natively; others vary)
+# - Users must have a registered device for push notifications
+#
+# Usage: Copy to /etc/unix-oidc/policy.yaml and fill in your values.
+
+issuers:
+  - issuer_url: "https://your-idp.example.com/realms/corp"
+    client_id: "unix-oidc"
+    client_secret: "your-secret-here"  # Required for CIBA (confidential client)
+    dpop_enforcement: strict
+    # Optional: claim to extract for CIBA login_hint
+    # Default: uses Unix username as login_hint
+    # ciba_login_hint_claim: "email"
+    # Optional: scope for CIBA request
+    # ciba_scope: "openid"
+    # ACR enforcement for step-up
+    acr_mapping:
+      required_acr: "urn:mfa"
+      acr_claim: "acr"
+
+ssh_login:
+  allowed_groups:
+    - developers
+    - sre-team
+    - ops
+
+sudo:
+  step_up:
+    enabled: true
+    method: device  # device | ciba
+    timeout_secs: 120
+
+break_glass:
+  enabled: true
+  users:
+    - username: breakglass
+      password_hash: "$6$rounds=656000$CHANGE_ME"
+  alert_on_use: true
+
+security_modes:
+  jti_enforcement: warn
+  dpop_required: strict

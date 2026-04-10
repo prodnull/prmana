@@ -1,0 +1,114 @@
+---
+# Prmana Ansible Role - Main Tasks
+#
+# Installs and configures the Prmana PAM module for OIDC SSH authentication.
+# See defaults/main.yml for all configurable variables.
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - prmana_issuer_url | length > 0
+      - prmana_pam_module_src | length > 0
+    fail_msg: "prmana_issuer_url and prmana_pam_module_src are required"
+
+- name: Validate issuer URL uses HTTPS
+  ansible.builtin.assert:
+    that:
+      - prmana_issuer_url is match('^https://')
+    fail_msg: "prmana_issuer_url must use HTTPS (got: {{ prmana_issuer_url }})"
+
+- name: Validate break-glass is configured
+  ansible.builtin.assert:
+    that:
+      - prmana_break_glass_password_hash | length > 0
+    fail_msg: >
+      Break-glass password hash must be set. Generate with:
+      python3 -c "import crypt; print(crypt.crypt('PASSWORD', crypt.mksalt(crypt.METHOD_SHA512)))"
+  when: prmana_break_glass_enabled
+
+# ── Install PAM module ──────────────────────────────────────────────────────
+
+- name: Create config directory
+  ansible.builtin.file:
+    path: "{{ prmana_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install PAM module
+  ansible.builtin.copy:
+    src: "{{ prmana_pam_module_src }}"
+    dest: "{{ prmana_pam_module_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart sshd
+
+# ── Configure policy.yaml ───────────────────────────────────────────────────
+
+- name: Deploy policy.yaml
+  ansible.builtin.template:
+    src: policy.yaml.j2
+    dest: "{{ prmana_policy_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+# ── Create break-glass user ─────────────────────────────────────────────────
+
+- name: Create break-glass user
+  ansible.builtin.user:
+    name: "{{ prmana_break_glass_username }}"
+    password: "{{ prmana_break_glass_password_hash }}"
+    shell: /bin/bash
+    create_home: true
+    comment: "Prmana break-glass emergency access"
+  when: prmana_break_glass_enabled
+
+- name: Ensure break-glass user account does not expire
+  ansible.builtin.command:
+    cmd: "chage -E -1 {{ prmana_break_glass_username }}"
+  changed_when: false
+  when: prmana_break_glass_enabled
+
+# ── Configure PAM ───────────────────────────────────────────────────────────
+
+- name: Deploy PAM sshd configuration
+  ansible.builtin.template:
+    src: pam-sshd.j2
+    dest: /etc/pam.d/unix-oidc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Include Prmana PAM config in sshd
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/sshd
+    line: "auth    sufficient    pam_unix_oidc.so"
+    insertbefore: "^auth.*pam_unix"
+    state: present
+  when: prmana_pam_mode == "parallel" or prmana_pam_mode == "primary"
+  notify: restart sshd
+
+# ── Ensure sshd allows password auth (for break-glass) ──────────────────────
+
+- name: Ensure PasswordAuthentication is enabled (for break-glass)
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PasswordAuthentication"
+    line: "PasswordAuthentication yes"
+    state: present
+  notify: restart sshd
+  when: prmana_break_glass_enabled
+
+# ── Create audit log file ───────────────────────────────────────────────────
+
+- name: Create audit log file
+  ansible.builtin.file:
+    path: "{{ prmana_audit_log }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0640"
+  changed_when: false

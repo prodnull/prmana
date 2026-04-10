@@ -1,0 +1,41 @@
+# Prmana Policy Template: Multi-IdP
+#
+# Configuration for organizations with multiple identity providers.
+# Example: Keycloak for internal users + Entra ID for contractors.
+# Each issuer has independent DPoP, ACR, and claim mapping settings.
+#
+# Usage: Copy to /etc/unix-oidc/policy.yaml and fill in your values.
+
+issuers:
+  # Internal users via Keycloak
+  - issuer_url: "https://keycloak.internal.example.com/realms/corp"
+    client_id: "unix-oidc"
+    client_secret: "keycloak-secret"
+    dpop_enforcement: strict
+    claim_mapping:
+      username_claim: "preferred_username"
+    acr_mapping:
+      required_acr: "urn:mfa"
+      acr_claim: "acr"
+
+  # Contractors via Entra ID
+  - issuer_url: "https://login.microsoftonline.com/YOUR-TENANT-ID/v2.0"
+    client_id: "unix-oidc-entra"
+    dpop_enforcement: disabled  # Entra does not support DPoP
+    expected_audience: "api://unix-oidc"
+    claim_mapping:
+      username_claim: "preferred_username"
+      transforms:
+        - type: strip_domain
+          domain: "example.com"
+    allow_unsafe_identity_pipeline: true  # Single-tenant Entra compensates
+
+break_glass:
+  enabled: true
+  users:
+    - username: breakglass
+      password_hash: "$6$rounds=656000$CHANGE_ME"
+  alert_on_use: true
+
+security_modes:
+  jti_enforcement: warn
