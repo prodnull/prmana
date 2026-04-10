@@ -93,11 +93,11 @@ Teleport and StrongDM issue short-lived x509 certificates. These are bearer cred
 | Open source | ✅ | Partial | ❌ | ❌ |
 | Deployment | PAM module | Gateway cluster | SaaS + relay | On-prem vault |
 
-### Sudo step-up: per-command MFA without agents
+### Sudo step-up: sudo as a fresh trust boundary
 
-Gateway products (Teleport, StrongDM) gate who can *connect* but don't re-verify at `sudo` — [Teleport's sudo integration is an open feature request](https://github.com/gravitational/teleport/issues/13258). Agent-based PAM solutions (CyberArk EPM, Delinea `dzdo`, BeyondTrust EPM-UL) can do elevation MFA, but require proprietary agents and custom commands.
+Most SSH identity solutions — gateways (Teleport, StrongDM), vaults (CyberArk, Delinea), and MFA-for-SSH tools (Duo Unix, Okta PAM) — challenge at login or session start. Once you're in, `sudo` either just works, relies on a proprietary agent command (`dzdo`), or requires a separate MFA product bolted onto PAM.
 
-unix-oidc does it with native `sudo` via standard PAM — no agent, no command replacement. Via [CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) (Client-Initiated Backchannel Authentication), your phone receives a push notification with the **specific command** — "Approve `sudo apt install nginx` on server-01" — and the command only executes after you confirm. The MFA challenge flows through your existing IdP, not a separate integration. Per-command, real-time, phishing-resistant.
+unix-oidc treats `sudo` as a fresh trust boundary, not an extension of the login session. Via [CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) (Client-Initiated Backchannel Authentication), your phone receives a push notification with the **specific command** — "Approve `sudo apt install nginx` on server-01" — and the command only executes after you confirm. This is OIDC-native: the step-up challenge flows through your existing IdP as a fresh, locally validated token — not a separate MFA integration, not a proprietary agent, not a session-level blanket approval.
 
 ### Why This Matters Now
 
