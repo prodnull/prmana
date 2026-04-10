@@ -259,27 +259,15 @@ impl DPoPSigner for YubiKeySigner {
         self.thumbprint.clone()
     }
 
-    fn public_key_jwk(&self) -> serde_json::Value {
-        self.public_key_jwk.clone()
-    }
-
-    fn sign_proof(
-        &self,
-        method: &str,
-        target: &str,
-        nonce: Option<&str>,
-    ) -> Result<String, DPoPError> {
-        // Step 1: Build the unsigned message.
-        let message = build_dpop_message(&self.public_key_jwk, method, target, nonce)?;
-
-        // Step 2: Get PIN (cached or prompt).
+    fn sign_jwt_es256(&self, message: &str) -> Result<Vec<u8>, DPoPError> {
+        // Get PIN (cached or prompt).
         let pin_secret = self
             .pin_cache
             .get_or_prompt("YubiKey PIN: ")
             .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
         let pin_str = pin_secret.expose_secret().to_owned();
 
-        // Step 3: Open PKCS#11 session (open-sign-close per HW-04).
+        // Open PKCS#11 session (open-sign-close per HW-04).
         let ctx = open_pkcs11_context(&self.pkcs11_path)
             .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
         let slot = first_slot(&ctx).map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
@@ -287,12 +275,12 @@ impl DPoPSigner for YubiKeySigner {
             .open_rw_session(slot)
             .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
-        // Step 4: Login.
+        // Login.
         let auth_pin = AuthPin::new(pin_str);
         login_with_pin(&session, &auth_pin, Some(&self.pin_cache))
             .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
-        // Step 5: Find private key.
+        // Find private key.
         let search_template = [
             Attribute::Class(ObjectClass::PRIVATE_KEY),
             Attribute::KeyType(KeyType::EC),
@@ -309,14 +297,26 @@ impl DPoPSigner for YubiKeySigner {
             ))
         })?;
 
-        // Step 6: Sign — try CKM_ECDSA_SHA256 first, fall back to CKM_ECDSA with prehash.
         let sig_bytes = sign_with_fallback(&session, priv_handle, message.as_bytes())
             .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
-        // Step 7: Session drops here (PCSC released — HW-04).
         drop(session);
+        Ok(sig_bytes)
+    }
 
-        // Step 8: Assemble the JWT.
+    fn public_key_jwk(&self) -> serde_json::Value {
+        self.public_key_jwk.clone()
+    }
+
+    fn sign_proof(
+        &self,
+        method: &str,
+        target: &str,
+        nonce: Option<&str>,
+    ) -> Result<String, DPoPError> {
+        // Step 1: Build the unsigned message.
+        let message = build_dpop_message(&self.public_key_jwk, method, target, nonce)?;
+        let sig_bytes = self.sign_jwt_es256(&message)?;
         assemble_dpop_proof(&message, &sig_bytes)
     }
 }

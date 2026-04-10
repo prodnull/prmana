@@ -13,7 +13,8 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::crypto::DPoPSigner;
+use crate::config::AgentConfig;
+use crate::crypto::{attach_client_attestation, DPoPSigner};
 use crate::daemon::peer_cred::get_peer_credentials;
 use crate::daemon::protocol::{AgentRequest, AgentResponse, MetricsFormat};
 use crate::metrics::MetricsCollector;
@@ -1060,6 +1061,9 @@ async fn handle_request(
                 .as_deref()
                 .unwrap_or("unix-oidc")
                 .to_string();
+            let client_attestation = AgentConfig::load()
+                .map(|c| c.client_attestation)
+                .unwrap_or_default();
 
             // Security (MEM-03): expose_secret() at this HTTP config boundary only.
             let client_secret: Option<String> = state_read
@@ -1172,6 +1176,8 @@ async fn handle_request(
                 &client_id,
                 client_secret.as_deref(),
                 &dpop_proof,
+                signer.as_ref(),
+                Some(&client_attestation),
             )
             .await
             {
@@ -1910,6 +1916,7 @@ async fn cleanup_session(state: Arc<RwLock<AgentState>>, session_id: String) {
 ///
 /// ## Login hint
 ///
+#[allow(clippy::too_many_arguments)]
 async fn handle_step_up(
     state: &Arc<RwLock<AgentState>>,
     username: String,
@@ -2146,6 +2153,9 @@ async fn handle_step_up(
 
     // ── Spawn async poll loop ─────────────────────────────────────────────────
     let correlation_id = uuid::Uuid::new_v4().to_string();
+    let client_attestation = AgentConfig::load()
+        .map(|c| c.client_attestation)
+        .unwrap_or_default();
     let handle = tokio::spawn(poll_ciba(
         poll_http,
         token_endpoint,
@@ -2155,6 +2165,8 @@ async fn handle_step_up(
         acr_required,
         parent_session_id.clone(),
         signer,
+        client_id.clone(),
+        client_attestation,
     ));
 
     let expires_at = tokio::time::Instant::now() + Duration::from_secs(bc_auth.expires_in);
@@ -2308,6 +2320,7 @@ async fn handle_step_up_result(
 /// validated via `validate_acr()`. This is a HARD-FAIL (not configurable) — see CLAUDE.md
 /// security invariants. If the IdP returns a token without the required ACR, this returns
 /// `TimedOut("acr_failed")` instead of `Complete`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn poll_ciba(
     http: reqwest::Client,
     token_endpoint: String,
@@ -2317,6 +2330,8 @@ pub(crate) async fn poll_ciba(
     acr_required: Option<String>,
     parent_session_id: Option<String>,
     signer: Arc<dyn DPoPSigner>,
+    client_id: String,
+    client_attestation: crate::config::ClientAttestationConfig,
 ) -> StepUpOutcome {
     use pam_unix_oidc::ciba::{parse_ciba_error, validate_acr, CibaError, CibaTokenResponse};
 
@@ -2334,13 +2349,23 @@ pub(crate) async fn poll_ciba(
                 }
             };
 
-            let response = match http
-                .post(&token_endpoint)
-                .header("DPoP", dpop_proof)
-                .form(&params)
-                .send()
-                .await
-            {
+            let builder = match attach_client_attestation(
+                http.post(&token_endpoint).header("DPoP", dpop_proof),
+                signer.as_ref(),
+                Some(&client_attestation),
+                &client_id,
+                &token_endpoint,
+            ) {
+                Ok(builder) => builder,
+                Err(e) => {
+                    return StepUpOutcome::TimedOut {
+                        reason: "client_attestation_failed".to_string(),
+                        user_message: format!("Failed to attach client attestation headers: {e}"),
+                    };
+                }
+            };
+
+            let response = match builder.form(&params).send().await {
                 Ok(r) => r,
                 Err(e) => {
                     // Network error: treat as transient, loop continues until outer timeout.
@@ -2617,6 +2642,7 @@ fn base64_decode_url(input: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::crypto::SoftwareSigner;
@@ -3370,6 +3396,8 @@ mod tests {
             None, // no ACR required
             None, // no parent_session_id
             test_signer(),
+            "test-client".to_string(),
+            AgentConfig::default().client_attestation,
         )
         .await;
 
@@ -3416,6 +3444,8 @@ mod tests {
             None,
             None,
             test_signer(),
+            "test-client".to_string(),
+            AgentConfig::default().client_attestation,
         )
         .await;
 
@@ -3423,6 +3453,56 @@ mod tests {
             matches!(outcome, StepUpOutcome::TimedOut { ref reason, .. } if reason == "denied"),
             "Expected TimedOut(denied), got: {outcome:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_poll_ciba_no_attestation_headers_when_disabled() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+
+        let captured = Arc::new(parking_lot::Mutex::new(String::new()));
+        let captured_clone = Arc::clone(&captured);
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let bytes = stream.read(&mut buf).await.unwrap();
+                *captured_clone.lock() = String::from_utf8_lossy(&buf[..bytes]).into_owned();
+                let body = r#"{"access_token":"tok123","id_token":null,"token_type":"Bearer","expires_in":3600}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let outcome = poll_ciba(
+            http,
+            format!("http://127.0.0.1:{port}/token"),
+            vec![],
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_secs(10),
+            None,
+            None,
+            test_signer(),
+            "test-client".to_string(),
+            AgentConfig::default().client_attestation,
+        )
+        .await;
+
+        assert!(matches!(outcome, StepUpOutcome::Complete { .. }));
+        let request = captured.lock().clone();
+        assert!(!request.contains("OAuth-Client-Attestation:"));
+        assert!(!request.contains("OAuth-Client-Attestation-PoP:"));
     }
 
     /// poll_ciba extends interval by 5s on `slow_down` per CIBA Core 1.0 §11.
@@ -3480,6 +3560,8 @@ mod tests {
             None,
             None,
             test_signer(),
+            "test-client".to_string(),
+            AgentConfig::default().client_attestation,
         )
         .await;
 
@@ -3581,6 +3663,8 @@ mod tests {
             None,
             None,
             test_signer(),
+            "test-client".to_string(),
+            AgentConfig::default().client_attestation,
         )
         .await;
 
@@ -4095,6 +4179,8 @@ mod tests {
             None, // no ACR required
             None,
             test_signer(),
+            "test-client".to_string(),
+            AgentConfig::default().client_attestation,
         )
         .await;
 
@@ -4159,6 +4245,8 @@ mod tests {
             None,
             None,
             test_signer(),
+            "test-client".to_string(),
+            AgentConfig::default().client_attestation,
         )
         .await;
 

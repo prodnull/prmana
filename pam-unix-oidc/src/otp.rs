@@ -179,7 +179,10 @@ pub fn verify_totp(username: &str, code: &str, store: &OtpSeedStore) -> Result<(
 /// Generate a TOTP code for a given counter value (RFC 6238 / RFC 4226).
 fn generate_totp_code(secret: &[u8], counter: u64, digits: u32) -> String {
     // RFC 4226 §5.3: HMAC-SHA1(secret, counter_bytes)
-    let mut mac = HmacSha1::new_from_slice(secret).expect("HMAC accepts any key length");
+    let mut mac = match HmacSha1::new_from_slice(secret) {
+        Ok(mac) => mac,
+        Err(_) => unreachable!("HMAC accepts any key length"),
+    };
     mac.update(&counter.to_be_bytes());
     let result = mac.finalize().into_bytes();
 

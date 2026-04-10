@@ -270,6 +270,11 @@ impl DPoPSigner for HybridPqcSigner {
         self.thumbprint.clone()
     }
 
+    fn sign_jwt_es256(&self, message: &str) -> Result<Vec<u8>, DPoPError> {
+        let signature: Es256Signature = self.ec_key.signing_key().sign(message.as_bytes());
+        Ok(signature.to_bytes().to_vec())
+    }
+
     fn sign_proof(
         &self,
         method: &str,
@@ -286,6 +291,18 @@ impl DPoPSigner for HybridPqcSigner {
 
     fn public_key_jwk(&self) -> serde_json::Value {
         self.composite_jwk()
+    }
+
+    fn client_attestation_jwk(&self) -> Result<serde_json::Value, DPoPError> {
+        let point = self.ec_key.verifying_key().to_encoded_point(false);
+        let x = URL_SAFE_NO_PAD.encode(point.x().ok_or(DPoPError::InvalidKey)?);
+        let y = URL_SAFE_NO_PAD.encode(point.y().ok_or(DPoPError::InvalidKey)?);
+        Ok(serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": x,
+            "y": y
+        }))
     }
 }
 

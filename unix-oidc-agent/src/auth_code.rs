@@ -14,6 +14,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
+use crate::config::ClientAttestationConfig;
+use crate::crypto::attach_client_attestation;
 use crate::crypto::DPoPSigner;
 
 /// Default timeout for the localhost callback receiver.
@@ -67,6 +69,7 @@ pub struct TokenExchangeRequest<'a> {
     pub code_verifier: &'a str,
     pub client_id: &'a str,
     pub client_secret: Option<&'a str>,
+    pub client_attestation: Option<&'a ClientAttestationConfig>,
 }
 
 /// Generate an RFC 7636 PKCE verifier/challenge pair using the S256 method.
@@ -214,11 +217,19 @@ pub async fn exchange_code(
 
     let response = client
         .post(request.token_endpoint)
-        .header("DPoP", dpop_proof)
-        .form(&params)
-        .send()
-        .await
-        .context("Authorization code exchange request failed")?;
+        .header("DPoP", dpop_proof);
+    let response = attach_client_attestation(
+        response,
+        signer,
+        request.client_attestation,
+        request.client_id,
+        request.token_endpoint,
+    )
+    .map_err(|e| anyhow!("Failed to attach client attestation headers: {e}"))?
+    .form(&params)
+    .send()
+    .await
+    .context("Authorization code exchange request failed")?;
 
     if response.status().is_success() {
         response
@@ -349,6 +360,7 @@ mod tests {
                 code_verifier: "verifier123",
                 client_id: "unix-oidc",
                 client_secret: Some("secret123"),
+                client_attestation: None,
             },
         )
         .await
@@ -389,6 +401,7 @@ mod tests {
                 code_verifier: "verifier123",
                 client_id: "unix-oidc",
                 client_secret: None,
+                client_attestation: None,
             },
         )
         .await
@@ -396,5 +409,45 @@ mod tests {
 
         let requests = server.received_requests().await.unwrap();
         assert!(requests[0].headers.contains_key("DPoP"));
+    }
+
+    #[tokio::test]
+    async fn test_auth_code_exchange_no_attestation_headers_when_disabled() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "abc",
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let signer = SoftwareSigner::generate();
+        let disabled = ClientAttestationConfig {
+            enabled: false,
+            lifetime_secs: 3600,
+        };
+        exchange_code(
+            &client,
+            &signer,
+            TokenExchangeRequest {
+                token_endpoint: &format!("{}/token", server.uri()),
+                code: "code123",
+                redirect_uri: "http://127.0.0.1:1234/callback",
+                code_verifier: "verifier123",
+                client_id: "unix-oidc",
+                client_secret: None,
+                client_attestation: Some(&disabled),
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(!requests[0].headers.contains_key("OAuth-Client-Attestation"));
+        assert!(!requests[0]
+            .headers
+            .contains_key("OAuth-Client-Attestation-PoP"));
     }
 }

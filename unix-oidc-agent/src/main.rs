@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::dangerous::insecure_decode;
 use pam_unix_oidc::oidc::jwks::OidcDiscovery;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -19,9 +19,11 @@ use unix_oidc_agent::auth_code::{
     build_authorization_url, exchange_code, generate_pkce, start_callback_listener,
     CallbackListener, TokenExchangeRequest, CALLBACK_TIMEOUT_SECS,
 };
-use unix_oidc_agent::config::AgentConfig;
+use unix_oidc_agent::config::{AgentConfig, ClientAttestationConfig};
 use unix_oidc_agent::crypto::protected_key::mlock_probe;
-use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
+use unix_oidc_agent::crypto::{
+    build_client_attestation_headers, DPoPSigner, MlockStatus, SoftwareSigner,
+};
 use unix_oidc_agent::daemon::{
     acquire_listener, spawn_refresh_task, AgentClient, AgentRequest, AgentResponse,
     AgentResponseData, AgentServer, AgentState,
@@ -741,9 +743,8 @@ async fn run_login(
 
     // Load agent config for timeout and skew parameters.
     // Failure is non-fatal — use defaults so the login flow still works.
-    let device_flow_timeout_secs = AgentConfig::load()
-        .map(|c| c.timeouts.device_flow_http_timeout_secs)
-        .unwrap_or(30);
+    let agent_config = AgentConfig::load().unwrap_or_default();
+    let device_flow_timeout_secs = agent_config.timeouts.device_flow_http_timeout_secs;
 
     // Initialize or load DPoP signer via the best available backend.
     // Run migration here: login is the primary user-facing trigger after upgrade.
@@ -892,6 +893,7 @@ async fn run_login(
             &client_id,
             client_secret.as_ref(),
             signer_arc.as_ref(),
+            &agent_config.client_attestation,
             device_flow_timeout_secs,
         )
         .await?
@@ -912,6 +914,7 @@ async fn run_login(
             &client_id,
             client_secret.clone(),
             Arc::clone(&signer_arc),
+            agent_config.client_attestation.clone(),
             device_flow_timeout_secs,
         )
         .await?
@@ -946,6 +949,7 @@ async fn run_login(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_device_flow(
     device_endpoint: &str,
     token_endpoint: &str,
@@ -953,6 +957,7 @@ async fn run_device_flow(
     client_id: &str,
     client_secret: Option<SecretString>,
     signer_for_poll: Arc<dyn DPoPSigner>,
+    client_attestation: ClientAttestationConfig,
     device_flow_timeout_secs: u64,
 ) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
     let device_endpoint = device_endpoint.to_string();
@@ -1099,10 +1104,24 @@ async fn run_device_flow(
 
             let response = http_client
                 .post(&token_endpoint)
-                .header("DPoP", &dpop_proof)
-                .form(&token_params)
-                .send()
-                .map_err(|e| anyhow::anyhow!("Token request failed: {e}"))?;
+                .header("DPoP", &dpop_proof);
+            let response = if let Some(headers) = build_client_attestation_headers(
+                signer_for_poll.as_ref(),
+                Some(&client_attestation),
+                client_id.as_str(),
+                &token_endpoint,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to attach client attestation headers: {e}"))?
+            {
+                response
+                    .header("OAuth-Client-Attestation", headers.attestation)
+                    .header("OAuth-Client-Attestation-PoP", headers.pop)
+            } else {
+                response
+            }
+            .form(&token_params)
+            .send()
+            .map_err(|e| anyhow::anyhow!("Token request failed: {e}"))?;
 
             if response.status().is_success() {
                 let token_response: serde_json::Value = response
@@ -1149,6 +1168,7 @@ async fn run_device_flow(
     .await?
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_auth_code_flow(
     authorization_endpoint: &str,
     token_endpoint: &str,
@@ -1156,6 +1176,7 @@ async fn run_auth_code_flow(
     client_id: &str,
     client_secret: Option<&SecretString>,
     signer: &dyn DPoPSigner,
+    client_attestation: &ClientAttestationConfig,
     http_timeout_secs: u64,
 ) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
     let (code_verifier, code_challenge) = generate_pkce();
@@ -1201,6 +1222,7 @@ async fn run_auth_code_flow(
             code_verifier: &code_verifier,
             client_id,
             client_secret: client_secret.map(ExposeSecret::expose_secret),
+            client_attestation: Some(client_attestation),
         },
     )
     .await?;
@@ -1241,6 +1263,7 @@ async fn fetch_oidc_discovery(issuer: &str, timeout_secs: u64) -> anyhow::Result
         .map_err(|e| anyhow::anyhow!("Failed to parse OIDC discovery: {e}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_login_tokens(
     storage: &mut StorageRouter,
     token_result: &serde_json::Value,
@@ -1813,17 +1836,7 @@ fn load_or_create_pqc_signer(
 /// This is safe because we're just extracting claims from a token we already trust
 /// (we received it from the IdP during login). The PAM module validates the signature.
 fn extract_username_from_token(token: &str) -> Option<String> {
-    // Create a validation that skips signature verification
-    // We're just extracting claims, not validating the token
-    let mut validation = Validation::new(Algorithm::ES256);
-    validation.insecure_disable_signature_validation();
-    validation.validate_exp = false;
-    validation.validate_aud = false;
-
-    // Use an empty key since we're not validating
-    let key = DecodingKey::from_secret(&[]);
-
-    match decode::<TokenClaims>(token, &key, &validation) {
+    match insecure_decode::<TokenClaims>(token) {
         Ok(token_data) => {
             let claims = token_data.claims;
 
@@ -2069,6 +2082,7 @@ async fn run_uninstall() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// Helper that mimics the updated_metadata construction pattern used in
     /// run_refresh() and perform_token_refresh(). This is the exact pattern
@@ -2236,5 +2250,60 @@ mod tests {
             substituted.contains("/Users/testuser"),
             "HOME not substituted"
         );
+    }
+
+    #[tokio::test]
+    async fn test_device_flow_token_poll_no_attestation_headers_when_disabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "device_code": "dev-code",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "https://idp.example.com/verify",
+                "expires_in": 30,
+                "interval": 0
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "tok",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+
+        let signer: Arc<dyn DPoPSigner> = Arc::new(SoftwareSigner::generate());
+        let disabled = ClientAttestationConfig {
+            enabled: false,
+            lifetime_secs: 3600,
+        };
+        let result = run_device_flow(
+            &format!("{}/device", server.uri()),
+            &format!("{}/token", server.uri()),
+            None,
+            "unix-oidc",
+            None,
+            signer,
+            disabled,
+            5,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let requests = server.received_requests().await.unwrap();
+        let token_req = requests
+            .iter()
+            .find(|r| r.url.path() == "/token")
+            .expect("token request must be sent");
+        assert!(!token_req.headers.contains_key("OAuth-Client-Attestation"));
+        assert!(!token_req
+            .headers
+            .contains_key("OAuth-Client-Attestation-PoP"));
     }
 }

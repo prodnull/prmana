@@ -25,6 +25,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use p256::ecdsa::{signature::Signer as _, Signature};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::crypto::dpop::{generate_dpop_proof, DPoPError};
@@ -304,6 +305,11 @@ impl SpireSigner {
 impl DPoPSigner for SpireSigner {
     fn thumbprint(&self) -> String {
         self.dpop_key.thumbprint().to_owned()
+    }
+
+    fn sign_jwt_es256(&self, message: &str) -> Result<Vec<u8>, DPoPError> {
+        let signature: Signature = self.dpop_key.signing_key().sign(message.as_bytes());
+        Ok(signature.to_bytes().to_vec())
     }
 
     fn sign_proof(

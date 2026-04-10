@@ -261,8 +261,10 @@ pub(crate) fn compute_hmac_signature(secret: &str, timestamp: u64, body: &str) -
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .expect("HMAC-SHA256 accepts any key length");
+    let mut mac = match Hmac::<Sha256>::new_from_slice(secret.as_bytes()) {
+        Ok(mac) => mac,
+        Err(_) => unreachable!("HMAC-SHA256 accepts any key length"),
+    };
     mac.update(format!("{timestamp}.{body}").as_bytes());
     let result = mac.finalize();
     hex::encode(result.into_bytes())

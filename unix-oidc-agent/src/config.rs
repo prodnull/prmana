@@ -166,6 +166,10 @@ pub struct AgentConfig {
     /// Operator-tunable timeout and clock-skew parameters
     #[serde(default)]
     pub timeouts: TimeoutsConfig,
+
+    /// OAuth client attestation header configuration.
+    #[serde(default)]
+    pub client_attestation: ClientAttestationConfig,
 }
 
 fn default_issuer() -> String {
@@ -184,6 +188,31 @@ impl Default for AgentConfig {
             socket_path: None,
             crypto: CryptoConfig::default(),
             timeouts: TimeoutsConfig::default(),
+            client_attestation: ClientAttestationConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientAttestationConfig {
+    /// Enable draft OAuth client-attestation headers on token endpoint requests.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Lifetime of the long-lived OAuth-Client-Attestation JWT in seconds.
+    #[serde(default = "default_client_attestation_lifetime_secs")]
+    pub lifetime_secs: u64,
+}
+
+fn default_client_attestation_lifetime_secs() -> u64 {
+    86_400
+}
+
+impl Default for ClientAttestationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            lifetime_secs: default_client_attestation_lifetime_secs(),
         }
     }
 }
@@ -227,6 +256,7 @@ impl AgentConfig {
             socket_path,
             crypto: CryptoConfig::default(),
             timeouts: TimeoutsConfig::default(),
+            client_attestation: ClientAttestationConfig::default(),
         })
     }
 
@@ -458,6 +488,8 @@ issuer: https://idp.example.com
         let config = AgentConfig::load_from_path(&config_path).unwrap();
         assert_eq!(config.timeouts.jwks_http_timeout_secs, 10);
         assert_eq!(config.timeouts.jwks_cache_ttl_secs, 300);
+        assert!(!config.client_attestation.enabled);
+        assert_eq!(config.client_attestation.lifetime_secs, 86_400);
     }
 
     #[test]
@@ -492,5 +524,49 @@ issuer: https://idp.example.com
         assert_eq!(config.timeouts.jwks_http_timeout_secs, 25);
 
         env::remove_var("UNIX_OIDC_TIMEOUTS__JWKS_HTTP_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn test_client_attestation_config_from_yaml() {
+        let _guard = ENV_MUTEX.lock();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+issuer: https://idp.example.com
+client_attestation:
+  enabled: true
+  lifetime_secs: 7200
+"#,
+        )
+        .unwrap();
+
+        env::remove_var("UNIX_OIDC_CLIENT_ATTESTATION__ENABLED");
+        env::remove_var("UNIX_OIDC_CLIENT_ATTESTATION__LIFETIME_SECS");
+
+        let config = AgentConfig::load_from_path(&config_path).unwrap();
+        assert!(config.client_attestation.enabled);
+        assert_eq!(config.client_attestation.lifetime_secs, 7200);
+    }
+
+    #[test]
+    fn test_client_attestation_env_override() {
+        let _guard = ENV_MUTEX.lock();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+
+        std::fs::write(&config_path, "issuer: https://idp.example.com\n").unwrap();
+
+        env::set_var("UNIX_OIDC_CLIENT_ATTESTATION__ENABLED", "true");
+        env::set_var("UNIX_OIDC_CLIENT_ATTESTATION__LIFETIME_SECS", "1234");
+
+        let config = AgentConfig::load_from_path(&config_path).unwrap();
+        assert!(config.client_attestation.enabled);
+        assert_eq!(config.client_attestation.lifetime_secs, 1234);
+
+        env::remove_var("UNIX_OIDC_CLIENT_ATTESTATION__ENABLED");
+        env::remove_var("UNIX_OIDC_CLIENT_ATTESTATION__LIFETIME_SECS");
     }
 }

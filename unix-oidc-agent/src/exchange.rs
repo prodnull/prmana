@@ -14,6 +14,9 @@ use serde::Deserialize;
 use thiserror::Error;
 use tracing::info;
 
+use crate::config::ClientAttestationConfig;
+use crate::crypto::{attach_client_attestation, DPoPError, DPoPSigner};
+
 /// Token exchange grant type (RFC 8693 §2.1).
 pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 
@@ -33,6 +36,9 @@ pub enum ExchangeError {
 
     #[error("Token exchange failed: {error} — {description}")]
     OAuthError { error: String, description: String },
+
+    #[error("Client attestation header generation failed: {0}")]
+    ClientAttestation(String),
 }
 
 /// Successful token exchange response (RFC 8693 §2.2).
@@ -71,6 +77,7 @@ struct OAuthErrorResponse {
 /// - RFC 8693 §2.1 (request parameters)
 /// - RFC 9449 §5 (DPoP proof header)
 /// - ADR-005-alignment §4 (identity chaining with `requested_cnf`)
+#[allow(clippy::too_many_arguments)]
 pub async fn perform_token_exchange(
     token_endpoint: &str,
     subject_token: &str,
@@ -78,6 +85,8 @@ pub async fn perform_token_exchange(
     client_id: &str,
     client_secret: Option<&str>,
     dpop_proof: &str,
+    signer: &dyn DPoPSigner,
+    client_attestation: Option<&ClientAttestationConfig>,
 ) -> Result<ExchangeResponse, ExchangeError> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(EXCHANGE_TIMEOUT_SECS))
@@ -96,12 +105,38 @@ pub async fn perform_token_exchange(
         params.push(("client_secret", secret));
     }
 
-    let response = client
-        .post(token_endpoint)
-        .header("DPoP", dpop_proof)
-        .form(&params)
-        .send()
-        .await?;
+    let response = attach_client_attestation(
+        client.post(token_endpoint).header("DPoP", dpop_proof),
+        signer,
+        client_attestation,
+        client_id,
+        token_endpoint,
+    )
+    .map_err(|e| match e {
+        DPoPError::HardwareSigner(msg) | DPoPError::UnsupportedAlgorithm(msg) => {
+            ExchangeError::ClientAttestation(msg)
+        }
+        DPoPError::InvalidKey => {
+            ExchangeError::ClientAttestation("invalid client attestation key".to_string())
+        }
+        DPoPError::ClockError => {
+            ExchangeError::ClientAttestation("clock error building client attestation".to_string())
+        }
+        DPoPError::Json(err) => ExchangeError::ClientAttestation(err.to_string()),
+        DPoPError::InvalidProofFormat => {
+            ExchangeError::ClientAttestation("invalid proof format".to_string())
+        }
+        DPoPError::InvalidBase64 => ExchangeError::ClientAttestation("invalid base64".to_string()),
+        DPoPError::InvalidProofType => {
+            ExchangeError::ClientAttestation("invalid proof type".to_string())
+        }
+        DPoPError::InvalidSignatureLength(len) => {
+            ExchangeError::ClientAttestation(format!("invalid signature length: {len}"))
+        }
+    })?
+    .form(&params)
+    .send()
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -130,11 +165,14 @@ pub async fn perform_token_exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ClientAttestationConfig;
+    use crate::crypto::SoftwareSigner;
     use wiremock::matchers;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn test_exchange_sends_correct_grant_type() {
+        let signer = SoftwareSigner::generate();
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .and(matchers::body_string_contains(
@@ -155,6 +193,8 @@ mod tests {
             "jump-host-a",
             Some("secret"),
             "dpop-proof-header",
+            &signer,
+            None,
         )
         .await;
 
@@ -166,6 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exchange_sends_dpop_header() {
+        let signer = SoftwareSigner::generate();
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .and(matchers::header("DPoP", "my-dpop-proof"))
@@ -184,6 +225,8 @@ mod tests {
             "client",
             None,
             "my-dpop-proof",
+            &signer,
+            None,
         )
         .await;
 
@@ -192,6 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exchange_includes_client_secret_when_provided() {
+        let signer = SoftwareSigner::generate();
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .and(matchers::body_string_contains("client_secret=my-secret"))
@@ -210,6 +254,8 @@ mod tests {
             "client",
             Some("my-secret"),
             "proof",
+            &signer,
+            None,
         )
         .await;
 
@@ -218,6 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exchange_error_response() {
+        let signer = SoftwareSigner::generate();
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
@@ -234,6 +281,8 @@ mod tests {
             "client",
             None,
             "proof",
+            &signer,
+            None,
         )
         .await;
 
@@ -247,6 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exchange_no_client_secret_omits_field() {
+        let signer = SoftwareSigner::generate();
         let mock_server = MockServer::start().await;
         // Verify client_secret is NOT in body when None
         Mock::given(matchers::method("POST"))
@@ -266,9 +316,48 @@ mod tests {
             "client",
             None, // no secret
             "proof",
+            &signer,
+            None,
         )
         .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_exchange_no_attestation_headers_when_disabled() {
+        let signer = SoftwareSigner::generate();
+        let disabled = ClientAttestationConfig {
+            enabled: false,
+            lifetime_secs: 3600,
+        };
+        let mock_server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "tok",
+                "token_type": "DPoP",
+                "expires_in": 60
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = perform_token_exchange(
+            &mock_server.uri(),
+            "sub-token",
+            "target",
+            "client",
+            None,
+            "proof",
+            &signer,
+            Some(&disabled),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let requests = mock_server.received_requests().await.unwrap();
+        assert!(!requests[0].headers.contains_key("OAuth-Client-Attestation"));
+        assert!(!requests[0]
+            .headers
+            .contains_key("OAuth-Client-Attestation-PoP"));
     }
 }

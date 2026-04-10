@@ -443,6 +443,74 @@ mod linux_impl {
             self.thumbprint.clone()
         }
 
+        fn sign_jwt_es256(&self, message: &str) -> Result<Vec<u8>, DPoPError> {
+            let hash_bytes = Sha256::digest(message.as_bytes());
+            let digest = TpmDigest::try_from(hash_bytes.as_ref())
+                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
+
+            let tcti_conf = parse_tcti(&self.tcti_conf)
+                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
+            let mut ctx =
+                Context::new(tcti_conf).map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
+
+            let persistent_tpm_handle = PersistentTpmHandle::new(self.persistent_handle)
+                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
+            let tpm_handle = TpmHandle::Persistent(persistent_tpm_handle);
+            let key_handle: KeyHandle = ctx
+                .tr_from_tpm_public(tpm_handle)
+                .map_err(|_| {
+                    DPoPError::HardwareSigner(
+                        TpmSignerError::KeyNotFound(self.persistent_handle).to_string(),
+                    )
+                })?
+                .into();
+
+            let scheme = SignatureScheme::EcDsa {
+                hash_scheme: HashScheme::new(HashingAlgorithm::Sha256),
+            };
+
+            let validation = tss_esapi::structures::HashcheckTicket::try_from(
+                tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
+                    tag: tss_esapi::constants::StructureTag::Hashcheck.into(),
+                    hierarchy: TPM2_RH_NULL,
+                    digest: Default::default(),
+                },
+            )
+            .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
+
+            let signature = ctx
+                .execute_with_nullauth_session(|ctx| {
+                    ctx.sign(key_handle, digest, scheme, validation)
+                })
+                .map_err(|e| {
+                    DPoPError::HardwareSigner(
+                        TpmSignerError::SigningFailed(e.to_string()).to_string(),
+                    )
+                })?;
+
+            let sig_bytes = match signature {
+                tss_esapi::structures::Signature::EcDsa(ecc_sig) => {
+                    let r = ecc_sig.signature_r().value();
+                    let s = ecc_sig.signature_s().value();
+                    let r_padded = pad_to_32(r)
+                        .map_err(|e| DPoPError::HardwareSigner(format!("r scalar: {e}")))?;
+                    let s_padded = pad_to_32(s)
+                        .map_err(|e| DPoPError::HardwareSigner(format!("s scalar: {e}")))?;
+                    let mut out = [0u8; 64];
+                    out[..32].copy_from_slice(&r_padded);
+                    out[32..].copy_from_slice(&s_padded);
+                    out.to_vec()
+                }
+                other => {
+                    return Err(DPoPError::HardwareSigner(format!(
+                        "Expected EcDsa signature from TPM, got {other:?}"
+                    )));
+                }
+            };
+
+            Ok(sig_bytes)
+        }
+
         fn public_key_jwk(&self) -> serde_json::Value {
             self.public_key_jwk.clone()
         }
@@ -488,82 +556,7 @@ mod linux_impl {
                 attestation_json.as_ref(),
             )?;
 
-            // Step 3: SHA-256 hash of the message.
-            // Unrestricted signing keys use a pre-computed digest + null hash-check ticket.
-            let hash_bytes = Sha256::digest(message.as_bytes());
-            let digest = TpmDigest::try_from(hash_bytes.as_ref())
-                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
-
-            // Step 4: Open a fresh TPM context per call (no persistent context — HW-04 pattern).
-            let tcti_conf = parse_tcti(&self.tcti_conf)
-                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
-            let mut ctx =
-                Context::new(tcti_conf).map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
-
-            // Step 5: Load the key handle from the persistent handle.
-            let persistent_tpm_handle = PersistentTpmHandle::new(self.persistent_handle)
-                .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
-            let tpm_handle = TpmHandle::Persistent(persistent_tpm_handle);
-            let key_handle: KeyHandle = ctx
-                .tr_from_tpm_public(tpm_handle)
-                .map_err(|_| {
-                    DPoPError::HardwareSigner(
-                        TpmSignerError::KeyNotFound(self.persistent_handle).to_string(),
-                    )
-                })?
-                .into();
-
-            // Step 6: Build signing scheme (ECDSA + SHA-256).
-            let scheme = SignatureScheme::EcDsa {
-                hash_scheme: HashScheme::new(HashingAlgorithm::Sha256),
-            };
-
-            // Step 7: Build null hash-check ticket.
-            // Unrestricted signing keys do not require a TPM-internal hash check
-            // (the TPM does not verify the hash itself). Pass a null ticket.
-            // tss-esapi 7.6: TPMT_TK_HASHCHECK.hierarchy is TPMI_RH_HIERARCHY (u32).
-            // There is no From<Hierarchy> for u32; use the raw TPM2_RH_NULL constant.
-            let validation = tss_esapi::structures::HashcheckTicket::try_from(
-                tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
-                    tag: tss_esapi::constants::StructureTag::Hashcheck.into(),
-                    hierarchy: TPM2_RH_NULL,
-                    digest: Default::default(),
-                },
-            )
-            .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
-
-            let signature = ctx
-                .execute_with_nullauth_session(|ctx| {
-                    ctx.sign(key_handle, digest, scheme, validation)
-                })
-                .map_err(|e| {
-                    DPoPError::HardwareSigner(
-                        TpmSignerError::SigningFailed(e.to_string()).to_string(),
-                    )
-                })?;
-
-            // Step 8: Extract r‖s from the EcDsa signature, left-padding each to 32 bytes.
-            let sig_bytes = match signature {
-                tss_esapi::structures::Signature::EcDsa(ecc_sig) => {
-                    let r = ecc_sig.signature_r().value();
-                    let s = ecc_sig.signature_s().value();
-                    let r_padded = pad_to_32(r)
-                        .map_err(|e| DPoPError::HardwareSigner(format!("r scalar: {e}")))?;
-                    let s_padded = pad_to_32(s)
-                        .map_err(|e| DPoPError::HardwareSigner(format!("s scalar: {e}")))?;
-                    let mut out = [0u8; 64];
-                    out[..32].copy_from_slice(&r_padded);
-                    out[32..].copy_from_slice(&s_padded);
-                    out.to_vec()
-                }
-                other => {
-                    return Err(DPoPError::HardwareSigner(format!(
-                        "Expected EcDsa signature from TPM, got {other:?}"
-                    )));
-                }
-            };
-
-            // Step 9: Assemble the final DPoP JWT.
+            let sig_bytes = self.sign_jwt_es256(&message)?;
             assemble_dpop_proof(&message, &sig_bytes)
         }
     }

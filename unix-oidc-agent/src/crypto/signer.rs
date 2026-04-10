@@ -5,7 +5,7 @@
 //! memory throughout the lifetime of the signer.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use p256::ecdsa::SigningKey;
+use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use zeroize::Zeroizing;
 
 use crate::crypto::dpop::{generate_dpop_proof, DPoPError};
@@ -21,6 +21,10 @@ pub trait DPoPSigner: Send + Sync {
     /// Get the JWK thumbprint of this signer's public key
     fn thumbprint(&self) -> String;
 
+    /// Sign an arbitrary JWT signing input (`base64url(header).base64url(claims)`)
+    /// using ES256 and return the raw 64-byte `r||s` signature bytes.
+    fn sign_jwt_es256(&self, message: &str) -> Result<Vec<u8>, DPoPError>;
+
     /// Generate a DPoP proof for the given target
     fn sign_proof(
         &self,
@@ -31,6 +35,31 @@ pub trait DPoPSigner: Send + Sync {
 
     /// Get the public key in JWK format
     fn public_key_jwk(&self) -> serde_json::Value;
+
+    /// Get the ES256 JWK to embed in OAuth client-attestation headers.
+    ///
+    /// Default implementation accepts only standard `EC`/`P-256` JWKs. Signers
+    /// with richer public key formats (for example hybrid PQC) must override
+    /// this to return their ES256-compatible JWK.
+    fn client_attestation_jwk(&self) -> Result<serde_json::Value, DPoPError> {
+        let jwk = self.public_key_jwk();
+        let is_ec_p256 = jwk
+            .get("kty")
+            .and_then(serde_json::Value::as_str)
+            .map(|v| v == "EC")
+            .unwrap_or(false)
+            && jwk
+                .get("crv")
+                .and_then(serde_json::Value::as_str)
+                .map(|v| v == "P-256")
+                .unwrap_or(false);
+
+        if is_ec_p256 {
+            Ok(jwk)
+        } else {
+            Err(DPoPError::InvalidKey)
+        }
+    }
 }
 
 /// Software-based DPoP signer.
@@ -100,6 +129,11 @@ impl SoftwareSigner {
 impl DPoPSigner for SoftwareSigner {
     fn thumbprint(&self) -> String {
         self.key.thumbprint().to_owned()
+    }
+
+    fn sign_jwt_es256(&self, message: &str) -> Result<Vec<u8>, DPoPError> {
+        let signature: Signature = self.key.signing_key().sign(message.as_bytes());
+        Ok(signature.to_bytes().to_vec())
     }
 
     fn sign_proof(

@@ -283,11 +283,11 @@ impl Default for SpiffeMappingConfig {
 
 // ── Token Exchange delegation (Phase 37, RFC 8693) ──────────────────────────
 
-/// Token exchange delegation policy for a specific issuer.
-///
-/// Controls which OAuth clients are authorized to perform token exchange
-/// (RFC 8693) against tokens from this issuer, and limits on the delegation chain.
-///
+// Token exchange delegation policy for a specific issuer.
+//
+// Controls which OAuth clients are authorized to perform token exchange
+// (RFC 8693) against tokens from this issuer, and limits on the delegation chain.
+//
 // ── Hardware attestation (Phase 37, ADR-018) ────────────────────────────────
 
 /// Hardware attestation enforcement configuration.

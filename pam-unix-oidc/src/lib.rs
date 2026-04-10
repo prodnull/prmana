@@ -407,7 +407,7 @@ impl PamServiceModule for PamUnixOidc {
                 ..DPoPAuthConfig::from_policy(&policy_for_auth)
             };
             authenticate_multi_issuer(
-                &token,
+                token,
                 dpop_proof.as_deref(),
                 &dpop_config,
                 &policy_for_auth,
@@ -423,10 +423,10 @@ impl PamServiceModule for PamUnixOidc {
                 expected_nonce: None, // None = cache path (auth.rs consumes from cache)
                 ..DPoPAuthConfig::from_policy(&policy_for_auth)
             };
-            authenticate_with_dpop(&token, dpop_proof.as_deref(), &dpop_config)
+            authenticate_with_dpop(token, dpop_proof.as_deref(), &dpop_config)
         } else {
             // Legacy: Warn or Disabled with no proof — token-only fallback.
-            authenticate_with_token(&token)
+            authenticate_with_token(token)
         };
 
         // Handle authentication result
@@ -463,7 +463,7 @@ impl PamServiceModule for PamUnixOidc {
                             .unwrap_or_else(|_| "unix-oidc".to_string());
                         let introspect_result = oidc::introspection::introspect_token(
                             &policy.introspection,
-                            &token,
+                            token,
                             result.token_jti.as_deref(),
                             result.token_exp,
                             &client_id,
