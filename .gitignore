@@ -61,3 +61,4 @@ website/
 *.tfstate
 *.tfstate.backup
 *.tfplan
+crash.log
