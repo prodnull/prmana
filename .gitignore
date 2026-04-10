@@ -47,3 +47,9 @@ docs/outreach/
 
 # GSD planning (local only)
 .planning/
+
+# Agent coordination runtime (local only)
+agent-coord/
+
+# Local Website Development
+website/

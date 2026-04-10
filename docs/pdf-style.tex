@@ -1,0 +1,90 @@
+% unix-oidc deep dive — minimal PDF styling (no extra TeX packages needed)
+
+% Page layout
+\usepackage[top=1.2in, bottom=1.2in, left=1.1in, right=1.1in]{geometry}
+\usepackage{parskip}
+\setlength{\parskip}{0.6em}
+
+% Fonts
+\usepackage{fontspec}
+\setmainfont{Helvetica Neue}[
+  BoldFont={Helvetica Neue Bold},
+  ItalicFont={Helvetica Neue Italic}
+]
+\setmonofont{Menlo}[Scale=0.82]
+
+% Colors
+\usepackage{xcolor}
+\definecolor{accent}{HTML}{1a56db}
+\definecolor{heading}{HTML}{111827}
+\definecolor{subhead}{HTML}{2563eb}
+\definecolor{codebg}{HTML}{f3f4f6}
+
+% Headings — use raw font commands (no titlesec needed)
+\makeatletter
+\renewcommand\section{\@startsection{section}{1}{\z@}%
+  {-2em \@plus -0.5em \@minus -0.2em}%
+  {1em \@plus 0.2em}%
+  {\LARGE\bfseries\color{heading}}}
+\renewcommand\subsection{\@startsection{subsection}{2}{\z@}%
+  {-1.5em \@plus -0.3em \@minus -0.2em}%
+  {0.6em \@plus 0.1em}%
+  {\Large\bfseries\color{subhead}}}
+\renewcommand\subsubsection{\@startsection{subsubsection}{3}{\z@}%
+  {-1em \@plus -0.2em \@minus -0.1em}%
+  {0.4em \@plus 0.1em}%
+  {\large\bfseries\color{heading}}}
+\makeatother
+
+% (heading styles defined via @startsection above)
+
+% Code block background
+\usepackage{framed}
+\definecolor{shadecolor}{HTML}{f3f4f6}
+\renewenvironment{Shaded}{\begin{snugshade}}{\end{snugshade}}
+
+% Tables — wider cells
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{array}
+\renewcommand{\arraystretch}{1.4}
+
+% Block quotes styled as callouts
+\renewenvironment{quote}
+  {\list{}{\leftmargin=1.5em\rightmargin=1em}\item\relax\itshape\color{heading}}
+  {\endlist}
+
+% Header/footer
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{heading!60}OAuth 2.0 \& OIDC Deep Dive}
+\fancyhead[R]{\small\color{heading!60}unix-oidc}
+\fancyfoot[C]{\small\color{heading!60}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Title page
+\renewcommand{\maketitle}{%
+  \begin{titlepage}
+    \centering
+    \vspace*{4cm}
+    {\fontsize{28}{34}\selectfont\bfseries\color{heading}OAuth 2.0 and OpenID Connect\par}
+    \vspace{0.6cm}
+    {\fontsize{18}{22}\selectfont\color{subhead}A Deep Dive Through unix-oidc\par}
+    \vspace{1.2cm}
+    {\large\color{heading!70}From First Principles to\\Hardware-Bound Token Delegation\par}
+    \vspace{4cm}
+    {\color{accent}\rule{0.5\textwidth}{1pt}\par}
+    \vspace{1cm}
+    {\large\color{heading!70}unix-oidc Project\par}
+    \vspace{0.3cm}
+    {\color{heading!50}April 2026\par}
+  \end{titlepage}
+}
+
+% No section numbering (markdown has its own)
+\setcounter{secnumdepth}{0}
+
+% Tighter lists
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}

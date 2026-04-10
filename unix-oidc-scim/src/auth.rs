@@ -337,15 +337,10 @@ fn find_decoding_key(
         .and_then(|jwk| DecodingKey::from_jwk(jwk).ok())
 }
 
-fn key_algorithm_to_algorithm(
-    key_algorithm: jsonwebtoken::jwk::KeyAlgorithm,
-) -> Option<Algorithm> {
+fn key_algorithm_to_algorithm(key_algorithm: jsonwebtoken::jwk::KeyAlgorithm) -> Option<Algorithm> {
     use jsonwebtoken::jwk::KeyAlgorithm;
 
     match key_algorithm {
-        KeyAlgorithm::HS256 => Some(Algorithm::HS256),
-        KeyAlgorithm::HS384 => Some(Algorithm::HS384),
-        KeyAlgorithm::HS512 => Some(Algorithm::HS512),
         KeyAlgorithm::ES256 => Some(Algorithm::ES256),
         KeyAlgorithm::ES384 => Some(Algorithm::ES384),
         KeyAlgorithm::RS256 => Some(Algorithm::RS256),
@@ -401,6 +396,7 @@ mod tests {
             key_algorithm_to_algorithm(KeyAlgorithm::EdDSA),
             Some(Algorithm::EdDSA)
         );
+        assert_eq!(key_algorithm_to_algorithm(KeyAlgorithm::HS256), None);
     }
 
     async fn ok_handler() -> &'static str {

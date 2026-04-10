@@ -173,20 +173,37 @@ OpenID Connect (OIDC) is a thin identity layer built on top of OAuth 2.0. It add
 
 A **claim** is a name-value pair that asserts something about the user. OIDC defines standard claims:
 
-| Claim | Meaning | Example | unix-oidc usage |
-|-------|---------|---------|-----------------|
-| `sub` | Subject identifier (unique per issuer) | `"abc123"` | User identity anchor |
-| `iss` | Issuer URL (who created this token) | `"https://idp.example.com"` | Issuer validation |
-| `aud` | Audience (who this token is for) | `"unix-oidc"` | Prevents token confusion |
-| `exp` | Expiration time (Unix timestamp) | `1712678400` | Token lifetime enforcement |
-| `iat` | Issued at (Unix timestamp) | `1712674800` | Freshness check |
-| `preferred_username` | Human-readable username | `"alice"` | Maps to Unix login name |
-| `email` | Email address | `"alice@corp.com"` | Fallback identity |
-| `acr` | Authentication Context Class Reference | `"urn:mfa"` | MFA enforcement |
-| `amr` | Authentication Methods References | `["pwd", "otp"]` | How the user authenticated |
-| `jti` | JWT ID (unique token identifier) | `"550e8400-..."` | Replay protection |
-| `cnf` | Confirmation (key binding) | `{"jkt": "..."}` | DPoP binding |
-| `act` | Actor (delegation chain) | `{"sub": "jump-host"}` | Token exchange |
+**Identity claims** -- who the user is:
+
+| Claim | What it asserts | Our usage |
+|-------|----------------|-----------|
+| `sub` | Unique user ID per issuer | Identity anchor |
+| `preferred_username` | Human-readable name | Maps to Unix login |
+| `email` | Email address | Fallback identity |
+
+**Security claims** -- how trust is established:
+
+| Claim | What it asserts | Our usage |
+|-------|----------------|-----------|
+| `iss` | Who issued this token | Must match configured issuer |
+| `aud` | Who this token is for | Must match our `client_id` |
+| `exp` | When the token expires | Reject if expired |
+| `iat` | When the token was issued | Freshness check |
+| `jti` | Unique token identifier | Replay prevention |
+
+**Authentication context** -- how the user proved their identity:
+
+| Claim | What it asserts | Our usage |
+|-------|----------------|-----------|
+| `acr` | Authentication strength | MFA enforcement |
+| `amr` | Methods used (pwd, otp, etc.) | Audit trail |
+
+**Proof-of-possession** -- binding tokens to keys:
+
+| Claim | What it asserts | Our usage |
+|-------|----------------|-----------|
+| `cnf` | Token is bound to a key (`jkt` thumbprint) | DPoP verification |
+| `act` | Delegation chain (who exchanged this token) | Multi-hop SSH |
 
 **In unix-oidc:** The `TokenClaims` struct in `pam-unix-oidc/src/oidc/token.rs` models every claim listed above. Each field maps directly to an OIDC standard claim. The `extra` field (a `HashMap<String, Value>`) captures any non-standard claims that IdPs might include — used by the username mapping pipeline when operators configure custom claim sources.
 
