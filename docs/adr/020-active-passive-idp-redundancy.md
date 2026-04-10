@@ -38,10 +38,45 @@ unreachable.
 
 | Option | Pros | Cons |
 |--------|------|------|
-| **Active-passive (chosen)** | Simple to reason about, audit, and debug. No split-brain. | Max one issuer active per pair. |
+| **Active-passive pair (chosen for v1)** | Simple to reason about, audit, and debug. No split-brain. | Max one issuer active per pair. |
 | Active-active load balancing | Better throughput utilization | Split-brain token sessions, complex audit correlation, harder to debug |
-| N-issuer priority chain | More flexible for complex deployments | Over-engineered for v1; can be added later as an extension of active-passive |
-| DNS-level failover (e.g., Route53 health checks) | Transparent to application | No application-level error classification; DNS TTL delays; can't distinguish availability from policy failures |
+| N-issuer priority chain | More flexible for multi-region | Extension of active-passive; planned for post-v1 |
+| DNS-level failover (e.g., Route53/CloudFlare) | Transparent to application; failover responsibility moves to enterprise networking team | Cannot distinguish availability vs policy failures at application layer; DNS TTL delays; unix-oidc still gets a single `iss` claim regardless |
+
+### Planned evolution: DNS-level failover, then N-issuer chain
+
+**DNS-level failover** is the natural enterprise deployment pattern. When the
+issuer URL resolves via DNS health-checked endpoints (Route53 failover routing,
+CloudFlare load balancer, F5 GTM), the enterprise networking team owns failover
+logic entirely. This is elegant for unix-oidc because:
+
+1. The agent sees a single issuer URL — no application-level failover needed.
+2. PAM validates against the single `iss` claim as usual.
+3. JWKS caching works normally since the logical issuer URL is stable.
+4. Failover latency is DNS TTL (typically 30-60s), acceptable for SSH.
+
+DNS failover does not replace application-level failover — it complements it.
+DNS cannot classify *why* a request failed (policy vs availability), so
+unix-oidc's application-level failover remains valuable when:
+- The enterprise does not control IdP DNS (SaaS IdPs like Auth0, Okta)
+- Different issuers have different `iss` claim values (multi-tenant)
+- Sub-second failover is required (DNS TTL is too slow)
+
+**N-issuer priority chain** extends active-passive to ordered lists:
+
+```yaml
+failover_chain:
+  - issuer_url: "https://idp-primary.example.com"
+    priority: 1
+  - issuer_url: "https://idp-secondary.example.com"
+    priority: 2
+  - issuer_url: "https://idp-dr.example.com"
+    priority: 3
+```
+
+This builds naturally on the Phase 41 state machine — each issuer gets a
+state slot, and the chain walks from highest to lowest priority on availability
+failures. Planned for a future phase after DNS failover documentation.
 
 ## Decision
 

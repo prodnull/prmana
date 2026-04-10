@@ -34,7 +34,7 @@ Every concept introduced in the theory sections is immediately grounded with a c
 12. [Workload Identity: SPIFFE and SPIRE](#12-spiffe)
 13. [Security Deep Dive](#13-security)
 14. [User Lifecycle: SCIM Provisioning](#14-scim)
-15. [Observability and Audit](#15-audit)
+15. [IdP Resilience: Failover, DNS, and Multi-Issuer Chains](#15-failover)
 16. [The Full Authentication Flow, Step by Step](#16-full-flow)
 
 ---
@@ -881,6 +881,99 @@ SCIM 2.0 (System for Cross-domain Identity Management, RFC 7643/7644) is the sta
 
 ---
 
+## 12.5 IdP Resilience: Failover, DNS, and Multi-Issuer Chains {#15-failover}
+
+### The Availability Problem
+
+Authentication infrastructure is a single point of failure. If your OIDC IdP goes down — scheduled maintenance, cloud region outage, DNS failure — every SSH login attempt fails. For production server access, this is catastrophic: an outage that prevents engineers from logging in to *fix* the outage.
+
+Traditional mitigations (break-glass accounts) work but require pre-planned credentials, manual procedures, and post-incident rotation. Automatic failover to a secondary IdP is better: the user sees no interruption, and the audit trail shows which issuer served the authentication.
+
+### Phase 41: Active-Passive Failover (v1)
+
+unix-oidc implements explicit failover pairs in the agent daemon:
+
+```yaml
+failover_pairs:
+  - primary_issuer_url: "https://idp-primary.example.com/realms/corp"
+    secondary_issuer_url: "https://idp-secondary.example.com/realms/corp"
+    request_timeout_secs: 10
+    cooldown_secs: 60
+```
+
+**How it works:**
+
+1. All new requests go to the primary issuer
+2. On availability failure (connect timeout, TLS error, HTTP 5xx), the agent switches to secondary
+3. After `cooldown_secs`, the next request retries primary
+4. If primary responds, the agent switches back (recovery)
+5. If both are down, authentication fails closed
+
+**The critical security invariant:** Failover triggers *only* on availability failures. Policy and crypto errors (401 `invalid_client`, 403 `access_denied`, signature failures, ACR rejections) are hard failures with no failover. This prevents the failover mechanism from becoming a security bypass — an attacker who cannot pass the primary's checks is not routed to a potentially more permissive secondary.
+
+```
+┌─────────────────────────────────────────────────────┐
+│              Failover State Machine                   │
+│                                                       │
+│   ┌─────────┐  availability  ┌───────────┐           │
+│   │ Primary │───────────────>│ Secondary │           │
+│   │         │   failure      │           │           │
+│   │         │<───────────────│           │           │
+│   └─────────┘  cooldown +    └───────────┘           │
+│                success            │                   │
+│                               secondary              │
+│                               failure                 │
+│                                   ▼                   │
+│                            ┌───────────┐             │
+│                            │ Exhausted │             │
+│                            │(fail closed)│           │
+│                            └───────────┘             │
+└─────────────────────────────────────────────────────┘
+```
+
+**OCSF audit events** track the entire lifecycle: `IDP_FAILOVER_ACTIVATED` (High), `IDP_FAILOVER_RECOVERED` (Info), `IDP_FAILOVER_EXHAUSTED` (Critical). Existing `SSH_LOGIN_SUCCESS` events include `serving_issuer` and `failover_active` fields for SIEM correlation.
+
+**Where failover happens:** The agent daemon owns all failover logic — it performs OIDC discovery, login flows, token exchange, and CIBA step-up against the selected issuer. PAM simply validates whatever token arrives against the token's own `iss` claim. Both issuers must be listed in PAM's `issuers` array so PAM accepts tokens from either.
+
+### DNS-Level Failover: Enterprise Networking Owns Routing
+
+For enterprise deployments, DNS-level failover is the most elegant approach. When the IdP's issuer URL resolves through health-checked DNS (Route53 failover routing, CloudFlare load balancer, F5 GTM), the networking team owns failover entirely:
+
+- The agent sees a **single issuer URL** — no application-level failover config needed
+- PAM validates against the single `iss` claim as always
+- JWKS caching works normally because the logical issuer is stable
+- Failover latency is DNS TTL (typically 30-60s), acceptable for interactive SSH
+
+DNS failover does not replace application-level failover — it complements it. Use DNS failover when:
+- The enterprise controls IdP infrastructure (self-hosted Keycloak/PingFederate)
+- The networking team already manages health-checked DNS routing
+- A single logical `iss` value is shared across instances
+
+Use application-level failover when:
+- Different issuers have different `iss` values (multi-tenant SaaS like Auth0, Okta)
+- Sub-second failover is required
+- The enterprise does not control IdP DNS
+
+### Future: N-Issuer Priority Chains
+
+Active-passive pairs will extend to ordered priority chains:
+
+```yaml
+failover_chain:
+  - issuer_url: "https://idp-primary.example.com"
+    priority: 1
+  - issuer_url: "https://idp-secondary.example.com"
+    priority: 2
+  - issuer_url: "https://idp-dr.example.com"
+    priority: 3
+```
+
+The state machine walks from highest to lowest priority on availability failures. This handles multi-region disaster recovery (primary in us-east-1, secondary in eu-west-1, DR in ap-southeast-1) and federated enterprise deployments with multiple IdP vendors.
+
+**In unix-oidc:** See `unix-oidc-agent/src/failover.rs` for the state machine, `docs/adr/020-active-passive-idp-redundancy.md` for the full architectural decision record.
+
+---
+
 ## 13. The Full Authentication Flow, Step by Step {#16-full-flow}
 
 Here is the complete flow from `ssh user@server` to shell, annotating every security check:
@@ -1140,6 +1233,20 @@ Every concept in this guide maps to specific source files. This appendix provide
 | `pam-unix-oidc/src/audit.rs:250+` | `AuditEvent` enum — 20+ event variants |
 | `pam-unix-oidc/src/audit.rs:1002-1055` | `ocsf_fields()` — OCSF 1.3.0 enrichment |
 | `pam-unix-oidc/src/audit.rs:1157+` | `enriched_log_json()` — HMAC chain + OCSF fields |
+
+### IdP Failover (Phase 41, ADR-020)
+
+| File | Key symbols |
+|------|-------------|
+| `unix-oidc-agent/src/failover.rs` | `FailoverRuntime` — three-state machine, failure classifier, cooldown logic |
+| `unix-oidc-agent/src/failover.rs` | `FailoverPairConfig` — primary/secondary pair with timeout/cooldown |
+| `unix-oidc-agent/src/failover.rs` | `classify_http_status()`, `classify_reqwest_error()` — availability vs policy |
+| `unix-oidc-agent/src/config.rs` | `AgentConfig.failover_pairs` — YAML/figment config loading |
+| `unix-oidc-agent/src/daemon/socket.rs` | `failover_aware_discovery()` — exchange path with failover |
+| `unix-oidc-agent/src/daemon/socket.rs` | `failover_aware_full_discovery()` — CIBA path with failover |
+| `unix-oidc-agent/src/daemon/socket.rs` | `AgentState.failover_runtimes` — persistent runtime state |
+| `pam-unix-oidc/src/audit.rs` | `IdpFailoverActivated`, `IdpFailoverRecovered`, `IdpFailoverExhausted` |
+| `docs/adr/020-active-passive-idp-redundancy.md` | ADR with DNS and N-issuer chain evolution |
 
 ---
 
