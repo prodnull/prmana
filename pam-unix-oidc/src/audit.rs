@@ -262,6 +262,16 @@ pub enum AuditEvent {
         oidc_auth_time: Option<i64>,
         /// DPoP JWK thumbprint (RFC 9449 cnf.jkt) — confirms proof-of-possession binding
         dpop_thumbprint: Option<String>,
+        /// The OIDC issuer URL that actually served this authentication (Phase 41).
+        /// When failover is active, this is the secondary issuer URL.
+        /// When absent (`None`), the issuer was the default/only configured issuer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        serving_issuer: Option<String>,
+        /// Whether this authentication was served by a failover secondary issuer (Phase 41).
+        /// `true` when the primary issuer was unavailable and the secondary handled auth.
+        /// Default: `false` (omitted from JSON when false to preserve backward compat).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failover_active: bool,
     },
 
     /// Failed SSH login attempt
@@ -567,6 +577,59 @@ pub enum AuditEvent {
         reason: String,
         host: String,
     },
+
+    /// IdP failover activated — primary issuer unavailable, switching to secondary (Phase 41).
+    ///
+    /// Emitted when an availability-class failure (connect timeout, TLS error, 5xx)
+    /// causes the agent to switch from primary to secondary issuer. Policy/crypto
+    /// failures never trigger this event.
+    ///
+    /// OCSF: Authentication / Other (activity_id 99, severity_id 4 = High).
+    #[serde(rename = "IDP_FAILOVER_ACTIVATED")]
+    IdpFailoverActivated {
+        timestamp: String,
+        /// Primary issuer URL that failed.
+        failed_issuer: String,
+        /// Secondary issuer URL now active.
+        secondary_issuer: String,
+        /// Availability failure reason (e.g., "connect timeout", "HTTP 503").
+        reason: String,
+        host: String,
+    },
+
+    /// IdP failover recovered — primary issuer healthy again (Phase 41).
+    ///
+    /// Emitted when a cooldown-based retry against the primary issuer succeeds
+    /// and the failover state transitions back to Primary.
+    ///
+    /// OCSF: Authentication / Other (activity_id 99, severity_id 1 = Info).
+    #[serde(rename = "IDP_FAILOVER_RECOVERED")]
+    IdpFailoverRecovered {
+        timestamp: String,
+        /// Primary issuer URL that recovered.
+        recovered_issuer: String,
+        /// Secondary issuer URL that was previously active.
+        previous_active_issuer: String,
+        host: String,
+    },
+
+    /// IdP failover exhausted — both primary and secondary unavailable (Phase 41).
+    ///
+    /// Emitted when both issuers in a failover pair are unreachable. Authentication
+    /// fails closed. This event should trigger immediate SIEM alerting.
+    ///
+    /// OCSF: Authentication / Other (activity_id 99, severity_id 5 = Critical).
+    #[serde(rename = "IDP_FAILOVER_EXHAUSTED")]
+    IdpFailoverExhausted {
+        timestamp: String,
+        /// Primary issuer URL.
+        primary_issuer: String,
+        /// Secondary issuer URL.
+        secondary_issuer: String,
+        /// Last error encountered.
+        last_error: String,
+        host: String,
+    },
 }
 
 impl AuditEvent {
@@ -593,6 +656,8 @@ impl AuditEvent {
             oidc_acr: oidc_acr.map(String::from),
             oidc_auth_time,
             dpop_thumbprint: dpop_thumbprint.map(String::from),
+            serving_issuer: None,
+            failover_active: false,
         }
     }
 
@@ -934,6 +999,58 @@ impl AuditEvent {
         }
     }
 
+    /// Create an IdP failover activated event (Phase 41, ADR-020).
+    ///
+    /// Emitted when an availability failure causes failover from primary to secondary.
+    /// `reason` should describe the availability failure (e.g., "connect timeout",
+    /// "HTTP 503 Service Unavailable").
+    pub fn idp_failover_activated(
+        failed_issuer: &str,
+        secondary_issuer: &str,
+        reason: &str,
+    ) -> Self {
+        Self::IdpFailoverActivated {
+            timestamp: iso_timestamp(),
+            failed_issuer: failed_issuer.to_string(),
+            secondary_issuer: secondary_issuer.to_string(),
+            reason: reason.to_string(),
+            host: get_hostname(),
+        }
+    }
+
+    /// Create an IdP failover recovered event (Phase 41, ADR-020).
+    ///
+    /// Emitted when the primary issuer becomes healthy again after a cooldown retry.
+    pub fn idp_failover_recovered(
+        recovered_issuer: &str,
+        previous_active_issuer: &str,
+    ) -> Self {
+        Self::IdpFailoverRecovered {
+            timestamp: iso_timestamp(),
+            recovered_issuer: recovered_issuer.to_string(),
+            previous_active_issuer: previous_active_issuer.to_string(),
+            host: get_hostname(),
+        }
+    }
+
+    /// Create an IdP failover exhausted event (Phase 41, ADR-020).
+    ///
+    /// Emitted when both primary and secondary issuers are unreachable.
+    /// This is a critical event — authentication will fail closed.
+    pub fn idp_failover_exhausted(
+        primary_issuer: &str,
+        secondary_issuer: &str,
+        last_error: &str,
+    ) -> Self {
+        Self::IdpFailoverExhausted {
+            timestamp: iso_timestamp(),
+            primary_issuer: primary_issuer.to_string(),
+            secondary_issuer: secondary_issuer.to_string(),
+            last_error: last_error.to_string(),
+            host: get_hostname(),
+        }
+    }
+
     /// Log this event to the configured audit destinations.
     ///
     /// When `UNIX_OIDC_AUDIT_HMAC_KEY` is set, the output JSON is augmented with
@@ -1016,6 +1133,9 @@ impl AuditEvent {
             Self::JtiStoreDegraded { .. } => "JTI_STORE_DEGRADED",
             Self::TokenExchangeAccepted { .. } => "TOKEN_EXCHANGE_ACCEPTED",
             Self::TokenExchangeRejected { .. } => "TOKEN_EXCHANGE_REJECTED",
+            Self::IdpFailoverActivated { .. } => "IDP_FAILOVER_ACTIVATED",
+            Self::IdpFailoverRecovered { .. } => "IDP_FAILOVER_RECOVERED",
+            Self::IdpFailoverExhausted { .. } => "IDP_FAILOVER_EXHAUSTED",
         }
     }
 
@@ -1056,6 +1176,10 @@ impl AuditEvent {
             | Self::IssuerRecovered { .. }
             | Self::TokenExchangeAccepted { .. } => AuditSeverity::Info,
             Self::TokenExchangeRejected { .. } => AuditSeverity::Warning,
+            // IdP failover events (Phase 41)
+            Self::IdpFailoverActivated { .. } => AuditSeverity::Warning,
+            Self::IdpFailoverRecovered { .. } => AuditSeverity::Info,
+            Self::IdpFailoverExhausted { .. } => AuditSeverity::Critical,
         }
     }
 
@@ -1127,6 +1251,14 @@ impl AuditEvent {
             // Accepted: Info (1); Rejected: High (4) — potential attack indicator
             Self::TokenExchangeAccepted { .. } => (1, 1),
             Self::TokenExchangeRejected { .. } => (1, 4),
+
+            // IdP failover events (Phase 41) — activity_id 99 (Other)
+            // Activated: High (4) — primary unavailable, operator should investigate
+            Self::IdpFailoverActivated { .. } => (99, 4),
+            // Recovered: Info (1) — primary healthy again
+            Self::IdpFailoverRecovered { .. } => (99, 1),
+            // Exhausted: Critical (5) — both issuers down, auth fails closed
+            Self::IdpFailoverExhausted { .. } => (99, 5),
         };
 
         let class_uid: u32 = 3002;
