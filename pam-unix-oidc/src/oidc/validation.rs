@@ -75,6 +75,8 @@ pub fn key_algorithm_to_algorithm(ka: &KeyAlgorithm) -> Result<Algorithm, Unsupp
         KeyAlgorithm::RSA1_5 | KeyAlgorithm::RSA_OAEP | KeyAlgorithm::RSA_OAEP_256 => {
             Err(UnsupportedKeyAlgorithm(*ka))
         }
+        // Unknown/future algorithms — reject safely
+        _ => Err(UnsupportedKeyAlgorithm(*ka)),
     }
 }
 

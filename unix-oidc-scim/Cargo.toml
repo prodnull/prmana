@@ -32,7 +32,7 @@ anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 # JWT validation
-jsonwebtoken = "9.0"
+jsonwebtoken = "10.3"
 
 # Configuration
 figment = { version = "0.10", features = ["yaml", "env"] }
