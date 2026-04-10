@@ -55,3 +55,9 @@ agent-coord/
 
 # Local Website Development
 website/
+
+# Terraform provider cache and state (do not commit .terraform/ directories)
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
