@@ -78,7 +78,11 @@ TOKEN_ENDPOINT="https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0
 
 # Request scopes: openid + profile + email for user claims.
 # Do NOT add User.Read -- it changes aud to Graph (see 22-RESEARCH.md Pitfall 3).
-SCOPE="openid profile email"
+#
+# IMPORTANT: Plain "openid profile email" scopes default to Graph audience on Entra.
+# To get a token with aud=client_id, request the app's own exposed API scope.
+# This requires "Expose an API" with an Application ID URI and at least one scope.
+SCOPE="api://${ENTRA_CLIENT_ID}/access openid profile email"
 
 # Use -s (not -sf) so we get the error response body for diagnostic parsing.
 RESPONSE=$(curl -s -X POST "${TOKEN_ENDPOINT}" \

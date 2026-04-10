@@ -243,16 +243,19 @@ fn test_entra_discovery_returns_valid_jwks_uri() {
 
     assert!(!keys.is_empty(), "JWKS must contain at least one key");
 
-    // Assert at least one RSA/RS256 key is present
-    let has_rs256 = keys.iter().any(|k| {
+    // Assert at least one RSA signing key is present.
+    // Entra JWKS keys have kty="RSA" and use="sig" but do NOT include an "alg" field.
+    // Accept keys that are either explicitly RS256 or RSA signing keys without alg.
+    let has_rsa_signing = keys.iter().any(|k| {
         let kty = k["kty"].as_str().unwrap_or("");
+        let use_field = k["use"].as_str().unwrap_or("");
         let alg = k["alg"].as_str().unwrap_or("");
-        kty == "RSA" && alg == "RS256"
+        kty == "RSA" && (alg == "RS256" || (alg.is_empty() && use_field == "sig"))
     });
 
     assert!(
-        has_rs256,
-        "JWKS must contain at least one RS256 RSA key. Keys present: {keys:?}"
+        has_rsa_signing,
+        "JWKS must contain at least one RSA signing key (RS256 or kty=RSA+use=sig). Keys present: {keys:?}"
     );
 }
 
@@ -294,8 +297,15 @@ fn test_entra_rs256_token_validates() {
 
 /// ENTR-03: Validated Entra token carries expected OIDC claims.
 ///
-/// Validates that the token includes preferred_username, email, and sub —
-/// the claims required for UPN mapping and user identity.
+/// Validates that the token includes preferred_username, sub, and optionally email.
+///
+/// In enterprise Entra tenants, `email` is reliably present (synced from AD/Exchange).
+/// In test tenants with `@onmicrosoft.com` users, `email` may be absent even with
+/// the optional claim configured — Entra only emits it when the user has a `mail`
+/// attribute set in the directory.
+///
+/// The test validates `email` when present but does not fail when absent, to support
+/// both enterprise and test tenant configurations.
 #[test]
 #[ignore = "Requires ENTRA_* env vars — see docs/entra-setup-guide.md"]
 fn test_entra_token_has_expected_claims() {
@@ -318,26 +328,34 @@ fn test_entra_token_has_expected_claims() {
     // sub — opaque user identifier; always present per OIDC Core 1.0 §2
     assert!(!claims.sub.is_empty(), "sub must be present and non-empty");
 
-    // email — required for the UPN strip_domain mapping pipeline
-    // Must be present when email scope was requested (see entra-setup-guide.md)
+    // email — present in enterprise tenants (AD-synced users with mail attribute).
+    // May be absent in test tenants with @onmicrosoft.com users.
     let email = claims.get_claim_str("email");
-    assert!(
-        email.is_some(),
-        "email claim must be present (ensure email scope was requested)"
-    );
-    let email = email.unwrap();
-    assert!(
-        email.contains('@'),
-        "email must be in user@domain format, got: {email}"
-    );
+    if let Some(email) = email {
+        assert!(
+            email.contains('@'),
+            "email must be in user@domain format, got: {email}"
+        );
+    } else {
+        eprintln!(
+            "NOTE: email claim absent from Entra token. This is expected for \
+             @onmicrosoft.com test users without a mail attribute. In enterprise \
+             tenants with AD-synced users, email will be present. \
+             See docs/entra-e2e-setup.md Step 4."
+        );
+    }
 }
 
 // ── UPN mapping tests ─────────────────────────────────────────────────────────
 
 /// ENTR-04: strip_domain + lowercase produces a bare Unix username (no @ character).
 ///
-/// Validates the primary Entra identity mapping pipeline:
+/// Validates the Entra identity mapping pipeline:
 /// `alice@corp.example.com` → `alice`
+///
+/// Prefers `email` claim (enterprise default). Falls back to `preferred_username`
+/// when `email` is absent (test tenants without mail attribute). Both claims
+/// are in UPN format (`user@domain`) so the same transform pipeline applies.
 #[test]
 #[ignore = "Requires ENTRA_* env vars — see docs/entra-setup-guide.md"]
 fn test_entra_upn_strip_domain_maps_to_bare_username() {
@@ -350,9 +368,19 @@ fn test_entra_upn_strip_domain_maps_to_bare_username() {
         .validate(&token)
         .expect("Token must validate for UPN mapping test");
 
-    // Build mapper: email → strip_domain → lowercase
+    // Use email if present (enterprise), fall back to preferred_username (test tenant)
+    let source_claim = if claims.get_claim_str("email").is_some() {
+        "email"
+    } else {
+        eprintln!(
+            "NOTE: email claim absent — falling back to preferred_username for mapping test. \
+             See docs/entra-e2e-setup.md Step 4."
+        );
+        "preferred_username"
+    };
+
     let identity_config = IdentityConfig {
-        username_claim: "email".to_string(),
+        username_claim: source_claim.to_string(),
         transforms: vec![
             TransformConfig::Simple("strip_domain".to_string()),
             TransformConfig::Simple("lowercase".to_string()),
@@ -363,7 +391,7 @@ fn test_entra_upn_strip_domain_maps_to_bare_username() {
 
     let username = mapper
         .map(&claims)
-        .expect("Mapping must succeed for valid Entra token with email claim");
+        .expect("Mapping must succeed for valid Entra token");
 
     assert!(
         !username.contains('@'),
