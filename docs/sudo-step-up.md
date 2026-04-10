@@ -169,11 +169,11 @@ Ensure the OIDC_ISSUER environment variable is set. For systemd services, add it
 
 ### "No supported step-up method available"
 
-The policy requires a step-up method not available. Ensure `device_flow` is in the `allowed_methods` list.
+The policy requires a step-up method not available. Ensure at least one of `push` (CIBA) or `device_flow` is in the `allowed_methods` list. If using CIBA push, the IdP must support the backchannel authentication endpoint.
 
 ### "Timeout waiting for authentication"
 
-User did not complete authentication within the timeout period. Increase `challenge_timeout` in the policy or ensure network connectivity to the IdP.
+User did not complete authentication within the timeout period. Check `challenge_timeout` and per-method overrides in `method_timeouts` (push defaults to 60s, device_flow to 120s). Also verify network connectivity to the IdP and that the user's device received the push notification.
 
 ### "Access denied by user"
 

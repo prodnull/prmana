@@ -127,4 +127,4 @@ break_glass:
 
 audit:
   log_file: "/var/log/unix-oidc-audit.log"
-  syslog: true
+  syslog_enabled: true
