@@ -12,6 +12,8 @@ pub struct ScimConfig {
     pub oidc_issuer: String,
     /// Expected audience for Bearer tokens.
     pub oidc_audience: String,
+    /// JWKS cache TTL in seconds. Default: 300.
+    pub jwks_cache_ttl_secs: u64,
     /// Default login shell for new users.
     pub default_shell: String,
     /// Whether to create home directories. Default: true.
@@ -28,6 +30,7 @@ impl Default for ScimConfig {
             listen_addr: "127.0.0.1:9443".to_string(),
             oidc_issuer: String::new(),
             oidc_audience: "unix-oidc-scim".to_string(),
+            jwks_cache_ttl_secs: 300,
             default_shell: "/bin/bash".to_string(),
             create_home: true,
             dry_run: false,

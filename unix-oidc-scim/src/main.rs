@@ -18,7 +18,7 @@ use figment::providers::Format; // Required for Yaml::file()
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
 
-use unix_oidc_scim::auth::AuthMode;
+use unix_oidc_scim::auth::{AuthMode, JwksCache};
 use unix_oidc_scim::config::ScimConfig;
 use unix_oidc_scim::provisioner::Provisioner;
 use unix_oidc_scim::routes::build_router;
@@ -98,6 +98,9 @@ async fn main() -> Result<()> {
         AuthMode::Validated {
             issuer: config.oidc_issuer.clone(),
             audience: config.oidc_audience.clone(),
+            jwks_cache: Arc::new(JwksCache::new(std::time::Duration::from_secs(
+                config.jwks_cache_ttl_secs,
+            ))),
         }
     };
 

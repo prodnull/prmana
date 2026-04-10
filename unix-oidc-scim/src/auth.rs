@@ -4,7 +4,9 @@
 //! The service refuses to start without either a configured `oidc_issuer`
 //! (real validation) or the explicit `--insecure-no-auth` flag.
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{Request, State},
@@ -15,15 +17,9 @@ use axum::{
 };
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
-use tokio::sync::OnceCell;
+use tokio::sync::RwLock;
 
 use crate::schema::ScimError;
-
-/// Cached JWKS keys fetched from the issuer's discovery endpoint.
-///
-/// Lazily initialized on the first request. The `OnceCell` ensures only
-/// one fetch occurs even under concurrent requests.
-static JWKS_CACHE: OnceCell<jsonwebtoken::jwk::JwkSet> = OnceCell::const_new();
 
 /// Fetch JWKS from the issuer's OIDC discovery endpoint.
 async fn fetch_jwks(issuer: &str) -> Result<jsonwebtoken::jwk::JwkSet, String> {
@@ -65,6 +61,110 @@ async fn fetch_jwks(issuer: &str) -> Result<jsonwebtoken::jwk::JwkSet, String> {
     Ok(jwks)
 }
 
+#[derive(Debug)]
+struct CachedJwks {
+    jwks: jsonwebtoken::jwk::JwkSet,
+    fetched_at: tokio::time::Instant,
+}
+
+/// TTL-based JWKS cache shared across axum handlers.
+#[derive(Debug)]
+pub struct JwksCache {
+    ttl: Duration,
+    inner: RwLock<Option<CachedJwks>>,
+}
+
+impl JwksCache {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            inner: RwLock::new(None),
+        }
+    }
+
+    async fn refresh_locked<F, Fut>(
+        &self,
+        guard: &mut Option<CachedJwks>,
+        fetcher: F,
+    ) -> Result<jsonwebtoken::jwk::JwkSet, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<jsonwebtoken::jwk::JwkSet, String>>,
+    {
+        let jwks = fetcher().await?;
+        *guard = Some(CachedJwks {
+            jwks: jwks.clone(),
+            fetched_at: tokio::time::Instant::now(),
+        });
+        Ok(jwks)
+    }
+
+    async fn get_with_fetch<F, Fut>(&self, fetcher: F) -> Result<jsonwebtoken::jwk::JwkSet, String>
+    where
+        F: Fn() -> Fut + Clone,
+        Fut: Future<Output = Result<jsonwebtoken::jwk::JwkSet, String>>,
+    {
+        {
+            let guard = self.inner.read().await;
+            if let Some(cached) = guard.as_ref() {
+                if cached.fetched_at.elapsed() < self.ttl {
+                    return Ok(cached.jwks.clone());
+                }
+            }
+        }
+
+        let mut guard = self.inner.write().await;
+        if let Some(cached) = guard.as_ref() {
+            if cached.fetched_at.elapsed() < self.ttl {
+                return Ok(cached.jwks.clone());
+            }
+        }
+
+        self.refresh_locked(&mut guard, fetcher).await
+    }
+
+    async fn decoding_key_with_refresh<F, Fut>(
+        &self,
+        kid: Option<&str>,
+        algorithm: Algorithm,
+        fetcher: F,
+    ) -> Result<Option<DecodingKey>, String>
+    where
+        F: Fn() -> Fut + Clone,
+        Fut: Future<Output = Result<jsonwebtoken::jwk::JwkSet, String>>,
+    {
+        let jwks = self.get_with_fetch(fetcher.clone()).await?;
+        let mut decoding_key = find_decoding_key(&jwks, kid, algorithm);
+
+        if decoding_key.is_none() && kid.is_some() {
+            let refreshed = self.refresh_with_fetch(fetcher).await?;
+            decoding_key = find_decoding_key(&refreshed, kid, algorithm);
+        }
+
+        Ok(decoding_key)
+    }
+
+    pub async fn refresh(&self, issuer: &str) -> Result<jsonwebtoken::jwk::JwkSet, String> {
+        self.refresh_with_fetch(|| fetch_jwks(issuer)).await
+    }
+
+    async fn refresh_with_fetch<F, Fut>(
+        &self,
+        fetcher: F,
+    ) -> Result<jsonwebtoken::jwk::JwkSet, String>
+    where
+        F: Fn() -> Fut + Clone,
+        Fut: Future<Output = Result<jsonwebtoken::jwk::JwkSet, String>>,
+    {
+        let mut guard = self.inner.write().await;
+        self.refresh_locked(&mut guard, fetcher).await
+    }
+
+    pub async fn get(&self, issuer: &str) -> Result<jsonwebtoken::jwk::JwkSet, String> {
+        self.get_with_fetch(|| fetch_jwks(issuer)).await
+    }
+}
+
 /// Authentication mode for the SCIM service.
 ///
 /// Determined at startup based on configuration and CLI flags.
@@ -77,6 +177,8 @@ pub enum AuthMode {
         issuer: String,
         /// Expected audience (`aud` claim).
         audience: String,
+        /// Shared TTL-based JWKS cache for this issuer.
+        jwks_cache: Arc<JwksCache>,
     },
     /// No-op auth: accept any non-empty Bearer token.
     /// Only reachable via the hidden `--insecure-no-auth` CLI flag.
@@ -138,7 +240,11 @@ pub async fn auth_middleware(
                     // The startup banner already logged a CRITICAL warning.
                     tracing::debug!("Insecure mode: skipping token validation");
                 }
-                AuthMode::Validated { issuer, audience } => {
+                AuthMode::Validated {
+                    issuer,
+                    audience,
+                    jwks_cache,
+                } => {
                     // Parse JWT header to determine algorithm and key ID.
                     let header = match decode_header(token) {
                         Ok(h) => h,
@@ -147,6 +253,7 @@ pub async fn auth_middleware(
                             return unauthorized("Invalid token");
                         }
                     };
+                    let kid = header.kid.as_deref();
 
                     // Enforce asymmetric algorithms only — never accept "none" or HMAC.
                     // Algorithm confusion attacks (CVE-2016-5431 class) are blocked here.
@@ -166,46 +273,23 @@ pub async fn auth_middleware(
                         }
                     }
 
-                    // Fetch JWKS from issuer (cached after first request).
-                    let issuer_clone = issuer.clone();
-                    let jwks = match JWKS_CACHE
-                        .get_or_try_init(|| fetch_jwks(&issuer_clone))
+                    // Fetch JWKS from issuer with TTL-based refresh.
+                    let decoding_key = match jwks_cache
+                        .decoding_key_with_refresh(kid, header.alg, || fetch_jwks(issuer))
                         .await
                     {
-                        Ok(j) => j,
-                        Err(e) => {
-                            tracing::error!(error = %e, issuer = %issuer, "Failed to fetch JWKS");
-                            return unauthorized("Authentication service unavailable");
-                        }
-                    };
-
-                    // Find the matching key by kid (if present in header) or by algorithm.
-                    let kid = header.kid.as_deref();
-                    let decoding_key = jwks
-                        .keys
-                        .iter()
-                        .find(|k| {
-                            // Match by kid if both header and key have it
-                            if let (Some(hdr_kid), Some(key_kid)) = (kid, &k.common.key_id) {
-                                return hdr_kid == key_kid;
-                            }
-                            // Fall back to algorithm match
-                            k.common
-                                .key_algorithm
-                                .map(|ka| format!("{ka:?}") == format!("{:?}", header.alg))
-                                .unwrap_or(false)
-                        })
-                        .and_then(|jwk| DecodingKey::from_jwk(jwk).ok());
-
-                    let decoding_key = match decoding_key {
-                        Some(k) => k,
-                        None => {
+                        Ok(Some(key)) => key,
+                        Ok(None) => {
                             tracing::warn!(
                                 kid = ?kid,
                                 algorithm = ?header.alg,
                                 "No matching JWKS key for Bearer token"
                             );
                             return unauthorized("Invalid token");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, issuer = %issuer, "Failed to fetch JWKS");
+                            return unauthorized("Authentication service unavailable");
                         }
                     };
 
@@ -233,8 +317,29 @@ pub async fn auth_middleware(
     }
 }
 
+fn find_decoding_key(
+    jwks: &jsonwebtoken::jwk::JwkSet,
+    kid: Option<&str>,
+    algorithm: Algorithm,
+) -> Option<DecodingKey> {
+    jwks.keys
+        .iter()
+        .find(|k| {
+            if let (Some(header_kid), Some(key_kid)) = (kid, &k.common.key_id) {
+                return header_kid == key_kid;
+            }
+            k.common
+                .key_algorithm
+                .map(|ka| format!("{ka:?}") == format!("{algorithm:?}"))
+                .unwrap_or(false)
+        })
+        .and_then(|jwk| DecodingKey::from_jwk(jwk).ok())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::middleware;
@@ -243,6 +348,19 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    fn test_jwks_with_kid(kid: &str) -> jsonwebtoken::jwk::JwkSet {
+        serde_json::from_value(serde_json::json!({
+            "keys": [{
+                "kty": "RSA",
+                "kid": kid,
+                "alg": "RS256",
+                "n": "sXchmO7QYj0V8vY4aXK6sA9d7A4L0i2x4g9zJ5R6uV0mU2x9m3q6fJ2k7l8n9p0q1r2s3t4u5v6w7x8y9z0",
+                "e": "AQAB"
+            }]
+        }))
+        .unwrap()
+    }
 
     async fn ok_handler() -> &'static str {
         "ok"
@@ -309,6 +427,7 @@ mod tests {
         let auth_mode = Arc::new(AuthMode::Validated {
             issuer: "https://idp.example.com".into(),
             audience: "unix-oidc-scim".into(),
+            jwks_cache: Arc::new(JwksCache::new(Duration::from_secs(300))),
         });
         let app = Router::new()
             .route("/test", get(ok_handler))
@@ -325,5 +444,79 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_jwks_cache_reuses_entry_within_ttl() {
+        let cache = JwksCache::new(Duration::from_secs(60));
+        let fetches = Arc::new(AtomicUsize::new(0));
+
+        let fetcher = {
+            let fetches = Arc::clone(&fetches);
+            move || {
+                let fetches = Arc::clone(&fetches);
+                async move {
+                    fetches.fetch_add(1, Ordering::SeqCst);
+                    Ok(test_jwks_with_kid("kid-1"))
+                }
+            }
+        };
+
+        let _ = cache.get_with_fetch(fetcher.clone()).await.unwrap();
+        let _ = cache.get_with_fetch(fetcher).await.unwrap();
+
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_jwks_cache_refreshes_after_ttl() {
+        let cache = JwksCache::new(Duration::from_millis(1));
+        let fetches = Arc::new(AtomicUsize::new(0));
+
+        let fetcher = {
+            let fetches = Arc::clone(&fetches);
+            move || {
+                let fetches = Arc::clone(&fetches);
+                async move {
+                    fetches.fetch_add(1, Ordering::SeqCst);
+                    Ok(test_jwks_with_kid("kid-1"))
+                }
+            }
+        };
+
+        let _ = cache.get_with_fetch(fetcher.clone()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let _ = cache.get_with_fetch(fetcher).await.unwrap();
+
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_kid_miss_triggers_immediate_refresh() {
+        let cache = JwksCache::new(Duration::from_secs(60));
+        let fetches = Arc::new(AtomicUsize::new(0));
+
+        let fetcher = {
+            let fetches = Arc::clone(&fetches);
+            move || {
+                let fetches = Arc::clone(&fetches);
+                async move {
+                    let call = fetches.fetch_add(1, Ordering::SeqCst);
+                    Ok(if call == 0 {
+                        test_jwks_with_kid("kid-old")
+                    } else {
+                        test_jwks_with_kid("kid-new")
+                    })
+                }
+            }
+        };
+
+        let decoding_key = cache
+            .decoding_key_with_refresh(Some("kid-new"), Algorithm::RS256, fetcher)
+            .await
+            .unwrap();
+
+        assert!(decoding_key.is_some());
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
     }
 }

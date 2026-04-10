@@ -512,6 +512,16 @@ pub struct IssuerConfig {
     /// (tokens with `act`) are rejected.
     #[serde(default)]
     pub delegation: Option<DelegationConfig>,
+    /// Claim name to extract from the access token for the CIBA `login_hint`.
+    ///
+    /// When absent, sudo step-up uses the Unix username as `login_hint`.
+    #[serde(default)]
+    pub ciba_login_hint_claim: Option<String>,
+    /// Scope to request during CIBA backchannel authentication.
+    ///
+    /// When absent, defaults to `"openid"`.
+    #[serde(default)]
+    pub ciba_scope: Option<String>,
 
     /// Per-issuer algorithm allowlist for JWT validation (SHRD-01/02).
     ///
@@ -580,6 +590,8 @@ impl Default for IssuerConfig {
             spiffe_mapping: None,
             attestation: None,
             delegation: None,
+            ciba_login_hint_claim: None,
+            ciba_scope: None,
             recovery_interval_secs: default_recovery_interval(),
             #[cfg(any(test, feature = "test-mode"))]
             allow_insecure_http_for_testing: false,

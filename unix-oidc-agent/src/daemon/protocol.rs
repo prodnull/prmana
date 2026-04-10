@@ -74,6 +74,12 @@ pub enum AgentRequest {
         /// compatibility — old PAM versions without this field deserialize as None.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         parent_session_id: Option<String>,
+        /// Optional CIBA scope override from policy.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        scope: Option<String>,
+        /// Optional access-token claim name used to populate `login_hint`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        login_hint_claim: Option<String>,
     },
 
     /// PAM -> Agent: poll for step-up result.
@@ -699,6 +705,8 @@ mod tests {
             method: "push".to_string(),
             timeout_secs: 120,
             parent_session_id: None,
+            scope: None,
+            login_hint_claim: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(
@@ -924,6 +932,23 @@ mod tests {
                     Some("abc-123"),
                     "parent_session_id must be Some('abc-123') when present in JSON"
                 );
+            }
+            _ => panic!("Expected StepUp, got {req:?}"),
+        }
+    }
+
+    #[test]
+    fn test_step_up_with_scope_and_login_hint_claim_round_trip() {
+        let json = r#"{"action":"step_up","username":"alice","command":"/usr/bin/ls","hostname":"prod-01","method":"push","timeout_secs":120,"scope":"openid profile","login_hint_claim":"email"}"#;
+        let req: AgentRequest = serde_json::from_str(json).unwrap();
+        match req {
+            AgentRequest::StepUp {
+                scope,
+                login_hint_claim,
+                ..
+            } => {
+                assert_eq!(scope.as_deref(), Some("openid profile"));
+                assert_eq!(login_hint_claim.as_deref(), Some("email"));
             }
             _ => panic!("Expected StepUp, got {req:?}"),
         }

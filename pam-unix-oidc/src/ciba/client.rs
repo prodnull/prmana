@@ -60,12 +60,13 @@ impl CibaClient {
     pub fn build_backchannel_auth_params<'a>(
         &'a self,
         login_hint: &'a str,
+        scope: &'a str,
         binding_message: &'a str,
         acr_values: Option<&'a str>,
     ) -> Vec<(&'static str, &'a str)> {
         let mut params: Vec<(&'static str, &'a str)> = vec![
             ("client_id", &self.client_id),
-            ("scope", "openid"),
+            ("scope", scope),
             ("login_hint", login_hint),
             ("binding_message", binding_message),
         ];
@@ -204,7 +205,8 @@ mod tests {
     fn backchannel_auth_params_includes_required_fields() {
         let d = make_discovery(Some("https://idp.example.com/bc-authn"), None);
         let client = CibaClient::new(&d, "my-client", None).unwrap();
-        let params = client.build_backchannel_auth_params("alice", "sudo cat on srv", None);
+        let params =
+            client.build_backchannel_auth_params("alice", "openid", "sudo cat on srv", None);
 
         let keys: Vec<&str> = params.iter().map(|(k, _)| *k).collect();
         assert!(keys.contains(&"client_id"));
@@ -217,7 +219,8 @@ mod tests {
     fn backchannel_auth_params_includes_acr_values_when_some() {
         let d = make_discovery(Some("https://idp.example.com/bc-authn"), None);
         let client = CibaClient::new(&d, "my-client", None).unwrap();
-        let params = client.build_backchannel_auth_params("alice", "sudo cat on srv", Some("phr"));
+        let params =
+            client.build_backchannel_auth_params("alice", "openid", "sudo cat on srv", Some("phr"));
 
         let acr = params
             .iter()
@@ -230,7 +233,8 @@ mod tests {
     fn backchannel_auth_params_omits_acr_values_when_none() {
         let d = make_discovery(Some("https://idp.example.com/bc-authn"), None);
         let client = CibaClient::new(&d, "my-client", None).unwrap();
-        let params = client.build_backchannel_auth_params("alice", "sudo cat on srv", None);
+        let params =
+            client.build_backchannel_auth_params("alice", "openid", "sudo cat on srv", None);
 
         assert!(!params.iter().any(|(k, _)| *k == "acr_values"));
     }
@@ -239,13 +243,29 @@ mod tests {
     fn backchannel_auth_params_includes_client_secret_when_set() {
         let d = make_discovery(Some("https://idp.example.com/bc-authn"), None);
         let client = CibaClient::new(&d, "my-client", Some("s3cr3t")).unwrap();
-        let params = client.build_backchannel_auth_params("alice", "sudo cat on srv", None);
+        let params =
+            client.build_backchannel_auth_params("alice", "openid", "sudo cat on srv", None);
 
         let secret = params
             .iter()
             .find(|(k, _)| *k == "client_secret")
             .map(|(_, v)| *v);
         assert_eq!(secret, Some("s3cr3t"));
+    }
+
+    #[test]
+    fn backchannel_auth_params_uses_custom_scope() {
+        let d = make_discovery(Some("https://idp.example.com/bc-authn"), None);
+        let client = CibaClient::new(&d, "my-client", None).unwrap();
+        let params = client.build_backchannel_auth_params(
+            "alice",
+            "openid profile custom",
+            "sudo cat on srv",
+            None,
+        );
+
+        let scope = params.iter().find(|(k, _)| *k == "scope").map(|(_, v)| *v);
+        assert_eq!(scope, Some("openid profile custom"));
     }
 
     // ── build_ciba_token_params ────────────────────────────────────────────

@@ -167,7 +167,7 @@ pub fn authenticate_sudo(
     // Perform step-up authentication
     let security_modes = policy.effective_security_modes();
     let start = std::time::Instant::now();
-    let result = match perform_step_up(ctx, &requirements, display, &security_modes) {
+    let result = match perform_step_up(ctx, &requirements, display, policy, &security_modes) {
         Ok(r) => r,
         Err(e) => {
             // Log failure
@@ -196,6 +196,7 @@ fn perform_step_up(
     ctx: &SudoContext,
     requirements: &SudoStepUpRequirements,
     _display: &dyn StepUpDisplay,
+    policy: &PolicyConfig,
     security_modes: &SecurityModes,
 ) -> Result<StepUpResult, SudoError> {
     // Prefer Push/Fido2 (CIBA) when available — lower friction than device flow.
@@ -204,6 +205,7 @@ fn perform_step_up(
         return perform_step_up_via_ipc(
             ctx,
             requirements,
+            policy,
             &socket_path,
             StepUpMethod::Push,
             security_modes,
@@ -215,6 +217,7 @@ fn perform_step_up(
         return perform_step_up_via_ipc(
             ctx,
             requirements,
+            policy,
             &socket_path,
             StepUpMethod::Fido2,
             security_modes,
@@ -273,6 +276,7 @@ fn agent_socket_path() -> String {
 pub(crate) fn perform_step_up_via_ipc(
     ctx: &SudoContext,
     requirements: &SudoStepUpRequirements,
+    policy: &PolicyConfig,
     socket_path: &str,
     method: StepUpMethod,
     security_modes: &SecurityModes,
@@ -304,6 +308,11 @@ pub(crate) fn perform_step_up_via_ipc(
         tracing::debug!("UNIX_OIDC_SESSION_ID not set in sudo PAM context; parent_session_id will be absent from step-up audit event");
     }
 
+    let active_issuer = std::env::var("UNIX_OIDC_ISSUER")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .and_then(|iss| policy.issuer_by_url(&iss));
+
     // ── Step 1: Send StepUp request ───────────────────────────────────────────
     let mut step_up_msg = serde_json::json!({
         "action": "step_up",
@@ -316,6 +325,14 @@ pub(crate) fn perform_step_up_via_ipc(
     // Add parent_session_id only when present (skip_serializing_if = None semantics)
     if let Some(ref psid) = parent_session_id {
         step_up_msg["parent_session_id"] = serde_json::Value::String(psid.clone());
+    }
+    if let Some(issuer) = active_issuer {
+        if let Some(scope) = issuer.ciba_scope.as_ref() {
+            step_up_msg["scope"] = serde_json::Value::String(scope.clone());
+        }
+        if let Some(login_hint_claim) = issuer.ciba_login_hint_claim.as_ref() {
+            step_up_msg["login_hint_claim"] = serde_json::Value::String(login_hint_claim.clone());
+        }
     }
 
     let correlation_id = {
@@ -895,6 +912,10 @@ mod tests {
         log_step_up_initiated(&ctx, &reqs);
     }
 
+    fn test_policy() -> PolicyConfig {
+        PolicyConfig::default()
+    }
+
     /// perform_step_up_via_ipc returns SudoError::StepUp on IPC connection failure.
     #[test]
     fn test_perform_step_up_via_ipc_connection_refused() {
@@ -913,7 +934,14 @@ mod tests {
             step_up_require_id_token: false,
             ..Default::default()
         };
-        let result = perform_step_up_via_ipc(&ctx, &reqs, socket_path, StepUpMethod::Push, &modes);
+        let result = perform_step_up_via_ipc(
+            &ctx,
+            &reqs,
+            &test_policy(),
+            socket_path,
+            StepUpMethod::Push,
+            &modes,
+        );
         assert!(
             matches!(result, Err(SudoError::StepUp(_))),
             "Expected SudoError::StepUp on connection refused, got: {result:?}"
@@ -985,6 +1013,7 @@ mod tests {
         let result = perform_step_up_via_ipc(
             &ctx,
             &reqs,
+            &test_policy(),
             socket_path.to_str().unwrap(),
             StepUpMethod::Push,
             &modes,
@@ -1049,6 +1078,7 @@ mod tests {
         let result = perform_step_up_via_ipc(
             &ctx,
             &reqs,
+            &test_policy(),
             socket_path.to_str().unwrap(),
             StepUpMethod::Push,
             &modes,
@@ -1116,6 +1146,7 @@ mod tests {
         let result = perform_step_up_via_ipc(
             &ctx,
             &reqs,
+            &test_policy(),
             socket_path.to_str().unwrap(),
             StepUpMethod::Push,
             &modes,

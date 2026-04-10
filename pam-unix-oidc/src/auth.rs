@@ -298,7 +298,7 @@ pub fn authenticate_multi_issuer(
             issuer_config.delegation.as_ref(),
         );
 
-        match &delegation_result {
+        match delegation_result {
             Ok(()) => {
                 // Also check exchanged token lifetime
                 if let Some(ref deleg_config) = issuer_config.delegation {
@@ -334,7 +334,7 @@ pub fn authenticate_multi_issuer(
                     &e.to_string(),
                 )
                 .log();
-                return Err(AuthError::TokenValidation(delegation_result.unwrap_err()));
+                return Err(AuthError::TokenValidation(e));
             }
         }
     }

@@ -985,6 +985,8 @@ async fn handle_request(
             method,
             timeout_secs,
             parent_session_id,
+            scope,
+            login_hint_claim,
         } => {
             let response = handle_step_up(
                 state,
@@ -994,6 +996,8 @@ async fn handle_request(
                 method,
                 timeout_secs,
                 parent_session_id,
+                scope,
+                login_hint_claim,
             )
             .await;
             let is_err = matches!(response, AgentResponse::Error { .. });
@@ -1906,11 +1910,6 @@ async fn cleanup_session(state: Arc<RwLock<AgentState>>, session_id: String) {
 ///
 /// ## Login hint
 ///
-/// The Unix `username` from the IPC request is used as the CIBA `login_hint`. If the IdP
-/// expects an email address rather than a Unix username, the operator must configure their
-/// IdP to accept username-based `login_hint` or configure claim mapping. This is an open
-/// research question (10-RESEARCH.md §Open Questions); full `login_hint_claim` config is
-/// deferred to a future enhancement.
 async fn handle_step_up(
     state: &Arc<RwLock<AgentState>>,
     username: String,
@@ -1919,6 +1918,8 @@ async fn handle_step_up(
     method: String,
     timeout_secs: u64,
     parent_session_id: Option<String>,
+    scope: Option<String>,
+    login_hint_claim: Option<String>,
 ) -> AgentResponse {
     use pam_unix_oidc::ciba::{build_binding_message, CibaClient, ACR_PHR};
     use pam_unix_oidc::oidc::OidcDiscovery;
@@ -1939,7 +1940,7 @@ async fn handle_step_up(
     }
 
     // ── Load OIDC config from state ───────────────────────────────────────────
-    let (issuer, client_id, client_secret_opt) = {
+    let (issuer, client_id, client_secret_opt, access_token, signer) = {
         let state_read = state.read().await;
 
         let issuer = match state_read.oidc_issuer.clone() {
@@ -1968,7 +1969,22 @@ async fn handle_step_up(
             .as_ref()
             .map(|s| s.expose_secret().to_string());
 
-        (issuer, client_id, client_secret_opt)
+        let access_token = state_read
+            .access_token
+            .as_ref()
+            .map(|t| t.expose_secret().to_string());
+
+        let signer = match state_read.signer.clone() {
+            Some(signer) => signer,
+            None => {
+                return AgentResponse::error(
+                    "Agent signer unavailable for CIBA step-up",
+                    "NOT_LOGGED_IN",
+                );
+            }
+        };
+
+        (issuer, client_id, client_secret_opt, access_token, signer)
     };
 
     // ── Fetch OIDC discovery ──────────────────────────────────────────────────
@@ -2033,15 +2049,28 @@ async fn handle_step_up(
         None
     };
 
-    debug!(
-        username = %username,
-        method = %method,
-        "Using Unix username as CIBA login_hint (see 10-RESEARCH.md Open Question #1)"
-    );
+    let login_hint = match login_hint_claim.as_deref() {
+        Some(claim_name) => match access_token
+            .as_deref()
+            .and_then(|token| extract_string_claim_from_jwt_payload(token, claim_name))
+        {
+            Some(value) => value,
+            None => {
+                return AgentResponse::error(
+                    format!(
+                        "Configured CIBA login_hint_claim '{claim_name}' missing from access token"
+                    ),
+                    "LOGIN_HINT_CLAIM_MISSING",
+                );
+            }
+        },
+        None => username.clone(),
+    };
+    let scope = scope.unwrap_or_else(|| "openid".to_string());
 
     let backchannel_endpoint = ciba_client.backchannel_endpoint().to_string();
     let auth_params = ciba_client
-        .build_backchannel_auth_params(&username, &binding_message, acr_values)
+        .build_backchannel_auth_params(&login_hint, &scope, &binding_message, acr_values)
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect::<Vec<_>>();
@@ -2125,6 +2154,7 @@ async fn handle_step_up(
         timeout,
         acr_required,
         parent_session_id.clone(),
+        signer,
     ));
 
     let expires_at = tokio::time::Instant::now() + Duration::from_secs(bc_auth.expires_in);
@@ -2286,6 +2316,7 @@ pub(crate) async fn poll_ciba(
     timeout: Duration,
     acr_required: Option<String>,
     parent_session_id: Option<String>,
+    signer: Arc<dyn DPoPSigner>,
 ) -> StepUpOutcome {
     use pam_unix_oidc::ciba::{parse_ciba_error, validate_acr, CibaError, CibaTokenResponse};
 
@@ -2293,7 +2324,23 @@ pub(crate) async fn poll_ciba(
         loop {
             tokio::time::sleep(interval).await;
 
-            let response = match http.post(&token_endpoint).form(&params).send().await {
+            let dpop_proof = match signer.sign_proof("POST", &token_endpoint, None) {
+                Ok(proof) => proof,
+                Err(e) => {
+                    return StepUpOutcome::TimedOut {
+                        reason: "dpop_failed".to_string(),
+                        user_message: format!("Failed to sign CIBA token poll request: {e}"),
+                    };
+                }
+            };
+
+            let response = match http
+                .post(&token_endpoint)
+                .header("DPoP", dpop_proof)
+                .form(&params)
+                .send()
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     // Network error: treat as transient, loop continues until outer timeout.
@@ -2444,6 +2491,18 @@ pub(crate) async fn poll_ciba(
     }
 }
 
+fn extract_string_claim_from_jwt_payload(token: &str, claim_name: &str) -> Option<String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    let payload_b64 = token.split('.').nth(1)?;
+    let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    claims
+        .get(claim_name)
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+}
+
 /// Extract the `acr` claim from an ID token JWT payload.
 ///
 /// Decodes the middle (payload) segment of the JWT without signature verification.
@@ -2562,6 +2621,10 @@ mod tests {
     use super::*;
     use crate::crypto::SoftwareSigner;
     use tempfile::TempDir;
+
+    fn test_signer() -> Arc<dyn DPoPSigner> {
+        Arc::new(SoftwareSigner::generate())
+    }
 
     #[tokio::test]
     async fn test_server_client_roundtrip() {
@@ -3198,6 +3261,8 @@ mod tests {
                 method: "push".to_string(),
                 timeout_secs: 120,
                 parent_session_id: None,
+                scope: None,
+                login_hint_claim: None,
             })
             .await
             .unwrap();
@@ -3304,6 +3369,7 @@ mod tests {
             std::time::Duration::from_secs(10),
             None, // no ACR required
             None, // no parent_session_id
+            test_signer(),
         )
         .await;
 
@@ -3349,6 +3415,7 @@ mod tests {
             std::time::Duration::from_secs(10),
             None,
             None,
+            test_signer(),
         )
         .await;
 
@@ -3412,6 +3479,7 @@ mod tests {
             std::time::Duration::from_secs(15),
             None,
             None,
+            test_signer(),
         )
         .await;
 
@@ -3470,6 +3538,30 @@ mod tests {
         assert_eq!(extract_acr_from_id_token("onlyone"), None,);
     }
 
+    #[test]
+    fn test_extract_string_claim_from_jwt_payload() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload =
+            URL_SAFE_NO_PAD.encode(r#"{"email":"alice@example.com","preferred_username":"alice"}"#);
+        let signature = URL_SAFE_NO_PAD.encode(b"sig");
+        let token = format!("{header}.{payload}.{signature}");
+
+        assert_eq!(
+            extract_string_claim_from_jwt_payload(&token, "email").as_deref(),
+            Some("alice@example.com")
+        );
+        assert_eq!(
+            extract_string_claim_from_jwt_payload(&token, "preferred_username").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            extract_string_claim_from_jwt_payload(&token, "missing"),
+            None
+        );
+    }
+
     /// poll_ciba returns TimedOut("timeout") when the outer timeout expires.
     #[tokio::test]
     async fn test_poll_ciba_times_out() {
@@ -3488,6 +3580,7 @@ mod tests {
             std::time::Duration::from_millis(100), // 100ms outer timeout
             None,
             None,
+            test_signer(),
         )
         .await;
 
@@ -4001,6 +4094,7 @@ mod tests {
             std::time::Duration::from_secs(10),
             None, // no ACR required
             None,
+            test_signer(),
         )
         .await;
 
@@ -4064,6 +4158,7 @@ mod tests {
             std::time::Duration::from_secs(10),
             None,
             None,
+            test_signer(),
         )
         .await;
 
