@@ -16,7 +16,9 @@
 //! - `OIDC_TOKEN` (test mode only): The OIDC token to use for authentication
 
 #![deny(unsafe_code)]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+// Production code must use ? or explicit error handling — unwrap/expect can panic
+// in PAM (locking users out). Test code is allowed to unwrap for clarity.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 // Security: Prevent accidental release builds with test-mode enabled.
 // test-mode bypasses ALL signature verification — a critical vulnerability if shipped.
 // See: docs/threat-model.md §7 Recommendation 1 (P0), CLAUDE.md §CRITICAL: Test Mode Security.
