@@ -1007,20 +1007,15 @@ async fn run_login(
                 }
 
                 // Availability failure — record and try secondary.
-                if let Some(event) =
-                    runtime.record_failure(&target, &primary_err.to_string())
-                {
+                if let Some(event) = runtime.record_failure(&target, &primary_err.to_string()) {
                     warn!("Failover event: {event:?}");
                 }
 
                 let fallback = runtime.resolve_issuer();
-                if fallback.issuer_url.trim_end_matches('/')
-                    == target.trim_end_matches('/')
-                {
+                if fallback.issuer_url.trim_end_matches('/') == target.trim_end_matches('/') {
                     // No different issuer to try (already exhausted or same).
-                    return Err(primary_err.context(
-                        "Primary issuer unavailable and no failover target available",
-                    ));
+                    return Err(primary_err
+                        .context("Primary issuer unavailable and no failover target available"));
                 }
 
                 println!();
@@ -1052,13 +1047,8 @@ async fn run_login(
                         result
                     }
                     Err((secondary_err, _)) => {
-                        runtime.record_failure(
-                            &fallback.issuer_url,
-                            &secondary_err.to_string(),
-                        );
-                        Err(secondary_err.context(
-                            "Both primary and secondary issuers unavailable",
-                        ))?
+                        runtime.record_failure(&fallback.issuer_url, &secondary_err.to_string());
+                        Err(secondary_err.context("Both primary and secondary issuers unavailable"))?
                     }
                 }
             }

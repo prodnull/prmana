@@ -1021,10 +1021,7 @@ impl AuditEvent {
     /// Create an IdP failover recovered event (Phase 41, ADR-020).
     ///
     /// Emitted when the primary issuer becomes healthy again after a cooldown retry.
-    pub fn idp_failover_recovered(
-        recovered_issuer: &str,
-        previous_active_issuer: &str,
-    ) -> Self {
+    pub fn idp_failover_recovered(recovered_issuer: &str, previous_active_issuer: &str) -> Self {
         Self::IdpFailoverRecovered {
             timestamp: iso_timestamp(),
             recovered_issuer: recovered_issuer.to_string(),

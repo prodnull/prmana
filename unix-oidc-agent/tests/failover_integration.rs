@@ -14,10 +14,10 @@
 //! 7. Failure classification: 5xx = availability, 4xx = non-failover
 //! 8. In-flight no mid-stream switching (covered by unit tests)
 
-use unix_oidc_agent::daemon::{AgentState};
+use unix_oidc_agent::daemon::AgentState;
 use unix_oidc_agent::failover::{
-    classify_http_status, FailoverEvent, FailoverPairConfig,
-    FailoverRuntime, FailoverState, FailureClass, validate_failover_pairs,
+    classify_http_status, validate_failover_pairs, FailoverEvent, FailoverPairConfig,
+    FailoverRuntime, FailoverState, FailureClass,
 };
 use wiremock::matchers;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -465,8 +465,7 @@ async fn test_jwks_cache_isolation_across_failover_pair() {
 
     // Keys must be different — cache isolation preserved
     assert_ne!(
-        primary_jwks["keys"][0]["kid"],
-        secondary_jwks["keys"][0]["kid"],
+        primary_jwks["keys"][0]["kid"], secondary_jwks["keys"][0]["kid"],
         "JWKS keys from primary and secondary must be different (cache isolation)"
     );
 

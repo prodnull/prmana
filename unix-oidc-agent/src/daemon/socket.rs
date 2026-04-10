@@ -1253,7 +1253,9 @@ async fn failover_aware_discovery(
     // Check if this issuer has a failover pair.
     let has_failover = {
         let state_read = state.read().await;
-        state_read.failover_runtimes.contains_key(&issuer_normalized)
+        state_read
+            .failover_runtimes
+            .contains_key(&issuer_normalized)
     };
 
     if !has_failover {
@@ -1370,10 +1372,7 @@ async fn failover_aware_discovery(
 /// Discover the token endpoint from an OIDC issuer's well-known configuration.
 ///
 /// Returns the token_endpoint URL on success, or an AgentResponse error.
-async fn discover_token_endpoint(
-    issuer: &str,
-    timeout_secs: u64,
-) -> Result<String, AgentResponse> {
+async fn discover_token_endpoint(issuer: &str, timeout_secs: u64) -> Result<String, AgentResponse> {
     let doc = fetch_oidc_discovery_doc(issuer, timeout_secs).await?;
     match doc["token_endpoint"].as_str() {
         Some(ep) => {
@@ -1446,7 +1445,9 @@ async fn failover_aware_full_discovery(
 
     let has_failover = {
         let state_read = state.read().await;
-        state_read.failover_runtimes.contains_key(&issuer_normalized)
+        state_read
+            .failover_runtimes
+            .contains_key(&issuer_normalized)
     };
 
     if !has_failover {

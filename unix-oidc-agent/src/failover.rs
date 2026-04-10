@@ -303,11 +303,7 @@ impl FailoverRuntime {
     /// Record an availability failure against the given issuer URL.
     ///
     /// Returns a failover event if the state transitions.
-    pub fn record_failure(
-        &mut self,
-        issuer_url: &str,
-        reason: &str,
-    ) -> Option<FailoverEvent> {
+    pub fn record_failure(&mut self, issuer_url: &str, reason: &str) -> Option<FailoverEvent> {
         let primary_normalized = self.config.primary_issuer_url.trim_end_matches('/');
         let secondary_normalized = self.config.secondary_issuer_url.trim_end_matches('/');
         let issuer_normalized = issuer_url.trim_end_matches('/');
@@ -531,10 +527,7 @@ mod tests {
     #[test]
     fn test_primary_failure_activates_secondary() {
         let mut rt = FailoverRuntime::new(test_config());
-        let event = rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
+        let event = rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
         assert_eq!(rt.state(), FailoverState::Secondary);
         assert!(matches!(event, Some(FailoverEvent::Activated { .. })));
 
@@ -549,14 +542,8 @@ mod tests {
     #[test]
     fn test_secondary_failure_exhausts() {
         let mut rt = FailoverRuntime::new(test_config());
-        rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
-        let event = rt.record_failure(
-            "https://secondary.example.com/realms/corp",
-            "TLS failure",
-        );
+        rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
+        let event = rt.record_failure("https://secondary.example.com/realms/corp", "TLS failure");
         assert_eq!(rt.state(), FailoverState::Exhausted);
         assert!(matches!(event, Some(FailoverEvent::Exhausted { .. })));
     }
@@ -567,10 +554,7 @@ mod tests {
             cooldown_secs: 0, // immediate cooldown for test
             ..test_config()
         });
-        rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
+        rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
         assert_eq!(rt.state(), FailoverState::Secondary);
 
         // Simulate cooldown expiry and successful primary retry
@@ -582,17 +566,11 @@ mod tests {
     #[test]
     fn test_primary_retry_failure_stays_secondary() {
         let mut rt = FailoverRuntime::new(test_config());
-        rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
+        rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
         assert_eq!(rt.state(), FailoverState::Secondary);
 
         // Primary fails again (cooldown retry)
-        let event = rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "still down",
-        );
+        let event = rt.record_failure("https://primary.example.com/realms/corp", "still down");
         assert_eq!(rt.state(), FailoverState::Secondary);
         assert!(event.is_none()); // No new event
     }
@@ -603,14 +581,8 @@ mod tests {
             cooldown_secs: 0, // immediate cooldown for test
             ..test_config()
         });
-        rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
-        rt.record_failure(
-            "https://secondary.example.com/realms/corp",
-            "TLS failure",
-        );
+        rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
+        rt.record_failure("https://secondary.example.com/realms/corp", "TLS failure");
         assert_eq!(rt.state(), FailoverState::Exhausted);
 
         // Primary recovers
@@ -622,10 +594,7 @@ mod tests {
     #[test]
     fn test_secondary_success_does_not_change_state() {
         let mut rt = FailoverRuntime::new(test_config());
-        rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
+        rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
         assert_eq!(rt.state(), FailoverState::Secondary);
 
         // Successful request to secondary — no state change.
@@ -657,10 +626,7 @@ mod tests {
             cooldown_secs: 3600, // very long cooldown
             ..test_config()
         });
-        rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
+        rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
         assert_eq!(rt.state(), FailoverState::Secondary);
 
         // Within cooldown — should resolve to secondary.
@@ -678,10 +644,7 @@ mod tests {
             cooldown_secs: 0, // immediate expiry
             ..test_config()
         });
-        rt.record_failure(
-            "https://primary.example.com/realms/corp",
-            "connect timeout",
-        );
+        rt.record_failure("https://primary.example.com/realms/corp", "connect timeout");
         assert_eq!(rt.state(), FailoverState::Secondary);
 
         // Cooldown expired — should resolve to primary for retry.
