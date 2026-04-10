@@ -47,28 +47,51 @@ This isn't a hypothetical. It's the norm. SSH keys get copied, shared, never rot
 | [pam-keycloak-oidc](https://github.com/zhaow-de/pam-keycloak-oidc) | Keycloak-specific. Embeds OTP in password field (hacky UX). |
 | [ssh-oidc](https://github.com/EOSC-synergy/ssh-oidc) | Token passed as password—limited to 1023 bytes by OpenSSH. |
 
-### Commercial Alternatives
+### "Why not Teleport / StrongDM / CyberArk?"
 
-| Tool | Trade-off |
-|------|-----------|
-| [Teleport](https://goteleport.com/) | Excellent but requires proxy infrastructure. SSH OIDC is enterprise-only ($$$). No sudo step-up. |
-| [Boundary](https://www.boundaryproject.io/) (HashiCorp) | Session brokering focus. Requires Vault integration. Complex architecture. |
-| [Smallstep](https://smallstep.com/) | Certificate-based approach. Requires running your own CA. Different security model. |
-| [StrongDM](https://www.strongdm.com/) | Full PAM solution but significant cost (~$100+/user/year). Vendor lock-in. |
+Good question. These are serious products. Here's the honest answer.
+
+**The SSH identity market has three architectures:**
+
+| Architecture | How it works | Players |
+|---|---|---|
+| **Gateway/Proxy** | All SSH routes through a central proxy that issues short-lived certs from its own CA | Teleport, StrongDM, Boundary |
+| **Vault/Broker** | A privileged access manager brokers and records SSH sessions, manages credential rotation | CyberArk, BeyondTrust, Delinea |
+| **PAM drop-in** | A module on the server validates OIDC tokens directly against the IdP. No proxy, no CA, no new infra | **unix-oidc** |
+
+**When to use them instead of us:**
+- You want session recording, RBAC policies, and a managed gateway → **Teleport**
+- You need credential vaulting, rotation, and compliance reporting across SSH/RDP/databases → **CyberArk/Delinea**
+- Budget is not a constraint and you want a turnkey platform → **StrongDM**
+
+**When to use us:**
+- You already have an IdP (Okta, Entra, Keycloak) and don't want another identity silo
+- You want to cover servers where a proxy is impractical — edge nodes, CI runners, legacy boxes, air-gapped environments, the staging server someone set up "temporarily" three years ago
+- You need DPoP token binding (RFC 9449) — intercepted tokens are cryptographically useless without the private key. Teleport/StrongDM use short-lived bearer certs that are replayable during their validity window
+- You want sudo step-up MFA via CIBA (phone push approval for `sudo`)
+- You want to drop in alongside existing sshd with zero infrastructure changes
+
+**The key security difference: token binding.**
+
+Teleport and StrongDM issue short-lived x509 certificates. These are bearer credentials — if exfiltrated from `/tmp` or memory during their 5-15 minute validity window, an attacker can use them from any machine. DPoP (RFC 9449) binds every token to the client's ephemeral private key. The token is useless without the key, even during its validity window. This is the same proof-of-possession model used by banking APIs.
+
+**Complementary at worst, sufficient at best.** If you have Teleport on your managed fleet, unix-oidc covers the long tail. If you don't want gateway architecture, unix-oidc is the lightweight path to IdP-backed SSH.
 
 ### Feature Comparison
 
-| Feature | unix-oidc | pam-keycloak-oidc | Teleport | Smallstep |
-|---------|-----------|-------------------|----------|-----------|
-| SSH OIDC auth | ✅ | ✅ | Enterprise | ✅ |
-| Sudo step-up | ✅ | ❌ | ❌ | ❌ |
-| DPoP token binding | ✅ | ❌ | ❌ | ❌ |
-| Device flow | ✅ | ❌ | N/A | N/A |
-| ACR enforcement | ✅ | Basic | ❌ | ❌ |
-| SSSD integration | ✅ | ❌ | ❌ | ❌ |
-| Provider-agnostic | ✅ | ❌ | ✅ | ✅ |
-| Self-hosted option | ✅ | ✅ | ✅ | ✅ |
-| Open source | ✅ | ✅ | Partial | Partial |
+| Feature | unix-oidc | Teleport | StrongDM | CyberArk |
+|---------|-----------|----------|----------|----------|
+| SSH OIDC auth | ✅ | Enterprise | ✅ | Via proxy |
+| DPoP token binding (RFC 9449) | ✅ | ❌ (bearer certs) | API only | ❌ |
+| Sudo step-up (CIBA) | ✅ | ❌ | ❌ | ❌ |
+| SPIFFE workload identity | ✅ | ✅ | ✅ | ❌ |
+| No proxy required | ✅ | ❌ | ❌ | ❌ |
+| Session recording | ❌ | ✅ | ✅ | ✅ |
+| Credential vaulting | ❌ | ❌ | ❌ | ✅ |
+| Works with existing sshd | ✅ | ❌ (own client) | ❌ (own client) | Via proxy |
+| IdP failover (Phase 41) | ✅ | Via HA proxy | Via HA proxy | Via HA proxy |
+| Open source | ✅ | Partial | ❌ | ❌ |
+| Deployment | PAM module | Gateway cluster | SaaS + relay | On-prem vault |
 
 ### Why This Matters Now
 
