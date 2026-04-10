@@ -29,7 +29,7 @@ issuers:
       acr_claim: "acr"
 
 ssh_login:
-  allowed_groups:
+  login_groups:
     - developers
     - sre-team
     - ops
@@ -70,9 +70,8 @@ sudo:
 
 break_glass:
   enabled: true
-  users:
-    - username: breakglass
-      password_hash: "$6$rounds=656000$CHANGE_ME"
+  accounts:
+    - breakglass
   alert_on_use: true
 
 security_modes:

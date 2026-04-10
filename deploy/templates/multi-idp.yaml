@@ -32,9 +32,8 @@ issuers:
 
 break_glass:
   enabled: true
-  users:
-    - username: breakglass
-      password_hash: "$6$rounds=656000$CHANGE_ME"
+  accounts:
+    - breakglass
   alert_on_use: true
 
 security_modes:

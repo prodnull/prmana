@@ -1,182 +1,130 @@
 # unix-oidc Policy Configuration Example
-# Copy to /etc/unix-oidc/policy.yaml and customize for your environment
+# Copy to /etc/unix-oidc/policy.yaml and customize for your environment.
+#
+# For additional templates (failover, multi-IdP, CIBA step-up, privilege policy),
+# see deploy/templates/.
 
-# Security mode overrides — these control enforcement of security checks.
-# Production deployments MUST keep dpop_required at "strict" (the default).
-# See docs/security-guide.md §Deployment Hardening and docs/threat-model.md §6 R-6.
+# ── Issuers ──────────────────────────────────────────────────────────────────
+# Per-issuer configuration. Each issuer must have a unique URL.
+# Tokens are validated against the issuer matching the token's `iss` claim.
+
+issuers:
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "unix-oidc"
+    # client_secret: "your-secret-here"  # Uncomment for confidential clients
+    dpop_enforcement: strict  # strict | warn | disabled
+    # claim_mapping:
+    #   username_claim: preferred_username
+    #   transforms:
+    #     - type: strip_domain
+    #       domain: "example.com"
+    # acr_mapping:
+    #   required_acr: "urn:mfa"
+    #   acr_claim: "acr"
+
+# ── Security Modes ───────────────────────────────────────────────────────────
+# Enforcement levels for configurable security checks.
+# strict: reject on failure. warn: log and allow. disabled: skip check.
+
 security_modes:
-  # DPoP proof-of-possession binding. Options: strict | warn | disabled
-  # strict (default): reject tokens without valid DPoP proof
-  # warn: accept but log warning (migration only — NOT for production)
-  # disabled: skip DPoP check entirely (NOT recommended)
-  dpop_required: strict
+  dpop_required: strict       # DPoP proof-of-possession binding
+  jti_enforcement: warn       # JTI replay prevention
+  amr_enforcement: disabled   # Authentication Methods References
+  groups_enforcement: warn    # NSS group membership
 
-  # JTI (JWT ID) replay prevention. Options: strict | warn | disabled
-  # warn (default): log warning if JTI missing, still allow
-  jti_enforcement: warn
+# ── Host Classification ──────────────────────────────────────────────────────
+# Affects default security posture and Phase 44 command rule matching.
 
-  # AMR (Authentication Methods References) enforcement. Options: strict | warn | disabled
-  # disabled (default): AMR claims not checked
-  amr_enforcement: disabled
+host:
+  classification: elevated    # standard | elevated | critical
 
-  # NSS group membership enforcement. Options: strict | warn | disabled
-  # warn (default): log warning but allow if group lookup fails
-  groups_enforcement: warn
+# ── SSH Login ────────────────────────────────────────────────────────────────
 
-  # ACR (Authentication Context Reference) configuration
-  # acr:
-  #   enforcement: warn          # strict | warn | disabled
-  #   required_values: []        # e.g., ["urn:keycloak:acr:loa2"]
+ssh_login:
+  # Groups permitted to SSH in. Empty = no restriction (allow all).
+  login_groups: []
+  # login_groups:
+  #   - developers
+  #   - sre-team
 
-# Identity — username claim mapping and transforms.
-# Controls how OIDC token claims are mapped to Unix usernames.
-identity:
-  # OIDC claim to extract as the raw username. Default: preferred_username
-  username_claim: preferred_username
-  # Ordered transforms applied to the raw claim value.
-  # Options: strip_domain (alice@corp.com → alice)
-  transforms: []
-  # transforms:
-  #   - strip_domain
+# ── Sudo Step-Up ─────────────────────────────────────────────────────────────
+# Controls privilege escalation policy. Phase 44 adds command-aware rules.
 
-# Break-glass — emergency local access when IdP is unavailable.
-# MANDATORY for production. See docs/security-guide.md §Break-Glass Procedure.
+sudo:
+  step_up_required: true
+  # Phase 44: explicit default action (overrides step_up_required boolean)
+  # default_action: step_up    # allow | step_up | deny
+
+  allowed_methods:
+    - device_flow    # OAuth 2.0 Device Authorization Grant
+    # - push         # CIBA push notification (requires IdP CIBA support)
+    # - fido2        # FIDO2/WebAuthn
+
+  challenge_timeout: 120       # seconds
+
+  # Per-method timeout overrides
+  method_timeouts:
+    fido2: 30
+    push: 60
+    device_flow: 120
+
+  poll_interval_secs: 5
+
+  # Grace period: reuse a recent step-up for this many seconds.
+  # 0 = every sudo requires a fresh challenge.
+  grace_period_secs: 300
+
+  # Dry-run mode: log policy decisions without enforcing them.
+  # Use during rollout to observe behavior before going live.
+  # dry_run: true
+
+  # Command-specific rules (Phase 44). First match wins.
+  # If no rule matches, default_action (or step_up_required) applies.
+  commands:
+    # Read-only commands: allow without step-up
+    - name: "safe-status"
+      pattern: "systemctl status *"
+      action: allow
+
+    - name: "safe-logs"
+      pattern: "journalctl *"
+      action: allow
+
+    # Service management: require step-up
+    - name: "service-restart"
+      pattern: "systemctl restart *"
+      action: step_up
+
+    # Package management: require step-up
+    - name: "package-install"
+      pattern: "apt install *"
+      action: step_up
+
+    # Dangerous commands: deny
+    - name: "deny-reboot-critical"
+      pattern: "reboot"
+      action: deny
+      host_classification: critical
+
+  # Groups permitted to sudo. Empty = no restriction.
+  sudo_groups: []
+  # sudo_groups:
+  #   - sre-team
+
+# ── Break-Glass ──────────────────────────────────────────────────────────────
+# Emergency local access when IdP is unavailable.
+# MANDATORY for production. See docs/break-glass-validation.md.
+
 break_glass:
   enabled: true
   accounts:
-    - breakglass       # Must exist as a local Unix account with password set
-  # Require offline TOTP verification before granting break-glass bypass (Phase 36-02).
-  # When set to "yubikey_otp", the user is prompted for a 6-digit TOTP code verified
-  # against pre-enrolled seeds in /etc/unix-oidc/break-glass-otp.json (no network).
-  # Omit or set to null to allow break-glass without a hardware factor.
-  requires: yubikey_otp
-  alert_on_use: true     # Log alert when break-glass access is used
+    - breakglass             # Must exist as a local Unix account with password set
+  # Require offline TOTP before granting break-glass bypass (Phase 36-02).
+  # requires: yubikey_otp
+  alert_on_use: true         # Emit BREAK_GLASS_AUTH audit event at CRITICAL severity
 
-# Host classification affects default security requirements
-# Options:
-#   - standard: Regular workstations (minimal step-up)
-#   - elevated: Development/staging servers (step-up for system changes)
-#   - critical: Production/sensitive systems (step-up for all sudo)
-host_classification: elevated
+# ── Audit ────────────────────────────────────────────────────────────────────
 
-# SSH login requirements
-ssh:
-  # Require OIDC token for SSH authentication
-  require_oidc: true
-
-  # Minimum ACR level required for SSH login
-  # Set to null to accept any ACR
-  # Examples: "urn:keycloak:acr:loa2" (MFA), "phr" (phishing-resistant)
-  minimum_acr: null
-
-  # Maximum age of the authentication event (seconds)
-  # User must have authenticated within this window
-  # Set to null to disable auth_time checking
-  max_auth_age: 3600  # 1 hour
-
-# Sudo step-up authentication requirements
-sudo:
-  # Whether step-up authentication is required for sudo
-  step_up_required: true
-
-  # Allowed step-up methods (in order of preference)
-  allowed_methods:
-    - device_flow  # OAuth 2.0 Device Authorization Grant
-    - webauthn     # FIDO2/WebAuthn passkey authentication
-    # - push       # Push notification to mobile authenticator (future)
-
-  # Default timeout for step-up authentication (seconds)
-  challenge_timeout: 300  # 5 minutes
-
-  # Per-method timeout overrides (Phase 36-01).
-  # Methods not listed use challenge_timeout.
-  method_timeouts:
-    fido2: 30           # FIDO2 hardware tap is fast — short timeout
-    push: 120           # Push notification — user must respond on phone
-    device_flow: 300    # Device flow — user must open browser
-
-  # CIBA/device-flow poll interval in seconds.
-  # Minimum: 1. The IdP may request slower polling via SlowDown.
-  poll_interval_secs: 5
-
-  # Required ACR level for step-up authentication
-  # Set to a higher ACR than SSH to require stronger auth for sudo
-  required_acr: urn:keycloak:acr:loa2  # Require MFA
-
-  # Grace period: Skip re-authentication for same command class (seconds)
-  # After successful step-up, user can run similar commands without re-auth
-  # Set to 0 to require step-up for every command
-  grace_period_seconds: 300  # 5 minutes
-
-  # Grace period scope: How to group commands for grace period
-  # Options:
-  #   - command_class: Group by command category (e.g., all systemctl commands)
-  #   - exact_command: Only exact same command skips re-auth
-  #   - any_sudo: Any sudo command within grace period skips re-auth
-  grace_period_scope: command_class
-
-  # Command classes for grace period grouping
-  command_classes:
-    service_management:
-      - "/usr/bin/systemctl*"
-      - "/usr/sbin/service*"
-    package_management:
-      - "/usr/bin/apt*"
-      - "/usr/bin/apt-get*"
-      - "/usr/bin/yum*"
-      - "/usr/bin/dnf*"
-    user_management:
-      - "/usr/sbin/useradd*"
-      - "/usr/sbin/usermod*"
-      - "/usr/sbin/userdel*"
-      - "/usr/bin/passwd*"
-
-  # Command-specific rules (optional)
-  # Rules are evaluated in order; first match wins
-  # If no rules match, the default step_up_required setting is used
-  commands:
-    # Package management always requires step-up
-    - pattern: "/usr/bin/apt*"
-      step_up_required: true
-    - pattern: "/usr/bin/apt-get*"
-      step_up_required: true
-    - pattern: "/usr/bin/yum*"
-      step_up_required: true
-    - pattern: "/usr/bin/dnf*"
-      step_up_required: true
-
-    # System administration commands
-    - pattern: "/usr/sbin/shutdown*"
-      step_up_required: true
-    - pattern: "/usr/sbin/reboot*"
-      step_up_required: true
-    - pattern: "/usr/bin/systemctl*"
-      step_up_required: true
-    - pattern: "/usr/sbin/service*"
-      step_up_required: true
-
-    # User management
-    - pattern: "/usr/sbin/useradd*"
-      step_up_required: true
-    - pattern: "/usr/sbin/usermod*"
-      step_up_required: true
-    - pattern: "/usr/sbin/userdel*"
-      step_up_required: true
-    - pattern: "/usr/bin/passwd*"
-      step_up_required: true
-
-    # Allow read-only commands without step-up
-    - pattern: "/usr/bin/cat *"
-      step_up_required: false
-    - pattern: "/bin/cat *"
-      step_up_required: false
-    - pattern: "/usr/bin/less *"
-      step_up_required: false
-    - pattern: "/bin/ls *"
-      step_up_required: false
-    - pattern: "/usr/bin/tail *"
-      step_up_required: false
-    - pattern: "/usr/bin/head *"
-      step_up_required: false
-    - pattern: "/usr/bin/grep *"
-      step_up_required: false
+audit:
+  log_file: "/var/log/unix-oidc-audit.log"
+  syslog: true

@@ -13,10 +13,10 @@ issuers:
 
 break_glass:
   enabled: true
-  users:
-    - username: breakglass
-      # Generate: python3 -c "import crypt; print(crypt.crypt('PASSWORD', crypt.mksalt(crypt.METHOD_SHA512)))"
-      password_hash: "$6$rounds=656000$CHANGE_ME"
+  # Account names that bypass OIDC and use local system password auth.
+  # Create the user: sudo useradd -m breakglass && sudo passwd breakglass
+  accounts:
+    - breakglass
   alert_on_use: true
 
 security_modes:

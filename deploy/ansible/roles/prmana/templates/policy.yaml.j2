@@ -21,9 +21,8 @@ issuers:
 break_glass:
   enabled: {{ prmana_break_glass_enabled | lower }}
 {% if prmana_break_glass_enabled %}
-  users:
-    - username: "{{ prmana_break_glass_username }}"
-      password_hash: "{{ prmana_break_glass_password_hash }}"
+  accounts:
+    - "{{ prmana_break_glass_username }}"
   alert_on_use: {{ prmana_break_glass_alert_on_use | lower }}
 {% endif %}
 
