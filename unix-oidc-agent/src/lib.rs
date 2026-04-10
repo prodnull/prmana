@@ -2,6 +2,7 @@
 //!
 //! This library provides the core functionality for the OIDC authentication agent.
 
+pub mod auth_code;
 pub mod config;
 pub mod crypto;
 pub mod daemon;

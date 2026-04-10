@@ -304,7 +304,9 @@ mod tests {
         crate::oidc::OidcDiscovery {
             jwks_uri: "https://idp.example/jwks".to_string(),
             issuer: "https://idp.example".to_string(),
+            authorization_endpoint: None,
             token_endpoint: "https://idp.example/token".to_string(),
+            code_challenge_methods_supported: None,
             device_authorization_endpoint: device_endpoint.map(str::to_string),
             backchannel_authentication_endpoint: None,
             backchannel_token_delivery_modes_supported: None,

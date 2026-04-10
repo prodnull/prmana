@@ -59,8 +59,14 @@ pub struct OidcDiscovery {
     pub jwks_uri: String,
     /// Issuer URL (OIDC Core 1.0 §3).
     pub issuer: String,
+    /// Authorization endpoint (RFC 6749 §3.1). Absent if auth-code flow unsupported.
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
     /// Token endpoint (RFC 6749 §3.2).
     pub token_endpoint: String,
+    /// PKCE code challenge methods supported (RFC 7636). Absent if unspecified by the IdP.
+    #[serde(default)]
+    pub code_challenge_methods_supported: Option<Vec<String>>,
     /// Device authorization endpoint (RFC 8628 §3.1). Absent if device flow unsupported.
     #[serde(default)]
     pub device_authorization_endpoint: Option<String>,
@@ -436,6 +442,27 @@ mod tests {
         assert_eq!(
             provider.http_timeout,
             Duration::from_secs(HTTP_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn test_oidc_discovery_parses_authorization_endpoint() {
+        let discovery: OidcDiscovery = serde_json::from_value(serde_json::json!({
+            "issuer": "https://idp.example.com",
+            "jwks_uri": "https://idp.example.com/jwks",
+            "authorization_endpoint": "https://idp.example.com/auth",
+            "token_endpoint": "https://idp.example.com/token",
+            "code_challenge_methods_supported": ["S256", "plain"],
+        }))
+        .unwrap();
+
+        assert_eq!(
+            discovery.authorization_endpoint.as_deref(),
+            Some("https://idp.example.com/auth")
+        );
+        assert_eq!(
+            discovery.code_challenge_methods_supported.as_deref(),
+            Some(&vec!["S256".to_string(), "plain".to_string()][..])
         );
     }
 }

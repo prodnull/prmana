@@ -8,12 +8,17 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use pam_unix_oidc::oidc::jwks::OidcDiscovery;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
+use unix_oidc_agent::auth_code::{
+    build_authorization_url, exchange_code, generate_pkce, start_callback_listener,
+    CallbackListener, TokenExchangeRequest, CALLBACK_TIMEOUT_SECS,
+};
 use unix_oidc_agent::config::AgentConfig;
 use unix_oidc_agent::crypto::protected_key::mlock_probe;
 use unix_oidc_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
@@ -29,6 +34,7 @@ use unix_oidc_agent::storage::KEY_PQ_SEED;
 use unix_oidc_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
+use uuid::Uuid;
 
 mod askpass;
 
@@ -166,7 +172,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Authenticate with the IdP using device flow
+    /// Authenticate with the IdP using device flow or auth code + PKCE
     Login {
         /// IdP issuer URL (defaults to OIDC_ISSUER env var)
         #[arg(long)]
@@ -185,6 +191,10 @@ enum Commands {
         /// SPIRE signer fetches JWT-SVIDs from local SPIRE agent (requires --features spire).
         #[arg(long, default_value = "software")]
         signer: String,
+
+        /// OAuth login flow: device (default) or authcode.
+        #[arg(long, default_value = "device")]
+        flow: String,
     },
 
     /// Provision a hardware key for DPoP signing.
@@ -316,7 +326,8 @@ async fn main() -> anyhow::Result<()> {
             client_id,
             client_secret,
             signer,
-        } => run_login(issuer, client_id, client_secret, signer).await,
+            flow,
+        } => run_login(issuer, client_id, client_secret, signer, flow).await,
 
         Commands::Provision { signer } => run_provision(signer).await,
 
@@ -694,6 +705,7 @@ async fn run_login(
     client_id: Option<String>,
     client_secret: Option<String>,
     signer_spec: String,
+    flow: String,
 ) -> anyhow::Result<()> {
     let issuer = issuer
         .or_else(|| std::env::var("OIDC_ISSUER").ok())
@@ -721,7 +733,11 @@ async fn run_login(
             .map(SecretString::from)
     });
 
-    info!("Starting device flow authentication with {}", issuer);
+    if flow != "device" && flow != "authcode" {
+        anyhow::bail!("Invalid --flow value '{flow}'. Supported values: device, authcode");
+    }
+
+    info!(issuer = %issuer, flow = %flow, "Starting authentication flow");
 
     // Load agent config for timeout and skew parameters.
     // Failure is non-fatal — use defaults so the login flow still works.
@@ -851,68 +867,108 @@ async fn run_login(
         return Ok(());
     }
 
-    println!("Starting device authorization flow with: {issuer}");
-    println!("Client ID: {client_id}");
+    let discovery = fetch_oidc_discovery(&issuer, device_flow_timeout_secs).await?;
+
+    let token_result = if flow == "authcode" {
+        println!("Starting authorization code + PKCE flow with: {issuer}");
+        println!("Client ID: {client_id}");
+        println!();
+
+        let authorization_endpoint = discovery
+            .authorization_endpoint
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("IdP does not advertise authorization_endpoint"))?;
+
+        if let Some(methods) = &discovery.code_challenge_methods_supported {
+            if !methods.iter().any(|m| m == "S256") {
+                anyhow::bail!("IdP does not advertise PKCE S256 support");
+            }
+        }
+
+        run_auth_code_flow(
+            authorization_endpoint,
+            &discovery.token_endpoint,
+            discovery.revocation_endpoint.clone(),
+            &client_id,
+            client_secret.as_ref(),
+            signer_arc.as_ref(),
+            device_flow_timeout_secs,
+        )
+        .await?
+    } else {
+        println!("Starting device authorization flow with: {issuer}");
+        println!("Client ID: {client_id}");
+        println!();
+
+        let device_endpoint = discovery
+            .device_authorization_endpoint
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("IdP does not support device authorization"))?;
+
+        run_device_flow(
+            &device_endpoint,
+            &discovery.token_endpoint,
+            discovery.revocation_endpoint.clone(),
+            &client_id,
+            client_secret.clone(),
+            Arc::clone(&signer_arc),
+            device_flow_timeout_secs,
+        )
+        .await?
+    };
+
     println!();
+    println!("Authentication successful!");
 
-    // Use spawn_blocking for the sync device flow client
-    let issuer_clone = issuer.clone();
-    let client_id_clone = client_id.clone();
-    // SecretString is Clone (String: CloneableSecret in secrecy 0.10) — safe to clone for closure capture.
-    let secret_clone = client_secret.clone();
-    // RFC 9449 §4.2: DPoP proof MUST be included in token requests.
-    // Clone the Arc so the blocking closure can generate fresh proofs per poll iteration.
-    let signer_for_poll = Arc::clone(&signer_arc);
+    persist_login_tokens(
+        &mut storage,
+        &token_result.0,
+        &issuer,
+        &token_result.1,
+        &client_id,
+        client_secret.as_ref(),
+        &signer_type,
+        token_result.2.as_deref(),
+    )?;
 
-    // Store issuer for refresh operations
-    let issuer_for_storage = issuer.clone();
-    let client_id_for_storage = client_id.clone();
-    let client_secret_for_storage = client_secret.clone();
-    // signer_type is a String — clone to use in metadata write after spawn_blocking.
-    let signer_type_for_storage = signer_type.clone();
-
-    let token_result = tokio::task::spawn_blocking(move || {
-        use std::time::Duration;
-
-        // Discover OIDC endpoints
-        let discovery_url = format!(
-            "{}/.well-known/openid-configuration",
-            issuer_clone.trim_end_matches('/')
+    let expires_in = token_result.0["expires_in"].as_u64().unwrap_or(3600);
+    println!("Token stored successfully");
+    println!("Token expires in: {expires_in}s");
+    if signer_type != "software" {
+        println!(
+            "Signer: {} (hardware key on device)",
+            format_signer_type(&signer_type)
         );
+    }
+    println!();
+    println!("Start the agent daemon with: unix-oidc-agent serve");
 
-        // device_flow_timeout_secs is loaded from AgentConfig above (default 30s).
+    Ok(())
+}
+
+async fn run_device_flow(
+    device_endpoint: &str,
+    token_endpoint: &str,
+    revocation_endpoint: Option<String>,
+    client_id: &str,
+    client_secret: Option<SecretString>,
+    signer_for_poll: Arc<dyn DPoPSigner>,
+    device_flow_timeout_secs: u64,
+) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
+    let device_endpoint = device_endpoint.to_string();
+    let token_endpoint = token_endpoint.to_string();
+    let client_id = client_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        use std::time::Duration;
         let http_client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(device_flow_timeout_secs))
             .build()
             .expect("Failed to create HTTP client");
 
-        // Fetch OIDC discovery document
-        let discovery: serde_json::Value = http_client
-            .get(&discovery_url)
-            .send()
-            .map_err(|e| anyhow::anyhow!("Failed to fetch OIDC discovery: {e}"))?
-            .json()
-            .map_err(|e| anyhow::anyhow!("Failed to parse OIDC discovery: {e}"))?;
-
-        let device_endpoint = discovery["device_authorization_endpoint"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("IdP does not support device authorization"))?;
-
-        let token_endpoint = discovery["token_endpoint"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Token endpoint not found in discovery"))?
-            .to_string();
-
-        // RFC 7009: revocation endpoint is optional — some IdPs don't publish it.
-        // Extract from discovery; if absent, revocation will be skipped gracefully.
-        let revocation_endpoint: Option<String> = discovery["revocation_endpoint"]
-            .as_str()
-            .map(str::to_string);
-
         // Start device authorization
-        let mut params = vec![("client_id", client_id_clone.as_str()), ("scope", "openid")];
+        let mut params = vec![("client_id", client_id.as_str()), ("scope", "openid")];
 
-        if let Some(ref secret) = secret_clone {
+        if let Some(ref secret) = client_secret {
             // Security (MEM-03): expose_secret() at HTTP param boundary only.
             let secret_str: &str = secret.expose_secret();
             params.push(("client_secret", secret_str));
@@ -1024,10 +1080,10 @@ async fn run_login(
             let mut token_params = vec![
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ("device_code", device_code),
-                ("client_id", client_id_clone.as_str()),
+                ("client_id", client_id.as_str()),
             ];
 
-            if let Some(ref secret) = secret_clone {
+            if let Some(ref secret) = client_secret {
                 // Security (MEM-03): expose_secret() at HTTP param boundary only.
                 let secret_str: &str = secret.expose_secret();
                 token_params.push(("client_secret", secret_str));
@@ -1090,15 +1146,111 @@ async fn run_login(
             }
         }
     })
-    .await??;
+    .await?
+}
 
-    let (token_result, token_endpoint, revocation_endpoint) = token_result;
+async fn run_auth_code_flow(
+    authorization_endpoint: &str,
+    token_endpoint: &str,
+    revocation_endpoint: Option<String>,
+    client_id: &str,
+    client_secret: Option<&SecretString>,
+    signer: &dyn DPoPSigner,
+    http_timeout_secs: u64,
+) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
+    let (code_verifier, code_challenge) = generate_pkce();
+    let state = Uuid::new_v4().to_string();
+    let listener: CallbackListener = start_callback_listener(&state).await?;
+    let redirect_uri = listener.redirect_uri().to_string();
+    let authorization_url = build_authorization_url(
+        authorization_endpoint,
+        client_id,
+        &redirect_uri,
+        "openid",
+        &state,
+        &code_challenge,
+    )?;
 
+    println!("Open this URL in your browser to continue:");
+    let authorization_url_str = authorization_url.to_string();
+    let (safe_url, was_sanitized) = sanitize_terminal_output(&authorization_url_str);
+    if was_sanitized {
+        warn!("Sanitized terminal escape sequences from authorization URL");
+    }
+    println!("{safe_url}");
     println!();
-    println!("Authentication successful!");
 
-    // Extract token information.
-    // Wrap in SecretString immediately — must not appear in logs (MEM-03).
+    if let Err(e) = open::that(&authorization_url_str) {
+        warn!(error = %e, "Failed to launch browser automatically");
+    }
+
+    let callback = listener
+        .wait(Duration::from_secs(CALLBACK_TIMEOUT_SECS))
+        .await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(http_timeout_secs))
+        .build()?;
+    let token_response = exchange_code(
+        &client,
+        signer,
+        TokenExchangeRequest {
+            token_endpoint,
+            code: &callback.code,
+            redirect_uri: &redirect_uri,
+            code_verifier: &code_verifier,
+            client_id,
+            client_secret: client_secret.map(ExposeSecret::expose_secret),
+        },
+    )
+    .await?;
+
+    Ok((
+        token_response,
+        token_endpoint.to_string(),
+        revocation_endpoint,
+    ))
+}
+
+async fn fetch_oidc_discovery(issuer: &str, timeout_secs: u64) -> anyhow::Result<OidcDiscovery> {
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()?;
+
+    let response = client
+        .get(&discovery_url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch OIDC discovery: {e}"))?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Failed to fetch OIDC discovery: HTTP {}: {}",
+            response.status(),
+            discovery_url
+        );
+    }
+
+    response
+        .json::<OidcDiscovery>()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse OIDC discovery: {e}"))
+}
+
+fn persist_login_tokens(
+    storage: &mut StorageRouter,
+    token_result: &serde_json::Value,
+    issuer: &str,
+    token_endpoint: &str,
+    client_id: &str,
+    client_secret: Option<&SecretString>,
+    signer_type: &str,
+    revocation_endpoint: Option<&str>,
+) -> anyhow::Result<()> {
     let access_token = SecretString::from(
         token_result["access_token"]
             .as_str()
@@ -1113,47 +1265,19 @@ async fn run_login(
         .as_secs() as i64
         + expires_in as i64;
 
-    // Storage write: expose_secret() is the audit boundary for persistence.
     storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
 
-    // For software signers: persist the DPoP private key (it's held in process memory).
-    // For hardware signers (YubiKey, TPM): the key never leaves the device — do NOT store it.
-    if signer_type_for_storage == "software" {
-        // load_or_create_signer already stored the key; nothing to do here.
-        // This branch exists for clarity: hardware signers must NOT write KEY_DPOP_PRIVATE.
-    }
-
-    // Store token metadata (expiry, refresh token, OIDC config for refresh, and signer_type).
-    // signer_type is read back at daemon startup to reconstruct the correct signer.
-    // Storage write: expose_secret() is the audit boundary — raw value written to disk only here.
     let metadata = serde_json::json!({
         "expires_at": token_expires,
         "refresh_token": token_result["refresh_token"].as_str(),
-        "issuer": issuer_for_storage,
+        "issuer": issuer,
         "token_endpoint": token_endpoint,
-        "client_id": client_id_for_storage,
-        "client_secret": client_secret_for_storage.as_ref().map(|s| { let v: &str = s.expose_secret(); v }),
-        // Persisted signer type: restored by load_agent_state() on daemon restart.
-        // "software" means key is in KEY_DPOP_PRIVATE; hardware specs mean key is on device.
-        "signer_type": signer_type_for_storage,
-        // RFC 7009: revocation endpoint from OIDC discovery (optional).
-        // Populated only when the IdP advertises "revocation_endpoint" in discovery.
-        // cleanup_session() uses this to send best-effort revocation on session close.
+        "client_id": client_id,
+        "client_secret": client_secret.map(ExposeSecret::expose_secret),
+        "signer_type": signer_type,
         "revocation_endpoint": revocation_endpoint,
     });
     storage.store(KEY_TOKEN_METADATA, metadata.to_string().as_bytes())?;
-
-    println!("Token stored successfully");
-    println!("Token expires in: {expires_in}s");
-    if signer_type_for_storage != "software" {
-        println!(
-            "Signer: {} (hardware key on device)",
-            format_signer_type(&signer_type_for_storage)
-        );
-    }
-    println!();
-    println!("Start the agent daemon with: unix-oidc-agent serve");
-
     Ok(())
 }
 

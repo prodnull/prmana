@@ -158,7 +158,9 @@ mod tests {
         OidcDiscovery {
             jwks_uri: "https://idp.example.com/jwks".to_string(),
             issuer: "https://idp.example.com".to_string(),
+            authorization_endpoint: None,
             token_endpoint: "https://idp.example.com/token".to_string(),
+            code_challenge_methods_supported: None,
             device_authorization_endpoint: None,
             backchannel_authentication_endpoint: backchannel.map(str::to_string),
             backchannel_token_delivery_modes_supported: modes
