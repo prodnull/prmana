@@ -2,6 +2,10 @@
 
 This guide covers monitoring and observability for unix-oidc deployments.
 
+Related docs:
+
+- [Access Posture & Evidence](./access-posture-evidence.md)
+
 ## Agent Metrics
 
 The unix-oidc-agent exposes metrics via IPC for monitoring health and performance.
@@ -84,10 +88,34 @@ Then expose via node_exporter textfile collector or a simple HTTP wrapper.
 
 The PAM module logs structured audit events to syslog (AUTH facility) and optionally to a dedicated file.
 
+Phase 45 also adds a local evidence-export path that can turn those audit events
+into filtered JSON or CSV bundles without requiring a separate management plane.
+
 ### Audit Log Location
 
 - **Syslog**: AUTH facility (typically `/var/log/auth.log` or `/var/log/secure`)
 - **Dedicated file**: `/var/log/unix-oidc-audit.log` (configurable via `UNIX_OIDC_AUDIT_LOG`)
+
+### Evidence Export CLI
+
+Generate a local posture snapshot from `policy.yaml`:
+
+```bash
+unix-oidc-evidence-export posture \
+  --policy /etc/unix-oidc/policy.yaml
+```
+
+Generate a filtered evidence bundle from the audit log:
+
+```bash
+unix-oidc-evidence-export export \
+  --file /var/log/unix-oidc-audit.log \
+  --policy /etc/unix-oidc/policy.yaml \
+  --event STEP_UP_FAILED \
+  --event BREAK_GLASS_AUTH
+```
+
+CSV output is available with `--format csv`.
 
 ### Event Types
 
@@ -100,6 +128,11 @@ The PAM module logs structured audit events to syslog (AUTH facility) and option
 | `STEP_UP_INITIATED` | Sudo step-up flow started |
 | `STEP_UP_SUCCESS` | Sudo step-up completed |
 | `STEP_UP_FAILED` | Sudo step-up failed |
+| `PRIVILEGE_POLICY_DECISION` | Risk-aware sudo policy decision |
+| `BREAK_GLASS_AUTH` | Break-glass bypass used |
+| `IDP_FAILOVER_ACTIVATED` | Primary issuer failed; secondary activated |
+| `IDP_FAILOVER_RECOVERED` | Primary issuer recovered |
+| `IDP_FAILOVER_EXHAUSTED` | Both issuers unavailable; auth failed closed |
 
 ### Example Audit Event
 

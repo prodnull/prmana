@@ -34,6 +34,7 @@ pub mod audit;
 pub mod auth;
 pub mod ciba;
 pub mod device_flow;
+pub mod evidence;
 pub mod identity;
 pub mod oidc;
 pub mod otp;

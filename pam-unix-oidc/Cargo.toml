@@ -23,6 +23,10 @@ pqc = ["dep:ml-dsa"]
 name = "unix-oidc-audit-verify"
 path = "src/bin/audit_verify.rs"
 
+[[bin]]
+name = "unix-oidc-evidence-export"
+path = "src/bin/evidence_export.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
