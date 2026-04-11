@@ -146,12 +146,33 @@ create accounts.
    management). On systems without capability support, the service logs a warning
    and continues as full root.
 
+   > **Superseded by ADR-021 §B (Decision B)** (2026-04-11). The in-process
+   > capability dropping described here is not implemented and was found to
+   > be fragile under distribution-specific `shadow-utils` and
+   > account-management hooks. ADR-021 replaces it with helper-based
+   > privilege separation as the target architecture (Decision B) and
+   > perimeter hardening of the single-process service as the shipped v1.0
+   > posture (Decision A). ADR-021 forbids describing SCIM as
+   > privilege-separated until Decision B ships.
+
 5. **Rate limiting**: Tower middleware enforces per-IP rate limits on the SCIM
    endpoint to prevent IdP misconfigurations or compromised tokens from triggering
    mass account creation.
 
+   > **Superseded by ADR-021 §A3** (2026-04-11). The "Tower middleware
+   > enforces per-IP rate limits" sentence describes an intended behavior
+   > that does not exist in the current code. ADR-021 §A3 replaces it with an
+   > explicit layered model (per-IP + per-principal + per-endpoint-class +
+   > global + body/header/timeout/concurrency bounds) and calls out that
+   > implementation is spec, not code, under phase DT-SCIM.
+
 6. **TLS**: The service requires TLS for non-loopback listeners. Plaintext HTTP is
    permitted only on `127.0.0.1`/`::1` for reverse-proxy deployments.
+
+   > **Superseded by ADR-021 §A1** (2026-04-11). ADR-019's TLS requirement is
+   > deployment guidance; ADR-021 §A1 makes it a startup-enforced invariant
+   > with a defined bind-target matrix and explicit fail-closed on missing or
+   > unreadable key material.
 
 ### Phase 37 scope limitations
 

@@ -28,6 +28,8 @@ ADRs document significant architectural decisions made during the project's deve
 | [017](./017-spire-workload-api-integration.md) | SpireSigner via tonic + Official Workload API Proto | Accepted | 2026-04-09 |
 | [018](./018-hardware-attestation.md) | TPM 2.0 Key Attestation via TPM2_CC_Certify | Accepted | 2026-04-09 |
 | [019](./019-scim-provisioning.md) | SCIM 2.0 Provisioning Architecture | Accepted | 2026-04-09 |
+| [020](./020-active-passive-idp-redundancy.md) | Active-Passive IdP Redundancy | Accepted | 2026-04-10 |
+| [021](./021-scim-service-hardening-and-privilege-separation.md) | SCIM Service Hardening and Target-State Privilege Separation | Accepted | 2026-04-11 |
 
 ## ADR Format
 
