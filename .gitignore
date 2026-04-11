@@ -62,3 +62,7 @@ website/
 *.tfstate.backup
 *.tfplan
 crash.log
+
+# SELinux compiled policy artifacts
+packaging/selinux/*.mod
+packaging/selinux/*.pp
