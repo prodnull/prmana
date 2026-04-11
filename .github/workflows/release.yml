@@ -341,11 +341,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
 
+      - name: Build test binaries (default features)
+        run: cargo test --workspace --no-run
+
       - name: Run tests (default features — fast path)
-        run: cargo test --workspace
+        run: cargo test --workspace -- --test-threads=4
+        timeout-minutes: 15
 
       - name: Verify all-features compile (optional features compile check)
         run: cargo check --workspace --all-features
+        timeout-minutes: 20
 
       - name: Security audit
         run: |
