@@ -36,6 +36,11 @@ pub struct MetricsCollector {
     /// IPC request errors
     pub ipc_errors_total: AtomicU64,
 
+    /// kubectl exec-credential token issuance metrics (DT-A-04).
+    /// Tracks GetKubectlCredential requests to detect abuse / rate-limit violations.
+    pub kubectl_tokens_issued_total: AtomicU64,
+    pub kubectl_token_failures_total: AtomicU64,
+
     // Latency tracking (requires lock for histogram updates)
     /// Proof generation latencies (microseconds)
     proof_latencies: RwLock<LatencyHistogram>,
@@ -68,6 +73,8 @@ impl MetricsCollector {
             ipc_connections_total: AtomicU64::new(0),
             ipc_requests_total: AtomicU64::new(0),
             ipc_errors_total: AtomicU64::new(0),
+            kubectl_tokens_issued_total: AtomicU64::new(0),
+            kubectl_token_failures_total: AtomicU64::new(0),
             proof_latencies: RwLock::new(LatencyHistogram::new()),
             refresh_latencies: RwLock::new(LatencyHistogram::new()),
             last_proof_time: AtomicU64::new(0),
@@ -160,6 +167,13 @@ impl MetricsCollector {
             ipc_requests_total: self.ipc_requests_total.load(Ordering::Relaxed),
             ipc_errors_total: self.ipc_errors_total.load(Ordering::Relaxed),
 
+            kubectl_tokens_issued_total: self
+                .kubectl_tokens_issued_total
+                .load(Ordering::Relaxed),
+            kubectl_token_failures_total: self
+                .kubectl_token_failures_total
+                .load(Ordering::Relaxed),
+
             last_proof_time: self.last_proof_time.load(Ordering::Relaxed),
             last_refresh_time: self.last_refresh_time.load(Ordering::Relaxed),
         }
@@ -203,6 +217,10 @@ pub struct MetricsSnapshot {
     pub ipc_connections_total: u64,
     pub ipc_requests_total: u64,
     pub ipc_errors_total: u64,
+
+    // kubectl exec-credential metrics (DT-A-04)
+    pub kubectl_tokens_issued_total: u64,
+    pub kubectl_token_failures_total: u64,
 
     // Timestamps
     pub last_proof_time: u64,
@@ -288,6 +306,25 @@ impl MetricsSnapshot {
         lines.push(format!(
             "prmana_agent_ipc_errors_total {}",
             self.ipc_errors_total
+        ));
+
+        // kubectl exec-credential metrics (DT-A-04)
+        lines.push(
+            "# HELP prmana_agent_kubectl_tokens_issued_total Total kubectl exec-credential tokens issued".to_string(),
+        );
+        lines.push("# TYPE prmana_agent_kubectl_tokens_issued_total counter".to_string());
+        lines.push(format!(
+            "prmana_agent_kubectl_tokens_issued_total {}",
+            self.kubectl_tokens_issued_total
+        ));
+
+        lines.push(
+            "# HELP prmana_agent_kubectl_token_failures_total Total kubectl token exchange failures".to_string(),
+        );
+        lines.push("# TYPE prmana_agent_kubectl_token_failures_total counter".to_string());
+        lines.push(format!(
+            "prmana_agent_kubectl_token_failures_total {}",
+            self.kubectl_token_failures_total
         ));
 
         lines.join("\n")
