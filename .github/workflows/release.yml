@@ -148,6 +148,172 @@ jobs:
             prmana-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
             prmana-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
 
+      # Upload raw binaries for the package job to consume.
+      # Only Linux builds produce the PAM module; macOS builds are agent-only.
+      - name: Upload raw binaries for packaging
+        if: matrix.build_pam == true
+        uses: actions/upload-artifact@v6
+        with:
+          name: binaries-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/prmana-agent
+            target/${{ matrix.target }}/release/libpam_prmana.so
+            target/${{ matrix.target }}/release/prmana-audit-verify
+            target/${{ matrix.target }}/release/prmana-scim
+          retention-days: 1
+
+  package:
+    name: Build packages (${{ matrix.pkg_arch }}, ${{ matrix.pkg_type }})
+    needs: [build]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rust_target: x86_64-unknown-linux-gnu
+            pkg_arch: amd64
+            pkg_type: deb
+            goarch: amd64
+            deb_multiarch: x86_64-linux-gnu
+          - rust_target: x86_64-unknown-linux-gnu
+            pkg_arch: amd64
+            pkg_type: rpm
+            goarch: x86_64
+            deb_multiarch: ""
+          - rust_target: aarch64-unknown-linux-gnu
+            pkg_arch: arm64
+            pkg_type: deb
+            goarch: arm64
+            deb_multiarch: aarch64-linux-gnu
+          - rust_target: aarch64-unknown-linux-gnu
+            pkg_arch: arm64
+            pkg_type: rpm
+            goarch: aarch64
+            deb_multiarch: ""
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: binaries-${{ matrix.rust_target }}
+          path: target/${{ matrix.rust_target }}/release/
+
+      - name: Fix binary permissions after download
+        run: |
+          chmod +x \
+            target/${{ matrix.rust_target }}/release/prmana-agent \
+            target/${{ matrix.rust_target }}/release/prmana-audit-verify \
+            target/${{ matrix.rust_target }}/release/prmana-scim \
+            2>/dev/null || true
+
+      - name: Install nfpm v2.46.0
+        run: |
+          NFPM_VERSION=2.46.0
+          curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
+              | sudo tar xz -C /usr/local/bin nfpm
+          nfpm --version
+
+      - name: Install lint and shell-check tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y lintian rpmlint shellcheck gettext-base
+
+      - name: Shellcheck maintainer scripts
+        run: shellcheck -s sh packaging/scripts/*.preinst packaging/scripts/*.postinst packaging/scripts/*.prerm packaging/scripts/*.postrm
+
+      - name: Build packages
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          GOARCH: ${{ matrix.goarch }}
+          DEB_PAM_MULTIARCH: ${{ matrix.deb_multiarch }}
+          PKG_TYPE: ${{ matrix.pkg_type }}
+          PKG_ARCH: ${{ matrix.pkg_arch }}
+        run: |
+          mkdir -p dist/packages
+
+          build_pkg() {
+            local cfg=$1 name=$2
+            envsubst < "$cfg" > /tmp/nfpm-expanded.yaml
+            if [ "$PKG_TYPE" = "deb" ]; then
+              nfpm pkg --packager deb --config /tmp/nfpm-expanded.yaml \
+                  --target "dist/packages/${name}_1.0.0_${PKG_ARCH}.deb"
+            else
+              nfpm pkg --packager rpm --config /tmp/nfpm-expanded.yaml \
+                  --target "dist/packages/${name}-1.0.0-1.${GOARCH}.rpm"
+            fi
+          }
+
+          # Main prmana package: co-installs pam_prmana.so + prmana-agent + systemd units
+          build_pkg packaging/nfpm/prmana.yaml prmana
+
+          # SCIM server package
+          build_pkg packaging/nfpm/prmana-scim.yaml prmana-scim
+
+          # prmana-tools: gated on DT-A-04 (prmana-kubectl binary must exist first)
+          if [ -x "target/${RUST_TARGET}/release/prmana-kubectl" ]; then
+            build_pkg packaging/nfpm/prmana-tools.yaml prmana-tools
+          else
+            echo "skip prmana-tools: prmana-kubectl not built (DT-A-04 not yet shipped)"
+          fi
+
+      - name: Lint deb packages
+        if: matrix.pkg_type == 'deb'
+        run: lintian --profile debian --pedantic dist/packages/*.deb
+
+      - name: Lint rpm packages
+        if: matrix.pkg_type == 'rpm'
+        run: rpmlint dist/packages/*.rpm || true
+
+      # Security gate: verify PRMANA_TEST_MODE sentinel absent from release binaries.
+      # T-DTA02-04: test-mode bypasses ALL JWT signature verification.
+      # This is a belt-and-suspenders check — the build job already runs this gate.
+      - name: Test-mode sentinel check (prmana-agent)
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          AGENT="target/${RUST_TARGET}/release/prmana-agent"
+          if [ ! -f "$AGENT" ]; then
+            echo "::error::prmana-agent not found at ${AGENT}"
+            exit 1
+          fi
+          if strings "$AGENT" | grep -qi "insecure.*test.*mode\|PRMANA_TEST_MODE\|new_insecure_for_testing"; then
+            echo "::error::CRITICAL: Release binary contains test-mode code!"
+            exit 1
+          fi
+          echo "Test-mode gate: PASSED"
+
+      - name: Smoke test deb install (amd64 only)
+        if: matrix.pkg_type == 'deb' && matrix.pkg_arch == 'amd64'
+        run: |
+          docker run --rm -v "$PWD/dist/packages:/pkg" debian:12-slim bash -c '
+            apt-get update -qq && apt-get install -y -qq /pkg/prmana_1.0.0_amd64.deb
+            /usr/bin/prmana-agent --version
+            test -f /usr/lib/security/pam_prmana.so
+            test -f /usr/lib/systemd/system/prmana-agent.service
+            test -d /etc/prmana
+            getent passwd prmana
+            echo "Debian 12 smoke test: PASSED"
+          '
+
+      - name: Smoke test rpm install (x86_64 only)
+        if: matrix.pkg_type == 'rpm' && matrix.goarch == 'x86_64'
+        run: |
+          docker run --rm -v "$PWD/dist/packages:/pkg" rockylinux:9 bash -c '
+            dnf install -y -q /pkg/prmana-1.0.0-1.x86_64.rpm
+            /usr/bin/prmana-agent --version
+            test -f /usr/lib64/security/pam_prmana.so
+            getent passwd prmana
+            echo "Rocky 9 smoke test: PASSED"
+          '
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: packages-${{ matrix.pkg_arch }}-${{ matrix.pkg_type }}
+          path: dist/packages/
+          retention-days: 7
+
   test:
     name: Pre-release Tests
     runs-on: ubuntu-latest
