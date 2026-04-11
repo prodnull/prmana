@@ -31,20 +31,19 @@ resource "aws_budgets_budget" "fleet_run" {
     values = ["user:Project$prmana-ci"]
   }
 
-  # Notification at 80% of the budget cap. Using ACTUAL (not FORECASTED)
-  # because spot instance costs accumulate rapidly and forecasted values
-  # lag real spend.
-  notification {
-    comparison_operator = "GREATER_THAN"
-    threshold           = 80
-    threshold_type      = "PERCENTAGE"
-    notification_type   = "ACTUAL"
-
-    # subscriber_sns_topic_arns is a list attribute. Conditionally populated:
-    # if an SNS topic ARN is provided, send alerts there; otherwise the budget
-    # alarm is still active (visible in AWS Console and Cost Explorer) but
-    # silent. This allows ad-hoc runs without requiring SNS setup.
-    subscriber_sns_topic_arns = var.sns_budget_topic_arn != "" ? [var.sns_budget_topic_arn] : []
+  # Notification at 80% of the budget cap — only created when an SNS topic
+  # ARN is provided. AWS Budgets requires at least one subscriber per
+  # notification; omitting the block entirely is valid and leaves the budget
+  # visible in Cost Explorer without sending alerts.
+  dynamic "notification" {
+    for_each = var.sns_budget_topic_arn != "" ? [1] : []
+    content {
+      comparison_operator       = "GREATER_THAN"
+      threshold                 = 80
+      threshold_type            = "PERCENTAGE"
+      notification_type         = "ACTUAL"
+      subscriber_sns_topic_arns = [var.sns_budget_topic_arn]
+    }
   }
 
   tags = {

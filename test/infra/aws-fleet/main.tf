@@ -39,10 +39,12 @@ resource "aws_instance" "fleet" {
     }
   }
 
-  # Critical: when the user-data shutdown watchdog fires, the instance is
-  # destroyed (not stopped). Stopped spot instances are billed and may be
-  # restarted unexpectedly.
-  instance_initiated_shutdown_behavior = "terminate"
+  # Note: instance_initiated_shutdown_behavior is intentionally absent.
+  # AWS does not support modifying this attribute on spot instances via
+  # ModifyInstanceAttribute (UnsupportedOperation). Spot instances default
+  # to "terminate" on shutdown, which is the behaviour we want. The user-data
+  # watchdog (shutdown -h +N) combined with spot_options.instance_interruption_behavior
+  # = "terminate" provides the required auto-destroy guarantee.
 
   # IMDSv2 enforcement (T-DT0-01-03: SSRF-based credential theft mitigation)
   metadata_options {
