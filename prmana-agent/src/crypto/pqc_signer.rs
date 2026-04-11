@@ -16,7 +16,7 @@
 //! This module is only compiled when `--features pqc` is active.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use ml_dsa::{MlDsa65, Seed};
+use ml_dsa::{KeyGen, MlDsa65, Seed};
 use p256::ecdsa::{signature::Signer as _, Signature as Es256Signature};
 use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -139,8 +139,8 @@ impl HybridPqcSigner {
         let mut seed_bytes = Zeroizing::new([0u8; 32]);
         OsRng.fill_bytes(seed_bytes.as_mut());
         let seed = Seed::from(*seed_bytes);
-        let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
-        let pq_vk = pq_key.verifying_key();
+        let pq_key = MlDsa65::from_seed(&seed);
+        let pq_vk = pq_key.signing_key().verifying_key();
 
         let signer = Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes);
         let key_id = &signer.thumbprint[..signer.thumbprint.len().min(8)];
@@ -169,8 +169,8 @@ impl HybridPqcSigner {
         let mut seed_bytes = Zeroizing::new([0u8; 32]);
         seed_bytes.copy_from_slice(pq_seed_bytes);
         let seed = Seed::from(*seed_bytes);
-        let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
-        let pq_vk = pq_key.verifying_key();
+        let pq_key = MlDsa65::from_seed(&seed);
+        let pq_vk = pq_key.signing_key().verifying_key();
 
         Ok(Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes))
     }

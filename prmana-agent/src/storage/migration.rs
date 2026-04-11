@@ -32,7 +32,7 @@ use super::{
 /// The set of (legacy, current) key pairs to migrate.
 /// Order is deterministic for reproducible logging.
 fn migration_pairs() -> Vec<(&'static str, &'static str)> {
-    let pairs = vec![
+    let mut pairs = vec![
         (LEGACY_KEY_DPOP_PRIVATE, KEY_DPOP_PRIVATE),
         (LEGACY_KEY_ACCESS_TOKEN, KEY_ACCESS_TOKEN),
         (LEGACY_KEY_REFRESH_TOKEN, KEY_REFRESH_TOKEN),

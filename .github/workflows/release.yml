@@ -118,7 +118,7 @@ jobs:
           fi
           # Copy agent binary (works on all platforms)
           cp "target/${MATRIX_TARGET}/release/prmana-agent" dist/ 2>/dev/null || true
-          cp README.md LICENSE LICENSE-APACHE LICENSE-MIT dist/
+          cp README.md LICENSE dist/
           cp sbom.json dist/
           cp -r examples dist/
           cd dist && tar -czvf "../prmana-${REF_NAME}-${MATRIX_NAME}.tar.gz" *
