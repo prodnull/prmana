@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-unix-oidc authenticates users via OIDC but does not create or manage Unix accounts.
+prmana authenticates users via OIDC but does not create or manage Unix accounts.
 Account existence is a prerequisite: if the IdP authenticates a user who has no
 corresponding Unix account, PAM authentication succeeds at the OIDC layer but fails
 at the system layer ("User not found"). Today, provisioning is a manual process or
@@ -16,7 +16,7 @@ state.
 
 SCIM 2.0 (RFC 7643, RFC 7644) is the dominant standard for cross-domain identity
 provisioning. All major IdPs (Entra ID, Okta, Google Workspace, Keycloak) support
-SCIM push provisioning. Adding a SCIM endpoint to unix-oidc closes the lifecycle
+SCIM push provisioning. Adding a SCIM endpoint to prmana closes the lifecycle
 gap: when an IdP provisions or deprovisions a user, the Unix account follows
 automatically.
 
@@ -56,7 +56,7 @@ automatically.
 
 ### Separate binary
 
-A new workspace crate, `unix-oidc-scim`, produces a standalone HTTP service binary.
+A new workspace crate, `prmana-scim`, produces a standalone HTTP service binary.
 It is not linked into the PAM module or the agent daemon. The service runs as root
 (required for `useradd`/`userdel`) and listens on a configurable address
 (default `127.0.0.1:9443`).
@@ -115,7 +115,7 @@ Reconciliation is deferred from Phase 37 scope.
 
 The SCIM endpoint authenticates inbound requests using Bearer token validation.
 Tokens are validated against the same OIDC issuer configuration used by the PAM
-module, reusing the token validation logic from `pam-unix-oidc`. This avoids a
+module, reusing the token validation logic from `pam-prmana`. This avoids a
 second trust root and ensures that SCIM provisioning requests are authorized by the
 same IdP that authenticates users.
 
@@ -131,7 +131,7 @@ create accounts.
    accounts where shorter, conventional names reduce operational risk.
 
 2. **Reserved username denylist**: The same denylist from
-   `pam-unix-oidc/src/identity/mapper.rs` (`RESERVED_USERNAMES`: root, daemon, bin,
+   `pam-prmana/src/identity/mapper.rs` (`RESERVED_USERNAMES`: root, daemon, bin,
    sshd, nobody, and 55+ other system accounts) is reused. SCIM requests to
    provision reserved usernames are rejected with SCIM 409 Conflict.
 

@@ -2,7 +2,7 @@
 #
 # Usage:
 #   docker compose -f docker-compose.tpm-test.yaml up -d
-#   UNIX_OIDC_TPM_TCTI=swtpm cargo test -p unix-oidc-agent --features tpm,test-mode -- --ignored
+#   PRMANA_TPM_TCTI=swtpm cargo test -p prmana-agent --features tpm,test-mode -- --ignored
 #   docker compose -f docker-compose.tpm-test.yaml down
 
 services:

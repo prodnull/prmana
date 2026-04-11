@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The unix-oidc agent daemon serves per-user credentials over local IPC. It must decide
+The prmana agent daemon serves per-user credentials over local IPC. It must decide
 which local clients are trusted to request proofs and token operations.
 
 Two approaches were considered:

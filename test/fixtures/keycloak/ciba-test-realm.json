@@ -20,7 +20,7 @@
   },
   "clients": [
     {
-      "clientId": "unix-oidc-ciba",
+      "clientId": "prmana-ciba",
       "name": "Unix OIDC CIBA Test Client",
       "enabled": true,
       "publicClient": false,
@@ -68,7 +68,7 @@
           "protocolMapper": "oidc-audience-mapper",
           "consentRequired": false,
           "config": {
-            "included.client.audience": "unix-oidc-ciba",
+            "included.client.audience": "prmana-ciba",
             "id.token.claim": "true",
             "access.token.claim": "true"
           }

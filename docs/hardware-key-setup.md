@@ -1,10 +1,10 @@
 # Hardware Key Setup Guide
 
-This guide covers setting up hardware-backed DPoP signing keys with `unix-oidc-agent`.
+This guide covers setting up hardware-backed DPoP signing keys with `prmana-agent`.
 
 ## Overview
 
-`unix-oidc-agent` supports three signer backends:
+`prmana-agent` supports three signer backends:
 
 | Backend | Flag | Key storage | Platform |
 |---------|------|-------------|----------|
@@ -76,7 +76,7 @@ Use slot `9a` unless you have a specific reason to use another slot.
 Generate a P-256 key on the YubiKey:
 
 ```bash
-unix-oidc-agent provision --signer yubikey:9a
+prmana-agent provision --signer yubikey:9a
 ```
 
 This calls `C_GenerateKeyPair` with `CKM_EC_KEY_PAIR_GEN` and P-256 curve OID `1.2.840.10045.3.1.7` (RFC 5480) via the PKCS#11 interface (PKCS#11 v2.40 §2.3.6).
@@ -89,13 +89,13 @@ Output on success:
 Provisioning key on yubikey (slot 9a)...
 Key provisioned successfully on yubikey (slot 9a).
 DPoP thumbprint: abc123...
-Run `unix-oidc-agent login --signer yubikey:9a` to authenticate.
+Run `prmana-agent login --signer yubikey:9a` to authenticate.
 ```
 
 ### Authentication
 
 ```bash
-unix-oidc-agent login --signer yubikey:9a --issuer https://your-idp.example.com
+prmana-agent login --signer yubikey:9a --issuer https://your-idp.example.com
 ```
 
 You will be prompted for the YubiKey PIV PIN on first use (or after the cache timeout expires).
@@ -128,7 +128,7 @@ ykman piv access change-pin
   ykman piv reset
   ```
 
-  After a factory reset, re-provision with `unix-oidc-agent provision --signer yubikey:9a`.
+  After a factory reset, re-provision with `prmana-agent provision --signer yubikey:9a`.
 
 **Touch confirmation (optional, high security):**
 
@@ -169,14 +169,14 @@ sudo systemctl enable --now tpm2-abrmd
 # Check TPM manufacturer info
 tpm2_getcap properties-fixed
 
-# Verify P-256 curve is available (required by unix-oidc-agent)
+# Verify P-256 curve is available (required by prmana-agent)
 tpm2_getcap ecc-curves | grep NIST_P256
 ```
 
 ### Provisioning
 
 ```bash
-unix-oidc-agent provision --signer tpm
+prmana-agent provision --signer tpm
 ```
 
 This performs the following steps:
@@ -190,24 +190,24 @@ The persistent handle survives reboots. Re-provisioning is only needed if the ha
 ### Authentication
 
 ```bash
-unix-oidc-agent login --signer tpm --issuer https://your-idp.example.com
+prmana-agent login --signer tpm --issuer https://your-idp.example.com
 ```
 
 ### Cloud vTPM notes
 
 | Cloud | vTPM availability | P-256 support | Notes |
 |-------|-----------------|---------------|-------|
-| AWS Nitro | Nitro instances with NitroTPM | Generally yes | Verify with `unix-oidc-agent provision --signer tpm` |
+| AWS Nitro | Nitro instances with NitroTPM | Generally yes | Verify with `prmana-agent provision --signer tpm` |
 | GCP Shielded VM | Enabled by default | Yes | |
 | Azure Trusted Launch | `security.trustedLaunch.enabled: true` | Yes (FW >= 2022) | |
 
-Always run `unix-oidc-agent provision --signer tpm` on a new instance type before deploying. The command probes P-256 availability and fails fast if unsupported.
+Always run `prmana-agent provision --signer tpm` on a new instance type before deploying. The command probes P-256 availability and fails fast if unsupported.
 
 ---
 
 ## Configuration
 
-Hardware signer behavior is controlled by `~/.config/unix-oidc/signer.yaml` (user-level) or `/etc/unix-oidc/signer.yaml` (system-level). The user config takes precedence.
+Hardware signer behavior is controlled by `~/.config/prmana/signer.yaml` (user-level) or `/etc/prmana/signer.yaml` (system-level). The user config takes precedence.
 
 ```yaml
 yubikey:
@@ -243,11 +243,11 @@ tpm:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `No YubiKey detected (is pcscd running?)` | `pcscd` not running | `sudo systemctl start pcscd` |
-| `No P-256 key found in YubiKey PIV slot 9a` | Slot empty or incompatible key type | Run `unix-oidc-agent provision --signer yubikey:9a` |
+| `No P-256 key found in YubiKey PIV slot 9a` | Slot empty or incompatible key type | Run `prmana-agent provision --signer yubikey:9a` |
 | `YubiKey PIN is locked` | 3 incorrect PIN attempts | `ykman piv access unblock-pin` (requires PUK) |
 | `YubiKey PIN and PUK are both locked` | 3 incorrect PUK attempts after PIN lock | `ykman piv reset` (destroys all PIV keys) — then re-provision |
 | `PCSC exclusive lock` / `CKR_TOKEN_NOT_PRESENT` | Another process holds the PCSC lock | Close `gpg-agent`, `ssh-agent` with PKCS#11, or any PCSC application |
-| `Hardware signer 'yubikey:9a' unavailable` at daemon start | YubiKey unplugged | Insert YubiKey and run `unix-oidc-agent login --signer yubikey:9a` |
+| `Hardware signer 'yubikey:9a' unavailable` at daemon start | YubiKey unplugged | Insert YubiKey and run `prmana-agent login --signer yubikey:9a` |
 | `YubiKey support not compiled in` | Built without `--features yubikey` | `cargo build --features yubikey` |
 | `TPM not available` | `tpm2-abrmd` not running | `sudo systemctl start tpm2-abrmd` |
 | `This TPM does not support P-256` | TPM lacks `TPM_ECC_NIST_P256` | Use software signer on this device |
@@ -257,7 +257,7 @@ tpm:
 
 ### Checking PKCS#11 library path
 
-If `unix-oidc-agent` cannot find `libykcs11`:
+If `prmana-agent` cannot find `libykcs11`:
 
 ```bash
 # Ubuntu/Debian
@@ -270,7 +270,7 @@ rpm -ql ykpers | grep libykcs11
 find /usr/local/lib /opt/homebrew/lib -name "libykcs11*" 2>/dev/null
 ```
 
-Set the correct path in `~/.config/unix-oidc/signer.yaml`.
+Set the correct path in `~/.config/prmana/signer.yaml`.
 
 ---
 
@@ -282,7 +282,7 @@ Hardware keys are generated with `CKA_EXTRACTABLE = FALSE` (YubiKey PKCS#11) or 
 
 ### No silent fallback
 
-If a hardware signer is specified in token metadata but the device is unavailable at daemon startup, the agent logs an `ERROR` and starts without signing capability. Authentication will fail until the user re-inserts the device and re-runs `unix-oidc-agent login --signer <spec>`. There is no silent fallback to a software key.
+If a hardware signer is specified in token metadata but the device is unavailable at daemon startup, the agent logs an `ERROR` and starts without signing capability. Authentication will fail until the user re-inserts the device and re-runs `prmana-agent login --signer <spec>`. There is no silent fallback to a software key.
 
 ### PIN caching
 
@@ -290,7 +290,7 @@ The PIN is cached in memory using `secrecy::SecretString` (RFC 9449 §5 recommen
 
 ### TPM key binding
 
-TPM P-256 keys are bound to the specific TPM chip by the TPM's endorsement hierarchy. Moving a machine image to a new host, or replacing the physical TPM, requires re-provisioning with `unix-oidc-agent provision --signer tpm` and re-authenticating with `unix-oidc-agent login --signer tpm`.
+TPM P-256 keys are bound to the specific TPM chip by the TPM's endorsement hierarchy. Moving a machine image to a new host, or replacing the physical TPM, requires re-provisioning with `prmana-agent provision --signer tpm` and re-authenticating with `prmana-agent login --signer tpm`.
 
 ### DPoP proof binding (RFC 9449)
 

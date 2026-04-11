@@ -11,11 +11,11 @@
 # This template uses Phase 44 command rules for granular control.
 # For a simpler config without per-command rules, see single-issuer.yaml.
 #
-# Usage: Copy to /etc/unix-oidc/policy.yaml and fill in your values.
+# Usage: Copy to /etc/prmana/policy.yaml and fill in your values.
 
 issuers:
   - issuer_url: "https://your-idp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     client_secret: "your-secret-here"  # Required for CIBA (confidential client)
     dpop_enforcement: strict
     # Optional: claim to extract for CIBA login_hint

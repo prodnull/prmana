@@ -1,6 +1,6 @@
 # Security Testing Roadmap
 
-This document outlines the security testing strategy for unix-oidc, including current implementation and future pentest automation plans.
+This document outlines the security testing strategy for prmana, including current implementation and future pentest automation plans.
 
 ## Current Security Testing
 

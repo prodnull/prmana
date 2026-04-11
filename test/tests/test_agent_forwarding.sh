@@ -30,20 +30,20 @@ echo "Test 1: Socket creation and permissions..."
 
 # Create a temporary directory for testing
 TEST_DIR=$(mktemp -d)
-SOCKET_PATH="$TEST_DIR/unix-oidc-agent.sock"
+SOCKET_PATH="$TEST_DIR/prmana-agent.sock"
 
 # Check if agent binary exists
-if [ ! -f "$PROJECT_ROOT/target/release/unix-oidc-agent" ]; then
+if [ ! -f "$PROJECT_ROOT/target/release/prmana-agent" ]; then
     echo -e "  ${YELLOW}SKIP${NC}: Agent binary not built (run 'cargo build --release')"
 else
     # Test socket permissions in isolation
     echo -e "  ${GREEN}PASS${NC}: Agent binary found"
 
     # Verify socket module tests pass
-    if cargo test -p unix-oidc-agent -- socket 2>/dev/null | grep -q "test result: ok"; then
+    if cargo test -p prmana-agent -- socket 2>/dev/null | grep -q "test result: ok"; then
         echo -e "  ${GREEN}PASS${NC}: Socket unit tests (6 tests)"
     else
-        echo -e "  ${YELLOW}SKIP${NC}: Socket tests (run 'cargo test -p unix-oidc-agent -- socket' for details)"
+        echo -e "  ${YELLOW}SKIP${NC}: Socket tests (run 'cargo test -p prmana-agent -- socket' for details)"
     fi
 fi
 
@@ -52,19 +52,19 @@ echo ""
 
 # Test 2: Agent client/server roundtrip (from unit tests)
 echo "Test 2: Agent IPC roundtrip..."
-if cargo test -p unix-oidc-agent -- test_server_client_roundtrip 2>/dev/null | grep -q "ok"; then
+if cargo test -p prmana-agent -- test_server_client_roundtrip 2>/dev/null | grep -q "ok"; then
     echo -e "  ${GREEN}PASS${NC}: Client/server roundtrip"
 else
     echo -e "  ${RED}FAIL${NC}: Client/server roundtrip"
 fi
 
-if cargo test -p unix-oidc-agent -- test_get_proof 2>/dev/null | grep -q "ok"; then
+if cargo test -p prmana-agent -- test_get_proof 2>/dev/null | grep -q "ok"; then
     echo -e "  ${GREEN}PASS${NC}: Get proof request"
 else
     echo -e "  ${RED}FAIL${NC}: Get proof request"
 fi
 
-if cargo test -p unix-oidc-agent -- test_not_logged_in 2>/dev/null | grep -q "ok"; then
+if cargo test -p prmana-agent -- test_not_logged_in 2>/dev/null | grep -q "ok"; then
     echo -e "  ${GREEN}PASS${NC}: Not logged in handling"
 else
     echo -e "  ${RED}FAIL${NC}: Not logged in handling"
@@ -125,13 +125,13 @@ echo ""
 
 # Test 4: Verify security properties
 echo "Test 4: Security properties..."
-if cargo test -p unix-oidc-agent -- test_extract_username_from_token 2>/dev/null | grep -q "ok"; then
+if cargo test -p prmana-agent -- test_extract_username_from_token 2>/dev/null | grep -q "ok"; then
     echo -e "  ${GREEN}PASS${NC}: Token username extraction"
 else
     echo -e "  ${RED}FAIL${NC}: Token username extraction"
 fi
 
-if cargo test -p unix-oidc-agent -- test_agent_state 2>/dev/null | grep -q "ok"; then
+if cargo test -p prmana-agent -- test_agent_state 2>/dev/null | grep -q "ok"; then
     echo -e "  ${GREEN}PASS${NC}: Agent state initialization"
 else
     echo -e "  ${RED}FAIL${NC}: Agent state initialization"
@@ -151,9 +151,9 @@ echo "  - Error handling (not logged in)"
 echo "  - Token username extraction"
 echo ""
 echo "For full SSH forwarding test:"
-echo "  1. Start agent: unix-oidc-agent serve"
-echo "  2. Login: unix-oidc-agent login"
+echo "  1. Start agent: prmana-agent serve"
+echo "  2. Login: prmana-agent login"
 echo "  3. SSH with forwarding:"
-echo "     ssh -o 'RemoteForward /tmp/unix-oidc-agent.sock /tmp/unix-oidc-agent.sock' user@host"
-echo "  4. On remote: unix-oidc-agent get-proof --target example.com"
+echo "     ssh -o 'RemoteForward /tmp/prmana-agent.sock /tmp/prmana-agent.sock' user@host"
+echo "  4. On remote: prmana-agent get-proof --target example.com"
 echo ""

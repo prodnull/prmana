@@ -4,7 +4,7 @@
 # E2ET-03: Session Lifecycle E2E Test
 #
 # Verifies the PAM session correlation path:
-#   1. putenv UNIX_OIDC_SESSION_ID → session record created at /run/unix-oidc/sessions/<uuid>
+#   1. putenv PRMANA_SESSION_ID → session record created at /run/prmana/sessions/<uuid>
 #   2. SessionClosed IPC → session record removed within 5 seconds of SSH disconnect
 #   3. cross-fork putenv/getenv correlation → session_id present in audit log
 #   4. Auto-refresh fires before token expiry (best-effort / SKIP if short token not available)
@@ -12,14 +12,14 @@
 # Architecture note: authenticate() runs in the sshd auth worker; open_session() runs in
 # a separate sshd session worker. PAM environment variables (putenv/getenv) are the only
 # reliable cross-fork channel within a single PAM transaction. The session record file at
-# /run/unix-oidc/sessions/<uuid> is the observable artefact of that cross-fork correlation.
+# /run/prmana/sessions/<uuid> is the observable artefact of that cross-fork correlation.
 #
 # SessionClosed IPC: pam_sm_close_session() calls notify_agent_session_closed() which
 # sends a SessionClosed message to the agent; the agent removes the session record.
 #
 # References:
-#   - pam-unix-oidc/src/lib.rs: pam_sm_open_session, pam_sm_close_session
-#   - unix-oidc-agent/src/daemon/socket.rs: SessionClosed handler, spawn_refresh_task
+#   - pam-prmana/src/lib.rs: pam_sm_open_session, pam_sm_close_session
+#   - prmana-agent/src/daemon/socket.rs: SessionClosed handler, spawn_refresh_task
 #   - RFC 7517 §4 (JWK), RFC 9449 §4 (DPoP proof)
 #
 # Usage:
@@ -35,10 +35,10 @@ E2E_DIR="${PROJECT_ROOT}/test/e2e"
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.e2e.yaml}"
 TEST_HOST_SERVICE="${TEST_HOST_SERVICE:-test-host-e2e}"
-SESSION_DIR="/run/unix-oidc/sessions"
+SESSION_DIR="/run/prmana/sessions"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${REALM:-unix-oidc}"
-CLIENT_ID="${CLIENT_ID:-unix-oidc}"
+REALM="${REALM:-prmana}"
+CLIENT_ID="${CLIENT_ID:-prmana}"
 SSH_PORT="${SSH_PORT:-2222}"
 
 PASS=0
@@ -100,7 +100,7 @@ fi
 result "PASS" "Token acquired from Keycloak"
 
 # Write token file for SSH_ASKPASS
-TOKEN_FILE=$(mktemp /tmp/unix-oidc-e2et03-token-XXXXXX)
+TOKEN_FILE=$(mktemp /tmp/prmana-e2et03-token-XXXXXX)
 echo -n "$ACCESS_TOKEN" > "$TOKEN_FILE"
 chmod 600 "$TOKEN_FILE"
 trap 'rm -f "$TOKEN_FILE"' EXIT
@@ -125,14 +125,14 @@ result "PASS" "SSH_ASKPASS script available"
 docker compose -f "$COMPOSE_FILE" exec -T "$TEST_HOST_SERVICE" \
     bash -c "rm -f ${SESSION_DIR}/* 2>/dev/null; true" >/dev/null 2>&1 || true
 docker compose -f "$COMPOSE_FILE" exec -T "$TEST_HOST_SERVICE" \
-    bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" >/dev/null 2>&1 || true
+    bash -c "truncate -s0 /var/log/prmana-audit.log 2>/dev/null; true" >/dev/null 2>&1 || true
 
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 1: Session record created on open (putenv UNIX_OIDC_SESSION_ID correlation)
+# Test 1: Session record created on open (putenv PRMANA_SESSION_ID correlation)
 #
-# pam_sm_open_session() reads UNIX_OIDC_SESSION_ID from PAM env (set by authenticate()
+# pam_sm_open_session() reads PRMANA_SESSION_ID from PAM env (set by authenticate()
 # via putenv) and writes a JSON session record to SESSION_DIR/<uuid>.
 # ─────────────────────────────────────────────────────────────────────────────
 echo "--- Test 1: Session record created on open ---"
@@ -143,7 +143,7 @@ SSH_PID=""
 DISPLAY=:0 \
 SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
 SSH_ASKPASS_REQUIRE=force \
-UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
+PRMANA_E2E_TOKEN_FILE="$TOKEN_FILE" \
     ssh -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o PreferredAuthentications=keyboard-interactive \
@@ -151,7 +151,7 @@ UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
         -o ConnectTimeout=10 \
         -p "$SSH_PORT" \
         testuser@localhost \
-        "sleep 5 && echo SESSION_OPEN_COMPLETE" >/tmp/unix-oidc-e2et03-ssh1.out 2>&1 &
+        "sleep 5 && echo SESSION_OPEN_COMPLETE" >/tmp/prmana-e2et03-ssh1.out 2>&1 &
 SSH_PID=$!
 
 # While SSH is in the sleep phase, check for session record
@@ -166,8 +166,8 @@ if [ "${SESSION_COUNT:-0}" -gt 0 ]; then
         bash -c "ls ${SESSION_DIR}/ 2>/dev/null | head -1" 2>/dev/null | tr -d '[:space:]' || echo "")
     result "PASS" "Session record created in ${SESSION_DIR}/ (id=${SESSION_ID_VALUE:-unknown})"
 else
-    result "FAIL" "Session record not found in ${SESSION_DIR}/ (count=0) — UNIX_OIDC_SESSION_ID putenv/getenv correlation failed"
-    echo "    Check: pam_sm_open_session reached? UNIX_OIDC_SESSION_ID set by authenticate()?"
+    result "FAIL" "Session record not found in ${SESSION_DIR}/ (count=0) — PRMANA_SESSION_ID putenv/getenv correlation failed"
+    echo "    Check: pam_sm_open_session reached? PRMANA_SESSION_ID set by authenticate()?"
 fi
 
 # Wait for SSH to finish
@@ -178,7 +178,7 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 2: SessionClosed IPC — session record removed after SSH disconnect
 #
-# pam_sm_close_session() retrieves UNIX_OIDC_SESSION_ID via getenv and calls
+# pam_sm_close_session() retrieves PRMANA_SESSION_ID via getenv and calls
 # notify_agent_session_closed(). The agent receives the SessionClosed IPC message
 # and removes the session record from SESSION_DIR/.
 #
@@ -215,16 +215,16 @@ echo ""
 echo "--- Test 3: putenv/getenv correlation confirmed in audit log ---"
 
 AUDIT_CONTENT=$(docker compose -f "$COMPOSE_FILE" exec -T "$TEST_HOST_SERVICE" \
-    bash -c "cat /var/log/unix-oidc-audit.log 2>/dev/null || echo ''" 2>/dev/null || echo "")
+    bash -c "cat /var/log/prmana-audit.log 2>/dev/null || echo ''" 2>/dev/null || echo "")
 
 if [ -n "$AUDIT_CONTENT" ]; then
     if echo "$AUDIT_CONTENT" | grep -q '"session_id"'; then
         AUDIT_SESSION_ID=$(echo "$AUDIT_CONTENT" | grep '"session_id"' | head -1 | jq -r '.session_id // empty' 2>/dev/null || echo "present")
-        result "PASS" "Audit log contains session_id field (UNIX_OIDC_SESSION_ID correlated cross-fork, id=${AUDIT_SESSION_ID:-present})"
+        result "PASS" "Audit log contains session_id field (PRMANA_SESSION_ID correlated cross-fork, id=${AUDIT_SESSION_ID:-present})"
     elif echo "$AUDIT_CONTENT" | grep -qiE "SESSION_OPENED|session_opened|open_session"; then
         result "PASS" "Audit log contains SESSION_OPENED event (cross-fork correlation succeeded)"
     else
-        result "FAIL" "Audit log present but no session_id or SESSION_OPENED found — check UNIX_OIDC_SESSION_ID putenv"
+        result "FAIL" "Audit log present but no session_id or SESSION_OPENED found — check PRMANA_SESSION_ID putenv"
         echo "    Audit log (first 500 chars): ${AUDIT_CONTENT:0:500}"
     fi
 else
@@ -267,7 +267,7 @@ fi
 if [ -z "$TOKEN_LIFETIME_SECS" ] || [ "${TOKEN_LIFETIME_SECS:-0}" -gt 180 ]; then
     echo "  SKIP: auto_refresh test requires short token lifetime (<= 180s)."
     echo "        Set TOKEN_LIFETIME_SECS=120 and configure Keycloak client with 2-minute token expiry."
-    echo "        Keycloak admin: Clients → unix-oidc → Settings → Access Token Lifespan = 2 minutes"
+    echo "        Keycloak admin: Clients → prmana → Settings → Access Token Lifespan = 2 minutes"
     result "SKIP" "Auto-refresh E2E (token lifetime > 180s; configure Keycloak for short tokens)"
 else
     THRESHOLD_PCT=80
@@ -276,12 +276,12 @@ else
 
     # Start a new SSH session to trigger the agent's auto-refresh task
     docker compose -f "$COMPOSE_FILE" exec -T "$TEST_HOST_SERVICE" \
-        bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" >/dev/null 2>&1 || true
+        bash -c "truncate -s0 /var/log/prmana-audit.log 2>/dev/null; true" >/dev/null 2>&1 || true
 
     DISPLAY=:0 \
     SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
     SSH_ASKPASS_REQUIRE=force \
-    UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
+    PRMANA_E2E_TOKEN_FILE="$TOKEN_FILE" \
         ssh -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=keyboard-interactive \
@@ -295,7 +295,7 @@ else
     sleep $(( WAIT_SECS + 5 ))
 
     REFRESH_LOG=$(docker compose -f "$COMPOSE_FILE" exec -T "$TEST_HOST_SERVICE" \
-        bash -c "cat /var/log/unix-oidc-audit.log 2>/dev/null || echo ''" 2>/dev/null || echo "")
+        bash -c "cat /var/log/prmana-audit.log 2>/dev/null || echo ''" 2>/dev/null || echo "")
 
     wait "$REFRESH_SSH_PID" 2>/dev/null || true
 

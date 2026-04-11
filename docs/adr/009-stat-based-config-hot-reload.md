@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-unix-oidc needs to detect policy changes without restarting critical services.
+prmana needs to detect policy changes without restarting critical services.
 Two approaches were considered:
 
 - Trigger reload with `SIGHUP`

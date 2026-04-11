@@ -1,9 +1,9 @@
 # Cargo.toml
 [workspace]
 members = [
-    "pam-unix-oidc",
-    "unix-oidc-agent",
-    "unix-oidc-scim",
+    "pam-prmana",
+    "prmana-agent",
+    "prmana-scim",
     "examples/webhook-server",
 ]
 exclude = ["fuzz", "test/fixtures/attestation/gen"]

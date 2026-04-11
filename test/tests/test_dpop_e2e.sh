@@ -27,10 +27,10 @@ echo ""
 
 # Test 1: DPoP library unit tests
 echo "Test 1: Running DPoP library unit tests..."
-if cargo test -p pam-unix-oidc --lib -- dpop 2>/dev/null | grep -q "test result: ok"; then
+if cargo test -p pam-prmana --lib -- dpop 2>/dev/null | grep -q "test result: ok"; then
     echo -e "  ${GREEN}PASS${NC}: PAM module DPoP unit tests"
 else
-    echo -e "  ${YELLOW}SKIP${NC}: PAM module DPoP tests (run 'cargo test -p pam-unix-oidc' for details)"
+    echo -e "  ${YELLOW}SKIP${NC}: PAM module DPoP tests (run 'cargo test -p pam-prmana' for details)"
 fi
 
 # Test 2: Cross-language DPoP tests
@@ -73,8 +73,8 @@ else
     # Step 3b: Verify agent binary
     echo "  3b: Verifying agent binary..."
     AGENT_VERSION=$(docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T test-host \
-        /usr/local/bin/unix-oidc-agent --version 2>&1 || true)
-    if [[ "$AGENT_VERSION" =~ "unix-oidc-agent" ]]; then
+        /usr/local/bin/prmana-agent --version 2>&1 || true)
+    if [[ "$AGENT_VERSION" =~ "prmana-agent" ]]; then
         echo -e "      ${GREEN}PASS${NC}: Agent version: $(echo "$AGENT_VERSION" | head -1)"
     else
         echo -e "      ${RED}FAIL${NC}: Agent binary not working"
@@ -83,9 +83,9 @@ else
     # Step 3c: Verify PAM module has DPoP support
     echo "  3c: Verifying PAM DPoP support..."
     PAM_CHECK=$(docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T test-host bash -c '
-        for path in /usr/lib/security/libpam_unix_oidc.so \
-                    /lib/x86_64-linux-gnu/security/libpam_unix_oidc.so \
-                    /lib/aarch64-linux-gnu/security/libpam_unix_oidc.so; do
+        for path in /usr/lib/security/libpam_prmana.so \
+                    /lib/x86_64-linux-gnu/security/libpam_prmana.so \
+                    /lib/aarch64-linux-gnu/security/libpam_prmana.so; do
             if [ -f "$path" ]; then
                 echo "found:$path"
                 exit 0
@@ -103,7 +103,7 @@ else
     # Step 3d: Test DPoP validation with synthetic token
     echo "  3d: Testing DPoP binding validation..."
     DPOP_TEST=$(docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T test-host bash -c '
-        export UNIX_OIDC_TEST_MODE=true
+        export PRMANA_TEST_MODE=true
 
         # Generate a P-256 keypair
         openssl ecparam -name prime256v1 -genkey -noout -out /tmp/test-key.pem 2>/dev/null

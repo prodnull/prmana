@@ -1,5 +1,5 @@
-# unix-oidc AWS Terraform Module - Variables
-# https://github.com/prodnull/unix-oidc
+# prmana AWS Terraform Module - Variables
+# https://github.com/prodnull/prmana
 
 # =============================================================================
 # Required Variables
@@ -25,13 +25,13 @@ variable "key_name" {
 # =============================================================================
 
 variable "oidc_client_id" {
-  description = "OIDC client ID for unix-oidc"
+  description = "OIDC client ID for prmana"
   type        = string
-  default     = "unix-oidc"
+  default     = "prmana"
 }
 
 variable "install_agent" {
-  description = "Whether to install the unix-oidc-agent"
+  description = "Whether to install the prmana-agent"
   type        = bool
   default     = true
 }
@@ -61,7 +61,7 @@ variable "ami_id" {
 variable "instance_name" {
   description = "Name tag for the EC2 instance"
   type        = string
-  default     = "unix-oidc-server"
+  default     = "prmana-server"
 }
 
 variable "root_volume_size" {

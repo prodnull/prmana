@@ -150,20 +150,20 @@ Session affinity: none (stateless OIDC discovery)
 
 When using DNS failover, the Prmana config is simple — single issuer, no `failover_pairs`:
 
-### Agent config (`~/.config/unix-oidc/config.yaml`)
+### Agent config (`~/.config/prmana/config.yaml`)
 
 ```yaml
 issuer: https://idp.example.com/realms/corp
-client_id: unix-oidc
+client_id: prmana
 # No failover_pairs needed — DNS handles routing
 ```
 
-### PAM policy (`/etc/unix-oidc/policy.yaml`)
+### PAM policy (`/etc/prmana/policy.yaml`)
 
 ```yaml
 issuers:
   - issuer_url: https://idp.example.com/realms/corp
-    client_id: unix-oidc
+    client_id: prmana
     dpop_enforcement: strict
 
 # Break-glass: always configure regardless of failover strategy

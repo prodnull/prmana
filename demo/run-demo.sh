@@ -1,5 +1,5 @@
 #!/bin/bash
-# unix-oidc E2E Demo Script
+# prmana E2E Demo Script
 # This script demonstrates OIDC-based Unix authentication
 
 set -e
@@ -16,14 +16,14 @@ NC='\033[0m' # No Color
 
 # Configuration
 KEYCLOAK_URL="http://localhost:8080"
-REALM="unix-oidc-test"
-CLIENT_ID="unix-oidc"
-CLIENT_SECRET="unix-oidc-test-secret"
+REALM="prmana-test"
+CLIENT_ID="prmana"
+CLIENT_SECRET="prmana-test-secret"
 TEST_USER="testuser"
 TEST_PASS="testpass"
 
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║           unix-oidc E2E Authentication Demo                  ║${NC}"
+echo -e "${BLUE}║           prmana E2E Authentication Demo                  ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo
 
@@ -175,9 +175,9 @@ test_ssh_auth() {
     TOKEN=$(cat /tmp/demo-token.txt)
 
     echo -e "${BLUE}Calling PAM authenticate for SSH service...${NC}"
-    RESULT=$(docker compose -f "$PROJECT_ROOT/docker-compose.test.yaml" exec -T -e OIDC_TOKEN="$TOKEN" -e UNIX_OIDC_TEST_MODE="true" test-host bash -c "
-export OIDC_ISSUER='http://keycloak:8080/realms/unix-oidc-test'
-export OIDC_CLIENT_ID='unix-oidc'
+    RESULT=$(docker compose -f "$PROJECT_ROOT/docker-compose.test.yaml" exec -T -e OIDC_TOKEN="$TOKEN" -e PRMANA_TEST_MODE="true" test-host bash -c "
+export OIDC_ISSUER='http://keycloak:8080/realms/prmana-test'
+export OIDC_CLIENT_ID='prmana'
 pamtester -v sshd testuser authenticate 2>&1
 " 2>&1)
 
@@ -199,9 +199,9 @@ test_sudo_auth() {
     TOKEN=$(cat /tmp/demo-token.txt)
 
     echo -e "${BLUE}Calling PAM authenticate for sudo service...${NC}"
-    RESULT=$(docker compose -f "$PROJECT_ROOT/docker-compose.test.yaml" exec -T -e OIDC_TOKEN="$TOKEN" -e UNIX_OIDC_TEST_MODE="true" test-host bash -c "
-export OIDC_ISSUER='http://keycloak:8080/realms/unix-oidc-test'
-export OIDC_CLIENT_ID='unix-oidc'
+    RESULT=$(docker compose -f "$PROJECT_ROOT/docker-compose.test.yaml" exec -T -e OIDC_TOKEN="$TOKEN" -e PRMANA_TEST_MODE="true" test-host bash -c "
+export OIDC_ISSUER='http://keycloak:8080/realms/prmana-test'
+export OIDC_CLIENT_ID='prmana'
 pamtester -v sudo testuser authenticate 2>&1
 " 2>&1)
 
@@ -225,7 +225,7 @@ show_audit_events() {
 {
   "event": "SSH_LOGIN_SUCCESS",
   "timestamp": "2026-01-20T00:04:04.887238250+00:00",
-  "session_id": "unix-oidc-188c4791bb41a389-6784f12565e5dcb1",
+  "session_id": "prmana-188c4791bb41a389-6784f12565e5dcb1",
   "user": "testuser",
   "uid": 1000,
   "source_ip": null,

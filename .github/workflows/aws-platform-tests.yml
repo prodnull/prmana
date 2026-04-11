@@ -171,7 +171,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: unix-oidc-test-${{ github.run_id }}
+          role-session-name: prmana-test-${{ github.run_id }}
 
       - name: Resolve AMI
         id: ami
@@ -203,7 +203,7 @@ jobs:
         id: sg
         run: |
           SG_ID=$(aws ec2 describe-security-groups \
-            --filters "Name=tag:Project,Values=unix-oidc-ci" "Name=group-name,Values=unix-oidc-ci-test-instances" \
+            --filters "Name=tag:Project,Values=prmana-ci" "Name=group-name,Values=prmana-ci-test-instances" \
             --query 'SecurityGroups[0].GroupId' \
             --output text)
           echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
@@ -250,9 +250,9 @@ jobs:
             --image-id "$AMI_ID" \
             --instance-type "$INPUT_INSTANCE_TYPE" \
             --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
-            --iam-instance-profile Name=unix-oidc-ci-instance-profile \
+            --iam-instance-profile Name=prmana-ci-instance-profile \
             --security-group-ids "$SECURITY_GROUP_ID" \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=unix-oidc-ci},{Key=Platform,Value=$PLATFORM},{Key=GitHubRun,Value=$GITHUB_RUN_ID}]" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=prmana-ci},{Key=Platform,Value=$PLATFORM},{Key=GitHubRun,Value=$GITHUB_RUN_ID}]" \
             --metadata-options 'HttpTokens=required' \
             $USER_DATA_ARG \
             --query 'Instances[0].InstanceId' \
@@ -335,24 +335,24 @@ jobs:
           cargo --version
 
           echo "=== Cloning repository ==="
-          git clone https://github.com/$GITHUB_REPO.git /tmp/unix-oidc
-          cd /tmp/unix-oidc
+          git clone https://github.com/$GITHUB_REPO.git /tmp/prmana
+          cd /tmp/prmana
           git checkout $GITHUB_SHA
 
           echo "=== Building PAM module ==="
-          cargo build --release -p pam-unix-oidc 2>&1
+          cargo build --release -p pam-prmana 2>&1
 
           echo "=== Running tests ==="
-          cargo test --release -p pam-unix-oidc 2>&1
+          cargo test --release -p pam-prmana 2>&1
 
           echo "=== Verifying PAM module ==="
-          ls -la target/release/libpam_unix_oidc.so
-          file target/release/libpam_unix_oidc.so
+          ls -la target/release/libpam_prmana.so
+          file target/release/libpam_prmana.so
 
           echo "=== Installing PAM module ==="
-          sudo cp target/release/libpam_unix_oidc.so /lib64/security/ 2>/dev/null || \\
-          sudo cp target/release/libpam_unix_oidc.so /lib/x86_64-linux-gnu/security/ 2>/dev/null || \\
-          sudo cp target/release/libpam_unix_oidc.so /lib/security/
+          sudo cp target/release/libpam_prmana.so /lib64/security/ 2>/dev/null || \\
+          sudo cp target/release/libpam_prmana.so /lib/x86_64-linux-gnu/security/ 2>/dev/null || \\
+          sudo cp target/release/libpam_prmana.so /lib/security/
 
           echo "=== SUCCESS: PAM module built and installed ==="
           EOF

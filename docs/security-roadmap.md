@@ -73,7 +73,7 @@ This document summarizes the security findings from the research analysis and tr
 
 ### Feature Comparison
 
-| Feature | unix-oidc | pam-keycloak-oidc | Teleport | Smallstep |
+| Feature | prmana | pam-keycloak-oidc | Teleport | Smallstep |
 |---------|-----------|-------------------|----------|-----------|
 | SSH OIDC auth | Yes | Yes | Enterprise only | Yes |
 | Sudo step-up | Yes | No | No | No |
@@ -96,24 +96,24 @@ This document summarizes the security findings from the research analysis and tr
    - Uses `getrandom` crate for CSPRNG
    - Format: `{prefix}-{timestamp_hex}-{random_hex}`
    - 64 bits of cryptographic randomness per session
-   - Location: `pam-unix-oidc/src/security/session.rs`
+   - Location: `pam-prmana/src/security/session.rs`
 
 3. **Token Replay Protection** ✅
    - JTI (JWT ID) tracking with in-memory cache
    - TTL matches token expiration for automatic cleanup
    - Global singleton with thread-safe RwLock
    - Configurable via `enforce_jti` flag in ValidationConfig
-   - Location: `pam-unix-oidc/src/security/jti_cache.rs`
+   - Location: `pam-prmana/src/security/jti_cache.rs`
 
 4. **Rate Limiting** ✅
    - Per-user and per-IP tracking
    - Sliding window with configurable max attempts (default: 5)
    - Exponential backoff on consecutive failures (cap: 1 hour)
    - Configurable via environment variables:
-     - `UNIX_OIDC_RATE_LIMIT_WINDOW`: Window size (default: 300s)
-     - `UNIX_OIDC_RATE_LIMIT_MAX_ATTEMPTS`: Max attempts (default: 5)
-     - `UNIX_OIDC_RATE_LIMIT_LOCKOUT`: Initial lockout (default: 60s)
-   - Location: `pam-unix-oidc/src/security/rate_limit.rs`
+     - `PRMANA_RATE_LIMIT_WINDOW`: Window size (default: 300s)
+     - `PRMANA_RATE_LIMIT_MAX_ATTEMPTS`: Max attempts (default: 5)
+     - `PRMANA_RATE_LIMIT_LOCKOUT`: Initial lockout (default: 60s)
+   - Location: `pam-prmana/src/security/rate_limit.rs`
 
 ### Phase 4: Advanced Features (In Progress)
 
@@ -142,7 +142,7 @@ Reduce blast radius of credential theft using DPoP (RFC 9449) with post-quantum 
 ```
 User Machine                          SSH Server
 ┌─────────────────┐                   ┌─────────────────┐
-│ unix-oidc-agent │                   │   PAM Module    │
+│ prmana-agent │                   │   PAM Module    │
 │ - DPoP keypair  │──token + proof───▶│ - Validate sig  │
 │ - Token refresh │                   │ - Check cnf.jkt │
 │ - Secure storage│                   │ - Verify nonce  │
@@ -151,17 +151,17 @@ User Machine                          SSH Server
 
 **CLI Interface:**
 ```bash
-unix-oidc-agent login      # Device flow by default
-unix-oidc-agent login --flow authcode  # Authorization code + PKCE on localhost
-unix-oidc-agent status     # Show token expiry, key thumbprint
-unix-oidc-agent logout     # Revoke tokens, keep keypair
-unix-oidc-agent reset      # Delete everything including keypair
-unix-oidc-agent serve      # Run daemon (systemd/launchd)
+prmana-agent login      # Device flow by default
+prmana-agent login --flow authcode  # Authorization code + PKCE on localhost
+prmana-agent status     # Show token expiry, key thumbprint
+prmana-agent logout     # Revoke tokens, keep keypair
+prmana-agent reset      # Delete everything including keypair
+prmana-agent serve      # Run daemon (systemd/launchd)
 ```
 
 **User Experience Goal:**
 ```bash
-$ unix-oidc-agent login          # Once per session (or week with refresh)
+$ prmana-agent login          # Once per session (or week with refresh)
 $ ssh server.example.com         # Just works, no prompts
 $ sudo systemctl restart nginx   # Step-up on phone, command proceeds
 ```

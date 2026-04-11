@@ -2,7 +2,7 @@
 name = "webhook-server"
 version = "0.1.0"
 edition = "2021"
-description = "Demo webhook approval server for unix-oidc"
+description = "Demo webhook approval server for prmana"
 license = "CC-BY-NC-SA-4.0"
 publish = false
 

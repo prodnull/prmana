@@ -1,6 +1,6 @@
 # Entra ID E2E Test Setup Guide
 
-Step-by-step setup for running unix-oidc integration tests against a live Entra ID (Azure AD) tenant. This covers tenant creation through passing CI tests.
+Step-by-step setup for running prmana integration tests against a live Entra ID (Azure AD) tenant. This covers tenant creation through passing CI tests.
 
 For production deployment configuration, see `docs/entra-setup-guide.md`.
 
@@ -16,8 +16,8 @@ You need an Azure Entra ID tenant where you are a **Global Administrator** or **
 2. Once the subscription is active, navigate to **Entra ID** in the Azure Portal.
 3. If your subscription was created under an existing organization, create a separate tenant:
    **Entra ID -> Manage tenants -> + Create** -> **Entra ID** (not Entra ID B2C).
-4. Name it something recognizable (e.g., `unix-oidc-test`). The default domain will be
-   `unix-oidc-test.onmicrosoft.com`.
+4. Name it something recognizable (e.g., `prmana-test`). The default domain will be
+   `prmana-test.onmicrosoft.com`.
 
 **Option B -- Existing tenant you control:**
 
@@ -35,7 +35,7 @@ Works fine as long as you can exclude a test user from MFA Conditional Access po
 
 1. Navigate to **Entra ID -> App registrations -> New registration**.
 2. Fill in the form:
-   - **Name:** `unix-oidc-test`
+   - **Name:** `prmana-test`
    - **Supported account types:** **Accounts in this organizational directory only (Single tenant)**. Multi-tenant would accept tokens from any Entra tenant -- a security violation for PAM auth.
    - **Redirect URI:** Select **Mobile and desktop applications** -> `http://localhost`
 3. Click **Register**.
@@ -75,8 +75,8 @@ Entra may not include `preferred_username` in access tokens by default.
 
 1. Navigate to **Entra ID -> Users -> New user -> Create new user**.
 2. Fill in:
-   - **User principal name:** `unix-oidc-ci@yourtenant.onmicrosoft.com`
-   - **Display name:** `unix-oidc CI Test`
+   - **User principal name:** `prmana-ci@yourtenant.onmicrosoft.com`
+   - **Display name:** `prmana CI Test`
    - **Password:** Set a strong password. Record it immediately.
 3. Click **Create**.
 4. After creation, navigate to the user's profile and set an **Email** under Contact info (the `email` claim depends on this).
@@ -108,7 +108,7 @@ Create a `.entra` file in the project root (already gitignored):
 ```
 ENTRA_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ENTRA_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-ENTRA_TEST_USER=unix-oidc-ci@yourtenant.onmicrosoft.com
+ENTRA_TEST_USER=prmana-ci@yourtenant.onmicrosoft.com
 ENTRA_TEST_PASSWORD=YourStrongPassword123!
 ```
 
@@ -140,7 +140,7 @@ Verify these claims:
 |-------|---------------|
 | `iss` | `https://login.microsoftonline.com/{your-tenant-id}/v2.0` |
 | `aud` | Your client ID GUID (NOT `00000003-...` or `https://graph.microsoft.com`) |
-| `preferred_username` | `unix-oidc-ci@yourtenant.onmicrosoft.com` |
+| `preferred_username` | `prmana-ci@yourtenant.onmicrosoft.com` |
 | `email` | The email set on the test user's profile |
 | `sub` | An opaque GUID (stable per user per app) |
 
@@ -161,10 +161,10 @@ source .entra
 export ENTRA_TOKEN=$(./test/scripts/get-entra-token.sh)
 
 # Run the Entra integration tests
-cargo test -p pam-unix-oidc --test entra_integration -- --include-ignored
+cargo test -p pam-prmana --test entra_integration -- --include-ignored
 ```
 
-The test suite (`pam-unix-oidc/tests/entra_integration.rs`) includes:
+The test suite (`pam-prmana/tests/entra_integration.rs`) includes:
 
 | Test | What it validates |
 |------|-------------------|
@@ -199,14 +199,14 @@ Add these secrets in **GitHub repo -> Settings -> Secrets and variables -> Actio
 |--------|-------|
 | `ENTRA_TENANT_ID` | Directory (tenant) ID |
 | `ENTRA_CLIENT_ID` | Application (client) ID |
-| `ENTRA_TEST_USER` | Full UPN (e.g., `unix-oidc-ci@yourtenant.onmicrosoft.com`) |
+| `ENTRA_TEST_USER` | Full UPN (e.g., `prmana-ci@yourtenant.onmicrosoft.com`) |
 | `ENTRA_TEST_PASSWORD` | Test user password |
 
 The CI workflow (`.github/workflows/provider-tests.yml`, `entra` job) auto-detects whether secrets are configured. When present, it:
 
 1. Verifies OIDC discovery and JWKS availability
 2. Acquires a token via ROPC (masked in logs with `::add-mask::`)
-3. Runs `cargo test -p pam-unix-oidc --test entra_integration -- --ignored --test-threads=1`
+3. Runs `cargo test -p pam-prmana --test entra_integration -- --ignored --test-threads=1`
 
 When secrets are absent, the job skips gracefully.
 
@@ -249,7 +249,7 @@ The `ENTRA_TENANT_ID` secret is not set. Verify it was added to the correct scop
 
 ### Entra-Specific Quirks
 
-- **`uti` vs `jti`:** Entra emits `uti` (unique token identifier) instead of standard `jti`. The unix-oidc replay cache checks `jti`, so `jti_enforcement` must be set to `warn` for Entra issuers. Strict mode rejects all Entra tokens.
+- **`uti` vs `jti`:** Entra emits `uti` (unique token identifier) instead of standard `jti`. The prmana replay cache checks `jti`, so `jti_enforcement` must be set to `warn` for Entra issuers. Strict mode rejects all Entra tokens.
 - **SHR vs DPoP:** Entra implements Signed HTTP Requests (SHR/PoP), not RFC 9449 DPoP. The two are not interoperable. `dpop_enforcement` must be `disabled`.
 - **ROPC deprecation:** ROPC is deprecated in OAuth 2.1 and Microsoft discourages its use. It is used here strictly for CI automation with a dedicated test user. Device Code flow is the production path.
 - **Token lifetime:** Entra access tokens are valid for 60-90 minutes by default. CI acquires a fresh token per run. For local testing, re-run `get-entra-token.sh` if tests fail with expiration errors.
@@ -264,5 +264,5 @@ The `ENTRA_TENANT_ID` secret is not set. Verify it was added to the correct scop
 - `docs/entra-setup-guide.md` -- Full Entra app registration and production configuration
 - `test/fixtures/policy/policy-entra.yaml` -- Test policy fixture
 - `test/scripts/get-entra-token.sh` -- Token acquisition script
-- `pam-unix-oidc/tests/entra_integration.rs` -- Rust integration test suite
+- `pam-prmana/tests/entra_integration.rs` -- Rust integration test suite
 - `.github/workflows/provider-tests.yml` -- CI workflow (Entra job)

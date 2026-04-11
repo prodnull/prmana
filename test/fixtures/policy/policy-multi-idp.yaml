@@ -24,7 +24,7 @@ security_modes:
 issuers:
   # Issuer 1: Keycloak — strict DPoP, uses preferred_username directly (no transforms)
   - issuer_url: "https://keycloak.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     dpop_enforcement: strict
     claim_mapping:
       username_claim: preferred_username
@@ -32,8 +32,8 @@ issuers:
     acr_mapping:
       enforcement: strict
       mappings:
-        "urn:keycloak:loa:mfa": "urn:unix-oidc:acr:mfa"
-        "urn:keycloak:loa:basic": "urn:unix-oidc:acr:basic"
+        "urn:keycloak:loa:mfa": "urn:prmana:acr:mfa"
+        "urn:keycloak:loa:basic": "urn:prmana:acr:basic"
     group_mapping:
       source: nss_only
 
@@ -43,7 +43,7 @@ issuers:
   #           allow_unsafe_identity_pipeline: true because strip_domain on email is non-injective
   #           across tenants but safe for single-tenant Entra (IdP enforces domain membership).
   - issuer_url: "https://login.microsoftonline.com/tenant-id/v2.0"
-    client_id: "unix-oidc-entra"
+    client_id: "prmana-entra"
     dpop_enforcement: disabled
     allow_unsafe_identity_pipeline: true
     claim_mapping:
@@ -54,6 +54,6 @@ issuers:
     acr_mapping:
       enforcement: warn
       mappings:
-        "http://schemas.microsoft.com/claims/authnmethodsreferences/mfa": "urn:unix-oidc:acr:mfa"
+        "http://schemas.microsoft.com/claims/authnmethodsreferences/mfa": "urn:prmana:acr:mfa"
     group_mapping:
       source: nss_only

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The unix-oidc agent can use TPM 2.0 hardware to generate non-exportable P-256 DPoP signing keys (ADR-014). However, the PAM module currently has no way to verify that a client's DPoP key is actually TPM-resident. A compromised client could claim to use a TPM but generate keys in software, undermining the non-exportability guarantee.
+The prmana agent can use TPM 2.0 hardware to generate non-exportable P-256 DPoP signing keys (ADR-014). However, the PAM module currently has no way to verify that a client's DPoP key is actually TPM-resident. A compromised client could claim to use a TPM but generate keys in software, undermining the non-exportability guarantee.
 
 For enterprises that require hardware-bound keys (phishing-resistant hardware, ACR `urn:schemas.openid.net/acr/2016/07/phishing-resistant-hardware`), server-side verification of key provenance is essential.
 

@@ -16,7 +16,7 @@ set -e
 
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
 REALM="${REALM:-ciba-test}"
-CLIENT_ID="${CLIENT_ID:-unix-oidc-ciba}"
+CLIENT_ID="${CLIENT_ID:-prmana-ciba}"
 CLIENT_SECRET="${CLIENT_SECRET:-ciba-test-secret}"
 TEST_USERNAME="${TEST_USERNAME:-cibauser}"
 TEST_PASSWORD="${TEST_PASSWORD:-cibapass}"

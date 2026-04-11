@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-04-XX — prmana rename
+
+### Changed
+- **Product rename**: All crates, binaries, env vars, and paths renamed from `unix-oidc` to `prmana`
+  - `pam-unix-oidc` crate → `pam-prmana`; PAM .so is now `libpam_prmana.so`
+  - `unix-oidc-agent` crate/binary → `prmana-agent`; `unix-oidc-jti-helper` → `prmana-jti-helper`
+  - `unix-oidc-scim` crate/binary → `prmana-scim`
+  - `unix-oidc-audit-verify` → `prmana-audit-verify`; `unix-oidc-evidence-export` → `prmana-evidence-export`
+  - All `UNIX_OIDC_*` environment variables renamed to `PRMANA_*`
+  - Config directory `/etc/unix-oidc/` → `/etc/prmana/`; runtime dir `/run/unix-oidc/` → `/run/prmana/`
+  - Socket path `unix-oidc-agent.sock` → `prmana-agent.sock`
+  - Audit log `/var/log/unix-oidc-audit.log` → `/var/log/prmana-audit.log`
+  - Systemd units renamed: `prmana-agent.service`, `prmana-agent.socket`, `prmana.tmpfiles.conf`
+  - Keycloak test realm `unix-oidc-test` → `prmana-test`
+- **Keyring key-name migration**: New `migrate_legacy_key_names()` function in `prmana-agent` reads
+  `unix-oidc-*` keyring entries and writes them under `prmana-*` names on first startup, preserving
+  credentials across the rename. Migration is idempotent and runs at daemon startup and login.
+- **Version**: Clean-slate v1.0.0 — independent of unix-oidc version history.
+
+### Migration guide
+See `docs/migration/unix-oidc-to-prmana.md` for step-by-step upgrade instructions.
+Users must update PAM config (`pam_unix_oidc.so` → `pam_prmana.so`), config paths,
+and environment variable names. Agent credentials are migrated automatically.
+
 ## [Unreleased]
 
 ### Added

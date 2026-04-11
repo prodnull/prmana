@@ -1,4 +1,4 @@
-# Makefile for unix-oidc
+# Makefile for prmana
 #
 # Usage:
 #   make build          # Build PAM module in Docker (cross-platform)
@@ -23,13 +23,13 @@ COMPOSE_FILE := docker-compose.test.yaml
 
 ## Build PAM module in Docker (works on any OS)
 build:
-	docker build -f Dockerfile.build -t unix-oidc-build .
-	@docker rm -f unix-oidc-build-tmp 2>/dev/null || true
-	docker create --name unix-oidc-build-tmp unix-oidc-build
+	docker build -f Dockerfile.build -t prmana-build .
+	@docker rm -f prmana-build-tmp 2>/dev/null || true
+	docker create --name prmana-build-tmp prmana-build
 	mkdir -p target/release
-	docker cp unix-oidc-build-tmp:/build/target/release/libpam_unix_oidc.so target/release/
-	docker rm unix-oidc-build-tmp
-	@echo "Built: target/release/libpam_unix_oidc.so"
+	docker cp prmana-build-tmp:/build/target/release/libpam_prmana.so target/release/
+	docker rm prmana-build-tmp
+	@echo "Built: target/release/libpam_prmana.so"
 
 ## Build natively (requires Linux with libpam-dev)
 build-native:
@@ -166,12 +166,12 @@ clean-all: clean dev-clean
 
 ## Install PAM module system-wide (requires sudo)
 install: build
-	sudo cp target/release/libpam_unix_oidc.so /lib/security/pam_unix_oidc.so
-	@echo "Installed: /lib/security/pam_unix_oidc.so"
+	sudo cp target/release/libpam_prmana.so /lib/security/pam_prmana.so
+	@echo "Installed: /lib/security/pam_prmana.so"
 
 ## Uninstall PAM module
 uninstall:
-	sudo rm -f /lib/security/pam_unix_oidc.so
+	sudo rm -f /lib/security/pam_prmana.so
 	@echo "Uninstalled PAM module"
 
 #==============================================================================
@@ -184,9 +184,9 @@ docs:
 
 ## Open documentation in browser
 docs-open: docs
-	open target/doc/pam_unix_oidc/index.html 2>/dev/null || \
-		xdg-open target/doc/pam_unix_oidc/index.html 2>/dev/null || \
-		echo "Open target/doc/pam_unix_oidc/index.html in your browser"
+	open target/doc/pam_prmana/index.html 2>/dev/null || \
+		xdg-open target/doc/pam_prmana/index.html 2>/dev/null || \
+		echo "Open target/doc/pam_prmana/index.html in your browser"
 
 #==============================================================================
 # Help
@@ -194,7 +194,7 @@ docs-open: docs
 
 ## Show this help message
 help:
-	@echo "unix-oidc Makefile"
+	@echo "prmana Makefile"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""

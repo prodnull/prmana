@@ -1,6 +1,6 @@
 # Webhook Approval Server Demo
 
-This is a demo webhook approval server that demonstrates how to integrate custom approval workflows with unix-oidc.
+This is a demo webhook approval server that demonstrates how to integrate custom approval workflows with prmana.
 
 ## Quick Start
 
@@ -8,8 +8,8 @@ This is a demo webhook approval server that demonstrates how to integrate custom
 # Start the webhook server
 cargo run -p webhook-server
 
-# In another terminal, configure unix-oidc to use the webhook
-export UNIX_OIDC_WEBHOOK_URL=http://localhost:3000
+# In another terminal, configure prmana to use the webhook
+export PRMANA_WEBHOOK_URL=http://localhost:3000
 ```
 
 ## Web Interface
@@ -84,20 +84,20 @@ Response:
 
 The server listens on port 3000 by default.
 
-Configure unix-oidc to use the webhook:
+Configure prmana to use the webhook:
 
 ```bash
 # Required: Webhook URL
-export UNIX_OIDC_WEBHOOK_URL=http://localhost:3000
+export PRMANA_WEBHOOK_URL=http://localhost:3000
 
 # Optional: Authorization header
-export UNIX_OIDC_WEBHOOK_AUTH="Bearer your-secret-token"
+export PRMANA_WEBHOOK_AUTH="Bearer your-secret-token"
 
 # Optional: Request timeout (default: 10s)
-export UNIX_OIDC_WEBHOOK_TIMEOUT=30
+export PRMANA_WEBHOOK_TIMEOUT=30
 
 # Optional: Disable TLS verification (testing only!)
-export UNIX_OIDC_WEBHOOK_INSECURE=true
+export PRMANA_WEBHOOK_INSECURE=true
 ```
 
 ## Building a Production Server

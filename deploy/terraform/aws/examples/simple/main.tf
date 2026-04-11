@@ -1,7 +1,7 @@
-# unix-oidc AWS Simple Example
+# prmana AWS Simple Example
 #
 # This example demonstrates the minimal configuration needed to deploy
-# unix-oidc on an EC2 instance with a new VPC.
+# prmana on an EC2 instance with a new VPC.
 #
 # Usage:
 #   terraform init
@@ -55,7 +55,7 @@ variable "my_ip" {
 # =============================================================================
 
 # Basic usage - creates a new VPC
-module "unix_oidc" {
+module "prmana" {
   source = "../../"
 
   # Required
@@ -78,7 +78,7 @@ module "unix_oidc" {
 
 # Uncomment and modify to use an existing VPC:
 #
-# module "unix_oidc_existing_vpc" {
+# module "prmana_existing_vpc" {
 #   source = "../../"
 #
 #   oidc_issuer = var.oidc_issuer
@@ -97,22 +97,22 @@ module "unix_oidc" {
 
 output "instance_id" {
   description = "EC2 instance ID"
-  value       = module.unix_oidc.instance_id
+  value       = module.prmana.instance_id
 }
 
 output "public_ip" {
   description = "Public IP address of the instance"
-  value       = module.unix_oidc.instance_public_ip
+  value       = module.prmana.instance_public_ip
 }
 
 output "ssh_command" {
   description = "SSH command to connect to the instance"
-  value       = module.unix_oidc.ssh_command
+  value       = module.prmana.ssh_command
 }
 
 output "oidc_issuer" {
   description = "Configured OIDC issuer"
-  value       = module.unix_oidc.oidc_issuer
+  value       = module.prmana.oidc_issuer
 }
 
 # =============================================================================
@@ -123,24 +123,24 @@ output "next_steps" {
   description = "Instructions for connecting"
   value       = <<-EOF
 
-    unix-oidc has been deployed!
+    prmana has been deployed!
 
     Next steps:
     1. Wait 2-3 minutes for the instance to initialize
     2. Get an OIDC token from your IdP
     3. Connect using:
 
-       # With unix-oidc-agent (recommended)
-       export OIDC_TOKEN=$(unix-oidc-agent get-token)
-       ssh -o "SetEnv OIDC_TOKEN=$OIDC_TOKEN" ubuntu@${module.unix_oidc.instance_public_ip}
+       # With prmana-agent (recommended)
+       export OIDC_TOKEN=$(prmana-agent get-token)
+       ssh -o "SetEnv OIDC_TOKEN=$OIDC_TOKEN" ubuntu@${module.prmana.instance_public_ip}
 
        # Or with SSH key (for initial verification)
-       ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${module.unix_oidc.instance_public_ip}
+       ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${module.prmana.instance_public_ip}
 
     4. Verify installation:
-       sudo cat /var/log/unix-oidc-install.log
+       sudo cat /var/log/prmana-install.log
 
-    Documentation: https://github.com/prodnull/unix-oidc
+    Documentation: https://github.com/prodnull/prmana
 
   EOF
 }

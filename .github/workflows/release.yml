@@ -73,7 +73,7 @@ jobs:
       - name: Build release (macOS agent only)
         if: matrix.build_pam == false
         run: |
-          cargo build --release --locked --target ${{ matrix.target }} -p unix-oidc-agent
+          cargo build --release --locked --target ${{ matrix.target }} -p prmana-agent
 
       - name: Assert test-mode feature is NOT active
         if: matrix.build_pam == true
@@ -82,14 +82,14 @@ jobs:
         run: |
           # Security gate: release binaries must never include test-mode.
           # test-mode bypasses all JWT signature verification.
-          PAM_SO="target/${MATRIX_TARGET}/release/libpam_unix_oidc.so"
+          PAM_SO="target/${MATRIX_TARGET}/release/libpam_prmana.so"
           if [ ! -f "$PAM_SO" ]; then
             echo "::error::PAM module not found at ${PAM_SO}"
             exit 1
           fi
           # Check for the test-mode sentinel string that only exists when
           # the feature is compiled in (the insecure constructor log message)
-          if strings "$PAM_SO" | grep -qi "insecure.*test.*mode\|UNIX_OIDC_TEST_MODE\|new_insecure_for_testing"; then
+          if strings "$PAM_SO" | grep -qi "insecure.*test.*mode\|PRMANA_TEST_MODE\|new_insecure_for_testing"; then
             echo "::error::CRITICAL: Release binary contains test-mode code!"
             echo "::error::The binary was built with --features test-mode."
             echo "::error::This bypasses ALL signature verification."
@@ -102,7 +102,7 @@ jobs:
           cargo install cargo-cyclonedx --locked
           cargo cyclonedx --format json
           # Use the main PAM module SBOM
-          cp pam-unix-oidc/pam-unix-oidc.cdx.json sbom.json
+          cp pam-prmana/pam-prmana.cdx.json sbom.json
 
       - name: Package artifacts
         env:
@@ -114,14 +114,14 @@ jobs:
           mkdir -p dist
           # Copy PAM module only for Linux builds
           if [ "${BUILD_PAM}" = "true" ]; then
-            cp "target/${MATRIX_TARGET}/release/libpam_unix_oidc.so" dist/ 2>/dev/null || true
+            cp "target/${MATRIX_TARGET}/release/libpam_prmana.so" dist/ 2>/dev/null || true
           fi
           # Copy agent binary (works on all platforms)
-          cp "target/${MATRIX_TARGET}/release/unix-oidc-agent" dist/ 2>/dev/null || true
+          cp "target/${MATRIX_TARGET}/release/prmana-agent" dist/ 2>/dev/null || true
           cp README.md LICENSE LICENSE-APACHE LICENSE-MIT dist/
           cp sbom.json dist/
           cp -r examples dist/
-          cd dist && tar -czvf "../unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz" *
+          cd dist && tar -czvf "../prmana-${REF_NAME}-${MATRIX_NAME}.tar.gz" *
 
       - name: Generate checksums
         env:
@@ -129,24 +129,24 @@ jobs:
           MATRIX_NAME: ${{ matrix.name }}
         run: |
           if command -v sha256sum &> /dev/null; then
-            sha256sum "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz" > "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz.sha256"
+            sha256sum "prmana-${REF_NAME}-${MATRIX_NAME}.tar.gz" > "prmana-${REF_NAME}-${MATRIX_NAME}.tar.gz.sha256"
           else
             # macOS uses shasum
-            shasum -a 256 "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz" > "unix-oidc-${REF_NAME}-${MATRIX_NAME}.tar.gz.sha256"
+            shasum -a 256 "prmana-${REF_NAME}-${MATRIX_NAME}.tar.gz" > "prmana-${REF_NAME}-${MATRIX_NAME}.tar.gz.sha256"
           fi
 
       - name: Generate SLSA provenance (per-build attestation)
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: unix-oidc-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          subject-path: prmana-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.name }}
           path: |
-            unix-oidc-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
-            unix-oidc-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
+            prmana-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+            prmana-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
 
   test:
     name: Pre-release Tests

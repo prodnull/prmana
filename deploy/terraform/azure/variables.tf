@@ -1,5 +1,5 @@
-# unix-oidc Azure Terraform Module - Variables
-# https://github.com/prodnull/unix-oidc
+# prmana Azure Terraform Module - Variables
+# https://github.com/prodnull/prmana
 
 # =============================================================================
 # Required Variables
@@ -41,13 +41,13 @@ variable "admin_ssh_public_key" {
 # =============================================================================
 
 variable "oidc_client_id" {
-  description = "OIDC client ID for unix-oidc"
+  description = "OIDC client ID for prmana"
   type        = string
-  default     = "unix-oidc"
+  default     = "prmana"
 }
 
 variable "install_agent" {
-  description = "Whether to install the unix-oidc-agent"
+  description = "Whether to install the prmana-agent"
   type        = bool
   default     = true
 }
@@ -87,7 +87,7 @@ variable "vm_size" {
 variable "vm_name" {
   description = "Name for the VM and related resources"
   type        = string
-  default     = "unix-oidc-server"
+  default     = "prmana-server"
 
   validation {
     condition     = can(regex("^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$", var.vm_name))

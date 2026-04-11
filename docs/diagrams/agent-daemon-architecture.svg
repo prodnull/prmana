@@ -38,18 +38,18 @@
 
   <!-- Title -->
   <text class="title" x="40" y="35">Agent Daemon Internal Architecture</text>
-  <text class="subtitle" x="40" y="55">unix-oidc-agent: Tokio async runtime with Unix socket IPC, key management, and CIBA step-up</text>
+  <text class="subtitle" x="40" y="55">prmana-agent: Tokio async runtime with Unix socket IPC, key management, and CIBA step-up</text>
 
   <!-- Daemon border -->
   <rect class="daemon-border" x="30" y="70" width="860" height="700"/>
-  <text class="section-label" x="50" y="90">unix-oidc-agent daemon (Tokio async runtime)</text>
+  <text class="section-label" x="50" y="90">prmana-agent daemon (Tokio async runtime)</text>
 
   <!-- Unix Socket Listener -->
   <rect class="module" x="50" y="100" width="200" height="80"/>
   <text class="module-label" x="70" y="125">Unix Socket Listener</text>
   <text class="module-sub" x="70" y="142">UnixListener (tokio::net)</text>
   <text class="module-sub" x="70" y="157">Path: $XDG_RUNTIME_DIR/</text>
-  <text class="module-sub" x="70" y="172">unix-oidc-agent.sock (0600)</text>
+  <text class="module-sub" x="70" y="172">prmana-agent.sock (0600)</text>
 
   <!-- IPC Protocol Dispatch -->
   <rect class="module" x="50" y="200" width="200" height="175"/>
@@ -202,7 +202,7 @@
   <line class="section-line" x1="925" y1="133" x2="1165" y2="133"/>
   <text class="module-detail" x="940" y="150">SSH Client (GetProof)</text>
   <text class="module-detail" x="940" y="165">PAM Module (StepUp, StepUpResult)</text>
-  <text class="module-detail" x="940" y="180">CLI: unix-oidc-agent status|login|logout</text>
+  <text class="module-detail" x="940" y="180">CLI: prmana-agent status|login|logout</text>
   <text class="module-detail" x="940" y="195">PAM close_session (SessionClosed)</text>
   <text class="module-detail" x="940" y="210">Monitoring: Metrics (JSON/Prometheus)</text>
   <text class="module-detail" x="940" y="225">All: 2s socket timeout per request</text>

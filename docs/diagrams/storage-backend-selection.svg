@@ -60,7 +60,7 @@
 
   <!-- Decision: Forced? -->
   <polygon class="decision" points="180,150 310,195 180,240 50,195"/>
-  <text class="decision-label" x="180" y="192">UNIX_OIDC_STORAGE</text>
+  <text class="decision-label" x="180" y="192">PRMANA_STORAGE</text>
   <text class="decision-label" x="180" y="205">_BACKEND set?</text>
 
   <!-- YES: Forced path -->

@@ -1,7 +1,7 @@
 {
-  "name": "unix-oidc-demo",
+  "name": "prmana-demo",
   "version": "1.0.0",
-  "description": "Training video capture for unix-oidc authentication flows",
+  "description": "Training video capture for prmana authentication flows",
   "scripts": {
     "test": "playwright test",
     "record": "playwright test --headed --project=chromium",

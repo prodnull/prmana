@@ -1,7 +1,7 @@
 #!/bin/bash
 # test/scripts/run-integration-tests.sh
 #
-# Run integration tests for unix-oidc
+# Run integration tests for prmana
 #
 # Usage:
 #   ./run-integration-tests.sh              # Run all tests
@@ -134,7 +134,7 @@ print_summary() {
 # Main
 echo ""
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║           unix-oidc Integration Test Suite                   ║${NC}"
+echo -e "${BLUE}║           prmana Integration Test Suite                   ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
 
 case "${1:-all}" in

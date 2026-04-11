@@ -1,12 +1,12 @@
 # Prmana Agent Config Template: Failover Pair
 #
 # Client-side agent configuration with primary/secondary IdP failover.
-# Place at ~/.config/unix-oidc/config.yaml on user workstations.
+# Place at ~/.config/prmana/config.yaml on user workstations.
 #
 # Pair with failover-pair.yaml on the server side.
 
 issuer: "https://idp-primary.example.com/realms/corp"
-client_id: "unix-oidc"
+client_id: "prmana"
 
 failover_pairs:
   - primary_issuer_url: "https://idp-primary.example.com/realms/corp"

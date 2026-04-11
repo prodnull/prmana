@@ -7,8 +7,8 @@
 # Usage:
 #   docker compose -f docker-compose.spire-test.yaml up -d
 #   # Wait for agent health check
-#   UNIX_OIDC_SPIRE_SOCKET=/tmp/spire-agent/public/api.sock \
-#     cargo test -p unix-oidc-agent --features spire -- --ignored spire
+#   PRMANA_SPIRE_SOCKET=/tmp/spire-agent/public/api.sock \
+#     cargo test -p prmana-agent --features spire -- --ignored spire
 #   docker compose -f docker-compose.spire-test.yaml down -v
 
 services:
@@ -63,15 +63,15 @@ services:
         echo "Creating agent join token..."
         TOKEN=$(/opt/spire/bin/spire-server token generate \
           -socketPath /opt/spire/data/server.sock \
-          -spiffeID spiffe://unix-oidc-test/agent \
+          -spiffeID spiffe://prmana-test/agent \
           -output json | grep -o '"value":"[^"]*"' | cut -d'"' -f4)
         echo "Join token: $TOKEN"
 
         echo "Registering test workload..."
         /opt/spire/bin/spire-server entry create \
           -socketPath /opt/spire/data/server.sock \
-          -parentID spiffe://unix-oidc-test/agent \
-          -spiffeID spiffe://unix-oidc-test/ns/ci/sa/test-workload \
+          -parentID spiffe://prmana-test/agent \
+          -spiffeID spiffe://prmana-test/ns/ci/sa/test-workload \
           -selector unix:uid:0 \
           -dns localhost \
           -jwt-svid-ttl 300

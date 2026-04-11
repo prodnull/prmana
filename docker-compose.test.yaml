@@ -55,13 +55,13 @@ services:
     ports:
       - "2222:22"
     environment:
-      UNIX_OIDC_TEST_MODE: "true"
-      OIDC_ISSUER: "http://keycloak:8080/realms/unix-oidc-test"
+      PRMANA_TEST_MODE: "true"
+      OIDC_ISSUER: "http://keycloak:8080/realms/prmana-test"
       LDAP_URI: "ldap://openldap:389"
       LDAP_BASE: "dc=test,dc=local"
     volumes:
-      - ./target/release:/opt/unix-oidc:ro
-      - ./test/fixtures/policy/policy-break-glass-e2e.yaml:/etc/unix-oidc/policy.yaml:ro
+      - ./target/release:/opt/prmana:ro
+      - ./test/fixtures/policy/policy-break-glass-e2e.yaml:/etc/prmana/policy.yaml:ro
     healthcheck:
       test: ["CMD", "pgrep", "sshd"]
       interval: 5s
@@ -70,4 +70,4 @@ services:
 
 networks:
   default:
-    name: unix-oidc-test
+    name: prmana-test

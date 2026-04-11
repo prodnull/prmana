@@ -1,6 +1,6 @@
 # Access Posture & Evidence
 
-Phase 45 adds a local/export-first evidence path for `pam-unix-oidc`.
+Phase 45 adds a local/export-first evidence path for `pam-prmana`.
 
 The goal is not to create a dashboard or management plane inside the PAM module.
 Instead, it provides two deterministic outputs that operators can use directly or
@@ -14,7 +14,7 @@ feed into a later fleet service:
 The crate now installs:
 
 ```bash
-unix-oidc-evidence-export
+prmana-evidence-export
 ```
 
 ## Posture Snapshots
@@ -22,8 +22,8 @@ unix-oidc-evidence-export
 Generate a host-local posture snapshot from the effective policy:
 
 ```bash
-unix-oidc-evidence-export posture \
-  --policy /etc/unix-oidc/policy.yaml
+prmana-evidence-export posture \
+  --policy /etc/prmana/policy.yaml
 ```
 
 The JSON snapshot includes:
@@ -47,9 +47,9 @@ This is intended for:
 Generate a filtered evidence bundle from the structured audit log:
 
 ```bash
-unix-oidc-evidence-export export \
-  --file /var/log/unix-oidc-audit.log \
-  --policy /etc/unix-oidc/policy.yaml \
+prmana-evidence-export export \
+  --file /var/log/prmana-audit.log \
+  --policy /etc/prmana/policy.yaml \
   --event BREAK_GLASS_AUTH \
   --event STEP_UP_FAILED
 ```
@@ -57,8 +57,8 @@ unix-oidc-evidence-export export \
 By default the output is pretty-printed JSON. CSV is also supported:
 
 ```bash
-unix-oidc-evidence-export export \
-  --file /var/log/unix-oidc-audit.log \
+prmana-evidence-export export \
+  --file /var/log/prmana-audit.log \
   --format csv
 ```
 
@@ -97,14 +97,14 @@ reduces schema churn.
 Review hosts still running dry-run sudo policy:
 
 ```bash
-unix-oidc-evidence-export posture | jq '.findings[] | select(.id == "sudo_policy_dry_run")'
+prmana-evidence-export posture | jq '.findings[] | select(.id == "sudo_policy_dry_run")'
 ```
 
 Export break-glass and failover events for an audit window:
 
 ```bash
-unix-oidc-evidence-export export \
-  --file /var/log/unix-oidc-audit.log \
+prmana-evidence-export export \
+  --file /var/log/prmana-audit.log \
   --from 2026-04-01T00:00:00Z \
   --to 2026-04-30T23:59:59Z \
   --event BREAK_GLASS_AUTH \

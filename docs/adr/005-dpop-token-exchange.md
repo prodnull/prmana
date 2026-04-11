@@ -6,9 +6,9 @@ Proposed
 
 ## Context
 
-Users often need to SSH through jump hosts (bastions) to reach internal servers. The current unix-oidc architecture supports two approaches:
+Users often need to SSH through jump hosts (bastions) to reach internal servers. The current prmana architecture supports two approaches:
 
-1. **Socket forwarding**: Forward the unix-oidc-agent socket through SSH, allowing the jump host to request DPoP proofs from the user's machine
+1. **Socket forwarding**: Forward the prmana-agent socket through SSH, allowing the jump host to request DPoP proofs from the user's machine
 2. **Direct authentication**: Authenticate independently to each hop
 
 Socket forwarding has security concerns (see THREAT_MODEL.md AF1-AF3): a compromised jump host can use the forwarded socket to generate proofs for any target.
@@ -32,7 +32,7 @@ User's Machine                    Jump Host A                      Target Host B
 ┌──────────────┐                 ┌──────────────┐                 ┌──────────────┐
 │ DPoP key: U  │                 │ DPoP key: J  │                 │              │
 │              │  Token(cnf=U)   │              │  Token(cnf=J)   │              │
-│ unix-oidc    │────────────────▶│ PAM validates│────────────────▶│ PAM validates│
+│ prmana    │────────────────▶│ PAM validates│────────────────▶│ PAM validates│
 │ agent        │  + DPoP proof U │ + exchanges  │  + DPoP proof J │ lineage claim│
 └──────────────┘                 │ for Token(J) │                 └──────────────┘
                                  └──────────────┘
@@ -54,7 +54,7 @@ Alice ──DPoP proof──▶ Jump Host A ──attestation──▶ IdP ─�
 
 - **Jump Host A verifies** Alice's DPoP proof against `cnf.jkt` in her token
 - **Jump Host A attests** to IdP: "I verified alice, here's her thumbprint"
-- **IdP records** the attestation in `x-unix-oidc-lineage` claim
+- **IdP records** the attestation in `x-prmana-lineage` claim
 - **IdP signs** the entire token (including lineage)
 - **Target Host B trusts** the IdP signature - no need to re-verify Alice's proof
 
@@ -116,14 +116,14 @@ The IdP embeds the verified lineage in the exchanged token:
 
   "act": {
     "sub": "alice@example.com",
-    "client_id": "unix-oidc-agent"
+    "client_id": "prmana-agent"
   },
   "cnf": {
     "jkt": "jump-host-dpop-thumbprint"
   },
   "scope": "ssh:login",
 
-  "x-unix-oidc-lineage": {
+  "x-prmana-lineage": {
     "version": 1,
     "trace_id": "otel-trace-abc123",
     "origin": {
@@ -166,7 +166,7 @@ The IdP embeds the verified lineage in the exchanged token:
 
 ### Why Lineage Is Tamper-Proof
 
-1. The `x-unix-oidc-lineage` claim is inside the JWT payload
+1. The `x-prmana-lineage` claim is inside the JWT payload
 2. The JWT is signed by the IdP
 3. Modifying any field invalidates the IdP's signature
 4. Target host only verifies IdP signature (standard JWT validation)
@@ -178,7 +178,7 @@ For deeper chains, lineage accumulates:
 
 ```json
 {
-  "x-unix-oidc-lineage": {
+  "x-prmana-lineage": {
     "trace_id": "otel-trace-abc123",
     "origin": {
       "sub": "alice@example.com",
@@ -270,16 +270,16 @@ Each PAM authentication emits OpenTelemetry spans:
 
 ```rust
 // In PAM module
-let span = tracer.span_builder("unix_oidc.auth")
+let span = tracer.span_builder("prmana.auth")
     .with_kind(SpanKind::Server)
     .start(&tracer);
 
-span.set_attribute(KeyValue::new("unix_oidc.trace_id", lineage.trace_id));
-span.set_attribute(KeyValue::new("unix_oidc.origin.sub", lineage.origin.sub));
-span.set_attribute(KeyValue::new("unix_oidc.origin.dpop_jkt", lineage.origin.dpop_jkt));
-span.set_attribute(KeyValue::new("unix_oidc.hop_count", lineage.path.len()));
-span.set_attribute(KeyValue::new("unix_oidc.current_actor", token.sub));
-span.set_attribute(KeyValue::new("unix_oidc.lineage_valid", true));
+span.set_attribute(KeyValue::new("prmana.trace_id", lineage.trace_id));
+span.set_attribute(KeyValue::new("prmana.origin.sub", lineage.origin.sub));
+span.set_attribute(KeyValue::new("prmana.origin.dpop_jkt", lineage.origin.dpop_jkt));
+span.set_attribute(KeyValue::new("prmana.hop_count", lineage.path.len()));
+span.set_attribute(KeyValue::new("prmana.current_actor", token.sub));
+span.set_attribute(KeyValue::new("prmana.lineage_valid", true));
 ```
 
 ### Telemetry Export
@@ -290,7 +290,7 @@ Structured log event for SIEM integration:
 {
   "timestamp": "2024-01-15T10:05:00Z",
   "level": "INFO",
-  "target": "unix_oidc::pam",
+  "target": "prmana::pam",
   "event": "AUTH_SUCCESS",
   
   "trace_id": "otel-trace-abc123",
@@ -336,7 +336,7 @@ Structured log event for SIEM integration:
 ## Policy Configuration
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 
 delegation:
   # Mode: "exchange" (token exchange) or "forward" (socket forwarding)
@@ -364,7 +364,7 @@ delegation:
 telemetry:
   # OpenTelemetry configuration
   otlp_endpoint: "http://otel-collector:4317"
-  service_name: "unix-oidc-pam"
+  service_name: "prmana-pam"
   
   # Include lineage in all spans
   include_lineage: true
@@ -407,7 +407,7 @@ telemetry:
 1. Configure test realm:
    - Token exchange enabled on jump-host client
    - DPoP required on both clients
-   - Custom protocol mapper for `x-unix-oidc-lineage`
+   - Custom protocol mapper for `x-prmana-lineage`
 
 2. Test flow:
    - User gets DPoP-bound token
@@ -432,7 +432,7 @@ telemetry:
 
 ### Phase 4: Jump Host Agent
 
-1. Create `unix-oidc-jump` daemon
+1. Create `prmana-jump` daemon
 2. DPoP key management for jump hosts
 3. Automatic exchange on session establishment
 4. PAM integration

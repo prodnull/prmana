@@ -1,4 +1,4 @@
-# unix-oidc E2E Demo Guide
+# prmana E2E Demo Guide
 
 This guide walks through a complete demonstration of OIDC-based Unix authentication, including:
 - Device flow authentication
@@ -35,7 +35,7 @@ make dev-up
 │                        Demo Environment                               │
 ├─────────────────┬─────────────────┬──────────────────────────────────┤
 │    Keycloak     │    OpenLDAP     │         Test Host                │
-│    (OIDC IdP)   │   (Directory)   │    (SSH + PAM + unix-oidc)       │
+│    (OIDC IdP)   │   (Directory)   │    (SSH + PAM + prmana)       │
 │    :8080        │    :389         │         :2222                    │
 └─────────────────┴─────────────────┴──────────────────────────────────┘
 
@@ -65,10 +65,10 @@ Expected output: All three services (keycloak, openldap, test-host) should show 
 ```bash
 # Request device authorization
 DEVICE_RESPONSE=$(curl -s -X POST \
-  "http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/auth/device" \
+  "http://localhost:8080/realms/prmana-test/protocol/openid-connect/auth/device" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "client_id=unix-oidc" \
-  -d "client_secret=unix-oidc-test-secret" \
+  -d "client_id=prmana" \
+  -d "client_secret=prmana-test-secret" \
   -d "scope=openid")
 
 echo "$DEVICE_RESPONSE" | jq .
@@ -92,11 +92,11 @@ DEVICE_CODE=$(echo "$DEVICE_RESPONSE" | jq -r '.device_code')
 
 # Poll for token (run after completing browser auth)
 TOKEN_RESPONSE=$(curl -s -X POST \
-  "http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/token" \
+  "http://localhost:8080/realms/prmana-test/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
-  -d "client_id=unix-oidc" \
-  -d "client_secret=unix-oidc-test-secret" \
+  -d "client_id=prmana" \
+  -d "client_secret=prmana-test-secret" \
   -d "device_code=$DEVICE_CODE")
 
 # Extract access token
@@ -112,8 +112,8 @@ echo "$ACCESS_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq '{iss, aud, su
 ```
 
 Expected claims:
-- `iss`: `http://keycloak:8080/realms/unix-oidc-test`
-- `aud`: includes `unix-oidc`
+- `iss`: `http://keycloak:8080/realms/prmana-test`
+- `aud`: includes `prmana`
 - `preferred_username`: `testuser`
 - `acr`: `1` (basic authentication level)
 
@@ -121,10 +121,10 @@ Expected claims:
 
 ```bash
 # Test PAM authentication with the token
-# Note: UNIX_OIDC_TEST_MODE enables reading tokens from environment variables
-docker compose -f docker-compose.test.yaml exec -e OIDC_TOKEN="$ACCESS_TOKEN" -e UNIX_OIDC_TEST_MODE="true" test-host bash -c "
-export OIDC_ISSUER='http://keycloak:8080/realms/unix-oidc-test'
-export OIDC_CLIENT_ID='unix-oidc'
+# Note: PRMANA_TEST_MODE enables reading tokens from environment variables
+docker compose -f docker-compose.test.yaml exec -e OIDC_TOKEN="$ACCESS_TOKEN" -e PRMANA_TEST_MODE="true" test-host bash -c "
+export OIDC_ISSUER='http://keycloak:8080/realms/prmana-test'
+export OIDC_CLIENT_ID='prmana'
 pamtester -v sshd testuser authenticate
 "
 ```
@@ -133,7 +133,7 @@ Expected output:
 ```
 pamtester: invoking pam_start(sshd, testuser, ...)
 pamtester: performing operation - authenticate
-unix-oidc-audit: {"event":"SSH_LOGIN_SUCCESS",...}
+prmana-audit: {"event":"SSH_LOGIN_SUCCESS",...}
 pamtester: successfully authenticated
 ```
 
@@ -141,9 +141,9 @@ pamtester: successfully authenticated
 
 ```bash
 # Test sudo PAM authentication
-docker compose -f docker-compose.test.yaml exec -e OIDC_TOKEN="$ACCESS_TOKEN" -e UNIX_OIDC_TEST_MODE="true" test-host bash -c "
-export OIDC_ISSUER='http://keycloak:8080/realms/unix-oidc-test'
-export OIDC_CLIENT_ID='unix-oidc'
+docker compose -f docker-compose.test.yaml exec -e OIDC_TOKEN="$ACCESS_TOKEN" -e PRMANA_TEST_MODE="true" test-host bash -c "
+export OIDC_ISSUER='http://keycloak:8080/realms/prmana-test'
+export OIDC_CLIENT_ID='prmana'
 pamtester -v sudo testuser authenticate
 "
 ```
@@ -156,7 +156,7 @@ The PAM module emits audit events in JSON format to syslog/stderr:
 {
   "event": "SSH_LOGIN_SUCCESS",
   "timestamp": "2026-01-20T00:04:04.887238250+00:00",
-  "session_id": "unix-oidc-188c4791bb41a389-6784f12565e5dcb1",
+  "session_id": "prmana-188c4791bb41a389-6784f12565e5dcb1",
   "user": "testuser",
   "uid": 1000,
   "source_ip": null,
@@ -197,7 +197,7 @@ This script:
 - UID verified against directory service
 
 ### 3. Step-Up Authentication
-Policy in `/etc/unix-oidc/policy.yaml`:
+Policy in `/etc/prmana/policy.yaml`:
 ```yaml
 sudo:
   step_up_required: true
@@ -236,7 +236,7 @@ The PAM module supports several methods for receiving OIDC tokens:
 ```bash
 # Set the token in the environment before authentication
 export OIDC_TOKEN="eyJ..."
-export UNIX_OIDC_TEST_MODE="true"  # Enable env var reading
+export PRMANA_TEST_MODE="true"  # Enable env var reading
 
 # Then authenticate
 pamtester sshd testuser authenticate
@@ -270,12 +270,12 @@ curl http://localhost:8080/health/ready
 ```bash
 # Check token issuer matches
 echo "$ACCESS_TOKEN" | cut -d'.' -f2 | base64 -d | jq '.iss'
-# Should be: http://keycloak:8080/realms/unix-oidc-test
+# Should be: http://keycloak:8080/realms/prmana-test
 ```
 
 ### PAM module not found
 ```bash
-docker compose -f docker-compose.test.yaml exec test-host ls -la /lib/security/pam_unix_oidc.so
+docker compose -f docker-compose.test.yaml exec test-host ls -la /lib/security/pam_prmana.so
 ```
 
 ### SSSD user resolution fails

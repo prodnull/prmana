@@ -1,9 +1,9 @@
 #!/bin/bash
-# unix-oidc uninstaller v2.0.0
+# prmana uninstaller v2.0.0
 # Idempotent — safe to run multiple times.
 set -euo pipefail
 
-INSTALL_DIR="/etc/unix-oidc"
+INSTALL_DIR="/etc/prmana"
 MANIFEST="$INSTALL_DIR/.install-manifest"
 
 # Colors
@@ -25,13 +25,13 @@ PURGE=false
 
 usage() {
     cat << EOF
-unix-oidc uninstaller v2.0.0
+prmana uninstaller v2.0.0
 
 Usage: $0 [OPTIONS]
 
 Options:
     --keep-config    Keep configuration files in $INSTALL_DIR
-    --purge          Also remove persistent state (/var/lib/unix-oidc)
+    --purge          Also remove persistent state (/var/lib/prmana)
     --dry-run        Show what would be removed without making changes
     --yes, -y        Skip confirmation prompts
     --help, -h       Show this help
@@ -56,14 +56,14 @@ check_pam_in_use() {
     local in_use=false
 
     for pam_file in /etc/pam.d/sshd /etc/pam.d/sudo; do
-        if [ -f "$pam_file" ] && grep -q "pam_unix_oidc" "$pam_file" 2>/dev/null; then
-            log_warn "PAM still configured to use unix-oidc in $pam_file"
+        if [ -f "$pam_file" ] && grep -q "pam_prmana" "$pam_file" 2>/dev/null; then
+            log_warn "PAM still configured to use prmana in $pam_file"
             in_use=true
         fi
     done
 
     if [ "$in_use" = true ]; then
-        log_warn "Remove unix-oidc from PAM config before uninstalling!"
+        log_warn "Remove prmana from PAM config before uninstalling!"
         log_warn "Otherwise authentication may fail."
         echo ""
         if [ "$YES_MODE" = false ] && [ "$DRY_RUN" = false ]; then
@@ -83,34 +83,34 @@ cleanup_pam_config() {
     log_info "Cleaning up PAM configuration..."
 
     # Remove pam-auth-update profile (Debian/Ubuntu)
-    if [ -f /usr/share/pam-configs/unix-oidc ]; then
+    if [ -f /usr/share/pam-configs/prmana ]; then
         if [ "$DRY_RUN" = true ]; then
-            log_info "Would remove: /usr/share/pam-configs/unix-oidc"
+            log_info "Would remove: /usr/share/pam-configs/prmana"
         else
-            rm -f /usr/share/pam-configs/unix-oidc
+            rm -f /usr/share/pam-configs/prmana
             # Re-run pam-auth-update to regenerate configs without our profile
             if command -v pam-auth-update &>/dev/null; then
-                pam-auth-update --remove unix-oidc 2>/dev/null || true
+                pam-auth-update --remove prmana 2>/dev/null || true
             fi
             log_success "Removed pam-auth-update profile"
         fi
     fi
 
     # Remove authselect custom profile (RHEL/Rocky)
-    if [ -d /etc/authselect/custom/unix-oidc ]; then
+    if [ -d /etc/authselect/custom/prmana ]; then
         if [ "$DRY_RUN" = true ]; then
-            log_info "Would remove: /etc/authselect/custom/unix-oidc"
+            log_info "Would remove: /etc/authselect/custom/prmana"
         else
             # Switch back to default profile if currently active
             if command -v authselect &>/dev/null; then
                 local current
                 current=$(authselect current -r 2>/dev/null || echo "")
-                if [ "$current" = "custom/unix-oidc" ]; then
+                if [ "$current" = "custom/prmana" ]; then
                     authselect select sssd --force 2>/dev/null || true
                     log_info "Switched authselect back to sssd profile"
                 fi
             fi
-            rm -rf /etc/authselect/custom/unix-oidc
+            rm -rf /etc/authselect/custom/prmana
             log_success "Removed authselect custom profile"
         fi
     fi
@@ -123,9 +123,9 @@ cleanup_systemd() {
     log_info "Cleaning up systemd units..."
 
     local units=(
-        "/usr/lib/systemd/user/unix-oidc-agent.service"
-        "/usr/lib/systemd/user/unix-oidc-agent.socket"
-        "/etc/tmpfiles.d/unix-oidc.conf"
+        "/usr/lib/systemd/user/prmana-agent.service"
+        "/usr/lib/systemd/user/prmana-agent.socket"
+        "/etc/tmpfiles.d/prmana.conf"
     )
 
     for unit in "${units[@]}"; do
@@ -168,7 +168,7 @@ main() {
 
     echo ""
     echo "==============================================="
-    echo "          unix-oidc Uninstaller v2.0.0"
+    echo "          prmana Uninstaller v2.0.0"
     echo "==============================================="
     echo ""
 
@@ -180,26 +180,26 @@ main() {
     # Idempotency: if no manifest and no known files exist, nothing to do
     if [ ! -f "$MANIFEST" ]; then
         local any_found=false
-        for f in /usr/local/bin/unix-oidc-agent \
-                 /usr/lib/systemd/user/unix-oidc-agent.service \
-                 /etc/tmpfiles.d/unix-oidc.conf \
-                 /usr/share/pam-configs/unix-oidc; do
+        for f in /usr/local/bin/prmana-agent \
+                 /usr/lib/systemd/user/prmana-agent.service \
+                 /etc/tmpfiles.d/prmana.conf \
+                 /usr/share/pam-configs/prmana; do
             [ -f "$f" ] && any_found=true && break
         done
         # Check PAM dirs for the module
         for pam_dir in /lib/security /lib64/security; do
-            [ -f "$pam_dir/pam_unix_oidc.so" ] && any_found=true && break
+            [ -f "$pam_dir/pam_prmana.so" ] && any_found=true && break
         done
 
         if [ "$any_found" = false ]; then
-            log_info "unix-oidc does not appear to be installed (no manifest, no known files)"
+            log_info "prmana does not appear to be installed (no manifest, no known files)"
             log_success "Nothing to do"
             exit 0
         fi
-        log_warn "Install manifest not found but unix-oidc files detected — removing known files"
+        log_warn "Install manifest not found but prmana files detected — removing known files"
     fi
 
-    # Check if PAM is still using unix-oidc
+    # Check if PAM is still using prmana
     check_pam_in_use
 
     # Remove PAM configuration (profiles, authselect)
@@ -244,22 +244,22 @@ main() {
         done < "$MANIFEST"
     else
         # No manifest — remove known files directly
-        if [ -f /usr/local/bin/unix-oidc-agent ]; then
+        if [ -f /usr/local/bin/prmana-agent ]; then
             if [ "$DRY_RUN" = true ]; then
-                log_info "Would remove: /usr/local/bin/unix-oidc-agent"
+                log_info "Would remove: /usr/local/bin/prmana-agent"
             else
-                rm -f /usr/local/bin/unix-oidc-agent
-                log_success "Removed: /usr/local/bin/unix-oidc-agent"
+                rm -f /usr/local/bin/prmana-agent
+                log_success "Removed: /usr/local/bin/prmana-agent"
             fi
             ((removed++)) || true
         fi
         for pam_dir in /lib/security /lib64/security; do
-            if [ -f "$pam_dir/pam_unix_oidc.so" ]; then
+            if [ -f "$pam_dir/pam_prmana.so" ]; then
                 if [ "$DRY_RUN" = true ]; then
-                    log_info "Would remove: $pam_dir/pam_unix_oidc.so"
+                    log_info "Would remove: $pam_dir/pam_prmana.so"
                 else
-                    rm -f "$pam_dir/pam_unix_oidc.so"
-                    log_success "Removed: $pam_dir/pam_unix_oidc.so"
+                    rm -f "$pam_dir/pam_prmana.so"
+                    log_success "Removed: $pam_dir/pam_prmana.so"
                 fi
                 ((removed++)) || true
             fi
@@ -282,11 +282,11 @@ main() {
     # Purge persistent state if requested
     if [ "$PURGE" = true ]; then
         if [ "$DRY_RUN" = true ]; then
-            log_info "Would remove: /var/lib/unix-oidc"
-            log_info "Would remove: /run/unix-oidc"
+            log_info "Would remove: /var/lib/prmana"
+            log_info "Would remove: /run/prmana"
         else
-            rm -rf /var/lib/unix-oidc 2>/dev/null || true
-            rm -rf /run/unix-oidc 2>/dev/null || true
+            rm -rf /var/lib/prmana 2>/dev/null || true
+            rm -rf /run/prmana 2>/dev/null || true
             log_success "Purged persistent state"
         fi
     fi
@@ -307,12 +307,12 @@ main() {
     echo ""
 
     if [ "$DRY_RUN" = false ]; then
-        log_info "unix-oidc has been removed from this system"
+        log_info "prmana has been removed from this system"
         if [ "$KEEP_CONFIG" = true ]; then
             log_info "Configuration preserved in $INSTALL_DIR"
         fi
         if [ "$PURGE" = false ]; then
-            log_info "Persistent state in /var/lib/unix-oidc preserved (use --purge to remove)"
+            log_info "Persistent state in /var/lib/prmana preserved (use --purge to remove)"
         fi
     fi
 }

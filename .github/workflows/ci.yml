@@ -131,7 +131,7 @@ jobs:
 
       - name: Build (macOS agent only)
         if: matrix.build_pam == false
-        run: cargo build --release -p unix-oidc-agent
+        run: cargo build --release -p prmana-agent
 
       - name: Run tests (Linux)
         if: matrix.build_pam == true
@@ -139,25 +139,25 @@ jobs:
 
       - name: Run tests (macOS agent only)
         if: matrix.build_pam == false
-        run: cargo test --release -p unix-oidc-agent
+        run: cargo test --release -p prmana-agent
 
       - name: Upload build artifact (Linux)
         if: matrix.build_pam == true
         uses: actions/upload-artifact@v6
         with:
-          name: unix-oidc-${{ matrix.name }}
+          name: prmana-${{ matrix.name }}
           path: |
-            target/release/libpam_unix_oidc.so
-            target/release/unix-oidc-agent
+            target/release/libpam_prmana.so
+            target/release/prmana-agent
           if-no-files-found: error
 
       - name: Upload build artifact (macOS)
         if: matrix.build_pam == false
         uses: actions/upload-artifact@v6
         with:
-          name: unix-oidc-${{ matrix.name }}
+          name: prmana-${{ matrix.name }}
           path: |
-            target/release/unix-oidc-agent
+            target/release/prmana-agent
           if-no-files-found: error
 
   # ============================================================================
@@ -350,7 +350,7 @@ jobs:
       - name: Download release artifact
         uses: actions/download-artifact@v6
         with:
-          name: unix-oidc-ubuntu-24.04
+          name: prmana-ubuntu-24.04
           path: target/release-linux
 
       - name: Make binaries executable
@@ -399,7 +399,7 @@ jobs:
 
       - name: Verify TEST_MODE sentinel
         run: |
-          if docker compose -f docker-compose.e2e.yaml exec -T test-host-e2e env | grep -q UNIX_OIDC_TEST_MODE; then
+          if docker compose -f docker-compose.e2e.yaml exec -T test-host-e2e env | grep -q PRMANA_TEST_MODE; then
             echo "TEST_MODE is set in E2E container — aborting"
             exit 1
           fi
@@ -414,9 +414,9 @@ jobs:
         run: bash test/tests/test_dpop_binding.sh
         env:
           KEYCLOAK_URL: http://localhost:8080
-          REALM: unix-oidc
-          CLIENT_ID: unix-oidc
-          CLIENT_SECRET: unix-oidc-test-secret
+          REALM: prmana
+          CLIENT_ID: prmana
+          CLIENT_SECRET: prmana-test-secret
           TEST_USERNAME: testuser
           TEST_PASSWORD: testpass
 
@@ -438,7 +438,7 @@ jobs:
           echo ""
           echo "=== Test-Host Audit Log ==="
           docker compose -f docker-compose.e2e.yaml exec -T test-host-e2e \
-            bash -c "cat /var/log/unix-oidc-audit.log 2>/dev/null || echo 'No audit log'" || true
+            bash -c "cat /var/log/prmana-audit.log 2>/dev/null || echo 'No audit log'" || true
 
       - name: Stop E2E stack
         if: always()
@@ -469,8 +469,8 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-systemd-e2e-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build release (unix-oidc-agent)
-        run: cargo build --release -p unix-oidc-agent
+      - name: Build release (prmana-agent)
+        run: cargo build --release -p prmana-agent
 
       - name: Build systemd test image
         run: |
@@ -548,9 +548,9 @@ jobs:
 
       - name: Run TPM integration tests
         run: |
-          cargo test -p unix-oidc-agent --features tpm,test-mode -- --ignored tpm
+          cargo test -p prmana-agent --features tpm,test-mode -- --ignored tpm
         env:
-          UNIX_OIDC_TPM_TCTI: swtpm
+          PRMANA_TPM_TCTI: swtpm
 
       - name: Collect logs on failure
         if: failure()
@@ -611,9 +611,9 @@ jobs:
           echo "Workload registration complete."
 
       - name: Run SPIRE integration tests
-        run: cargo test -p unix-oidc-agent --features spire -- --ignored spire
+        run: cargo test -p prmana-agent --features spire -- --ignored spire
         env:
-          UNIX_OIDC_SPIRE_SOCKET: /tmp/spire-agent/public/api.sock
+          PRMANA_SPIRE_SOCKET: /tmp/spire-agent/public/api.sock
 
       - name: Collect logs on failure
         if: failure()

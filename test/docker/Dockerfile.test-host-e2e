@@ -1,6 +1,6 @@
 # test/docker/Dockerfile.test-host-e2e
 # E2E test-host: real OIDC signature verification, no TEST_MODE.
-# Includes unix-oidc-agent binary on PATH for device flow + DPoP proof generation.
+# Includes prmana-agent binary on PATH for device flow + DPoP proof generation.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -37,17 +37,17 @@ COPY test/fixtures/sssd/sssd.conf /etc/sssd/sssd.conf
 RUN chmod 600 /etc/sssd/sssd.conf
 
 # Copy PAM configuration
-COPY test/fixtures/pam/sshd /etc/pam.d/sshd.unix-oidc
-COPY test/fixtures/pam/sudo /etc/pam.d/sudo.unix-oidc
+COPY test/fixtures/pam/sshd /etc/pam.d/sshd.prmana
+COPY test/fixtures/pam/sudo /etc/pam.d/sudo.prmana
 
 # Copy policy configuration
-RUN mkdir -p /etc/unix-oidc
-COPY test/fixtures/policy/policy-e2e.yaml /etc/unix-oidc/policy.yaml
+RUN mkdir -p /etc/prmana
+COPY test/fixtures/policy/policy-e2e.yaml /etc/prmana/policy.yaml
 
 # OIDC configuration in /etc/environment
 # Issuer matches KC_HOSTNAME=localhost. socat proxies localhost:8080 → keycloak:8080.
-RUN echo 'OIDC_ISSUER=http://localhost:8080/realms/unix-oidc' >> /etc/environment && \
-    echo 'OIDC_CLIENT_ID=unix-oidc' >> /etc/environment
+RUN echo 'OIDC_ISSUER=http://localhost:8080/realms/prmana' >> /etc/environment && \
+    echo 'OIDC_CLIENT_ID=prmana' >> /etc/environment
 
 # Startup script
 COPY test/docker/entrypoint-e2e.sh /entrypoint.sh

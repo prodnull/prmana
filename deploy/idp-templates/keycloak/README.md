@@ -1,6 +1,6 @@
-# Keycloak Configuration for unix-oidc
+# Keycloak Configuration for prmana
 
-This guide covers configuring Keycloak as an Identity Provider (IdP) for unix-oidc.
+This guide covers configuring Keycloak as an Identity Provider (IdP) for prmana.
 
 ## Prerequisites
 
@@ -17,8 +17,8 @@ This guide covers configuring Keycloak as an Identity Provider (IdP) for unix-oi
 2. Click the realm dropdown (top-left) and select "Create Realm"
 3. Click "Browse" and select `realm-export.json` from this directory
 4. Click "Create"
-5. Navigate to Clients > unix-oidc > Credentials and regenerate the client secret
-6. Note the new client secret for your unix-oidc configuration
+5. Navigate to Clients > prmana > Credentials and regenerate the client secret
+6. Note the new client secret for your prmana configuration
 
 ### Option 2: Import via CLI
 
@@ -37,7 +37,7 @@ This guide covers configuring Keycloak as an Identity Provider (IdP) for unix-oi
 
 # Regenerate client secret (recommended)
 /opt/keycloak/bin/kcadm.sh create clients/<client-uuid>/client-secret \
-    -r unix-oidc
+    -r prmana
 ```
 
 ### Option 3: Import via REST API
@@ -70,7 +70,7 @@ If you prefer to configure Keycloak manually or need to integrate with an existi
 1. Log in to Keycloak Admin Console
 2. Click the realm dropdown (top-left)
 3. Click "Create Realm"
-4. Enter realm name: `unix-oidc` (or your preferred name)
+4. Enter realm name: `prmana` (or your preferred name)
 5. Click "Create"
 
 ### Step 2: Create Client
@@ -78,7 +78,7 @@ If you prefer to configure Keycloak manually or need to integrate with an existi
 1. Navigate to Clients > Create client
 2. Configure General Settings:
    - **Client type**: OpenID Connect
-   - **Client ID**: `unix-oidc`
+   - **Client ID**: `prmana`
    - **Name**: Unix OIDC Client
    - Click "Next"
 
@@ -88,7 +88,7 @@ If you prefer to configure Keycloak manually or need to integrate with an existi
    - **Authentication flow**:
      - [x] Standard flow (for testing)
      - [x] Direct access grants (for testing)
-     - [x] **OAuth 2.0 Device Authorization Grant** (REQUIRED for unix-oidc)
+     - [x] **OAuth 2.0 Device Authorization Grant** (REQUIRED for prmana)
    - Click "Next"
 
 4. Configure Login Settings:
@@ -104,17 +104,17 @@ If you prefer to configure Keycloak manually or need to integrate with an existi
 
 ### Step 3: Configure Client Scopes
 
-The `preferred_username` claim must be included in tokens for unix-oidc to map IdP users to Unix users.
+The `preferred_username` claim must be included in tokens for prmana to map IdP users to Unix users.
 
 1. Navigate to Client scopes > Create client scope
 2. Or modify the existing `profile` scope
 
 **To ensure preferred_username is always included:**
 
-1. Go to Clients > unix-oidc > Client scopes
+1. Go to Clients > prmana > Client scopes
 2. Click "Add client scope" > "profile" (if not already added)
 3. Alternatively, create a dedicated mapper:
-   - Go to Clients > unix-oidc > Client scopes > Dedicated scopes
+   - Go to Clients > prmana > Client scopes > Dedicated scopes
    - Click "Configure a new mapper" > "User Property"
    - Configure:
      - **Name**: preferred_username
@@ -150,27 +150,27 @@ Users must exist in Keycloak with usernames that **exactly match** Unix username
    - **Temporary**: OFF (unless you want forced password change)
    - Click "Save"
 
-**Important**: The username in Keycloak becomes the `preferred_username` claim, which unix-oidc uses to identify the Unix user. These must match exactly.
+**Important**: The username in Keycloak becomes the `preferred_username` claim, which prmana uses to identify the Unix user. These must match exactly.
 
 ### Step 5: Get Configuration Values
 
-Gather these values for unix-oidc configuration:
+Gather these values for prmana configuration:
 
-1. **Issuer URL**: `https://keycloak.example.com/realms/unix-oidc`
+1. **Issuer URL**: `https://keycloak.example.com/realms/prmana`
    - This is your realm's base URL
 
-2. **Client ID**: `unix-oidc` (or whatever you named your client)
+2. **Client ID**: `prmana` (or whatever you named your client)
 
-3. **Client Secret**: Found in Clients > unix-oidc > Credentials
+3. **Client Secret**: Found in Clients > prmana > Credentials
 
-4. **Discovery URL**: `https://keycloak.example.com/realms/unix-oidc/.well-known/openid-configuration`
+4. **Discovery URL**: `https://keycloak.example.com/realms/prmana/.well-known/openid-configuration`
 
-Example unix-oidc configuration (`/etc/unix-oidc/config.toml`):
+Example prmana configuration (`/etc/prmana/config.toml`):
 
 ```toml
 [oidc]
-issuer = "https://keycloak.example.com/realms/unix-oidc"
-client_id = "unix-oidc"
+issuer = "https://keycloak.example.com/realms/prmana"
+client_id = "prmana"
 client_secret = "your-client-secret-here"
 
 [claims]
@@ -182,7 +182,7 @@ username_claim = "preferred_username"
 ### Verify OpenID Configuration
 
 ```bash
-curl -s https://keycloak.example.com/realms/unix-oidc/.well-known/openid-configuration | jq .
+curl -s https://keycloak.example.com/realms/prmana/.well-known/openid-configuration | jq .
 ```
 
 Confirm these endpoints exist:
@@ -195,9 +195,9 @@ Confirm these endpoints exist:
 ```bash
 # Step 1: Request device code
 DEVICE_RESPONSE=$(curl -s -X POST \
-    "https://keycloak.example.com/realms/unix-oidc/protocol/openid-connect/auth/device" \
+    "https://keycloak.example.com/realms/prmana/protocol/openid-connect/auth/device" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "client_id=unix-oidc" \
+    -d "client_id=prmana" \
     -d "client_secret=YOUR_CLIENT_SECRET" \
     -d "scope=openid profile")
 
@@ -213,9 +213,9 @@ echo "Or enter code: $USER_CODE at $(echo "$DEVICE_RESPONSE" | jq -r '.verificat
 
 # Step 2: Poll for token (run after user authenticates)
 curl -s -X POST \
-    "https://keycloak.example.com/realms/unix-oidc/protocol/openid-connect/token" \
+    "https://keycloak.example.com/realms/prmana/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "client_id=unix-oidc" \
+    -d "client_id=prmana" \
     -d "client_secret=YOUR_CLIENT_SECRET" \
     -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
     -d "device_code=$DEVICE_CODE" | jq .
@@ -236,9 +236,9 @@ Verify the token contains:
 
 ```bash
 curl -s -X POST \
-    "https://keycloak.example.com/realms/unix-oidc/protocol/openid-connect/token" \
+    "https://keycloak.example.com/realms/prmana/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "client_id=unix-oidc" \
+    -d "client_id=prmana" \
     -d "client_secret=YOUR_CLIENT_SECRET" \
     -d "grant_type=password" \
     -d "username=testuser" \
@@ -255,7 +255,7 @@ curl -s -X POST \
 **Symptom**: Error when requesting device code
 
 **Solution**:
-1. Go to Clients > unix-oidc > Settings
+1. Go to Clients > prmana > Settings
 2. Scroll to "Capability config"
 3. Enable "OAuth 2.0 Device Authorization Grant"
 4. Click Save
@@ -265,13 +265,13 @@ curl -s -X POST \
 **Symptom**: 401 error with "invalid_client"
 
 **Solution**:
-1. Verify client secret in Clients > unix-oidc > Credentials
+1. Verify client secret in Clients > prmana > Credentials
 2. Ensure Client authentication is ON (confidential client)
 3. Regenerate secret if needed
 
 ### "User not found" or username mismatch
 
-**Symptom**: unix-oidc authentication succeeds but user mapping fails
+**Symptom**: prmana authentication succeeds but user mapping fails
 
 **Solution**:
 1. Verify Keycloak username exactly matches Unix username
@@ -293,7 +293,7 @@ curl -s -X POST \
 **Symptom**: Error during device flow completion
 
 **Solution**:
-1. Go to Clients > unix-oidc > Settings
+1. Go to Clients > prmana > Settings
 2. Add `urn:ietf:wg:oauth:2.0:oob` to Valid redirect URIs
 3. Click Save
 
@@ -303,10 +303,10 @@ curl -s -X POST \
 
 **Solution**:
 1. Ensure Keycloak is accessible via HTTPS
-2. For self-signed certificates, configure unix-oidc to trust the CA:
+2. For self-signed certificates, configure prmana to trust the CA:
    ```toml
    [tls]
-   ca_cert = "/etc/unix-oidc/keycloak-ca.pem"
+   ca_cert = "/etc/prmana/keycloak-ca.pem"
    ```
 3. For development, you can disable verification (NOT for production):
    ```toml
@@ -322,7 +322,7 @@ curl -s -X POST \
 1. The default device code lifetime is 300 seconds (5 minutes)
 2. User must complete authentication within this window
 3. To extend, modify client settings:
-   - Clients > unix-oidc > Advanced > Advanced settings
+   - Clients > prmana > Advanced > Advanced settings
    - Adjust "OAuth 2.0 Device Code Lifespan"
 
 ## Security Recommendations

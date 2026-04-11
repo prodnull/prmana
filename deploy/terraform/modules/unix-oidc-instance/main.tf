@@ -1,9 +1,9 @@
-# unix-oidc-instance module
-# Shared Terraform module for installing unix-oidc on any cloud instance
+# prmana-instance module
+# Shared Terraform module for installing prmana on any cloud instance
 #
 # This module uses null_resource with remote-exec provisioner to:
 # 1. Download and run the installer script
-# 2. Configure /etc/unix-oidc/config.env
+# 2. Configure /etc/prmana/config.env
 # 3. Optionally enable DPoP token binding
 
 terraform {
@@ -19,7 +19,7 @@ terraform {
 
 locals {
   # Build version argument for installer
-  version_arg = var.unix_oidc_version != "latest" ? "--version ${var.unix_oidc_version}" : ""
+  version_arg = var.prmana_version != "latest" ? "--version ${var.prmana_version}" : ""
 
   # Build agent argument
   agent_arg = var.install_agent ? "" : "--no-agent"
@@ -34,8 +34,8 @@ locals {
   ]))
 }
 
-# Install unix-oidc on the target instance
-resource "null_resource" "unix_oidc_install" {
+# Install prmana on the target instance
+resource "null_resource" "prmana_install" {
   connection {
     type        = var.connection.type
     host        = var.connection.host
@@ -46,7 +46,7 @@ resource "null_resource" "unix_oidc_install" {
   # Download and run the installer
   provisioner "remote-exec" {
     inline = [
-      "echo 'Starting unix-oidc installation...'",
+      "echo 'Starting prmana installation...'",
 
       # Install prerequisites if needed
       "if command -v apt-get >/dev/null 2>&1; then",
@@ -59,14 +59,14 @@ resource "null_resource" "unix_oidc_install" {
       "fi",
 
       # Download and run installer
-      "curl -fsSL ${var.installer_url} -o /tmp/unix-oidc-install.sh",
-      "chmod +x /tmp/unix-oidc-install.sh",
-      "sudo /tmp/unix-oidc-install.sh ${local.installer_args}",
+      "curl -fsSL ${var.installer_url} -o /tmp/prmana-install.sh",
+      "chmod +x /tmp/prmana-install.sh",
+      "sudo /tmp/prmana-install.sh ${local.installer_args}",
 
       # Clean up installer
-      "rm -f /tmp/unix-oidc-install.sh",
+      "rm -f /tmp/prmana-install.sh",
 
-      "echo 'unix-oidc installation complete'"
+      "echo 'prmana installation complete'"
     ]
   }
 
@@ -74,15 +74,15 @@ resource "null_resource" "unix_oidc_install" {
   triggers = {
     oidc_issuer       = var.oidc_issuer
     oidc_client_id    = var.oidc_client_id
-    unix_oidc_version = var.unix_oidc_version
+    prmana_version = var.prmana_version
     install_agent     = var.install_agent
     enable_dpop       = var.enable_dpop
   }
 }
 
-# Configure unix-oidc settings
-resource "null_resource" "unix_oidc_configure" {
-  depends_on = [null_resource.unix_oidc_install]
+# Configure prmana settings
+resource "null_resource" "prmana_configure" {
+  depends_on = [null_resource.prmana_install]
 
   connection {
     type        = var.connection.type
@@ -94,11 +94,11 @@ resource "null_resource" "unix_oidc_configure" {
   # Update configuration file with all settings
   provisioner "remote-exec" {
     inline = [
-      "echo 'Configuring unix-oidc...'",
+      "echo 'Configuring prmana...'",
 
       # Create/update config.env with all settings
-      "sudo tee /etc/unix-oidc/config.env > /dev/null << 'EOFCONFIG'",
-      "# unix-oidc configuration",
+      "sudo tee /etc/prmana/config.env > /dev/null << 'EOFCONFIG'",
+      "# prmana configuration",
       "# Managed by Terraform - do not edit manually",
       "",
       "# OIDC Issuer URL (required)",
@@ -114,10 +114,10 @@ resource "null_resource" "unix_oidc_configure" {
       "EOFCONFIG",
 
       # Set proper permissions
-      "sudo chmod 600 /etc/unix-oidc/config.env",
-      "sudo chown root:root /etc/unix-oidc/config.env",
+      "sudo chmod 600 /etc/prmana/config.env",
+      "sudo chown root:root /etc/prmana/config.env",
 
-      "echo 'unix-oidc configuration complete'"
+      "echo 'prmana configuration complete'"
     ]
   }
 
@@ -132,8 +132,8 @@ resource "null_resource" "unix_oidc_configure" {
 }
 
 # Validate the installation
-resource "null_resource" "unix_oidc_validate" {
-  depends_on = [null_resource.unix_oidc_configure]
+resource "null_resource" "prmana_validate" {
+  depends_on = [null_resource.prmana_configure]
 
   connection {
     type        = var.connection.type
@@ -145,10 +145,10 @@ resource "null_resource" "unix_oidc_validate" {
   # Verify installation
   provisioner "remote-exec" {
     inline = [
-      "echo 'Validating unix-oidc installation...'",
+      "echo 'Validating prmana installation...'",
 
       # Check PAM module exists
-      "if [ -f /lib/security/pam_unix_oidc.so ] || [ -f /lib64/security/pam_unix_oidc.so ]; then",
+      "if [ -f /lib/security/pam_prmana.so ] || [ -f /lib64/security/pam_prmana.so ]; then",
       "  echo 'PAM module: OK'",
       "else",
       "  echo 'PAM module: NOT FOUND' >&2",
@@ -156,7 +156,7 @@ resource "null_resource" "unix_oidc_validate" {
       "fi",
 
       # Check config exists
-      "if [ -f /etc/unix-oidc/config.env ]; then",
+      "if [ -f /etc/prmana/config.env ]; then",
       "  echo 'Configuration: OK'",
       "else",
       "  echo 'Configuration: NOT FOUND' >&2",
@@ -165,7 +165,7 @@ resource "null_resource" "unix_oidc_validate" {
 
       # Check agent if installed
       "if [ '${var.install_agent}' = 'true' ]; then",
-      "  if [ -f /usr/local/bin/unix-oidc-agent ]; then",
+      "  if [ -f /usr/local/bin/prmana-agent ]; then",
       "    echo 'Agent: OK'",
       "  else",
       "    echo 'Agent: NOT FOUND' >&2",

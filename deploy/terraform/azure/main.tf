@@ -1,7 +1,7 @@
-# unix-oidc Azure Terraform Module
-# https://github.com/prodnull/unix-oidc
+# prmana Azure Terraform Module
+# https://github.com/prodnull/prmana
 #
-# This module creates an Azure VM with unix-oidc installed and configured.
+# This module creates an Azure VM with prmana installed and configured.
 # It can create a new Resource Group and VNet or use existing ones.
 
 terraform {
@@ -61,21 +61,21 @@ locals {
   # Common tags
   common_tags = merge(
     {
-      "Project"     = "unix-oidc"
+      "Project"     = "prmana"
       "Environment" = var.environment
       "ManagedBy"   = "terraform"
     },
     var.tags
   )
 
-  # Custom script extension for installing unix-oidc
+  # Custom script extension for installing prmana
   install_script = <<-EOF
     #!/bin/bash
     set -euo pipefail
 
     # Log to both console and file
-    exec > >(tee /var/log/unix-oidc-install.log) 2>&1
-    echo "Starting unix-oidc installation at $(date)"
+    exec > >(tee /var/log/prmana-install.log) 2>&1
+    echo "Starting prmana installation at $(date)"
 
     # Wait for cloud-init to complete
     cloud-init status --wait || true
@@ -85,7 +85,7 @@ locals {
     apt-get install -y curl jq
 
     # Download and run installer
-    curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh -o /tmp/install.sh
+    curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh -o /tmp/install.sh
     chmod +x /tmp/install.sh
 
     # Run installer with provided configuration
@@ -97,24 +97,24 @@ locals {
 
     # Configure DPoP if enabled
     if [ "${var.enable_dpop}" = "true" ]; then
-      if [ -f /etc/unix-oidc/config.env ]; then
-        echo "" >> /etc/unix-oidc/config.env
-        echo "# DPoP token binding enabled" >> /etc/unix-oidc/config.env
-        echo "OIDC_DPOP_REQUIRED=true" >> /etc/unix-oidc/config.env
+      if [ -f /etc/prmana/config.env ]; then
+        echo "" >> /etc/prmana/config.env
+        echo "# DPoP token binding enabled" >> /etc/prmana/config.env
+        echo "OIDC_DPOP_REQUIRED=true" >> /etc/prmana/config.env
       fi
     fi
 
     # Apply PAM configuration for sshd
-    if [ -f /etc/unix-oidc/pam.d-sshd.recommended ]; then
+    if [ -f /etc/prmana/pam.d-sshd.recommended ]; then
       cp /etc/pam.d/sshd /etc/pam.d/sshd.backup.$(date +%Y%m%d%H%M%S)
-      cp /etc/unix-oidc/pam.d-sshd.recommended /etc/pam.d/sshd
+      cp /etc/prmana/pam.d-sshd.recommended /etc/pam.d/sshd
       echo "PAM configuration applied for sshd"
     fi
 
     # Restart SSH to pick up PAM changes
     systemctl restart sshd
 
-    echo "unix-oidc installation completed at $(date)"
+    echo "prmana installation completed at $(date)"
     EOF
 }
 
@@ -159,7 +159,7 @@ resource "azurerm_subnet" "main" {
 # Network Security Group
 # =============================================================================
 
-resource "azurerm_network_security_group" "unix_oidc" {
+resource "azurerm_network_security_group" "prmana" {
   name                = "${var.vm_name}-nsg"
   location            = local.resource_group_location
   resource_group_name = local.resource_group_name
@@ -197,7 +197,7 @@ resource "azurerm_network_security_group" "unix_oidc" {
 # Public IP
 # =============================================================================
 
-resource "azurerm_public_ip" "unix_oidc" {
+resource "azurerm_public_ip" "prmana" {
   count = var.create_public_ip ? 1 : 0
 
   name                = "${var.vm_name}-pip"
@@ -213,7 +213,7 @@ resource "azurerm_public_ip" "unix_oidc" {
 # Network Interface
 # =============================================================================
 
-resource "azurerm_network_interface" "unix_oidc" {
+resource "azurerm_network_interface" "prmana" {
   name                = "${var.vm_name}-nic"
   location            = local.resource_group_location
   resource_group_name = local.resource_group_name
@@ -222,23 +222,23 @@ resource "azurerm_network_interface" "unix_oidc" {
     name                          = "internal"
     subnet_id                     = local.subnet_id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = var.create_public_ip ? azurerm_public_ip.unix_oidc[0].id : null
+    public_ip_address_id          = var.create_public_ip ? azurerm_public_ip.prmana[0].id : null
   }
 
   tags = local.common_tags
 }
 
 # Associate NSG with NIC
-resource "azurerm_network_interface_security_group_association" "unix_oidc" {
-  network_interface_id      = azurerm_network_interface.unix_oidc.id
-  network_security_group_id = azurerm_network_security_group.unix_oidc.id
+resource "azurerm_network_interface_security_group_association" "prmana" {
+  network_interface_id      = azurerm_network_interface.prmana.id
+  network_security_group_id = azurerm_network_security_group.prmana.id
 }
 
 # =============================================================================
 # Virtual Machine
 # =============================================================================
 
-resource "azurerm_linux_virtual_machine" "unix_oidc" {
+resource "azurerm_linux_virtual_machine" "prmana" {
   name                = var.vm_name
   resource_group_name = local.resource_group_name
   location            = local.resource_group_location
@@ -246,7 +246,7 @@ resource "azurerm_linux_virtual_machine" "unix_oidc" {
   admin_username      = var.admin_username
 
   network_interface_ids = [
-    azurerm_network_interface.unix_oidc.id
+    azurerm_network_interface.prmana.id
   ]
 
   admin_ssh_key {
@@ -279,18 +279,18 @@ resource "azurerm_linux_virtual_machine" "unix_oidc" {
 
   # Ensure network resources are ready
   depends_on = [
-    azurerm_network_interface_security_group_association.unix_oidc,
+    azurerm_network_interface_security_group_association.prmana,
     azurerm_subnet.main
   ]
 }
 
 # =============================================================================
-# Custom Script Extension for unix-oidc Installation
+# Custom Script Extension for prmana Installation
 # =============================================================================
 
-resource "azurerm_virtual_machine_extension" "unix_oidc_install" {
-  name                 = "unix-oidc-install"
-  virtual_machine_id   = azurerm_linux_virtual_machine.unix_oidc.id
+resource "azurerm_virtual_machine_extension" "prmana_install" {
+  name                 = "prmana-install"
+  virtual_machine_id   = azurerm_linux_virtual_machine.prmana.id
   publisher            = "Microsoft.Azure.Extensions"
   type                 = "CustomScript"
   type_handler_version = "2.1"
@@ -301,5 +301,5 @@ resource "azurerm_virtual_machine_extension" "unix_oidc_install" {
 
   tags = local.common_tags
 
-  depends_on = [azurerm_linux_virtual_machine.unix_oidc]
+  depends_on = [azurerm_linux_virtual_machine.prmana]
 }

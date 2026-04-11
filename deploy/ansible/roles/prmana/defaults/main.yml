@@ -5,7 +5,7 @@
 
 # ── OIDC Configuration (required) ───────────────────────────────────────────
 prmana_issuer_url: ""
-prmana_client_id: "unix-oidc"
+prmana_client_id: "prmana"
 prmana_client_secret: ""  # Optional: only for confidential clients
 
 # ── DPoP Enforcement ────────────────────────────────────────────────────────
@@ -35,15 +35,15 @@ prmana_jti_enforcement: "warn"
 prmana_acr_enforcement: "warn"
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-prmana_config_dir: "/etc/unix-oidc"
-prmana_policy_file: "/etc/unix-oidc/policy.yaml"
+prmana_config_dir: "/etc/prmana"
+prmana_policy_file: "/etc/prmana/policy.yaml"
 # PAM module location (auto-detected by architecture)
-prmana_pam_module_src: ""  # Path to libpam_unix_oidc.so (must be provided)
+prmana_pam_module_src: ""  # Path to libpam_prmana.so (must be provided)
 prmana_pam_module_dest: >-
-  {{ '/lib64/security/pam_unix_oidc.so'
+  {{ '/lib64/security/pam_prmana.so'
      if ansible_architecture == 'x86_64' and ansible_os_family == 'RedHat'
-     else '/lib/security/pam_unix_oidc.so' }}
+     else '/lib/security/pam_prmana.so' }}
 
 # ── Audit ────────────────────────────────────────────────────────────────────
-prmana_audit_log: "/var/log/unix-oidc-audit.log"
+prmana_audit_log: "/var/log/prmana-audit.log"
 prmana_audit_syslog: true

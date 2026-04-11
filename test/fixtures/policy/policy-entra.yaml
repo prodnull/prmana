@@ -33,7 +33,7 @@
 #   Alice@Corp.Example -> alice. Lowercase handles mixed-case UPNs from Entra.
 #
 # expected_audience: (commented out — uncomment if custom App ID URI is configured)
-#   When the Entra app registration has an Application ID URI set (e.g. api://unix-oidc),
+#   When the Entra app registration has an Application ID URI set (e.g. api://prmana),
 #   the access token aud claim will carry that URI instead of the client_id GUID.
 #   In that case, uncomment the expected_audience line and set it to the App ID URI.
 
@@ -45,7 +45,7 @@ issuers:
     client_id: "ENTRA_CLIENT_ID_PLACEHOLDER"
     dpop_enforcement: disabled
     allow_unsafe_identity_pipeline: true
-    # expected_audience: "api://unix-oidc"  # uncomment if custom App ID URI is set
+    # expected_audience: "api://prmana"  # uncomment if custom App ID URI is set
     claim_mapping:
       username_claim: email
       transforms:

@@ -33,7 +33,7 @@ jobs:
           - fuzz_token_parser
           - fuzz_policy_parser
           - fuzz_username_mapper
-          # dpop_proof requires unix-oidc-agent which has more deps
+          # dpop_proof requires prmana-agent which has more deps
     env:
       # Use environment variable to safely handle user input
       FUZZ_DURATION: ${{ github.event.inputs.fuzz_duration || '30' }}

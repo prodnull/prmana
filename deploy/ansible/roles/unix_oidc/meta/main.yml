@@ -1,10 +1,10 @@
 ---
-# meta/main.yml - Ansible Galaxy metadata for unix_oidc role
+# meta/main.yml - Ansible Galaxy metadata for prmana role
 
 galaxy_info:
-  author: unix-oidc
-  description: Deploy and configure unix-oidc for OIDC-based Unix authentication
-  company: unix-oidc
+  author: prmana
+  description: Deploy and configure prmana for OIDC-based Unix authentication
+  company: prmana
 
   license: Apache-2.0 OR MIT
 

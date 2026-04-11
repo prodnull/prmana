@@ -61,16 +61,16 @@ jobs:
       - name: Test OIDC Discovery
         run: |
           echo "=== OIDC Discovery ==="
-          curl -sf "http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration" | jq .
+          curl -sf "http://localhost:8080/realms/prmana-test/.well-known/openid-configuration" | jq .
 
           echo ""
           echo "=== JWKS Endpoint ==="
-          JWKS_URI=$(curl -sf "http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration" | jq -r .jwks_uri)
+          JWKS_URI=$(curl -sf "http://localhost:8080/realms/prmana-test/.well-known/openid-configuration" | jq -r .jwks_uri)
           curl -sf "$JWKS_URI" | jq .
 
           echo ""
           echo "=== Device Authorization Endpoint ==="
-          DEVICE_ENDPOINT=$(curl -sf "http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration" | jq -r .device_authorization_endpoint)
+          DEVICE_ENDPOINT=$(curl -sf "http://localhost:8080/realms/prmana-test/.well-known/openid-configuration" | jq -r .device_authorization_endpoint)
           echo "Device endpoint: $DEVICE_ENDPOINT"
 
       - name: Test Token Acquisition
@@ -89,8 +89,8 @@ jobs:
 
       - name: Test Token Validation
         run: |
-          OIDC_ISSUER="http://localhost:8080/realms/unix-oidc-test" \
-          OIDC_CLIENT_ID="unix-oidc" \
+          OIDC_ISSUER="http://localhost:8080/realms/prmana-test" \
+          OIDC_CLIENT_ID="prmana" \
           cargo test --release -- --test-threads=1 jwks validation
 
       - name: Stop Keycloak
@@ -206,7 +206,7 @@ jobs:
 
       - name: Build
         if: steps.check-entra.outputs.skip != 'true'
-        run: cargo build --release -p pam-unix-oidc
+        run: cargo build --release -p pam-prmana
 
       - name: Verify Entra OIDC Discovery
         if: steps.check-entra.outputs.skip != 'true'
@@ -254,7 +254,7 @@ jobs:
           ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
           ENTRA_TOKEN: ${{ env.ENTRA_TOKEN }}
         run: |
-          cargo test --release -p pam-unix-oidc --test entra_integration \
+          cargo test --release -p pam-prmana --test entra_integration \
             -- --ignored --test-threads=1 2>&1
 
       - name: Entra Test Summary

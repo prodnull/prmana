@@ -4,12 +4,12 @@
 # Example: Keycloak for internal users + Entra ID for contractors.
 # Each issuer has independent DPoP, ACR, and claim mapping settings.
 #
-# Usage: Copy to /etc/unix-oidc/policy.yaml and fill in your values.
+# Usage: Copy to /etc/prmana/policy.yaml and fill in your values.
 
 issuers:
   # Internal users via Keycloak
   - issuer_url: "https://keycloak.internal.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     client_secret: "keycloak-secret"
     dpop_enforcement: strict
     claim_mapping:
@@ -20,9 +20,9 @@ issuers:
 
   # Contractors via Entra ID
   - issuer_url: "https://login.microsoftonline.com/YOUR-TENANT-ID/v2.0"
-    client_id: "unix-oidc-entra"
+    client_id: "prmana-entra"
     dpop_enforcement: disabled  # Entra does not support DPoP
-    expected_audience: "api://unix-oidc"
+    expected_audience: "api://prmana"
     claim_mapping:
       username_claim: "preferred_username"
       transforms:

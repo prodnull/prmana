@@ -3,7 +3,7 @@
 **Time to complete:** 15 minutes
 **Prerequisites:** Linux server with root access + OIDC Identity Provider
 
-This guide walks you through deploying unix-oidc on a production server with your existing identity provider. By the end, your users will authenticate to Linux servers using OIDC tokens instead of passwords or SSH keys.
+This guide walks you through deploying prmana on a production server with your existing identity provider. By the end, your users will authenticate to Linux servers using OIDC tokens instead of passwords or SSH keys.
 
 ---
 
@@ -44,7 +44,7 @@ sudo dnf install -y curl jq
 
 ## Step 1: Configure Your Identity Provider (5 min)
 
-Choose your IdP and follow the linked guide to create a unix-oidc application:
+Choose your IdP and follow the linked guide to create a prmana application:
 
 | Identity Provider | Setup Guide | Estimated Time |
 |-------------------|-------------|----------------|
@@ -60,7 +60,7 @@ After configuring your IdP, you should have:
 | Setting | Example | Your Value |
 |---------|---------|------------|
 | **Issuer URL** | `https://login.example.com/realms/myorg` | _____________ |
-| **Client ID** | `unix-oidc` | _____________ |
+| **Client ID** | `prmana` | _____________ |
 
 ### Verify It Works: Test OIDC Discovery
 
@@ -89,14 +89,14 @@ If the `device_authorization_endpoint` is missing, your IdP may not have Device 
 
 ---
 
-## Step 2: Install unix-oidc (3 min)
+## Step 2: Install prmana (3 min)
 
 ### Option 1: One-liner Install (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | sudo bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh | sudo bash -s -- \
   --issuer "https://your-idp.example.com/realms/your-realm" \
-  --client-id "unix-oidc"
+  --client-id "prmana"
 ```
 
 ### Option 2: Step-by-Step (Inspect First)
@@ -105,7 +105,7 @@ If you prefer to review the installer before running:
 
 ```bash
 # 1. Download the installer
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh -o install.sh
 
 # 2. Review the script
 less install.sh
@@ -113,31 +113,31 @@ less install.sh
 # 3. Dry run (shows what would happen without making changes)
 sudo bash install.sh --dry-run \
   --issuer "https://your-idp.example.com/realms/your-realm" \
-  --client-id "unix-oidc"
+  --client-id "prmana"
 
 # 4. Run the installer
 sudo bash install.sh \
   --issuer "https://your-idp.example.com/realms/your-realm" \
-  --client-id "unix-oidc"
+  --client-id "prmana"
 ```
 
 ### Verify It Works: Check Installation
 
 ```bash
 # PAM module installed
-ls -la /lib/security/pam_unix_oidc.so 2>/dev/null || \
-ls -la /lib64/security/pam_unix_oidc.so
+ls -la /lib/security/pam_prmana.so 2>/dev/null || \
+ls -la /lib64/security/pam_prmana.so
 
 # Configuration created
-cat /etc/unix-oidc/config.env
+cat /etc/prmana/config.env
 
 # Recommended PAM configs generated
-ls /etc/unix-oidc/pam.d-*.recommended
+ls /etc/prmana/pam.d-*.recommended
 ```
 
 **Expected output:**
 ```
--rw-r--r-- 1 root root 12345 ... /lib/security/pam_unix_oidc.so
+-rw-r--r-- 1 root root 12345 ... /lib/security/pam_prmana.so
 ```
 
 ---
@@ -156,7 +156,7 @@ ls /etc/unix-oidc/pam.d-*.recommended
 The installer generated a recommended PAM configuration. Review it:
 
 ```bash
-cat /etc/unix-oidc/pam.d-sshd.recommended
+cat /etc/prmana/pam.d-sshd.recommended
 ```
 
 This configuration:
@@ -178,7 +178,7 @@ echo "Backup created at: /etc/pam.d/sshd.backup.$(date +%Y%m%d%H%M%S)"
 
 ```bash
 # Apply the recommended configuration
-sudo cp /etc/unix-oidc/pam.d-sshd.recommended /etc/pam.d/sshd
+sudo cp /etc/prmana/pam.d-sshd.recommended /etc/pam.d/sshd
 
 # Restart sshd to apply changes
 sudo systemctl restart sshd
@@ -223,7 +223,7 @@ The exact method depends on your IdP. Here's a device flow example:
 
 ```bash
 # Start device authorization flow
-CLIENT_ID="unix-oidc"
+CLIENT_ID="prmana"
 ISSUER="https://your-idp.example.com/realms/your-realm"
 
 # Get the device authorization endpoint
@@ -285,7 +285,7 @@ If you see the shell prompt, OIDC authentication is working.
 | Step | Status |
 |------|--------|
 | IdP configured with Device Authorization Grant | Done |
-| unix-oidc PAM module installed | Done |
+| prmana PAM module installed | Done |
 | PAM configured with fallback authentication | Done |
 | OIDC SSH login tested | Done |
 
@@ -303,21 +303,21 @@ Require re-authentication when users run privileged commands:
 
 ```bash
 # Apply the sudo PAM configuration
-sudo cp /etc/unix-oidc/pam.d-sudo.recommended /etc/pam.d/sudo
+sudo cp /etc/prmana/pam.d-sudo.recommended /etc/pam.d/sudo
 ```
 
 See: [Sudo Step-Up Guide](../../docs/sudo-step-up.md)
 
 ### Set Up the Agent for Token Caching
 
-The unix-oidc agent caches tokens and handles refresh automatically:
+The prmana agent caches tokens and handles refresh automatically:
 
 ```bash
 # Start the agent
-unix-oidc-agent
+prmana-agent
 
 # Configure your shell to use it
-echo 'eval "$(unix-oidc-agent --shell)"' >> ~/.bashrc
+echo 'eval "$(prmana-agent --shell)"' >> ~/.bashrc
 ```
 
 See: [User Guide](../../docs/user-guide.md)
@@ -328,7 +328,7 @@ DPoP (Demonstration of Proof-of-Possession) binds tokens to cryptographic keys, 
 
 ```bash
 # Edit config to require DPoP
-sudo sed -i 's/# OIDC_DPOP_REQUIRED=true/OIDC_DPOP_REQUIRED=true/' /etc/unix-oidc/config.env
+sudo sed -i 's/# OIDC_DPOP_REQUIRED=true/OIDC_DPOP_REQUIRED=true/' /etc/prmana/config.env
 ```
 
 See: [Security Guide](../../docs/security-guide.md)
@@ -351,14 +351,14 @@ Use configuration management for fleet-wide deployment:
 ### "PAM module not found"
 
 ```
-pam_unix_oidc.so: cannot open shared object file: No such file or directory
+pam_prmana.so: cannot open shared object file: No such file or directory
 ```
 
 **Solution:** The module may be in a different directory. Check both locations:
 
 ```bash
 # Find the module
-sudo find /lib* -name "pam_unix_oidc.so" 2>/dev/null
+sudo find /lib* -name "pam_prmana.so" 2>/dev/null
 
 # Update PAM config to use correct path if needed
 ```
@@ -366,18 +366,18 @@ sudo find /lib* -name "pam_unix_oidc.so" 2>/dev/null
 ### "OIDC_ISSUER not set"
 
 ```
-unix-oidc: OIDC_ISSUER environment variable not set
+prmana: OIDC_ISSUER environment variable not set
 ```
 
 **Solution:** Ensure PAM is loading the environment file:
 
 ```bash
 # Verify config exists
-cat /etc/unix-oidc/config.env | grep OIDC_ISSUER
+cat /etc/prmana/config.env | grep OIDC_ISSUER
 
 # Verify PAM is loading it (check first line of PAM config)
 head -5 /etc/pam.d/sshd
-# Should include: pam_env.so envfile=/etc/unix-oidc/config.env
+# Should include: pam_env.so envfile=/etc/prmana/config.env
 ```
 
 ### "Token validation failed: issuer mismatch"
@@ -389,7 +389,7 @@ head -5 /etc/pam.d/sshd
 echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '.iss'
 
 # Compare with configured issuer
-grep OIDC_ISSUER /etc/unix-oidc/config.env
+grep OIDC_ISSUER /etc/prmana/config.env
 ```
 
 ### "User not found"
@@ -421,8 +421,8 @@ If you can't SSH in:
 - [Full Installation Guide](../../docs/installation.md)
 - [Architecture Overview](../../docs/deployment-patterns.md)
 - [Security Model](../../docs/THREAT_MODEL.md)
-- [GitHub Issues](https://github.com/prodnull/unix-oidc/issues)
+- [GitHub Issues](https://github.com/prodnull/prmana/issues)
 
 ---
 
-*This guide is part of the [unix-oidc deployment documentation](../README.md).*
+*This guide is part of the [prmana deployment documentation](../README.md).*

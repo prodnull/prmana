@@ -1,6 +1,6 @@
 # Standards Compliance Matrix
 
-This document tracks every standards reference in the unix-oidc codebase -- RFCs, NIST publications, IETF drafts, industry frameworks, and compliance controls. It serves as a centralized index for auditors, security reviewers, conference submissions, and IETF working-group engagement.
+This document tracks every standards reference in the prmana codebase -- RFCs, NIST publications, IETF drafts, industry frameworks, and compliance controls. It serves as a centralized index for auditors, security reviewers, conference submissions, and IETF working-group engagement.
 
 **Scope:** Only standards actually referenced in implementation code (`*.rs`), documentation (`*.md`), configuration (`*.yaml`, `*.toml`), or test files are listed. Hypothetical or aspirational references are excluded.
 
@@ -14,32 +14,32 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | RFC | Title | Sections Referenced | Implementation Files | Status | Notes |
 |-----|-------|---------------------|----------------------|--------|-------|
-| RFC 9449 | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | SS4.2 (proof syntax), SS8 (server nonce), SS9.3 (pre-bound FD), SS11.1 (JTI replay) | `pam-unix-oidc/src/oidc/dpop.rs`, `unix-oidc-agent/src/crypto/dpop.rs`, `rust-oauth-dpop/src/server.rs`, `rust-oauth-dpop/src/lib.rs`, `go-oauth-dpop/dpop.go`, `python-oauth-dpop/oauth_dpop/server.py`, `java-oauth-dpop/src/.../DPoPValidator.java` | Full | Central security mechanism; four language implementations |
-| RFC 7638 | JSON Web Key (JWK) Thumbprint | SS3.2 (canonical member order), SS3.3 (canonical JSON) | `unix-oidc-agent/src/crypto/thumbprint.rs`, `rust-oauth-dpop/src/thumbprint.rs`, `go-oauth-dpop/dpop.go:387`, `python-oauth-dpop/oauth_dpop/thumbprint.py`, `java-oauth-dpop/src/.../Thumbprint.java`, `unix-oidc-agent/src/crypto/pqc_signer.rs:145` | Full | Hardcoded canonical `kty`/`crv` values prevent thumbprint manipulation |
-| RFC 7519 | JSON Web Token (JWT) | SS4.1.7 (jti claim) | `pam-unix-oidc/src/oidc/validation.rs` | Full | Token validation pipeline; `jti` enforcement configurable (Warn/Strict) |
-| RFC 7517 | JSON Web Key (JWK) | SS4.5 (kid hint) | `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/oidc/dpop.rs` | Full | JWKS fetch and key selection |
-| RFC 6749 | OAuth 2.0 Authorization Framework | SS5.2 (error response), SS6 (refresh) | `unix-oidc-agent/src/daemon/socket.rs:1017`, `pam-unix-oidc/src/ciba/types.rs:90` | Full | Token endpoint interactions, refresh flow |
-| RFC 8628 | OAuth 2.0 Device Authorization Grant | SS3.2 (verification URI) | `unix-oidc-agent/src/askpass.rs`, `pam-unix-oidc/src/device_flow/client.rs`, `pam-unix-oidc/src/device_flow/types.rs` | Full | Step-up sudo authentication; `slow_down` backoff implemented |
-| RFC 7636 | Proof Key for Code Exchange (PKCE) | SS4.1 (code_verifier), SS4.2 (code_challenge), SS4.3 (S256) | `unix-oidc-agent/src/auth_code.rs`, `unix-oidc-agent/src/main.rs`, `pam-unix-oidc/src/oidc/jwks.rs` | Full | Authorization code login flow with localhost callback, state validation, and S256 PKCE |
-| RFC 7009 | OAuth 2.0 Token Revocation | SS2.1 (revocation request) | `unix-oidc-agent/src/daemon/socket.rs:1154-1287`, `unix-oidc-agent/src/daemon/protocol.rs:44` | Full | Best-effort revocation on session close (5s timeout) |
-| RFC 7662 | OAuth 2.0 Token Introspection | SS2.1 (authentication), SS4 | `pam-unix-oidc/src/policy/config.rs:271-305`, `pam-unix-oidc/src/oidc/introspection.rs` | Full | Opt-in with TTL-bounded caching; fail-open/fail-closed configurable |
-| RFC 8414 | OAuth 2.0 Authorization Server Metadata | -- | `pam-unix-oidc/src/oidc/discovery.rs` | Full | OIDC discovery; issuer validation post-fetch |
-| RFC 9700 | OAuth 2.0 Security Best Current Practice | SS2.2 (iat validation), SS2.4 (algorithm), SS2.5 (TLS), SS4.15.2 (replay) | `pam-unix-oidc/src/device_flow/client.rs:159`, `pam-unix-oidc/src/device_flow/types.rs:73`, `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/config.rs` | Full | HTTPS enforcement enforced at config load time (Phase 25 SHRD-04); algorithm validation uses explicit enum match (SHRD-01) |
-| RFC 7515 | JSON Web Signature (JWS) | SS4.1.1 (alg), SS4.1.4 (kid) | `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/oidc/dpop.rs` | Full | Algorithm validation, kid matching |
-| RFC 7518 | JSON Web Algorithms (JWA) | SS3.4 (ES256 signature format), SS6.2.1.2 (EC key validation) | `go-oauth-dpop/dpop.go:410`, `unix-oidc-agent/src/crypto/dpop.rs:157` | Full | Raw r||s 64-byte signature format for P-256 |
-| RFC 5424 | Syslog Protocol | PRIORITY codes | `unix-oidc-agent/src/main.rs:55` | Full | Tracing levels mapped to syslog priorities for journald |
-| RFC 3339 | Date and Time on the Internet | Timestamp format | `pam-unix-oidc/src/audit.rs:593` | Full | All audit event timestamps |
+| RFC 9449 | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | SS4.2 (proof syntax), SS8 (server nonce), SS9.3 (pre-bound FD), SS11.1 (JTI replay) | `pam-prmana/src/oidc/dpop.rs`, `prmana-agent/src/crypto/dpop.rs`, `rust-oauth-dpop/src/server.rs`, `rust-oauth-dpop/src/lib.rs`, `go-oauth-dpop/dpop.go`, `python-oauth-dpop/oauth_dpop/server.py`, `java-oauth-dpop/src/.../DPoPValidator.java` | Full | Central security mechanism; four language implementations |
+| RFC 7638 | JSON Web Key (JWK) Thumbprint | SS3.2 (canonical member order), SS3.3 (canonical JSON) | `prmana-agent/src/crypto/thumbprint.rs`, `rust-oauth-dpop/src/thumbprint.rs`, `go-oauth-dpop/dpop.go:387`, `python-oauth-dpop/oauth_dpop/thumbprint.py`, `java-oauth-dpop/src/.../Thumbprint.java`, `prmana-agent/src/crypto/pqc_signer.rs:145` | Full | Hardcoded canonical `kty`/`crv` values prevent thumbprint manipulation |
+| RFC 7519 | JSON Web Token (JWT) | SS4.1.7 (jti claim) | `pam-prmana/src/oidc/validation.rs` | Full | Token validation pipeline; `jti` enforcement configurable (Warn/Strict) |
+| RFC 7517 | JSON Web Key (JWK) | SS4.5 (kid hint) | `pam-prmana/src/oidc/validation.rs`, `pam-prmana/src/oidc/dpop.rs` | Full | JWKS fetch and key selection |
+| RFC 6749 | OAuth 2.0 Authorization Framework | SS5.2 (error response), SS6 (refresh) | `prmana-agent/src/daemon/socket.rs:1017`, `pam-prmana/src/ciba/types.rs:90` | Full | Token endpoint interactions, refresh flow |
+| RFC 8628 | OAuth 2.0 Device Authorization Grant | SS3.2 (verification URI) | `prmana-agent/src/askpass.rs`, `pam-prmana/src/device_flow/client.rs`, `pam-prmana/src/device_flow/types.rs` | Full | Step-up sudo authentication; `slow_down` backoff implemented |
+| RFC 7636 | Proof Key for Code Exchange (PKCE) | SS4.1 (code_verifier), SS4.2 (code_challenge), SS4.3 (S256) | `prmana-agent/src/auth_code.rs`, `prmana-agent/src/main.rs`, `pam-prmana/src/oidc/jwks.rs` | Full | Authorization code login flow with localhost callback, state validation, and S256 PKCE |
+| RFC 7009 | OAuth 2.0 Token Revocation | SS2.1 (revocation request) | `prmana-agent/src/daemon/socket.rs:1154-1287`, `prmana-agent/src/daemon/protocol.rs:44` | Full | Best-effort revocation on session close (5s timeout) |
+| RFC 7662 | OAuth 2.0 Token Introspection | SS2.1 (authentication), SS4 | `pam-prmana/src/policy/config.rs:271-305`, `pam-prmana/src/oidc/introspection.rs` | Full | Opt-in with TTL-bounded caching; fail-open/fail-closed configurable |
+| RFC 8414 | OAuth 2.0 Authorization Server Metadata | -- | `pam-prmana/src/oidc/discovery.rs` | Full | OIDC discovery; issuer validation post-fetch |
+| RFC 9700 | OAuth 2.0 Security Best Current Practice | SS2.2 (iat validation), SS2.4 (algorithm), SS2.5 (TLS), SS4.15.2 (replay) | `pam-prmana/src/device_flow/client.rs:159`, `pam-prmana/src/device_flow/types.rs:73`, `pam-prmana/src/oidc/validation.rs`, `pam-prmana/src/config.rs` | Full | HTTPS enforcement enforced at config load time (Phase 25 SHRD-04); algorithm validation uses explicit enum match (SHRD-01) |
+| RFC 7515 | JSON Web Signature (JWS) | SS4.1.1 (alg), SS4.1.4 (kid) | `pam-prmana/src/oidc/validation.rs`, `pam-prmana/src/oidc/dpop.rs` | Full | Algorithm validation, kid matching |
+| RFC 7518 | JSON Web Algorithms (JWA) | SS3.4 (ES256 signature format), SS6.2.1.2 (EC key validation) | `go-oauth-dpop/dpop.go:410`, `prmana-agent/src/crypto/dpop.rs:157` | Full | Raw r||s 64-byte signature format for P-256 |
+| RFC 5424 | Syslog Protocol | PRIORITY codes | `prmana-agent/src/main.rs:55` | Full | Tracing levels mapped to syslog priorities for journald |
+| RFC 3339 | Date and Time on the Internet | Timestamp format | `pam-prmana/src/audit.rs:593` | Full | All audit event timestamps |
 
 ### Protocol RFCs (Partial / Planned Implementation)
 
 | RFC | Title | Sections Referenced | Implementation Files | Status | Notes |
 |-----|-------|---------------------|----------------------|--------|-------|
-| RFC 8693 | OAuth 2.0 Token Exchange | SS2.1 (request params), SS2.2 (response), SS4.1 (`act` claim) | `unix-oidc-agent/src/exchange.rs`, `unix-oidc-agent/src/daemon/socket.rs`, `pam-unix-oidc/src/oidc/token.rs`, `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/policy/config.rs`, `test/tests/test_token_exchange.sh`, `test/tests/test_token_exchange.py`, `test/tests/test_attested_exchange.sh` | Implemented (Phase 37) | Token exchange with DPoP rebinding, `act` claim validation, delegation chain depth limits, attestation evidence in DPoP header |
-| RFC 7643 | SCIM: Core Schema | SS3.1 (metadata), SS4.1 (User resource), SS5 (ServiceProviderConfig), SS8 (schema URIs) | `unix-oidc-scim/src/schema.rs`, `unix-oidc-scim/src/lib.rs` | Implemented (Phase 37) | User resource, name/email sub-attributes, list responses, error responses, ServiceProviderConfig |
-| RFC 7644 | SCIM: Protocol | SS3.4.2 (list response), SS3.12 (error response) | `unix-oidc-scim/src/routes.rs`, `unix-oidc-scim/src/main.rs`, `unix-oidc-scim/src/schema.rs`, `unix-oidc-scim/src/auth.rs` | Implemented (Phase 37/38) | CRUD endpoints for User resources, filtering, pagination, JWT Bearer auth with JWKS validation and TTL-based refresh |
+| RFC 8693 | OAuth 2.0 Token Exchange | SS2.1 (request params), SS2.2 (response), SS4.1 (`act` claim) | `prmana-agent/src/exchange.rs`, `prmana-agent/src/daemon/socket.rs`, `pam-prmana/src/oidc/token.rs`, `pam-prmana/src/oidc/validation.rs`, `pam-prmana/src/policy/config.rs`, `test/tests/test_token_exchange.sh`, `test/tests/test_token_exchange.py`, `test/tests/test_attested_exchange.sh` | Implemented (Phase 37) | Token exchange with DPoP rebinding, `act` claim validation, delegation chain depth limits, attestation evidence in DPoP header |
+| RFC 7643 | SCIM: Core Schema | SS3.1 (metadata), SS4.1 (User resource), SS5 (ServiceProviderConfig), SS8 (schema URIs) | `prmana-scim/src/schema.rs`, `prmana-scim/src/lib.rs` | Implemented (Phase 37) | User resource, name/email sub-attributes, list responses, error responses, ServiceProviderConfig |
+| RFC 7644 | SCIM: Protocol | SS3.4.2 (list response), SS3.12 (error response) | `prmana-scim/src/routes.rs`, `prmana-scim/src/main.rs`, `prmana-scim/src/schema.rs`, `prmana-scim/src/auth.rs` | Implemented (Phase 37/38) | CRUD endpoints for User resources, filtering, pagination, JWT Bearer auth with JWKS validation and TTL-based refresh |
 | RFC 4648 | Base16/32/64 Encodings | SS5 (base64url) | `test/tests/test_token_exchange.sh:87` | Full | Base64URL encoding in DPoP proof construction |
 | RFC 5480 | ECC SubjectPublicKeyInfo ASN.1 | P-256 curve OID `1.2.840.10045.3.1.7` | `docs/hardware-key-setup.md:82` | Full | PKCS#11 key generation uses this OID |
-| RFC 5785 | Well-Known URIs | -- | `pam-unix-oidc/src/oidc/discovery.rs` | Full | `/.well-known/openid-configuration` endpoint |
+| RFC 5785 | Well-Known URIs | -- | `pam-prmana/src/oidc/discovery.rs` | Full | `/.well-known/openid-configuration` endpoint |
 | RFC 9126 | Pushed Authorization Requests (PAR) | -- | `.planning/research/STACK.md:341` | Referenced-Only | Noted as distinct from CIBA; not implemented |
 
 ### Referenced-Only RFCs (Informative Context)
@@ -54,10 +54,10 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | Specification | Sections Referenced | Implementation Files | Normative/Informative | Status | Notes |
 |---------------|---------------------|----------------------|----------------------|--------|-------|
-| OpenID Connect Core 1.0 | SS3.1.3.7 (ID token validation), SS5.1 (preferred_username) | `pam-unix-oidc/src/oidc/validation.rs`, `pam-unix-oidc/src/oidc/claims.rs` | Normative | Full | Core identity layer; `preferred_username` made optional per SS5.1 |
-| OpenID Connect Discovery 1.0 | SS4 (issuer identifier) | `pam-unix-oidc/src/oidc/discovery.rs` | Normative | Full | HTTPS issuer requirement; auto-configuration |
-| OpenID CIBA Core 1.0 | SS2 (grant type URN), SS7.1 (binding_message), SS7.3 (poll mode), SS10.1 (token request), SS10.2 (token response), SS11 (slow_down) | `pam-unix-oidc/src/ciba/client.rs`, `pam-unix-oidc/src/ciba/types.rs`, `unix-oidc-agent/src/daemon/socket.rs:1684-1780` | Normative | Full | Push step-up for sudo; poll mode with `slow_down` backoff; `binding_message` security |
-| OpenID Connect EAP ACR Values 1.0 | `phr`/`phrh` URIs | `pam-unix-oidc/src/ciba/acr.rs`, `docs/diagrams/ciba-step-up-flow.svg` | Normative | Full | Phishing-resistant ACR validation for FIDO2 step-up |
+| OpenID Connect Core 1.0 | SS3.1.3.7 (ID token validation), SS5.1 (preferred_username) | `pam-prmana/src/oidc/validation.rs`, `pam-prmana/src/oidc/claims.rs` | Normative | Full | Core identity layer; `preferred_username` made optional per SS5.1 |
+| OpenID Connect Discovery 1.0 | SS4 (issuer identifier) | `pam-prmana/src/oidc/discovery.rs` | Normative | Full | HTTPS issuer requirement; auto-configuration |
+| OpenID CIBA Core 1.0 | SS2 (grant type URN), SS7.1 (binding_message), SS7.3 (poll mode), SS10.1 (token request), SS10.2 (token response), SS11 (slow_down) | `pam-prmana/src/ciba/client.rs`, `pam-prmana/src/ciba/types.rs`, `prmana-agent/src/daemon/socket.rs:1684-1780` | Normative | Full | Push step-up for sudo; poll mode with `slow_down` backoff; `binding_message` security |
+| OpenID Connect EAP ACR Values 1.0 | `phr`/`phrh` URIs | `pam-prmana/src/ciba/acr.rs`, `docs/diagrams/ciba-step-up-flow.svg` | Normative | Full | Phishing-resistant ACR validation for FIDO2 step-up |
 
 ---
 
@@ -65,7 +65,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | Draft | Title | Implementation Files | Status | Notes |
 |-------|-------|----------------------|--------|-------|
-| draft-ietf-jose-pq-composite-sigs-01 | Use of Post-Quantum Algorithms with JOSE | `unix-oidc-agent/src/crypto/pqc_signer.rs`, `pam-unix-oidc/src/oidc/dpop.rs:446` | Partial | ML-DSA-65+ES256 hybrid DPoP; composite signature format; pre-RFC, may change |
+| draft-ietf-jose-pq-composite-sigs-01 | Use of Post-Quantum Algorithms with JOSE | `prmana-agent/src/crypto/pqc_signer.rs`, `pam-prmana/src/oidc/dpop.rs:446` | Partial | ML-DSA-65+ES256 hybrid DPoP; composite signature format; pre-RFC, may change |
 | draft-ietf-oauth-identity-chaining-08 | OAuth 2.0 Identity Chaining | `docs/adr/005-dpop-token-exchange-alignment.md:94` | Referenced-Only | Cited for token exchange delegation patterns |
 
 ---
@@ -76,20 +76,20 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | Publication | Title | Sections Referenced | Implementation Files | Normative/Informative | Status | Notes |
 |-------------|-------|---------------------|----------------------|----------------------|--------|-------|
-| SP 800-63B Rev 3 | Digital Identity Guidelines: Authentication | SS4.3.3 (session lifetime), SS5.1.9 (trusted OS), SS7.1 (replay) | `pam-unix-oidc/src/oidc/validation.rs`, `docs/security-guide.md`, `docs/threat-model.md` | Normative | Partial | AAL enforcement via ACR claims (Phase 26 DEBT-02 wired); clock skew finding F-01 still open. AAL mapping: AAL1=urn:\*:acr:1, AAL2=urn:\*:acr:loa2, AAL3=phr/phrh (OpenID EAP ACR Values 1.0); see docs/security-guide.md §Authentication Assurance Levels |
-| SP 800-88 Rev 1 | Guidelines for Media Sanitization | SS2.4 (Clear), SS2.5 (CoW/FDE), SS4.7 | `unix-oidc-agent/src/storage/secure_delete.rs`, `unix-oidc-agent/src/storage/file_store.rs:20` | Normative | Full | Three-pass overwrite with documented CoW/SSD limitations; FDE advisory |
-| SP 800-53 Rev 5 | Security and Privacy Controls | AC-2 (account mgmt), AU-2/3/9/10/11 (audit), IA-2(12) (replay-resistant), IA-7/8 (crypto), SC-8/12/13 (comms/keys) | `pam-unix-oidc/src/audit.rs`, `pam-unix-oidc/src/oidc/dpop.rs` | Informative | Partial | Break-glass (AC-2), audit events (AU-\*), replay protection (IA-2(12)); (AU-9) tamper-evidence **CLOSED Phase 27 OBS-06**: HMAC chain + audit_verify tool. Break-glass CRITICAL severity **CLOSED Phase 24 SBUG-02** |
-| SP 800-131A Rev 2 | Transitioning Cryptographic Algorithms | SS3 (time-validity), Table 1/2 (approved algorithms, key lengths) | `pam-unix-oidc/src/oidc/validation.rs` | Informative | Partial | Algorithm allowlist added; RSA minimum key length check gap noted. Per-issuer algorithm allowlist added Phase 25 (SHRD-01, SHRD-02). F-06 CLOSED |
-| SP 800-57 Part 1 Rev 5 | Recommendation for Key Management | SS5.3 (cryptoperiod), SS5.3.6 (expiration), SS6.2 Table 1 (key lifetime), SS8.2 (key lifecycle audit) | `unix-oidc-agent/src/crypto/protected_key.rs` | Informative | Partial | Key lifecycle audit events shipped Phase 27 (OBS-04). OBS-4 gap CLOSED. Key rotation policy still open (F-05) |
-| SP 800-123 | Guide to General Server Security | Least-privilege baseline | `deploy/systemd/unix-oidc-agent.service` | Normative | Full | systemd hardening directives (NoNewPrivileges, ProtectSystem, etc.) |
+| SP 800-63B Rev 3 | Digital Identity Guidelines: Authentication | SS4.3.3 (session lifetime), SS5.1.9 (trusted OS), SS7.1 (replay) | `pam-prmana/src/oidc/validation.rs`, `docs/security-guide.md`, `docs/threat-model.md` | Normative | Partial | AAL enforcement via ACR claims (Phase 26 DEBT-02 wired); clock skew finding F-01 still open. AAL mapping: AAL1=urn:\*:acr:1, AAL2=urn:\*:acr:loa2, AAL3=phr/phrh (OpenID EAP ACR Values 1.0); see docs/security-guide.md §Authentication Assurance Levels |
+| SP 800-88 Rev 1 | Guidelines for Media Sanitization | SS2.4 (Clear), SS2.5 (CoW/FDE), SS4.7 | `prmana-agent/src/storage/secure_delete.rs`, `prmana-agent/src/storage/file_store.rs:20` | Normative | Full | Three-pass overwrite with documented CoW/SSD limitations; FDE advisory |
+| SP 800-53 Rev 5 | Security and Privacy Controls | AC-2 (account mgmt), AU-2/3/9/10/11 (audit), IA-2(12) (replay-resistant), IA-7/8 (crypto), SC-8/12/13 (comms/keys) | `pam-prmana/src/audit.rs`, `pam-prmana/src/oidc/dpop.rs` | Informative | Partial | Break-glass (AC-2), audit events (AU-\*), replay protection (IA-2(12)); (AU-9) tamper-evidence **CLOSED Phase 27 OBS-06**: HMAC chain + audit_verify tool. Break-glass CRITICAL severity **CLOSED Phase 24 SBUG-02** |
+| SP 800-131A Rev 2 | Transitioning Cryptographic Algorithms | SS3 (time-validity), Table 1/2 (approved algorithms, key lengths) | `pam-prmana/src/oidc/validation.rs` | Informative | Partial | Algorithm allowlist added; RSA minimum key length check gap noted. Per-issuer algorithm allowlist added Phase 25 (SHRD-01, SHRD-02). F-06 CLOSED |
+| SP 800-57 Part 1 Rev 5 | Recommendation for Key Management | SS5.3 (cryptoperiod), SS5.3.6 (expiration), SS6.2 Table 1 (key lifetime), SS8.2 (key lifecycle audit) | `prmana-agent/src/crypto/protected_key.rs` | Informative | Partial | Key lifecycle audit events shipped Phase 27 (OBS-04). OBS-4 gap CLOSED. Key rotation policy still open (F-05) |
+| SP 800-123 | Guide to General Server Security | Least-privilege baseline | `deploy/systemd/prmana-agent.service` | Normative | Full | systemd hardening directives (NoNewPrivileges, ProtectSystem, etc.) |
 | SP 800-115 | Technical Guide to Information Security Testing | §4 (test design), §5 (network discovery), §6.3 (password cracking) | `docs/security-testing-roadmap.md` | Informative | Partial | Security testing methodology reference; pentest automation planned v3.0 CAP-05 |
 
 ### FIPS Standards
 
 | Standard | Title | Sections Referenced | Implementation Files | Status | Notes |
 |----------|-------|---------------------|----------------------|--------|-------|
-| FIPS 186-4/5 | Digital Signature Standard | SS6 (approved curves: P-256, P-384, P-521) | `pam-unix-oidc/src/oidc/dpop.rs`, all DPoP signing code | Full | ES256 (P-256 ECDSA) is the primary algorithm |
-| FIPS 204 | ML-DSA (Module-Lattice-Based Digital Signature) | SS3.2 (implementation security) | `unix-oidc-agent/src/crypto/pqc_signer.rs` | Full | ML-DSA-65 (NIST level 3, 192-bit classical); `mlock` gap noted (finding F-07) |
+| FIPS 186-4/5 | Digital Signature Standard | SS6 (approved curves: P-256, P-384, P-521) | `pam-prmana/src/oidc/dpop.rs`, all DPoP signing code | Full | ES256 (P-256 ECDSA) is the primary algorithm |
+| FIPS 204 | ML-DSA (Module-Lattice-Based Digital Signature) | SS3.2 (implementation security) | `prmana-agent/src/crypto/pqc_signer.rs` | Full | ML-DSA-65 (NIST level 3, 192-bit classical); `mlock` gap noted (finding F-07) |
 | FIPS 203 | ML-KEM (Module-Lattice-Based Key Encapsulation) | -- | -- | Referenced-Only | Cited in NIST audit for completeness; not implemented (KEM not needed for DPoP) |
 | FIPS 140-3 | Security Requirements for Cryptographic Modules | AS05.10 (zeroization) | `docs/research/libcrux-zeroize-contribution.md` | Referenced-Only | No FIPS-validated Rust crypto libraries yet; OpenSSL FIPS backend planned |
 
@@ -107,15 +107,15 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | Control | Description | Implementation | Files |
 |---------|-------------|----------------|-------|
-| CC6.1 | Logical access controls | Policy-based authorization | `pam-unix-oidc/src/policy/` |
-| CC6.2 | Authentication mechanisms | MFA via OIDC + DPoP | `pam-unix-oidc/src/oidc/` |
-| CC6.3 | Access removal | Token expiration, IdP revocation | `unix-oidc-agent/src/daemon/socket.rs` |
-| CC6.7 | Anomalous activity detection | Lockout events | `pam-unix-oidc/src/audit.rs` |
-| CC7.1 | Log integrity | CLOSED (Phase 27 OBS-06): HMAC chain over OCSF-enriched JSON; audit_verify utility ships in pam-unix-oidc/src/bin/audit_verify.rs | `pam-unix-oidc/src/audit.rs`, `pam-unix-oidc/src/bin/audit_verify.rs` |
-| CC7.2 | System monitoring | Structured audit logs with session correlation | `pam-unix-oidc/src/audit.rs` |
-| CC7.3 | Severity classification | CLOSED (Phase 24 SBUG-02): BREAK_GLASS_AUTH events at syslog CRITICAL when alert_on_use=true | `pam-unix-oidc/src/audit.rs` |
+| CC6.1 | Logical access controls | Policy-based authorization | `pam-prmana/src/policy/` |
+| CC6.2 | Authentication mechanisms | MFA via OIDC + DPoP | `pam-prmana/src/oidc/` |
+| CC6.3 | Access removal | Token expiration, IdP revocation | `prmana-agent/src/daemon/socket.rs` |
+| CC6.7 | Anomalous activity detection | Lockout events | `pam-prmana/src/audit.rs` |
+| CC7.1 | Log integrity | CLOSED (Phase 27 OBS-06): HMAC chain over OCSF-enriched JSON; audit_verify utility ships in pam-prmana/src/bin/audit_verify.rs | `pam-prmana/src/audit.rs`, `pam-prmana/src/bin/audit_verify.rs` |
+| CC7.2 | System monitoring | Structured audit logs with session correlation | `pam-prmana/src/audit.rs` |
+| CC7.3 | Severity classification | CLOSED (Phase 24 SBUG-02): BREAK_GLASS_AUTH events at syslog CRITICAL when alert_on_use=true | `pam-prmana/src/audit.rs` |
 | CC7.4 | Security event response | Gap: alerting not yet automated | -- |
-| A1.2 | Log retention | CLOSED (Phase 27 OBS-05): logrotate config shipped, log retention docs at docs/log-retention.md, GDPR erasure guide at docs/gdpr-erasure-guide.md | `deploy/logrotate/unix-oidc`, `docs/log-retention.md`, `docs/gdpr-erasure-guide.md` |
+| A1.2 | Log retention | CLOSED (Phase 27 OBS-05): logrotate config shipped, log retention docs at docs/log-retention.md, GDPR erasure guide at docs/gdpr-erasure-guide.md | `deploy/logrotate/prmana`, `docs/log-retention.md`, `docs/gdpr-erasure-guide.md` |
 
 ### PCI DSS v4.0
 
@@ -126,7 +126,7 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 | 10.2.1.6 | Log lockout status changes | Partial | -- |
 | 10.3.3 | Audit log integrity | Full | HMAC chain tamper-evidence ships Phase 27 OBS-06; audit_verify tool verifies integrity |
 | 10.5.1 | 12-month retention | Full | Logrotate config ships Phase 27 OBS-05; 12-month retention default (rotate 52 weekly). docs/log-retention.md |
-| 3.7.6 | Key lifecycle audit trails | Full | Key lifecycle audit events (KEY_GENERATED, KEY_LOADED, KEY_DESTROYED) ship Phase 27 OBS-04. pam-unix-oidc/src/audit.rs |
+| 3.7.6 | Key lifecycle audit trails | Full | Key lifecycle audit events (KEY_GENERATED, KEY_LOADED, KEY_DESTROYED) ship Phase 27 OBS-04. pam-prmana/src/audit.rs |
 
 ### ISO/IEC Standards
 
@@ -157,9 +157,9 @@ This document tracks every standards reference in the unix-oidc codebase -- RFCs
 
 | Control | Description | Implementation | Files |
 |---------|-------------|----------------|-------|
-| 5.2 | Use MFA | ACR enforcement via OIDC | `pam-unix-oidc/src/policy/` |
-| 6.3 | Require MFA for admin access | Step-up for sudo via CIBA | `pam-unix-oidc/src/ciba/` |
-| 8.5 | Centralized log collection | JSON structured audit logs | `pam-unix-oidc/src/audit.rs` |
+| 5.2 | Use MFA | ACR enforcement via OIDC | `pam-prmana/src/policy/` |
+| 6.3 | Require MFA for admin access | Step-up for sudo via CIBA | `pam-prmana/src/ciba/` |
+| 8.5 | Centralized log collection | JSON structured audit logs | `pam-prmana/src/audit.rs` |
 
 ### OWASP
 
@@ -202,8 +202,8 @@ Referenced in `docs/THREAT_MODEL.md` (Appendix A) and `docs/threat-model.md` (Se
 
 | Standard | Where Referenced | Notes |
 |----------|------------------|-------|
-| PKCS#11 v2.40 | `docs/hardware-key-setup.md:82`, `unix-oidc-agent/src/crypto/yubikey_signer.rs` | SS2.3.6 (key generation), SS11.3.1 (ECDSA signature format); YubiKey PIV interface |
-| TCG TPM 2.0 Part 2 | `docs/hardware-key-setup.md:301`, `unix-oidc-agent/src/crypto/tpm_signer.rs` | Hardware-backed DPoP signing via tss-esapi |
+| PKCS#11 v2.40 | `docs/hardware-key-setup.md:82`, `prmana-agent/src/crypto/yubikey_signer.rs` | SS2.3.6 (key generation), SS11.3.1 (ECDSA signature format); YubiKey PIV interface |
+| TCG TPM 2.0 Part 2 | `docs/hardware-key-setup.md:301`, `prmana-agent/src/crypto/tpm_signer.rs` | Hardware-backed DPoP signing via tss-esapi |
 | DoD 5220.22-M | `CLAUDE.md:198` | Historical reference for three-pass overwrite; superseded by NIST SP 800-88 Rev 1 |
 
 ---
@@ -220,7 +220,7 @@ Referenced in `docs/THREAT_MODEL.md` (Appendix A) and `docs/threat-model.md` (Se
 | FIPS | 2 | 0 | 2 | 4 |
 | SOC 2 Controls | 7 | 1 | 0 | 8 mapped (1 gap) |
 | PCI DSS Requirements | 5 | 1 | 0 | 6 mapped (0 gaps) |
-| OCSF Schema | 7 audit event types with category_uid/class_uid/severity_id | Phase 27 OBS-07 | `pam-unix-oidc/src/audit.rs` |
+| OCSF Schema | 7 audit event types with category_uid/class_uid/severity_id | Phase 27 OBS-07 | `pam-prmana/src/audit.rs` |
 | MITRE ATT&CK Techniques | 18 mapped | -- | -- | 18 |
 | **Totals** | **54** | **10** | **5** | **69** |
 
@@ -234,37 +234,37 @@ For each source file that references standards, the standards it cites.
 
 | File | Standards Referenced |
 |------|---------------------|
-| `pam-unix-oidc/src/oidc/dpop.rs` | RFC 9449, RFC 7638, RFC 7518, FIPS 186-5, draft-ietf-jose-pq-composite-sigs-01 |
-| `pam-unix-oidc/src/oidc/validation.rs` | RFC 7519, RFC 7517, RFC 7515, RFC 9700, SP 800-63B, SP 800-131A |
-| `pam-unix-oidc/src/audit.rs` | RFC 3339, RFC 5424, SP 800-53 (AU-2/3/9/10), SOC 2 CC7.1/CC7.2, PCI 10.2.1, OCSF schema, GDPR Art 17(3)(b) |
-| `pam-unix-oidc/src/bin/audit_verify.rs` | SP 800-53 AU-9/10, SOC 2 CC7.1, PCI 10.3.3, FedRAMP AU-9 |
-| `pam-unix-oidc/src/policy/config.rs` | RFC 7662, RFC 9449 SS8 |
-| `pam-unix-oidc/src/ciba/client.rs` | CIBA Core 1.0 SS7.1/SS10.1, OpenID EAP ACR Values 1.0 |
-| `pam-unix-oidc/src/ciba/types.rs` | RFC 6749 SS5.1, CIBA Core 1.0 SS10.2 |
-| `pam-unix-oidc/src/device_flow/client.rs` | RFC 9700 SS2.5 |
-| `pam-unix-oidc/src/device_flow/types.rs` | RFC 9700 SS2.5 |
-| `unix-oidc-agent/src/main.rs` | RFC 5424, RFC 7009 |
-| `unix-oidc-agent/src/daemon/socket.rs` | RFC 6749 SS5.2, RFC 7009 SS2.1, CIBA Core 1.0 SS11 |
-| `unix-oidc-agent/src/daemon/protocol.rs` | RFC 7009 |
-| `unix-oidc-agent/src/crypto/dpop.rs` | RFC 9449 SS4.2 |
-| `unix-oidc-agent/src/crypto/thumbprint.rs` | RFC 7638 |
-| `unix-oidc-agent/src/crypto/protected_key.rs` | RFC 7638, SP 800-57 |
-| `unix-oidc-agent/src/crypto/pqc_signer.rs` | draft-ietf-jose-pq-composite-sigs-01, RFC 7638, FIPS 204 |
-| `unix-oidc-agent/src/crypto/tpm_signer.rs` | RFC 9449 SS4.2, RFC 7638 SS3.3, TCG TPM 2.0 |
-| `unix-oidc-agent/src/crypto/yubikey_signer.rs` | RFC 7638 SS3.3, PKCS#11 v2.40 |
-| `unix-oidc-agent/src/storage/secure_delete.rs` | NIST SP 800-88 Rev 1 SS2.4/SS2.5 |
-| `unix-oidc-agent/src/storage/file_store.rs` | NIST SP 800-88 Rev 1 SS2.4 |
-| `unix-oidc-agent/src/storage/router.rs` | NIST SP 800-88 |
-| `unix-oidc-agent/src/askpass.rs` | RFC 9449 SS4 |
+| `pam-prmana/src/oidc/dpop.rs` | RFC 9449, RFC 7638, RFC 7518, FIPS 186-5, draft-ietf-jose-pq-composite-sigs-01 |
+| `pam-prmana/src/oidc/validation.rs` | RFC 7519, RFC 7517, RFC 7515, RFC 9700, SP 800-63B, SP 800-131A |
+| `pam-prmana/src/audit.rs` | RFC 3339, RFC 5424, SP 800-53 (AU-2/3/9/10), SOC 2 CC7.1/CC7.2, PCI 10.2.1, OCSF schema, GDPR Art 17(3)(b) |
+| `pam-prmana/src/bin/audit_verify.rs` | SP 800-53 AU-9/10, SOC 2 CC7.1, PCI 10.3.3, FedRAMP AU-9 |
+| `pam-prmana/src/policy/config.rs` | RFC 7662, RFC 9449 SS8 |
+| `pam-prmana/src/ciba/client.rs` | CIBA Core 1.0 SS7.1/SS10.1, OpenID EAP ACR Values 1.0 |
+| `pam-prmana/src/ciba/types.rs` | RFC 6749 SS5.1, CIBA Core 1.0 SS10.2 |
+| `pam-prmana/src/device_flow/client.rs` | RFC 9700 SS2.5 |
+| `pam-prmana/src/device_flow/types.rs` | RFC 9700 SS2.5 |
+| `prmana-agent/src/main.rs` | RFC 5424, RFC 7009 |
+| `prmana-agent/src/daemon/socket.rs` | RFC 6749 SS5.2, RFC 7009 SS2.1, CIBA Core 1.0 SS11 |
+| `prmana-agent/src/daemon/protocol.rs` | RFC 7009 |
+| `prmana-agent/src/crypto/dpop.rs` | RFC 9449 SS4.2 |
+| `prmana-agent/src/crypto/thumbprint.rs` | RFC 7638 |
+| `prmana-agent/src/crypto/protected_key.rs` | RFC 7638, SP 800-57 |
+| `prmana-agent/src/crypto/pqc_signer.rs` | draft-ietf-jose-pq-composite-sigs-01, RFC 7638, FIPS 204 |
+| `prmana-agent/src/crypto/tpm_signer.rs` | RFC 9449 SS4.2, RFC 7638 SS3.3, TCG TPM 2.0 |
+| `prmana-agent/src/crypto/yubikey_signer.rs` | RFC 7638 SS3.3, PKCS#11 v2.40 |
+| `prmana-agent/src/storage/secure_delete.rs` | NIST SP 800-88 Rev 1 SS2.4/SS2.5 |
+| `prmana-agent/src/storage/file_store.rs` | NIST SP 800-88 Rev 1 SS2.4 |
+| `prmana-agent/src/storage/router.rs` | NIST SP 800-88 |
+| `prmana-agent/src/askpass.rs` | RFC 9449 SS4 |
 | `rust-oauth-dpop/src/server.rs` | RFC 9449 SS11.1, RFC 7638 |
 | `rust-oauth-dpop/src/thumbprint.rs` | RFC 7638 |
 | `rust-oauth-dpop/src/lib.rs` | RFC 9449 SS4.2 |
 | `rust-oauth-dpop/src/jwk.rs` | RFC 7638 |
-| `unix-oidc-agent/src/exchange.rs` | RFC 8693 SS2.1/SS2.2, RFC 9449 |
-| `unix-oidc-scim/src/schema.rs` | RFC 7643 SS3.1/SS4.1/SS5/SS8, RFC 7644 SS3.4.2/SS3.12 |
-| `unix-oidc-scim/src/routes.rs` | RFC 7644 |
-| `unix-oidc-scim/src/main.rs` | RFC 7644 |
-| `unix-oidc-scim/src/lib.rs` | RFC 7643, RFC 7644 |
+| `prmana-agent/src/exchange.rs` | RFC 8693 SS2.1/SS2.2, RFC 9449 |
+| `prmana-scim/src/schema.rs` | RFC 7643 SS3.1/SS4.1/SS5/SS8, RFC 7644 SS3.4.2/SS3.12 |
+| `prmana-scim/src/routes.rs` | RFC 7644 |
+| `prmana-scim/src/main.rs` | RFC 7644 |
+| `prmana-scim/src/lib.rs` | RFC 7643, RFC 7644 |
 
 ### Cross-Language DPoP Libraries
 

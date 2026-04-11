@@ -6,9 +6,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="unix-oidc-test"
-CLIENT_ID="unix-oidc"
-CLIENT_SECRET="unix-oidc-test-secret"
+REALM="prmana-test"
+CLIENT_ID="prmana"
+CLIENT_SECRET="prmana-test-secret"
 
 # Colors
 RED='\033[0;31m'
@@ -23,10 +23,10 @@ echo ""
 
 # Test 0: Run unit tests
 echo "Test 0: Running sudo unit tests..."
-if cargo test -p pam-unix-oidc -- sudo 2>/dev/null | grep -q "test result: ok"; then
+if cargo test -p pam-prmana -- sudo 2>/dev/null | grep -q "test result: ok"; then
     echo -e "  ${GREEN}PASS${NC}: Sudo unit tests (8 tests)"
 else
-    echo -e "  ${YELLOW}SKIP${NC}: Sudo unit tests (run 'cargo test -p pam-unix-oidc -- sudo' for details)"
+    echo -e "  ${YELLOW}SKIP${NC}: Sudo unit tests (run 'cargo test -p pam-prmana -- sudo' for details)"
 fi
 echo ""
 
@@ -72,12 +72,12 @@ fi
 # Test 3: Test policy configuration parsing
 echo "Test 3: Verify policy configuration..."
 docker compose -f docker-compose.test.yaml exec -T test-host bash -c "
-    export UNIX_OIDC_TEST_MODE=true
-    export OIDC_ISSUER='http://keycloak:8080/realms/unix-oidc-test'
-    export OIDC_CLIENT_ID='unix-oidc'
+    export PRMANA_TEST_MODE=true
+    export OIDC_ISSUER='http://keycloak:8080/realms/prmana-test'
+    export OIDC_CLIENT_ID='prmana'
 
     # Check if policy files are accessible
-    if [ -f /etc/unix-oidc/policy.yaml ]; then
+    if [ -f /etc/prmana/policy.yaml ]; then
         echo '  Policy file found'
     else
         echo '  Policy file not installed (expected in test mode)'
@@ -93,13 +93,13 @@ if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
 else
     docker compose -f docker-compose.test.yaml exec -T test-host bash -c "
         export OIDC_TOKEN='$TOKEN'
-        export UNIX_OIDC_TEST_MODE=true
-        export OIDC_ISSUER='http://keycloak:8080/realms/unix-oidc-test'
-        export OIDC_CLIENT_ID='unix-oidc'
-        export UNIX_OIDC_SKIP_STEP_UP=true  # Skip step-up for this test
+        export PRMANA_TEST_MODE=true
+        export OIDC_ISSUER='http://keycloak:8080/realms/prmana-test'
+        export OIDC_CLIENT_ID='prmana'
+        export PRMANA_SKIP_STEP_UP=true  # Skip step-up for this test
 
         # If PAM module is installed, test will use it
-        if [ -f /lib/security/pam_unix_oidc.so ]; then
+        if [ -f /lib/security/pam_prmana.so ]; then
             echo '  PAM module installed - testing sudo flow'
             # Test that we can at least parse the token
             echo '  Token parsed successfully'
@@ -112,9 +112,9 @@ fi
 # Test 5: Verify audit events are logged (when module is installed)
 echo "Test 5: Verify audit event structure..."
 docker compose -f docker-compose.test.yaml exec -T test-host bash -c "
-    # Check syslog for any unix-oidc entries
+    # Check syslog for any prmana entries
     if [ -f /var/log/auth.log ]; then
-        grep 'unix-oidc' /var/log/auth.log 2>/dev/null | tail -3 || echo '  No unix-oidc audit entries yet (expected)'
+        grep "prmana" /var/log/auth.log 2>/dev/null | tail -3 || echo '  No prmana audit entries yet (expected)'
     else
         echo '  Auth log not available'
     fi

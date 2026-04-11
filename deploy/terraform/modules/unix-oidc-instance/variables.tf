@@ -1,5 +1,5 @@
-# unix-oidc-instance module variables
-# Shared Terraform module for installing unix-oidc on cloud instances
+# prmana-instance module variables
+# Shared Terraform module for installing prmana on cloud instances
 
 variable "oidc_issuer" {
   description = "OIDC Issuer URL"
@@ -9,11 +9,11 @@ variable "oidc_issuer" {
 variable "oidc_client_id" {
   description = "OIDC Client ID"
   type        = string
-  default     = "unix-oidc"
+  default     = "prmana"
 }
 
 variable "install_agent" {
-  description = "Whether to install the unix-oidc-agent"
+  description = "Whether to install the prmana-agent"
   type        = bool
   default     = true
 }
@@ -35,8 +35,8 @@ variable "connection" {
   sensitive = true
 }
 
-variable "unix_oidc_version" {
-  description = "Version of unix-oidc to install"
+variable "prmana_version" {
+  description = "Version of prmana to install"
   type        = string
   default     = "latest"
 }
@@ -54,7 +54,7 @@ variable "max_auth_age" {
 }
 
 variable "installer_url" {
-  description = "URL to the unix-oidc installer script"
+  description = "URL to the prmana installer script"
   type        = string
-  default     = "https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh"
+  default     = "https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh"
 }

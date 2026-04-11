@@ -1,7 +1,7 @@
-# unix-oidc Training Video Capture
+# prmana Training Video Capture
 
 This directory contains Playwright tests that capture training videos demonstrating
-the unix-oidc authentication flows.
+the prmana authentication flows.
 
 ## Prerequisites
 

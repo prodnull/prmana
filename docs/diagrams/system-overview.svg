@@ -94,7 +94,7 @@
 
   <!-- PAM Module -->
   <rect class="component-critical" x="230" y="505" width="180" height="55"/>
-  <text class="component-label" x="250" y="532" style="fill: #f5c6c6;">pam_unix_oidc</text>
+  <text class="component-label" x="250" y="532" style="fill: #f5c6c6;">pam_prmana</text>
   <text class="component-sub" x="250" y="548" style="fill: #e8a0a0;">PAM auth + account</text>
 
   <!-- Token Validator -->

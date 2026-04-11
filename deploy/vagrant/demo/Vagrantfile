@@ -1,8 +1,8 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 #
-# unix-oidc Demo Vagrant Image
-# Complete demo environment with Keycloak IdP and unix-oidc
+# prmana Demo Vagrant Image
+# Complete demo environment with Keycloak IdP and prmana
 # Works offline after first boot (all images cached locally)
 #
 
@@ -11,7 +11,7 @@ VAGRANTFILE_API_VERSION = "2"
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   # Ubuntu 22.04 LTS base box
   config.vm.box = "ubuntu/jammy64"
-  config.vm.hostname = "unix-oidc-demo"
+  config.vm.hostname = "prmana-demo"
 
   # Network configuration
   # SSH port forwarding (guest 22 -> host 2222)
@@ -21,7 +21,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   # VirtualBox provider settings
   config.vm.provider "virtualbox" do |vb|
-    vb.name = "unix-oidc-demo"
+    vb.name = "prmana-demo"
     vb.memory = "4096"  # Keycloak needs more memory
     vb.cpus = 2
 
@@ -38,7 +38,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     set -euo pipefail
 
     echo "=========================================="
-    echo "unix-oidc Demo Image Provisioning"
+    echo "prmana Demo Image Provisioning"
     echo "=========================================="
 
     # Update system
@@ -71,17 +71,17 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     systemctl enable docker
     systemctl start docker
 
-    # Create unix-oidc directories
-    echo "[4/8] Creating unix-oidc directories..."
-    mkdir -p /etc/unix-oidc
-    chmod 755 /etc/unix-oidc
+    # Create prmana directories
+    echo "[4/8] Creating prmana directories..."
+    mkdir -p /etc/prmana
+    chmod 755 /etc/prmana
 
     # Create Keycloak realm configuration
     echo "[5/8] Creating Keycloak configuration..."
     mkdir -p /opt/keycloak/data
     cat > /opt/keycloak/realm-export.json << 'REALM_EOF'
 {
-  "realm": "unix-oidc-demo",
+  "realm": "prmana-demo",
   "enabled": true,
   "sslRequired": "none",
   "registrationAllowed": false,
@@ -96,9 +96,9 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   "defaultSignatureAlgorithm": "RS256",
   "clients": [
     {
-      "clientId": "unix-oidc",
+      "clientId": "prmana",
       "name": "Unix OIDC Client",
-      "description": "OpenID Connect client for unix-oidc PAM authentication",
+      "description": "OpenID Connect client for prmana PAM authentication",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": false,
@@ -134,7 +134,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
           "config": {
-            "included.client.audience": "unix-oidc",
+            "included.client.audience": "prmana",
             "id.token.claim": "true",
             "access.token.claim": "true"
           }
@@ -157,7 +157,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           "temporary": false
         }
       ],
-      "realmRoles": ["default-roles-unix-oidc-demo"]
+      "realmRoles": ["default-roles-prmana-demo"]
     },
     {
       "username": "adminuser",
@@ -173,7 +173,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           "temporary": false
         }
       ],
-      "realmRoles": ["default-roles-unix-oidc-demo"]
+      "realmRoles": ["default-roles-prmana-demo"]
     },
     {
       "username": "demouser",
@@ -189,7 +189,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           "temporary": false
         }
       ],
-      "realmRoles": ["default-roles-unix-oidc-demo"]
+      "realmRoles": ["default-roles-prmana-demo"]
     }
   ]
 }
@@ -252,18 +252,18 @@ COMPOSE_EOF
       echo "Warning: Keycloak may not be fully ready. Check with 'docker logs keycloak'"
     fi
 
-    # Create unix-oidc configuration pointing to local Keycloak
-    echo "[7/8] Configuring unix-oidc for local Keycloak..."
-    cat > /etc/unix-oidc/config.env << 'EOF'
-# unix-oidc Configuration for Demo Environment
+    # Create prmana configuration pointing to local Keycloak
+    echo "[7/8] Configuring prmana for local Keycloak..."
+    cat > /etc/prmana/config.env << 'EOF'
+# prmana Configuration for Demo Environment
 # =============================================
 # This is pre-configured to use the local Keycloak instance.
 
 # Local Keycloak issuer URL
-OIDC_ISSUER="http://localhost:8080/realms/unix-oidc-demo"
+OIDC_ISSUER="http://localhost:8080/realms/prmana-demo"
 
 # Client ID (matches Keycloak configuration)
-OIDC_CLIENT_ID="unix-oidc"
+OIDC_CLIENT_ID="prmana"
 
 # Optional: Enable DPoP token binding (recommended for production)
 # OIDC_DPOP_REQUIRED=true
@@ -274,23 +274,23 @@ OIDC_CLIENT_ID="unix-oidc"
 # Optional: Maximum auth age in seconds
 # OIDC_MAX_AUTH_AGE=3600
 EOF
-    chmod 600 /etc/unix-oidc/config.env
+    chmod 600 /etc/prmana/config.env
 
     # Create PAM configuration templates
-    cat > /etc/unix-oidc/pam.d-sshd.recommended << 'EOF'
-# /etc/pam.d/sshd - Demo configuration for unix-oidc
-auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
-auth       sufficient   pam_unix_oidc.so
+    cat > /etc/prmana/pam.d-sshd.recommended << 'EOF'
+# /etc/pam.d/sshd - Demo configuration for prmana
+auth       required     pam_env.so envfile=/etc/prmana/config.env
+auth       sufficient   pam_prmana.so
 auth       required     pam_unix.so
 @include common-account
 @include common-session
 @include common-password
 EOF
 
-    cat > /etc/unix-oidc/pam.d-sudo.recommended << 'EOF'
-# /etc/pam.d/sudo - Demo configuration for unix-oidc
-auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
-auth       sufficient   pam_unix_oidc.so
+    cat > /etc/prmana/pam.d-sudo.recommended << 'EOF'
+# /etc/pam.d/sudo - Demo configuration for prmana
+auth       required     pam_env.so envfile=/etc/prmana/config.env
+auth       sufficient   pam_prmana.so
 auth       required     pam_unix.so
 @include common-account
 @include common-session
@@ -316,9 +316,9 @@ USERNAME="${1:-testuser}"
 PASSWORD="${2:-testpass}"
 
 TOKEN_RESPONSE=$(curl -s -X POST \
-  http://localhost:8080/realms/unix-oidc-demo/protocol/openid-connect/token \
+  http://localhost:8080/realms/prmana-demo/protocol/openid-connect/token \
   -d "grant_type=password" \
-  -d "client_id=unix-oidc" \
+  -d "client_id=prmana" \
   -d "username=$USERNAME" \
   -d "password=$PASSWORD")
 
@@ -357,7 +357,7 @@ SCRIPT_EOF
 
     echo ""
     echo "=========================================="
-    echo "unix-oidc Demo Environment Ready!"
+    echo "prmana Demo Environment Ready!"
     echo "=========================================="
     echo ""
     echo "Services Running:"

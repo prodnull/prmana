@@ -1,7 +1,7 @@
-# unix-oidc AWS Terraform Module
-# https://github.com/prodnull/unix-oidc
+# prmana AWS Terraform Module
+# https://github.com/prodnull/prmana
 #
-# This module creates an EC2 instance with unix-oidc installed and configured.
+# This module creates an EC2 instance with prmana installed and configured.
 # It can create a new VPC or use an existing one.
 
 terraform {
@@ -85,21 +85,21 @@ locals {
   # Common tags
   common_tags = merge(
     {
-      "Project"     = "unix-oidc"
+      "Project"     = "prmana"
       "Environment" = var.environment
       "ManagedBy"   = "terraform"
     },
     var.tags
   )
 
-  # User data script for installing unix-oidc
+  # User data script for installing prmana
   user_data = <<-EOF
     #!/bin/bash
     set -euo pipefail
 
     # Log to both console and file
-    exec > >(tee /var/log/unix-oidc-install.log) 2>&1
-    echo "Starting unix-oidc installation at $(date)"
+    exec > >(tee /var/log/prmana-install.log) 2>&1
+    echo "Starting prmana installation at $(date)"
 
     # Wait for cloud-init to complete
     cloud-init status --wait || true
@@ -109,7 +109,7 @@ locals {
     apt-get install -y curl jq
 
     # Download and run installer
-    curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh -o /tmp/install.sh
+    curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh -o /tmp/install.sh
     chmod +x /tmp/install.sh
 
     # Run installer with provided configuration
@@ -121,25 +121,25 @@ locals {
 
     # Configure DPoP if enabled
     if [ "${var.enable_dpop}" = "true" ]; then
-      if [ -f /etc/unix-oidc/config.env ]; then
-        echo "" >> /etc/unix-oidc/config.env
-        echo "# DPoP token binding enabled" >> /etc/unix-oidc/config.env
-        echo "OIDC_DPOP_REQUIRED=true" >> /etc/unix-oidc/config.env
+      if [ -f /etc/prmana/config.env ]; then
+        echo "" >> /etc/prmana/config.env
+        echo "# DPoP token binding enabled" >> /etc/prmana/config.env
+        echo "OIDC_DPOP_REQUIRED=true" >> /etc/prmana/config.env
       fi
     fi
 
     # Apply PAM configuration for sshd
     # This copies the recommended config - adjust for your security requirements
-    if [ -f /etc/unix-oidc/pam.d-sshd.recommended ]; then
+    if [ -f /etc/prmana/pam.d-sshd.recommended ]; then
       cp /etc/pam.d/sshd /etc/pam.d/sshd.backup.$(date +%Y%m%d%H%M%S)
-      cp /etc/unix-oidc/pam.d-sshd.recommended /etc/pam.d/sshd
+      cp /etc/prmana/pam.d-sshd.recommended /etc/pam.d/sshd
       echo "PAM configuration applied for sshd"
     fi
 
     # Restart SSH to pick up PAM changes
     systemctl restart sshd
 
-    echo "unix-oidc installation completed at $(date)"
+    echo "prmana installation completed at $(date)"
     EOF
 }
 
@@ -209,9 +209,9 @@ resource "aws_route_table_association" "public" {
 # Security Group
 # =============================================================================
 
-resource "aws_security_group" "unix_oidc" {
+resource "aws_security_group" "prmana" {
   name        = "${var.instance_name}-sg"
-  description = "Security group for unix-oidc instance"
+  description = "Security group for prmana instance"
   vpc_id      = local.vpc_id
 
   # Allow SSH from specified CIDRs
@@ -245,12 +245,12 @@ resource "aws_security_group" "unix_oidc" {
 # EC2 Instance
 # =============================================================================
 
-resource "aws_instance" "unix_oidc" {
+resource "aws_instance" "prmana" {
   ami                         = local.ami_id
   instance_type               = var.instance_type
   key_name                    = var.key_name
   subnet_id                   = local.subnet_id
-  vpc_security_group_ids      = [aws_security_group.unix_oidc.id]
+  vpc_security_group_ids      = [aws_security_group.prmana.id]
   associate_public_ip_address = var.associate_public_ip
 
   user_data                   = local.user_data
@@ -284,10 +284,10 @@ resource "aws_instance" "unix_oidc" {
 # Elastic IP (optional)
 # =============================================================================
 
-resource "aws_eip" "unix_oidc" {
+resource "aws_eip" "prmana" {
   count = var.create_eip ? 1 : 0
 
-  instance = aws_instance.unix_oidc.id
+  instance = aws_instance.prmana.id
   domain   = "vpc"
 
   tags = merge(local.common_tags, {

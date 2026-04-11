@@ -6,11 +6,11 @@
 # Rules are evaluated top-to-bottom, first match wins.
 # If no rule matches, default_action applies.
 #
-# Usage: Copy to /etc/unix-oidc/policy.yaml and customize.
+# Usage: Copy to /etc/prmana/policy.yaml and customize.
 
 issuers:
   - issuer_url: "https://your-idp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     client_secret: "your-secret-here"
     dpop_enforcement: strict
     acr_mapping:

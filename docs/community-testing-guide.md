@@ -1,6 +1,6 @@
 # Community Testing Guide
 
-Thank you for helping test unix-oidc! This guide covers testing on various platforms and identity providers.
+Thank you for helping test prmana! This guide covers testing on various platforms and identity providers.
 
 ## Testing Status
 
@@ -53,17 +53,17 @@ V=v0.1.0-beta.1
 P=linux-x86_64      # or linux-aarch64 for ARM
 
 # Download release artifacts
-curl -LO https://github.com/prodnull/unix-oidc/releases/download/$V/unix-oidc-$V-$P.tar.gz
-curl -LO https://github.com/prodnull/unix-oidc/releases/download/$V/unix-oidc-$V-$P.tar.gz.sha256
-curl -LO https://github.com/prodnull/unix-oidc/releases/download/$V/unix-oidc-$V-$P.tar.gz.sig
-curl -LO https://github.com/prodnull/unix-oidc/releases/download/$V/unix-oidc-$V-$P.tar.gz.pem
+curl -LO https://github.com/prodnull/prmana/releases/download/$V/prmana-$V-$P.tar.gz
+curl -LO https://github.com/prodnull/prmana/releases/download/$V/prmana-$V-$P.tar.gz.sha256
+curl -LO https://github.com/prodnull/prmana/releases/download/$V/prmana-$V-$P.tar.gz.sig
+curl -LO https://github.com/prodnull/prmana/releases/download/$V/prmana-$V-$P.tar.gz.pem
 
 # Verify checksum
-sha256sum -c unix-oidc-$V-$P.tar.gz.sha256
+sha256sum -c prmana-$V-$P.tar.gz.sha256
 
 # Extract
-tar -xzf unix-oidc-$V-$P.tar.gz
-ls -la libpam_unix_oidc.so
+tar -xzf prmana-$V-$P.tar.gz
+ls -la libpam_prmana.so
 ```
 
 ### Optional: Verify Signature (requires cosign)
@@ -74,11 +74,11 @@ All releases are signed with [Sigstore](https://www.sigstore.dev/) keyless signi
 # Install cosign if needed (see platform-specific section below)
 
 cosign verify-blob \
-  --certificate unix-oidc-$V-$P.tar.gz.pem \
-  --signature unix-oidc-$V-$P.tar.gz.sig \
-  --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \
+  --certificate prmana-$V-$P.tar.gz.pem \
+  --signature prmana-$V-$P.tar.gz.sig \
+  --certificate-identity-regexp 'https://github.com/prodnull/prmana' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  unix-oidc-$V-$P.tar.gz
+  prmana-$V-$P.tar.gz
 ```
 
 ---
@@ -93,50 +93,50 @@ PAM_DIR=/lib/x86_64-linux-gnu/security
 # Fallback for older systems
 [ -d "$PAM_DIR" ] || PAM_DIR=/lib/security
 
-sudo cp libpam_unix_oidc.so $PAM_DIR/pam_unix_oidc.so
-sudo chmod 644 $PAM_DIR/pam_unix_oidc.so
-sudo chown root:root $PAM_DIR/pam_unix_oidc.so
+sudo cp libpam_prmana.so $PAM_DIR/pam_prmana.so
+sudo chmod 644 $PAM_DIR/pam_prmana.so
+sudo chown root:root $PAM_DIR/pam_prmana.so
 ```
 
 ### RHEL / Rocky / Alma / Fedora / Amazon Linux
 
 ```bash
 # RHEL-family uses /lib64/security
-sudo cp libpam_unix_oidc.so /lib64/security/pam_unix_oidc.so
-sudo chmod 644 /lib64/security/pam_unix_oidc.so
-sudo chown root:root /lib64/security/pam_unix_oidc.so
+sudo cp libpam_prmana.so /lib64/security/pam_prmana.so
+sudo chmod 644 /lib64/security/pam_prmana.so
+sudo chown root:root /lib64/security/pam_prmana.so
 
 # Restore SELinux context
-sudo restorecon /lib64/security/pam_unix_oidc.so
+sudo restorecon /lib64/security/pam_prmana.so
 ```
 
 ### Verify Installation
 
 ```bash
 # Should show the module
-ls -la /lib*/security/pam_unix_oidc.so
+ls -la /lib*/security/pam_prmana.so
 ```
 
 ---
 
-## Step 3: Configure unix-oidc
+## Step 3: Configure prmana
 
 ### Create Configuration Directory
 
 ```bash
-sudo mkdir -p /etc/unix-oidc
-sudo chmod 755 /etc/unix-oidc
+sudo mkdir -p /etc/prmana
+sudo chmod 755 /etc/prmana
 ```
 
 ### Create Environment File
 
 ```bash
-sudo tee /etc/unix-oidc/env << 'EOF'
+sudo tee /etc/prmana/env << 'EOF'
 # Required: Your OIDC issuer URL
 OIDC_ISSUER=https://your-idp.example.com/realms/your-realm
 
 # Required: Client ID registered with your IdP
-OIDC_CLIENT_ID=unix-oidc
+OIDC_CLIENT_ID=prmana
 
 # Optional: Client secret (if your IdP requires it)
 # OIDC_CLIENT_SECRET=your-secret
@@ -145,8 +145,8 @@ OIDC_CLIENT_ID=unix-oidc
 # OIDC_REQUIRED_ACR=urn:your-idp:acr:mfa
 EOF
 
-sudo chmod 600 /etc/unix-oidc/env
-sudo chown root:root /etc/unix-oidc/env
+sudo chmod 600 /etc/prmana/env
+sudo chown root:root /etc/prmana/env
 ```
 
 ### Provider-Specific Issuer URLs
@@ -163,7 +163,7 @@ sudo chown root:root /etc/unix-oidc/env
 ### Create Policy File
 
 ```bash
-sudo tee /etc/unix-oidc/policy.yaml << 'EOF'
+sudo tee /etc/prmana/policy.yaml << 'EOF'
 # Host classification: standard, elevated, or critical
 host_classification: elevated
 
@@ -182,7 +182,7 @@ sudo:
   required_acr: null
 EOF
 
-sudo chmod 644 /etc/unix-oidc/policy.yaml
+sudo chmod 644 /etc/prmana/policy.yaml
 ```
 
 ---
@@ -201,8 +201,8 @@ sudo cp /etc/pam.d/sudo /etc/pam.d/sudo.bak
 Edit `/etc/pam.d/sshd` and add at the **TOP** (before other auth lines):
 
 ```
-# unix-oidc authentication (primary)
-auth    sufficient    pam_unix_oidc.so
+# prmana authentication (primary)
+auth    sufficient    pam_prmana.so
 
 # Fallback to standard Unix auth (for break-glass)
 auth    required      pam_unix.so try_first_pass
@@ -213,8 +213,8 @@ auth    required      pam_unix.so try_first_pass
 Edit `/etc/pam.d/sudo` and add at the **TOP**:
 
 ```
-# unix-oidc step-up authentication
-auth    required      pam_unix_oidc.so
+# prmana step-up authentication
+auth    required      pam_prmana.so
 ```
 
 ---
@@ -262,8 +262,8 @@ getenforce
 sudo ausearch -m avc -ts recent
 
 # Create and install a policy module (if needed)
-sudo ausearch -c 'sshd' --raw | audit2allow -M unix_oidc_pam
-sudo semodule -i unix_oidc_pam.pp
+sudo ausearch -c 'sshd' --raw | audit2allow -M prmana_pam
+sudo semodule -i prmana_pam.pp
 ```
 
 Common SELinux booleans that may need to be enabled:
@@ -328,7 +328,7 @@ sudo journalctl -u sshd -f
 
 ```bash
 # Verify OIDC discovery endpoint is reachable
-source /etc/unix-oidc/env
+source /etc/prmana/env
 curl -s "${OIDC_ISSUER}/.well-known/openid-configuration" | jq '.issuer'
 ```
 
@@ -344,7 +344,7 @@ sudo ls /root
 
 ## Step 8: Report Results
 
-Please open a GitHub issue at https://github.com/prodnull/unix-oidc/issues with:
+Please open a GitHub issue at https://github.com/prodnull/prmana/issues with:
 
 ### Required Information
 
@@ -385,25 +385,25 @@ Please open a GitHub issue at https://github.com/prodnull/unix-oidc/issues with:
 ### PAM Module Not Found
 
 ```
-pam_unix_oidc.so: cannot open shared object file
+pam_prmana.so: cannot open shared object file
 ```
 
 **Solution:** Verify the path matches your distro:
 ```bash
 # Find where PAM looks for modules
 cat /etc/pam.d/sshd | grep -i pam
-ls -la /lib*/security/pam_unix_oidc.so
+ls -la /lib*/security/pam_prmana.so
 ```
 
 ### OIDC Discovery Failed
 
 ```
-unix-oidc: Failed to fetch OIDC configuration
+prmana: Failed to fetch OIDC configuration
 ```
 
 **Solution:** Check network connectivity and issuer URL:
 ```bash
-source /etc/unix-oidc/env
+source /etc/prmana/env
 curl -v "${OIDC_ISSUER}/.well-known/openid-configuration"
 ```
 
@@ -415,14 +415,14 @@ avc: denied { name_connect } ... sshd
 
 **Solution:** Create SELinux policy module:
 ```bash
-sudo ausearch -m avc -ts recent | audit2allow -M unix_oidc
-sudo semodule -i unix_oidc.pp
+sudo ausearch -m avc -ts recent | audit2allow -M prmana
+sudo semodule -i prmana.pp
 ```
 
 ### User Not Found
 
 ```
-unix-oidc: User 'username' not found in directory
+prmana: User 'username' not found in directory
 ```
 
 **Solution:** Verify SSSD can resolve the user:
@@ -434,7 +434,7 @@ id username
 ### Token Validation Failed
 
 ```
-unix-oidc: Token validation failed: issuer mismatch
+prmana: Token validation failed: issuer mismatch
 ```
 
 **Solution:** Verify issuer URL matches exactly:
@@ -460,8 +460,8 @@ sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo
 sudo systemctl restart sshd
 
 # Optionally remove the module
-sudo rm /lib*/security/pam_unix_oidc.so
-sudo rm -rf /etc/unix-oidc
+sudo rm /lib*/security/pam_prmana.so
+sudo rm -rf /etc/prmana
 ```
 
 ---
@@ -494,6 +494,6 @@ sudo mv cosign-linux-amd64 /usr/local/bin/cosign
 
 ## Questions?
 
-- **GitHub Issues:** https://github.com/prodnull/unix-oidc/issues
+- **GitHub Issues:** https://github.com/prodnull/prmana/issues
 - **Security Issues:** See [SECURITY.md](../SECURITY.md)
-- **Full Documentation:** https://github.com/prodnull/unix-oidc/tree/main/docs
+- **Full Documentation:** https://github.com/prodnull/prmana/tree/main/docs

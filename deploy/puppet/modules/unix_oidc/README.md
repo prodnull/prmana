@@ -1,4 +1,4 @@
-# unix_oidc
+# prmana
 
 ## Table of Contents
 
@@ -11,7 +11,7 @@
 
 ## Description
 
-This Puppet module installs and configures the unix-oidc PAM module for OIDC-based authentication on Unix systems. It provides a simple way to enable passwordless SSH and sudo authentication using OpenID Connect identity providers.
+This Puppet module installs and configures the prmana PAM module for OIDC-based authentication on Unix systems. It provides a simple way to enable passwordless SSH and sudo authentication using OpenID Connect identity providers.
 
 ## Requirements
 
@@ -40,7 +40,7 @@ The module will automatically install the following packages:
 The minimum configuration requires only the OIDC issuer URL:
 
 ```puppet
-class { 'unix_oidc':
+class { 'prmana':
   issuer => 'https://auth.example.com',
 }
 ```
@@ -48,9 +48,9 @@ class { 'unix_oidc':
 ### Full Configuration
 
 ```puppet
-class { 'unix_oidc':
+class { 'prmana':
   issuer        => 'https://auth.example.com',
-  client_id     => 'my-unix-oidc-client',
+  client_id     => 'my-prmana-client',
   version       => '0.1.0',
   install_agent => true,
   enable_dpop   => true,
@@ -64,12 +64,12 @@ You can also configure the module using Hiera:
 
 ```yaml
 # data/common.yaml
-unix_oidc::issuer: 'https://auth.example.com'
-unix_oidc::client_id: 'unix-oidc'
-unix_oidc::version: 'latest'
-unix_oidc::install_agent: true
-unix_oidc::enable_dpop: true
-unix_oidc::pam_services:
+prmana::issuer: 'https://auth.example.com'
+prmana::client_id: 'prmana'
+prmana::version: 'latest'
+prmana::install_agent: true
+prmana::enable_dpop: true
+prmana::pam_services:
   - 'sshd'
   - 'sudo'
 ```
@@ -77,14 +77,14 @@ unix_oidc::pam_services:
 Then include the class in your manifests:
 
 ```puppet
-include unix_oidc
+include prmana
 ```
 
 ## Reference
 
-### Class: unix_oidc
+### Class: prmana
 
-Main class for installing and configuring unix-oidc.
+Main class for installing and configuring prmana.
 
 #### Parameters
 
@@ -102,11 +102,11 @@ The OIDC client ID used for authentication.
 
 Type: `String`
 
-Default: `'unix-oidc'`
+Default: `'prmana'`
 
 ##### `version`
 
-The version of unix-oidc to install. Use `'latest'` for the most recent release.
+The version of prmana to install. Use `'latest'` for the most recent release.
 
 Type: `String`
 
@@ -114,7 +114,7 @@ Default: `'latest'`
 
 ##### `install_agent`
 
-Whether to install the unix-oidc agent for token management.
+Whether to install the prmana agent for token management.
 
 Type: `Boolean`
 
@@ -130,7 +130,7 @@ Default: `false`
 
 ##### `pam_services`
 
-List of PAM services to configure for unix-oidc authentication. Common values include `'sshd'` and `'sudo'`.
+List of PAM services to configure for prmana authentication. Common values include `'sshd'` and `'sudo'`.
 
 Type: `Array[String]`
 
@@ -138,19 +138,19 @@ Default: `[]`
 
 ### Private Classes
 
-#### unix_oidc::install
+#### prmana::install
 
-Handles the installation of unix-oidc and its dependencies.
+Handles the installation of prmana and its dependencies.
 
-#### unix_oidc::config
+#### prmana::config
 
 Manages the configuration files and PAM service integration.
 
 ### Defined Types
 
-#### unix_oidc::config::pam_service
+#### prmana::config::pam_service
 
-Configures a specific PAM service to use unix-oidc authentication.
+Configures a specific PAM service to use prmana authentication.
 
 ##### Parameters
 
@@ -158,7 +158,7 @@ Configures a specific PAM service to use unix-oidc authentication.
 
 ## Limitations
 
-- The module assumes network access to download the unix-oidc installer from GitHub releases
+- The module assumes network access to download the prmana installer from GitHub releases
 - PAM service configuration uses a simple sed-based approach; for complex PAM configurations, consider managing PAM files directly
 - The module does not manage the OIDC identity provider configuration
 

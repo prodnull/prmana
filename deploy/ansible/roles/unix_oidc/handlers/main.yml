@@ -1,5 +1,5 @@
 ---
-# handlers/main.yml - Handlers for unix_oidc role
+# handlers/main.yml - Handlers for prmana role
 
 - name: Restart sshd
   ansible.builtin.service:
@@ -7,9 +7,9 @@
     state: restarted
   become: true
 
-- name: Restart unix-oidc
+- name: Restart prmana
   ansible.builtin.service:
-    name: unix-oidc
+    name: prmana
     state: restarted
   become: true
   failed_when: false

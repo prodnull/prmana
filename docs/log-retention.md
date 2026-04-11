@@ -1,18 +1,18 @@
-# Log Retention Guide for unix-oidc
+# Log Retention Guide for prmana
 
 This document describes log retention requirements, output modes, centralized-logging
-integration, and configuration guidance for unix-oidc audit logs. It is intended for
+integration, and configuration guidance for prmana audit logs. It is intended for
 system administrators, security operations teams, and compliance officers.
 
 ## Log Output Modes
 
-unix-oidc emits structured JSON audit events over three output channels, which can be
+prmana emits structured JSON audit events over three output channels, which can be
 configured independently in `policy.yaml`:
 
 | Mode | Channel | Default Destination | Suitable For |
 |------|---------|---------------------|--------------|
 | `syslog` | Linux syslog AUTH facility | `/var/log/auth.log` (Debian/Ubuntu), `/var/log/secure` (RHEL) | Low-overhead, integrated with system log infrastructure |
-| `file` | Dedicated audit file | `/var/log/unix-oidc-audit.log` | Compliance archiving, SIEM file-based ingestion |
+| `file` | Dedicated audit file | `/var/log/prmana-audit.log` | Compliance archiving, SIEM file-based ingestion |
 | `stderr` | Standard error | journald / supervisor / container log driver | Container deployments, systemd-unit services |
 
 All three modes can be enabled simultaneously. The `file` mode is recommended for
@@ -21,17 +21,17 @@ is independent of the system syslog configuration.
 
 ### Enabling File Mode
 
-In `/etc/unix-oidc/policy.yaml`:
+In `/etc/prmana/policy.yaml`:
 
 ```yaml
 audit:
   output:
     - syslog       # PAM AUTH facility
-    - file         # /var/log/unix-oidc-audit.log
-  file_path: /var/log/unix-oidc-audit.log
+    - file         # /var/log/prmana-audit.log
+  file_path: /var/log/prmana-audit.log
 ```
 
-The PAM module creates `/var/log/unix-oidc-audit.log` on first write with mode
+The PAM module creates `/var/log/prmana-audit.log` on first write with mode
 `0640` (root:adm). If the parent directory does not exist the module falls back to
 syslog and logs a warning.
 
@@ -78,11 +78,11 @@ stricter requirements.
 
 ### Adjusting the Logrotate Configuration
 
-The shipped `deploy/logrotate.d/unix-oidc` uses `rotate 52` (52 weekly rotations = 1 year).
+The shipped `deploy/logrotate.d/prmana` uses `rotate 52` (52 weekly rotations = 1 year).
 To meet HIPAA's 6-year working standard, change to `rotate 312` (52 weeks × 6 years):
 
 ```
-/var/log/unix-oidc-audit.log /var/log/unix-oidc/*.log {
+/var/log/prmana-audit.log /var/log/prmana/*.log {
     weekly
     rotate 312          # 6 years — suitable for HIPAA
     compress
@@ -101,7 +101,7 @@ For PCI-DSS, consider using `dateext` and offloading logs older than 3 months to
 secondary (cold) storage while keeping the 1-year total:
 
 ```
-/var/log/unix-oidc-audit.log /var/log/unix-oidc/*.log {
+/var/log/prmana-audit.log /var/log/prmana/*.log {
     weekly
     rotate 52
     dateext
@@ -122,13 +122,13 @@ secondary (cold) storage while keeping the 1-year total:
 
 ```bash
 # Install the shipped configuration
-sudo cp deploy/logrotate.d/unix-oidc /etc/logrotate.d/unix-oidc
+sudo cp deploy/logrotate.d/prmana /etc/logrotate.d/prmana
 
 # Dry-run to verify syntax and which files will be rotated
-sudo logrotate -d /etc/logrotate.d/unix-oidc
+sudo logrotate -d /etc/logrotate.d/prmana
 
 # Force a rotation immediately (e.g., after initial deployment)
-sudo logrotate -f /etc/logrotate.d/unix-oidc
+sudo logrotate -f /etc/logrotate.d/prmana
 ```
 
 Logrotate runs automatically via cron (`/etc/cron.daily/logrotate`) or systemd timer
@@ -138,27 +138,27 @@ Logrotate runs automatically via cron (`/etc/cron.daily/logrotate`) or systemd t
 
 ```bash
 # List rotated files (gzip-compressed copies)
-ls -lh /var/log/unix-oidc-audit.log*
+ls -lh /var/log/prmana-audit.log*
 
 # Verify logrotate state (last run date, file offset)
-cat /var/lib/logrotate/status | grep unix-oidc
+cat /var/lib/logrotate/status | grep prmana
 ```
 
 ## Centralized Logging Integration
 
 ### Splunk (HTTP Event Collector)
 
-unix-oidc emits newline-delimited JSON. Configure a Splunk Universal Forwarder monitor
+prmana emits newline-delimited JSON. Configure a Splunk Universal Forwarder monitor
 input or use the rsyslog `omelasticsearch` / `omhttp` output module:
 
 ```ini
-# /etc/rsyslog.d/60-unix-oidc-splunk.conf
+# /etc/rsyslog.d/60-prmana-splunk.conf
 module(load="imfile")
 module(load="omhttp")
 
 input(type="imfile"
-      File="/var/log/unix-oidc-audit.log"
-      Tag="unix_oidc_audit"
+      File="/var/log/prmana-audit.log"
+      Tag="prmana_audit"
       Ruleset="to_splunk")
 
 ruleset(name="to_splunk") {
@@ -180,16 +180,16 @@ filebeat.inputs:
   - type: log
     enabled: true
     paths:
-      - /var/log/unix-oidc-audit.log
+      - /var/log/prmana-audit.log
     json.keys_under_root: true
     json.add_error_key: true
     fields:
-      source: unix-oidc
+      source: prmana
       log_type: audit
 
 output.elasticsearch:
   hosts: ["https://elasticsearch:9200"]
-  index: "unix-oidc-audit-%{+yyyy.MM.dd}"
+  index: "prmana-audit-%{+yyyy.MM.dd}"
   ssl.certificate_authorities: ["/etc/filebeat/ca.crt"]
 ```
 
@@ -198,12 +198,12 @@ Reference: Elastic Filebeat Reference, §Configure Inputs (Log Input).
 ### Datadog
 
 ```yaml
-# /etc/datadog-agent/conf.d/unix_oidc.d/conf.yaml
+# /etc/datadog-agent/conf.d/prmana.d/conf.yaml
 logs:
   - type: file
-    path: /var/log/unix-oidc-audit.log
-    service: unix-oidc
-    source: unix-oidc
+    path: /var/log/prmana-audit.log
+    service: prmana
+    source: prmana
     log_processing_rules:
       - type: multi_line
         name: json_events
@@ -221,8 +221,8 @@ Reference: Datadog Agent Log Collection documentation.
       "files": {
         "collect_list": [
           {
-            "file_path": "/var/log/unix-oidc-audit.log",
-            "log_group_name": "/unix-oidc/audit",
+            "file_path": "/var/log/prmana-audit.log",
+            "log_group_name": "/prmana/audit",
             "log_stream_name": "{instance_id}",
             "timezone": "UTC"
           }
@@ -234,14 +234,14 @@ Reference: Datadog Agent Log Collection documentation.
 ```
 
 Add a CloudWatch Log Group retention policy of 365 days (SOC 2/PCI-DSS) or 2190 days
-(HIPAA) using `aws logs put-retention-policy --log-group-name /unix-oidc/audit
+(HIPAA) using `aws logs put-retention-policy --log-group-name /prmana/audit
 --retention-in-days 365`.
 
 Reference: AWS CloudWatch Agent Configuration Reference.
 
 ## Structured Event Format
 
-All unix-oidc audit events are newline-delimited JSON. Key fields for SIEM queries:
+All prmana audit events are newline-delimited JSON. Key fields for SIEM queries:
 
 | Field | Type | Description |
 |-------|------|-------------|

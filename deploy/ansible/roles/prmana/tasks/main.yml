@@ -77,7 +77,7 @@
 - name: Deploy PAM sshd configuration
   ansible.builtin.template:
     src: pam-sshd.j2
-    dest: /etc/pam.d/unix-oidc
+    dest: /etc/pam.d/prmana
     owner: root
     group: root
     mode: "0644"
@@ -85,7 +85,7 @@
 - name: Include Prmana PAM config in sshd
   ansible.builtin.lineinfile:
     path: /etc/pam.d/sshd
-    line: "auth    sufficient    pam_unix_oidc.so"
+    line: "auth    sufficient    pam_prmana.so"
     insertbefore: "^auth.*pam_unix"
     state: present
   when: prmana_pam_mode == "parallel" or prmana_pam_mode == "primary"

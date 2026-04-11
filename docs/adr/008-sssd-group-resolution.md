@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-unix-oidc must decide where authorization group membership comes from during PAM
+prmana must decide where authorization group membership comes from during PAM
 authentication. Two approaches were considered:
 
 - Resolve groups from SSSD/NSS, with FreeIPA or the directory as the source of truth

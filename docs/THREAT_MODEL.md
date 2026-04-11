@@ -1,4 +1,4 @@
-# unix-oidc Threat Model (v1.0 — Superseded)
+# prmana Threat Model (v1.0 — Superseded)
 
 > **⚠️ This document is superseded by [threat-model.md](threat-model.md) (v3.0, 2026-03-12).**
 > This file is retained for historical reference. All new threat analysis, STRIDE categorization,
@@ -10,10 +10,10 @@
 
 ## 1. System Overview
 
-unix-oidc provides OIDC-based authentication for SSH and sudo step-up on Linux/Unix systems. The system consists of:
+prmana provides OIDC-based authentication for SSH and sudo step-up on Linux/Unix systems. The system consists of:
 
-- **PAM Module** (`pam_unix_oidc.so`): Server-side component validating OIDC tokens
-- **Client Agent** (`unix-oidc-agent`): User-side daemon managing tokens and DPoP proofs
+- **PAM Module** (`pam_prmana.so`): Server-side component validating OIDC tokens
+- **Client Agent** (`prmana-agent`): User-side daemon managing tokens and DPoP proofs
 - **IdP Integration**: Keycloak (primary), Entra ID, Okta (supported)
 - **Directory Integration**: SSSD/FreeIPA for user resolution
 
@@ -24,7 +24,7 @@ unix-oidc provides OIDC-based authentication for SSH and sudo step-up on Linux/U
 │                                                                         │
 │  User Laptop                    │  SSH Server                           │
 │  ┌─────────────────┐            │  ┌─────────────────┐                  │
-│  │ unix-oidc-agent │            │  │   PAM Module    │                  │
+│  │ prmana-agent │            │  │   PAM Module    │                  │
 │  │ (user process)  │────────────┼──│   (root)        │                  │
 │  └────────┬────────┘            │  └────────┬────────┘                  │
 │           │                     │           │                           │
@@ -369,20 +369,20 @@ unix-oidc provides OIDC-based authentication for SSH and sudo step-up on Linux/U
 ### 10.1 Token Compromise
 
 1. Revoke refresh token in Keycloak admin console
-2. Rotate DPoP key: `unix-oidc-agent reset && unix-oidc-agent login`
+2. Rotate DPoP key: `prmana-agent reset && prmana-agent login`
 3. Review audit logs for unauthorized access
 4. Consider forced re-authentication for affected user
 
 ### 10.2 Key Compromise (DPoP Private Key)
 
-1. User runs `unix-oidc-agent reset` (deletes key)
-2. User runs `unix-oidc-agent login` (generates new key)
+1. User runs `prmana-agent reset` (deletes key)
+2. User runs `prmana-agent login` (generates new key)
 3. New key thumbprint automatically bound to new tokens
 4. Old tokens become invalid (thumbprint mismatch)
 
 ### 10.3 IdP Compromise
 
-1. Disable unix-oidc PAM module (emergency)
+1. Disable prmana PAM module (emergency)
 2. Fall back to SSH keys or password
 3. Wait for IdP recovery and key rotation
 4. Re-enable after IdP team confirms remediation
@@ -441,11 +441,11 @@ unix-oidc provides OIDC-based authentication for SSH and sudo step-up on Linux/U
 
 ## Appendix B: NIST Cybersecurity Framework Mapping
 
-unix-oidc controls mapped to NIST CSF 2.0 categories:
+prmana controls mapped to NIST CSF 2.0 categories:
 
 ### IDENTIFY (ID)
 
-| Subcategory | unix-oidc Implementation |
+| Subcategory | prmana Implementation |
 |-------------|--------------------------|
 | ID.AM-1: Physical devices inventoried | N/A (out of scope) |
 | ID.AM-2: Software platforms inventoried | Cargo.toml dependencies, SBOM generation |
@@ -454,7 +454,7 @@ unix-oidc controls mapped to NIST CSF 2.0 categories:
 
 ### PROTECT (PR)
 
-| Subcategory | unix-oidc Implementation |
+| Subcategory | prmana Implementation |
 |-------------|--------------------------|
 | PR.AA-1: Identities managed | OIDC integration, SSSD user resolution |
 | PR.AA-2: Authentication | DPoP-bound tokens, MFA via IdP |
@@ -466,7 +466,7 @@ unix-oidc controls mapped to NIST CSF 2.0 categories:
 
 ### DETECT (DE)
 
-| Subcategory | unix-oidc Implementation |
+| Subcategory | prmana Implementation |
 |-------------|--------------------------|
 | DE.AE-2: Events analyzed | Structured JSON audit logs with session correlation |
 | DE.AE-3: Correlation | Session ID links auth events across components |
@@ -475,7 +475,7 @@ unix-oidc controls mapped to NIST CSF 2.0 categories:
 
 ### RESPOND (RS)
 
-| Subcategory | unix-oidc Implementation |
+| Subcategory | prmana Implementation |
 |-------------|--------------------------|
 | RS.AN-3: Forensics | Session ID enables incident correlation |
 | RS.MI-1: Incident containment | Token revocation via IdP, key rotation |
@@ -483,7 +483,7 @@ unix-oidc controls mapped to NIST CSF 2.0 categories:
 
 ### RECOVER (RC)
 
-| Subcategory | unix-oidc Implementation |
+| Subcategory | prmana Implementation |
 |-------------|--------------------------|
 | RC.RP-1: Recovery plan | Break-glass procedures, fallback auth |
 | RC.CO-3: Lessons learned | Security review cycle, threat model updates |
@@ -492,11 +492,11 @@ unix-oidc controls mapped to NIST CSF 2.0 categories:
 
 ## Appendix C: MITRE ATT&CK Mapping
 
-Attack techniques relevant to unix-oidc and their mitigations:
+Attack techniques relevant to prmana and their mitigations:
 
 ### Initial Access
 
-| Technique | ID | unix-oidc Mitigation |
+| Technique | ID | prmana Mitigation |
 |-----------|----|--------------------|
 | Valid Accounts | T1078 | DPoP prevents stolen token reuse; MFA via IdP |
 | Phishing | T1566 | Out of scope (IdP responsibility); device flow reduces exposure |
@@ -504,7 +504,7 @@ Attack techniques relevant to unix-oidc and their mitigations:
 
 ### Credential Access
 
-| Technique | ID | unix-oidc Mitigation |
+| Technique | ID | prmana Mitigation |
 |-----------|----|--------------------|
 | Brute Force | T1110 | Rate limiting, exponential backoff |
 | Credentials from Password Stores | T1555 | Keychain integration, OS-level protection |
@@ -514,7 +514,7 @@ Attack techniques relevant to unix-oidc and their mitigations:
 
 ### Defense Evasion
 
-| Technique | ID | unix-oidc Mitigation |
+| Technique | ID | prmana Mitigation |
 |-----------|----|--------------------|
 | Access Token Manipulation | T1134.001 | Signature verification, DPoP binding |
 | Modify Authentication Process | T1556 | PAM module integrity (binary signing planned) |
@@ -522,7 +522,7 @@ Attack techniques relevant to unix-oidc and their mitigations:
 
 ### Lateral Movement
 
-| Technique | ID | unix-oidc Mitigation |
+| Technique | ID | prmana Mitigation |
 |-----------|----|--------------------|
 | Use Alternate Authentication | T1550 | DPoP proof bound to specific target (htu claim) |
 | SSH Hijacking | T1563.001 | Agent forwarding with rate limits, socket permissions |
@@ -530,14 +530,14 @@ Attack techniques relevant to unix-oidc and their mitigations:
 
 ### Collection
 
-| Technique | ID | unix-oidc Mitigation |
+| Technique | ID | prmana Mitigation |
 |-----------|----|--------------------|
 | Input Capture | T1056 | Token-based auth (no password entry on server) |
 | Data from Local System | T1005 | Audit logging of privileged access |
 
 ### Impact
 
-| Technique | ID | unix-oidc Mitigation |
+| Technique | ID | prmana Mitigation |
 |-----------|----|--------------------|
 | Account Access Removal | T1531 | IdP integration for centralized revocation |
 | Inhibit System Recovery | T1490 | Break-glass procedures, fallback auth |
@@ -557,7 +557,7 @@ Attack techniques relevant to unix-oidc and their mitigations:
                           │     + DPoP       │                  │
                           ▼                  │                  ▼
 ┌─────────────────┐      ┌─────────────────┐ │ ┌─────────────────┐
-│  User Browser   │◀────▶│ unix-oidc-agent │ │ │   PAM Module    │
+│  User Browser   │◀────▶│ prmana-agent │ │ │   PAM Module    │
 │  (auth)         │      │ (client)        │ │ │   (server)      │
 └─────────────────┘      └────────┬────────┘ │ └────────┬────────┘
                                   │          │          │

@@ -1,6 +1,6 @@
 # Testing Guide
 
-This guide covers how to test unix-oidc at various levels: unit tests, integration tests, and end-to-end tests.
+This guide covers how to test prmana at various levels: unit tests, integration tests, and end-to-end tests.
 
 ## Quick Reference
 
@@ -124,11 +124,11 @@ make test-integration
 
 # Or manually with curl
 curl -s -X POST \
-  "http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/token" \
+  "http://localhost:8080/realms/prmana-test/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=password" \
-  -d "client_id=unix-oidc" \
-  -d "client_secret=unix-oidc-test-secret" \
+  -d "client_id=prmana" \
+  -d "client_secret=prmana-test-secret" \
   -d "username=testuser" \
   -d "password=testpass" \
   -d "scope=openid" | jq -r '.access_token'
@@ -172,7 +172,7 @@ When Playwright is available (e.g., via Claude Code MCP):
 
 Playwright MCP commands:
 ```
-browser_navigate: http://localhost:8080/realms/unix-oidc-test/device?user_code=XXXX-XXXX
+browser_navigate: http://localhost:8080/realms/prmana-test/device?user_code=XXXX-XXXX
 browser_snapshot
 browser_type: username field -> testuser
 browser_type: password field -> testpass
@@ -197,9 +197,9 @@ sudo ls /root
 
 ### Keycloak Realm Configuration
 
-`test/fixtures/keycloak/unix-oidc-test-realm.json`
+`test/fixtures/keycloak/prmana-test-realm.json`
 
-- Client: `unix-oidc` (confidential)
+- Client: `prmana` (confidential)
 - Device flow enabled (300s timeout, 5s interval)
 - Direct access grants enabled (for testing)
 - Users: testuser, adminuser
@@ -222,8 +222,8 @@ sudo ls /root
 
 `test/fixtures/pam/`
 
-- `sshd` - PAM config for SSH with unix-oidc
-- `sudo` - PAM config for sudo with unix-oidc
+- `sshd` - PAM config for SSH with prmana
+- `sudo` - PAM config for sudo with prmana
 
 ## Troubleshooting
 
@@ -257,15 +257,15 @@ TOKEN=$(./test/scripts/get-test-token.sh testuser testpass)
 echo "$TOKEN" | cut -d'.' -f2 | base64 -d | jq '.'
 
 # Verify issuer matches
-# Should be: http://keycloak:8080/realms/unix-oidc-test (inside containers)
-# Or: http://localhost:8080/realms/unix-oidc-test (from host)
+# Should be: http://keycloak:8080/realms/prmana-test (inside containers)
+# Or: http://localhost:8080/realms/prmana-test (from host)
 ```
 
 ### Device flow times out
 
 ```bash
 # Increase timeout in Keycloak
-# Admin console > Clients > unix-oidc > Advanced
+# Admin console > Clients > prmana > Advanced
 # Device Authorization Grant Max Lifespan: 600
 
 # Or check network connectivity to Keycloak
@@ -314,7 +314,7 @@ echo "Test passed"
 
 ## Provider Testing
 
-unix-oidc is tested against real identity providers to ensure compatibility.
+prmana is tested against real identity providers to ensure compatibility.
 
 ### Testing Matrix
 
@@ -403,7 +403,7 @@ DPoP (Demonstrating Proof of Possession) has dedicated tests:
 ### Unit Tests (87 tests, 8 DPoP-specific)
 
 ```bash
-cargo test -p pam-unix-oidc -- dpop
+cargo test -p pam-prmana -- dpop
 ```
 
 Tests include:

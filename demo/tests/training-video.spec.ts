@@ -136,7 +136,7 @@ const getTerminalHTML = (title: string = 'testuser@prod-server: ~') => `
   </html>
 `;
 
-test.describe('unix-oidc Training Videos', () => {
+test.describe('prmana Training Videos', () => {
   test.beforeEach(async ({ page }) => {
     page.setDefaultTimeout(60000);
   });

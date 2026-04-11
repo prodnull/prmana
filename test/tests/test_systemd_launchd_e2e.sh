@@ -5,7 +5,7 @@
 #          and launchd install/uninstall (macOS local only).
 #
 # Tests:
-#   1. systemd socket activation — unix-oidc-agent.socket is active after enable
+#   1. systemd socket activation — prmana-agent.socket is active after enable
 #   2. JSON log under journald — daemon logs produce jq-parseable output
 #   3. Graceful shutdown — systemctl stop completes within 10 seconds
 #   4. launchd install/uninstall — plist created/removed (macOS, SKIP in CI)
@@ -27,9 +27,9 @@
 #   See test/docker/Dockerfile.test-host-systemd and docker-compose.systemd-e2e.yaml
 #
 # References:
-#   - contrib/systemd/unix-oidc-agent.service (Type=notify, systemd hardening)
-#   - contrib/systemd/unix-oidc-agent.socket (ListenStream=%t/unix-oidc-agent.sock)
-#   - unix-oidc-agent/src/main.rs: init_tracing() JOURNAL_STREAM detection
+#   - contrib/systemd/prmana-agent.service (Type=notify, systemd hardening)
+#   - contrib/systemd/prmana-agent.socket (ListenStream=%t/prmana-agent.sock)
+#   - prmana-agent/src/main.rs: init_tracing() JOURNAL_STREAM detection
 #   - systemd.socket(5): socket activation protocol
 #   - RFC 6749 §5: token endpoint (agent requires a valid config to start fully)
 #
@@ -83,13 +83,13 @@ if [ "${SKIP_SYSTEMD_TEST:-}" = "1" ]; then
         echo "--- Test 4: launchd install/uninstall (macOS) ---"
         _run_launchd_test() {
             local agent_bin
-            agent_bin=$(command -v unix-oidc-agent 2>/dev/null || echo "${PROJECT_ROOT}/target/release/unix-oidc-agent")
+            agent_bin=$(command -v prmana-agent 2>/dev/null || echo "${PROJECT_ROOT}/target/release/prmana-agent")
             if [ ! -x "$agent_bin" ]; then
-                echo "  SKIP: unix-oidc-agent not found; build with: cargo build --release -p unix-oidc-agent"
+                echo "  SKIP: prmana-agent not found; build with: cargo build --release -p prmana-agent"
                 result "SKIP" "launchd install/uninstall (agent not built)"
                 return
             fi
-            PLIST_PATH="${HOME}/Library/LaunchAgents/com.unix-oidc.agent.plist"
+            PLIST_PATH="${HOME}/Library/LaunchAgents/com.prmana.agent.plist"
             if "$agent_bin" launchd-install 2>/dev/null; then
                 if [ -f "$PLIST_PATH" ]; then
                     result "PASS" "launchd-install created plist at $PLIST_PATH"
@@ -156,12 +156,12 @@ else
     exit 0
 fi
 
-# Verify unix-oidc-agent is present
+# Verify prmana-agent is present
 if docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "which unix-oidc-agent >/dev/null 2>&1"; then
-    result "PASS" "unix-oidc-agent binary present in container"
+    bash -c "which prmana-agent >/dev/null 2>&1"; then
+    result "PASS" "prmana-agent binary present in container"
 else
-    result "FAIL" "unix-oidc-agent not found in container — was the image built with the binary?"
+    result "FAIL" "prmana-agent not found in container — was the image built with the binary?"
 fi
 
 echo ""
@@ -169,7 +169,7 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 1: systemd socket activation
 #
-# unix-oidc-agent.socket (ListenStream=%t/unix-oidc-agent.sock) is activated via
+# prmana-agent.socket (ListenStream=%t/prmana-agent.sock) is activated via
 # systemctl --user enable --now. The daemon starts on first connection.
 # ─────────────────────────────────────────────────────────────────────────────
 echo "--- Test 1: systemd socket activation ---"
@@ -182,29 +182,29 @@ docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
 # Enable and start the socket unit
 SOCKET_ENABLE_EXIT=0
 docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user enable --now unix-oidc-agent.socket'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user enable --now prmana-agent.socket'" \
     >/dev/null 2>&1 || SOCKET_ENABLE_EXIT=$?
 
 sleep 2
 
 # Check socket is active
 SOCKET_STATE=$(docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user is-active unix-oidc-agent.socket'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user is-active prmana-agent.socket'" \
     2>/dev/null | tr -d '[:space:]' || echo "unknown")
 
 if [ "$SOCKET_STATE" = "active" ]; then
-    result "PASS" "unix-oidc-agent.socket is active (socket activation enabled)"
+    result "PASS" "prmana-agent.socket is active (socket activation enabled)"
 else
-    result "FAIL" "unix-oidc-agent.socket state: '$SOCKET_STATE' (expected 'active')"
-    echo "    Debug: systemctl --user status unix-oidc-agent.socket"
+    result "FAIL" "prmana-agent.socket state: '$SOCKET_STATE' (expected 'active')"
+    echo "    Debug: systemctl --user status prmana-agent.socket"
     docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-        bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user status unix-oidc-agent.socket 2>&1 | head -20'" \
+        bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user status prmana-agent.socket 2>&1 | head -20'" \
         2>/dev/null || true
 fi
 
 # Trigger socket activation by connecting: the daemon should respond or at minimum start
 AGENT_STATUS_OUTPUT=$(docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) unix-oidc-agent status 2>&1'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) prmana-agent status 2>&1'" \
     2>/dev/null | head -5 || echo "")
 
 if echo "$AGENT_STATUS_OUTPUT" | grep -qiE "running|status|agent|connected|listening|error"; then
@@ -228,14 +228,14 @@ echo "--- Test 2: JSON log format under journald ---"
 
 # Ensure daemon service is started (socket activation may have already started it)
 docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user start unix-oidc-agent'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user start prmana-agent'" \
     >/dev/null 2>&1 || true
 
 sleep 2
 
 # Capture journald output in JSON format (-o json outputs one JSON object per line)
 JOURNALD_OUTPUT=$(docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) journalctl --user -u unix-oidc-agent -n 20 -o json --no-pager 2>&1'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) journalctl --user -u prmana-agent -n 20 -o json --no-pager 2>&1'" \
     2>/dev/null || echo "")
 
 if [ -n "$JOURNALD_OUTPUT" ]; then
@@ -271,13 +271,13 @@ echo "--- Test 3: Graceful shutdown (< 10s) ---"
 
 # Ensure daemon is running before we attempt to stop it
 docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user start unix-oidc-agent'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user start prmana-agent'" \
     >/dev/null 2>&1 || true
 sleep 1
 
 START_TS=$(date +%s)
 docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user stop unix-oidc-agent'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user stop prmana-agent'" \
     >/dev/null 2>&1 || true
 END_TS=$(date +%s)
 ELAPSED=$(( END_TS - START_TS ))
@@ -290,13 +290,13 @@ fi
 
 # Confirm the service is no longer active
 SERVICE_STATE=$(docker compose -f "$COMPOSE_FILE" exec -T "$SYSTEMD_SERVICE" \
-    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user is-active unix-oidc-agent'" \
+    bash -c "su - testuser -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u testuser) systemctl --user is-active prmana-agent'" \
     2>/dev/null | tr -d '[:space:]' || echo "unknown")
 
 if [ "$SERVICE_STATE" != "active" ]; then
-    result "PASS" "unix-oidc-agent service inactive after stop (state: $SERVICE_STATE)"
+    result "PASS" "prmana-agent service inactive after stop (state: $SERVICE_STATE)"
 else
-    result "FAIL" "unix-oidc-agent still 'active' after systemctl stop"
+    result "FAIL" "prmana-agent still 'active' after systemctl stop"
 fi
 
 echo ""
@@ -304,9 +304,9 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 4: launchd install/uninstall (macOS only — SKIP in CI)
 #
-# unix-oidc-agent launchd-install writes:
-#   ~/Library/LaunchAgents/com.unix-oidc.agent.plist
-# unix-oidc-agent launchd-uninstall removes it.
+# prmana-agent launchd-install writes:
+#   ~/Library/LaunchAgents/com.prmana.agent.plist
+# prmana-agent launchd-uninstall removes it.
 #
 # This test never runs in CI (Linux). On macOS, run locally without Docker.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -317,22 +317,22 @@ if [ "$(uname -s)" != "Darwin" ]; then
     echo ""
     echo "  Manual verification steps (run on macOS):"
     echo "    # Install"
-    echo "    unix-oidc-agent launchd-install"
-    echo "    launchctl list | grep unix-oidc-agent"
-    echo "    ls ~/Library/LaunchAgents/com.unix-oidc.agent.plist"
+    echo "    prmana-agent launchd-install"
+    echo "    launchctl list | grep prmana-agent"
+    echo "    ls ~/Library/LaunchAgents/com.prmana.agent.plist"
     echo ""
     echo "    # Uninstall"
-    echo "    unix-oidc-agent launchd-uninstall"
-    echo "    launchctl list | grep -c unix-oidc-agent  # should be 0"
-    echo "    ls ~/Library/LaunchAgents/com.unix-oidc.agent.plist  # should fail"
+    echo "    prmana-agent launchd-uninstall"
+    echo "    launchctl list | grep -c prmana-agent  # should be 0"
+    echo "    ls ~/Library/LaunchAgents/com.prmana.agent.plist  # should fail"
     result "SKIP" "launchd install/uninstall (Linux — macOS only)"
 else
-    AGENT_BIN=$(command -v unix-oidc-agent 2>/dev/null || echo "${PROJECT_ROOT}/target/release/unix-oidc-agent")
-    PLIST_PATH="${HOME}/Library/LaunchAgents/com.unix-oidc.agent.plist"
+    AGENT_BIN=$(command -v prmana-agent 2>/dev/null || echo "${PROJECT_ROOT}/target/release/prmana-agent")
+    PLIST_PATH="${HOME}/Library/LaunchAgents/com.prmana.agent.plist"
 
     if [ ! -x "$AGENT_BIN" ]; then
-        echo "  SKIP: unix-oidc-agent binary not found at $AGENT_BIN"
-        echo "        Build with: cargo build --release -p unix-oidc-agent"
+        echo "  SKIP: prmana-agent binary not found at $AGENT_BIN"
+        echo "        Build with: cargo build --release -p prmana-agent"
         result "SKIP" "launchd test (agent binary not built)"
     else
         # launchd-install

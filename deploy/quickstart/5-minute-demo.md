@@ -10,7 +10,7 @@ This demo launches a complete OIDC environment locally so you can see token-base
 | Component | URL/Address | Credentials |
 |-----------|-------------|-------------|
 | Keycloak Admin | http://localhost:8080/admin | admin / admin |
-| OIDC Issuer | http://localhost:8080/realms/unix-oidc-test | - |
+| OIDC Issuer | http://localhost:8080/realms/prmana-test | - |
 | OpenLDAP | ldap://localhost:389 | admin / admin |
 
 ### Test Users
@@ -24,8 +24,8 @@ This demo launches a complete OIDC environment locally so you can see token-base
 
 | Setting | Value |
 |---------|-------|
-| Client ID | unix-oidc |
-| Client Secret | unix-oidc-test-secret |
+| Client ID | prmana |
+| Client Secret | prmana-test-secret |
 | Grant Types | password, device_code |
 
 ## Quick Start
@@ -33,7 +33,7 @@ This demo launches a complete OIDC environment locally so you can see token-base
 ### Option 1: One-liner (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/demo.sh | bash
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/demo.sh | bash
 ```
 
 ### Option 2: Manual Setup
@@ -42,7 +42,7 @@ If you prefer to inspect the script first:
 
 ```bash
 # Download the script
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/demo.sh -o demo.sh
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/demo.sh -o demo.sh
 
 # Review it
 less demo.sh
@@ -59,10 +59,10 @@ Once the demo is running, request a token using the password grant:
 
 ```bash
 TOKEN=$(curl -s -X POST \
-  http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/token \
+  http://localhost:8080/realms/prmana-test/protocol/openid-connect/token \
   -d 'grant_type=password' \
-  -d 'client_id=unix-oidc' \
-  -d 'client_secret=unix-oidc-test-secret' \
+  -d 'client_id=prmana' \
+  -d 'client_secret=prmana-test-secret' \
   -d 'username=testuser' \
   -d 'password=testpass' | jq -r '.access_token')
 
@@ -84,7 +84,7 @@ echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq
 {
   "exp": 1234567890,
   "iat": 1234567590,
-  "iss": "http://localhost:8080/realms/unix-oidc-test",
+  "iss": "http://localhost:8080/realms/prmana-test",
   "sub": "...",
   "preferred_username": "testuser",
   "email": "testuser@test.local",
@@ -92,7 +92,7 @@ echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq
 }
 ```
 
-Key claims used by unix-oidc:
+Key claims used by prmana:
 - `iss` - Issuer URL (must match PAM configuration)
 - `sub` - Subject identifier (unique user ID)
 - `preferred_username` - Maps to Unix username
@@ -104,10 +104,10 @@ Key claims used by unix-oidc:
 See the full OIDC configuration:
 
 ```bash
-curl -s http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration | jq
+curl -s http://localhost:8080/realms/prmana-test/.well-known/openid-configuration | jq
 ```
 
-This document tells clients (like unix-oidc) where to find:
+This document tells clients (like prmana) where to find:
 - Token endpoint
 - Authorization endpoint
 - JWKS endpoint (public keys for token validation)
@@ -119,7 +119,7 @@ Fetch the JWKS and verify the token is properly signed:
 
 ```bash
 # Get the JWKS
-curl -s http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/certs | jq
+curl -s http://localhost:8080/realms/prmana-test/protocol/openid-connect/certs | jq
 
 # The PAM module uses this to cryptographically verify tokens
 ```
@@ -131,8 +131,8 @@ For servers without browsers, use the device authorization grant:
 ```bash
 # Step 1: Request device code
 DEVICE_RESPONSE=$(curl -s -X POST \
-  http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/auth/device \
-  -d 'client_id=unix-oidc')
+  http://localhost:8080/realms/prmana-test/protocol/openid-connect/auth/device \
+  -d 'client_id=prmana')
 
 echo "$DEVICE_RESPONSE" | jq
 
@@ -142,9 +142,9 @@ echo "$DEVICE_RESPONSE" | jq
 # Step 3: Poll for token (after user authorizes)
 DEVICE_CODE=$(echo "$DEVICE_RESPONSE" | jq -r '.device_code')
 curl -s -X POST \
-  http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/token \
+  http://localhost:8080/realms/prmana-test/protocol/openid-connect/token \
   -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
-  -d 'client_id=unix-oidc' \
+  -d 'client_id=prmana' \
   -d "device_code=$DEVICE_CODE" | jq
 ```
 
@@ -153,26 +153,26 @@ curl -s -X POST \
 ### View Logs
 
 ```bash
-cd ~/.unix-oidc-demo && docker compose logs -f
+cd ~/.prmana-demo && docker compose logs -f
 ```
 
 ### Stop the Demo
 
 ```bash
-cd ~/.unix-oidc-demo && docker compose down
+cd ~/.prmana-demo && docker compose down
 ```
 
 ### Restart the Demo
 
 ```bash
-cd ~/.unix-oidc-demo && docker compose up -d
+cd ~/.prmana-demo && docker compose up -d
 ```
 
 ### Clean Up Completely
 
 ```bash
-cd ~/.unix-oidc-demo && docker compose down -v
-rm -rf ~/.unix-oidc-demo
+cd ~/.prmana-demo && docker compose down -v
+rm -rf ~/.prmana-demo
 ```
 
 ## Troubleshooting
@@ -199,7 +199,7 @@ sudo systemctl start docker
 Another service is using port 8080. Either stop that service or modify the demo:
 
 ```bash
-cd ~/.unix-oidc-demo
+cd ~/.prmana-demo
 # Edit docker-compose.yaml to change the port mapping
 # e.g., change "8080:8080" to "8081:8080"
 docker compose up -d
@@ -209,7 +209,7 @@ docker compose up -d
 
 Check the logs for errors:
 ```bash
-cd ~/.unix-oidc-demo && docker compose logs keycloak
+cd ~/.prmana-demo && docker compose logs keycloak
 ```
 
 Common issues:
@@ -226,8 +226,8 @@ curl -s http://localhost:8080/health/ready
 
 Check the realm was imported correctly:
 ```bash
-curl -s http://localhost:8080/realms/unix-oidc-test | jq .realm
-# Should output: "unix-oidc-test"
+curl -s http://localhost:8080/realms/prmana-test | jq .realm
+# Should output: "prmana-test"
 ```
 
 ## Next Steps
@@ -235,10 +235,10 @@ curl -s http://localhost:8080/realms/unix-oidc-test | jq .realm
 Now that you've seen OIDC authentication in action:
 
 1. **[15-Minute Production Setup](./15-minute-production.md)**
-   Deploy unix-oidc on a real server with your identity provider
+   Deploy prmana on a real server with your identity provider
 
 2. **[Architecture Decisions](../../docs/adr/)**
-   Understand the design decisions behind unix-oidc
+   Understand the design decisions behind prmana
 
 3. **[Threat Model](../../docs/THREAT_MODEL.md)**
    Learn about the threat model and security guarantees
@@ -255,8 +255,8 @@ In production, the flow is similar but with important differences:
 | Password grant (direct credentials) | Device code or authorization code flow |
 | HTTP (localhost) | HTTPS (required) |
 | Test realm with sample users | Your organization's IdP |
-| Local token validation | unix-oidc PAM module validation |
-| Manual curl commands | unix-oidc-agent handles token lifecycle |
+| Local token validation | prmana PAM module validation |
+| Manual curl commands | prmana-agent handles token lifecycle |
 
 The PAM module (`pam_oidc.so`) validates tokens the same way you did manually:
 1. Fetches JWKS from issuer's discovery document
@@ -267,4 +267,4 @@ The PAM module (`pam_oidc.so`) validates tokens the same way you did manually:
 
 ---
 
-*Questions? Issues? [Open a GitHub issue](https://github.com/prodnull/unix-oidc/issues)*
+*Questions? Issues? [Open a GitHub issue](https://github.com/prodnull/prmana/issues)*

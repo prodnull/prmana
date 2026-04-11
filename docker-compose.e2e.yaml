@@ -12,7 +12,7 @@ services:
       KEYCLOAK_ADMIN_PASSWORD: admin
       KC_HEALTH_ENABLED: "true"
       # Use internal hostname for issuer URL alignment.
-      # Tokens issued by Keycloak will carry iss: http://keycloak:8080/realms/unix-oidc
+      # Tokens issued by Keycloak will carry iss: http://keycloak:8080/realms/prmana
       # which matches the PAM module's OIDC_ISSUER config exactly.
       KC_HOSTNAME: localhost
       KC_HOSTNAME_PORT: "8080"
@@ -61,14 +61,14 @@ services:
     ports:
       - "2222:22"
     environment:
-      # NO UNIX_OIDC_TEST_MODE — real signature verification only.
+      # NO PRMANA_TEST_MODE — real signature verification only.
       # Issuer must match token iss claim (KC_HOSTNAME=localhost).
-      OIDC_ISSUER: "http://localhost:8080/realms/unix-oidc"
-      OIDC_CLIENT_ID: "unix-oidc"
+      OIDC_ISSUER: "http://localhost:8080/realms/prmana"
+      OIDC_CLIENT_ID: "prmana"
       LDAP_URI: "ldap://openldap:389"
       LDAP_BASE: "dc=test,dc=local"
     volumes:
-      - ./target/release-linux:/opt/unix-oidc:ro
+      - ./target/release-linux:/opt/prmana:ro
     healthcheck:
       test: ["CMD", "pgrep", "sshd"]
       interval: 5s
@@ -77,4 +77,4 @@ services:
 
 networks:
   default:
-    name: unix-oidc-e2e
+    name: prmana-e2e

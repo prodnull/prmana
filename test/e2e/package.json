@@ -1,5 +1,5 @@
 {
-  "name": "unix-oidc-e2e",
+  "name": "prmana-e2e",
   "private": true,
   "scripts": {
     "test": "npx playwright test",

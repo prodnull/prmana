@@ -46,7 +46,7 @@ Before running this module you need:
    `secrets.AWS_ROLE_ARN` in the repository is already set up for this. Do not
    create a new federation role — reuse the existing one.
 
-2. **IAM role supplemental policy** — the `unix-oidc-ci-github-actions` role
+2. **IAM role supplemental policy** — the `prmana-ci-github-actions` role
    needs the following additions beyond its base permissions (the Terraform AWS
    provider makes many read-back calls after resource creation that the existing
    CLI-based workflows do not trigger):
@@ -87,15 +87,15 @@ Before running this module you need:
          "Sid": "PrmanaFleetPassRole",
          "Effect": "Allow",
          "Action": "iam:PassRole",
-         "Resource": "arn:aws:iam::<ACCOUNT_ID>:instance-profile/unix-oidc-ci-instance-profile"
+         "Resource": "arn:aws:iam::<ACCOUNT_ID>:instance-profile/prmana-ci-instance-profile"
        }
      ]
    }
    ```
 
-   Apply with: `aws iam put-role-policy --role-name unix-oidc-ci-github-actions --policy-name prmana-fleet-supplemental --policy-document file://policy.json`
+   Apply with: `aws iam put-role-policy --role-name prmana-ci-github-actions --policy-name prmana-fleet-supplemental --policy-document file://policy.json`
 
-3. **IAM instance profile** named `unix-oidc-ci-instance-profile` (or override
+3. **IAM instance profile** named `prmana-ci-instance-profile` (or override
    `iam_instance_profile` in `main.tf`). This profile is already created in the
    account for the legacy arm64 CI workflows.
 
@@ -234,6 +234,6 @@ remaining healthy, which the above layers do not.
   runs.
 - **AMI supply chain:** Only verified public owners are used. No community AMIs
   or name-glob-only searches (T-DT0-01-08).
-- **Branding note:** The IAM instance profile `unix-oidc-ci-instance-profile`
+- **Branding note:** The IAM instance profile `prmana-ci-instance-profile`
   retains legacy naming. A future cleanup task can rename it to
   `prmana-ci-instance-profile` once all legacy workflows are migrated.

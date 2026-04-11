@@ -1,11 +1,11 @@
 # test/fixtures/pam/sudo
-# PAM configuration for sudo with unix-oidc step-up authentication
+# PAM configuration for sudo with prmana step-up authentication
 
 # Load OIDC environment variables from /etc/environment
 auth    required        pam_env.so readenv=1
 
-# unix-oidc step-up authentication (sufficient = success if OIDC works)
-auth    sufficient      pam_unix_oidc.so
+# prmana step-up authentication (sufficient = success if OIDC works)
+auth    sufficient      pam_prmana.so
 
 # Fallback to standard Unix auth (for break-glass)
 auth    required        pam_unix.so try_first_pass

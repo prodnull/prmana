@@ -17,12 +17,12 @@ fi
 # In test mode, the module reads the token from OIDC_TOKEN environment variable
 docker compose -f docker-compose.test.yaml exec -T test-host bash -c "
     export OIDC_TOKEN='$TOKEN'
-    export UNIX_OIDC_TEST_MODE=true
-    export OIDC_ISSUER='http://keycloak:8080/realms/unix-oidc-test'
-    export OIDC_CLIENT_ID='unix-oidc'
+    export PRMANA_TEST_MODE=true
+    export OIDC_ISSUER='http://keycloak:8080/realms/prmana-test'
+    export OIDC_CLIENT_ID='prmana'
 
     # Check if the PAM module is installed
-    if [ ! -f /lib/security/pam_unix_oidc.so ]; then
+    if [ ! -f /lib/security/pam_prmana.so ]; then
         echo 'PAM module not installed - skipping PAM test'
         # For now, just verify the token can be parsed correctly
         # This will be enhanced when the full integration is ready

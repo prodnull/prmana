@@ -15,9 +15,9 @@
 #
 # Environment variables (defaults match docker-compose.e2e.yaml fixtures):
 #   KEYCLOAK_URL  - Keycloak base URL (default: http://localhost:8080)
-#   REALM         - Keycloak realm (default: unix-oidc)
-#   CLIENT_ID     - OIDC client ID (default: unix-oidc)
-#   CLIENT_SECRET - OIDC client secret (default: unix-oidc-test-secret)
+#   REALM         - Keycloak realm (default: prmana)
+#   CLIENT_ID     - OIDC client ID (default: prmana)
+#   CLIENT_SECRET - OIDC client secret (default: prmana-test-secret)
 #   TEST_USERNAME - Test user (default: testuser)
 #   TEST_PASSWORD - Test user password (default: testpass)
 #   SSH_PORT      - SSH port on test host (default: 2222)
@@ -29,9 +29,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${REALM:-unix-oidc}"
-CLIENT_ID="${CLIENT_ID:-unix-oidc}"
-CLIENT_SECRET="${CLIENT_SECRET:-unix-oidc-test-secret}"
+REALM="${REALM:-prmana}"
+CLIENT_ID="${CLIENT_ID:-prmana}"
+CLIENT_SECRET="${CLIENT_SECRET:-prmana-test-secret}"
 TEST_USERNAME="${TEST_USERNAME:-testuser}"
 TEST_PASSWORD="${TEST_PASSWORD:-testpass}"
 SSH_PORT="${SSH_PORT:-2222}"
@@ -205,7 +205,7 @@ if [ -z "$CONTAINER" ]; then
     exit 1
 fi
 
-docker exec "$CONTAINER" bash -c 'truncate -s 0 /var/log/unix-oidc-audit.log 2>/dev/null || true'
+docker exec "$CONTAINER" bash -c 'truncate -s 0 /var/log/prmana-audit.log 2>/dev/null || true'
 pass "Audit log cleared"
 
 # ---- Step 7: Send DPoP-bound token through SSH -> PAM ----
@@ -238,7 +238,7 @@ echo "Step 8: Verifying dpop_thumbprint in audit event..."
 # Give PAM a moment to write the audit event
 sleep 1
 
-AUDIT_LOG=$(docker exec "$CONTAINER" cat /var/log/unix-oidc-audit.log 2>/dev/null || true)
+AUDIT_LOG=$(docker exec "$CONTAINER" cat /var/log/prmana-audit.log 2>/dev/null || true)
 
 if [ -z "$AUDIT_LOG" ]; then
     fail "Audit log is empty — no authentication events recorded"

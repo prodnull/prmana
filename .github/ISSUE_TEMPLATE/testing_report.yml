@@ -6,9 +6,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for testing unix-oidc! Please share your results - even "everything worked" is valuable feedback.
+        Thanks for testing prmana! Please share your results - even "everything worked" is valuable feedback.
 
-        See the [Community Testing Guide](https://github.com/prodnull/unix-oidc/blob/main/docs/community-testing-guide.md) for instructions.
+        See the [Community Testing Guide](https://github.com/prodnull/prmana/blob/main/docs/community-testing-guide.md) for instructions.
 
   - type: dropdown
     id: result

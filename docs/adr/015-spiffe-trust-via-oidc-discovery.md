@@ -7,7 +7,7 @@ Accepted
 ## Context
 
 Phase 35 adds support for SPIRE-issued JWT-SVIDs so workloads can authenticate to
-Unix hosts. unix-oidc had to choose between:
+Unix hosts. prmana had to choose between:
 
 - Adding SPIFFE-specific trust bundle validation logic to the PAM module
 - Registering SPIRE trust domains as standard OIDC issuers through the SPIRE OIDC

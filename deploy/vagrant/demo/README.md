@@ -1,6 +1,6 @@
-# unix-oidc Demo Vagrant Image
+# prmana Demo Vagrant Image
 
-A complete demo environment with Keycloak IdP and unix-oidc, ready to explore OIDC-based Unix authentication. Works offline after first boot.
+A complete demo environment with Keycloak IdP and prmana, ready to explore OIDC-based Unix authentication. Works offline after first boot.
 
 ## Prerequisites
 
@@ -12,8 +12,8 @@ A complete demo environment with Keycloak IdP and unix-oidc, ready to explore OI
 
 ```bash
 # Clone the repository (if not already done)
-git clone https://github.com/prodnull/unix-oidc.git
-cd unix-oidc/deploy/vagrant/demo
+git clone https://github.com/prodnull/prmana.git
+cd prmana/deploy/vagrant/demo
 
 # Start the VM (first boot takes 5-10 minutes to download and start Keycloak)
 vagrant up
@@ -26,7 +26,7 @@ vagrant ssh
 
 - Ubuntu 22.04 LTS base
 - Docker with Keycloak 23.0
-- unix-oidc pre-configured for local Keycloak
+- prmana pre-configured for local Keycloak
 - Three test users with passwords
 - Helper scripts for token operations
 - Works offline after first boot (Docker images cached)
@@ -74,7 +74,7 @@ decode-jwt $TOKEN
 ### View OIDC Discovery Document
 
 ```bash
-curl -s http://localhost:8080/realms/unix-oidc-demo/.well-known/openid-configuration | jq
+curl -s http://localhost:8080/realms/prmana-demo/.well-known/openid-configuration | jq
 ```
 
 ### Test Token via Keycloak API
@@ -85,14 +85,14 @@ TOKEN=$(get-oidc-token testuser testpass)
 
 # Validate token via userinfo endpoint
 curl -s -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/realms/unix-oidc-demo/protocol/openid-connect/userinfo | jq
+  http://localhost:8080/realms/prmana-demo/protocol/openid-connect/userinfo | jq
 ```
 
 ## Accessing Keycloak Admin Console
 
 1. Open http://localhost:8080/admin in your browser
 2. Login with `admin` / `admin`
-3. Select "unix-oidc-demo" realm from the dropdown
+3. Select "prmana-demo" realm from the dropdown
 
 From the admin console you can:
 - View and manage test users
@@ -104,7 +104,7 @@ From the admin console you can:
 
 | Path | Description |
 |------|-------------|
-| `/etc/unix-oidc/config.env` | unix-oidc configuration (pre-configured) |
+| `/etc/prmana/config.env` | prmana configuration (pre-configured) |
 | `/opt/keycloak/docker-compose.yml` | Keycloak Docker Compose file |
 | `/opt/keycloak/realm-export.json` | Keycloak realm configuration |
 
@@ -217,10 +217,10 @@ cd /opt/keycloak && docker compose restart
 curl -s http://localhost:8080/health/ready | jq
 
 # Verify realm exists
-curl -s http://localhost:8080/realms/unix-oidc-demo | jq
+curl -s http://localhost:8080/realms/prmana-demo | jq
 
 # Check realm discovery
-curl -s http://localhost:8080/realms/unix-oidc-demo/.well-known/openid-configuration | jq
+curl -s http://localhost:8080/realms/prmana-demo/.well-known/openid-configuration | jq
 ```
 
 ### Not Enough Memory

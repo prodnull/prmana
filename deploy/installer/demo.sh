@@ -1,11 +1,11 @@
 #!/bin/bash
-# unix-oidc 5-minute demo launcher
-# Usage: curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/demo.sh | bash
+# prmana 5-minute demo launcher
+# Usage: curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/demo.sh | bash
 set -euo pipefail
 
-GITHUB_REPO="prodnull/unix-oidc"
+GITHUB_REPO="prodnull/prmana"
 GITHUB_BRANCH="main"
-DEMO_DIR="${HOME}/.unix-oidc-demo"
+DEMO_DIR="${HOME}/.prmana-demo"
 
 # Colors for output
 RED='\033[0;31m'
@@ -118,9 +118,9 @@ download_files() {
 
     # Download keycloak realm config
     mkdir -p test/fixtures/keycloak
-    local realm_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/test/fixtures/keycloak/unix-oidc-test-realm.json"
+    local realm_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/test/fixtures/keycloak/prmana-test-realm.json"
     log_info "Downloading keycloak realm configuration..."
-    if ! curl -fsSL "${realm_url}" -o test/fixtures/keycloak/unix-oidc-test-realm.json; then
+    if ! curl -fsSL "${realm_url}" -o test/fixtures/keycloak/prmana-test-realm.json; then
         log_error "Failed to download keycloak realm config"
         exit 1
     fi
@@ -227,16 +227,16 @@ print_instructions() {
     echo "  +-----------+------------+-------------------+"
     echo ""
     echo -e "${BOLD}OIDC Configuration:${NC}"
-    echo "  Issuer:        http://localhost:8080/realms/unix-oidc-test"
-    echo "  Client ID:     unix-oidc"
-    echo "  Client Secret: unix-oidc-test-secret"
+    echo "  Issuer:        http://localhost:8080/realms/prmana-test"
+    echo "  Client ID:     prmana"
+    echo "  Client Secret: prmana-test-secret"
     echo ""
     echo -e "${CYAN}Step 1: Get an access token${NC}"
     echo ""
-    echo "  curl -s -X POST http://localhost:8080/realms/unix-oidc-test/protocol/openid-connect/token \\"
+    echo "  curl -s -X POST http://localhost:8080/realms/prmana-test/protocol/openid-connect/token \\"
     echo "    -d 'grant_type=password' \\"
-    echo "    -d 'client_id=unix-oidc' \\"
-    echo "    -d 'client_secret=unix-oidc-test-secret' \\"
+    echo "    -d 'client_id=prmana' \\"
+    echo "    -d 'client_secret=prmana-test-secret' \\"
     echo "    -d 'username=testuser' \\"
     echo "    -d 'password=testpass' | jq -r '.access_token'"
     echo ""
@@ -248,7 +248,7 @@ print_instructions() {
     echo ""
     echo -e "${CYAN}Step 3: View the OIDC discovery document${NC}"
     echo ""
-    echo "  curl -s http://localhost:8080/realms/unix-oidc-test/.well-known/openid-configuration | jq"
+    echo "  curl -s http://localhost:8080/realms/prmana-test/.well-known/openid-configuration | jq"
     echo ""
     echo -e "${BOLD}To stop the demo:${NC}"
     echo "  cd ${DEMO_DIR} && ${COMPOSE_CMD} down"

@@ -20,7 +20,7 @@ permissions:
 
 env:
   AWS_REGION: us-west-2
-  AMI_NAME_PREFIX: unix-oidc-ci-arm64
+  AMI_NAME_PREFIX: prmana-ci-arm64
   INSTANCE_TIMEOUT: 1800  # 30 minutes max
 
 jobs:
@@ -37,14 +37,14 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: unix-oidc-arm64-preflight-${{ github.run_id }}
+          role-session-name: prmana-arm64-preflight-${{ github.run_id }}
 
       - name: Find latest ARM64 AMI
         id: ami
         run: |
           AMI_ID=$(aws ec2 describe-images \
             --owners self \
-            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=unix-oidc-ci" "Name=state,Values=available" \
+            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=prmana-ci" "Name=state,Values=available" \
             --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
             --output text)
 
@@ -98,13 +98,13 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: unix-oidc-arm64-test-${{ github.run_id }}
+          role-session-name: prmana-arm64-test-${{ github.run_id }}
 
       - name: Get security group
         id: sg
         run: |
           SG_ID=$(aws ec2 describe-security-groups \
-            --filters "Name=tag:Project,Values=unix-oidc-ci" "Name=group-name,Values=unix-oidc-ci-test-instances" \
+            --filters "Name=tag:Project,Values=prmana-ci" "Name=group-name,Values=prmana-ci-test-instances" \
             --query 'SecurityGroups[0].GroupId' \
             --output text)
           echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
@@ -119,9 +119,9 @@ jobs:
             --image-id "$AMI_ID" \
             --instance-type "$INPUT_INSTANCE_TYPE" \
             --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
-            --iam-instance-profile Name=unix-oidc-ci-instance-profile \
+            --iam-instance-profile Name=prmana-ci-instance-profile \
             --security-group-ids "$SG_ID" \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=unix-oidc-ci},{Key=Purpose,Value=arm64-integration-test},{Key=GitHubRun,Value=$GH_RUN_ID}]" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=prmana-ci},{Key=Purpose,Value=arm64-integration-test},{Key=GitHubRun,Value=$GH_RUN_ID}]" \
             --metadata-options 'HttpTokens=required' \
             --query 'Instances[0].InstanceId' \
             --output text)
@@ -154,8 +154,8 @@ jobs:
 
           echo "=== Clone repository ==="
           cd /tmp
-          git clone https://github.com/$GH_REPO.git unix-oidc
-          cd unix-oidc
+          git clone https://github.com/$GH_REPO.git prmana
+          cd prmana
           git checkout $GH_SHA
 
           echo "=== Start test infrastructure ==="
@@ -173,14 +173,14 @@ jobs:
           source /root/.cargo/env
 
           echo "=== Build PAM module ==="
-          cargo build --release -p pam-unix-oidc
+          cargo build --release -p pam-prmana
 
           echo "=== Run unit tests ==="
-          cargo test --release -p pam-unix-oidc
+          cargo test --release -p pam-prmana
 
           echo "=== Verify PAM module ==="
-          file target/release/libpam_unix_oidc.so
-          ls -la target/release/libpam_unix_oidc.so
+          file target/release/libpam_prmana.so
+          ls -la target/release/libpam_prmana.so
 
           echo "=== Run integration tests ==="
           # Check Keycloak is responding

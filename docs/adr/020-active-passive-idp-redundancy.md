@@ -11,7 +11,7 @@ When a single OIDC IdP goes down (maintenance, outage, DNS failure), all SSH
 authentication stops. This is unacceptable for production server access where even
 brief outages can cascade into incident response failures.
 
-unix-oidc already supports multi-issuer configuration (Phase 21, MIDP-01..05) and
+prmana already supports multi-issuer configuration (Phase 21, MIDP-01..05) and
 per-issuer JWKS cache isolation (MIDP-07). However, there is no mechanism to
 automatically route authentication attempts to a backup IdP when the primary is
 unreachable.
@@ -41,14 +41,14 @@ unreachable.
 | **Active-passive pair (chosen for v1)** | Simple to reason about, audit, and debug. No split-brain. | Max one issuer active per pair. |
 | Active-active load balancing | Better throughput utilization | Split-brain token sessions, complex audit correlation, harder to debug |
 | N-issuer priority chain | More flexible for multi-region | Extension of active-passive; planned for post-v1 |
-| DNS-level failover (e.g., Route53/CloudFlare) | Transparent to application; failover responsibility moves to enterprise networking team | Cannot distinguish availability vs policy failures at application layer; DNS TTL delays; unix-oidc still gets a single `iss` claim regardless |
+| DNS-level failover (e.g., Route53/CloudFlare) | Transparent to application; failover responsibility moves to enterprise networking team | Cannot distinguish availability vs policy failures at application layer; DNS TTL delays; prmana still gets a single `iss` claim regardless |
 
 ### Planned evolution: DNS-level failover, then N-issuer chain
 
 **DNS-level failover** is the natural enterprise deployment pattern. When the
 issuer URL resolves via DNS health-checked endpoints (Route53 failover routing,
 CloudFlare load balancer, F5 GTM), the enterprise networking team owns failover
-logic entirely. This is elegant for unix-oidc because:
+logic entirely. This is elegant for prmana because:
 
 1. The agent sees a single issuer URL — no application-level failover needed.
 2. PAM validates against the single `iss` claim as usual.
@@ -57,7 +57,7 @@ logic entirely. This is elegant for unix-oidc because:
 
 DNS failover does not replace application-level failover — it complements it.
 DNS cannot classify *why* a request failed (policy vs availability), so
-unix-oidc's application-level failover remains valuable when:
+prmana's application-level failover remains valuable when:
 - The enterprise does not control IdP DNS (SaaS IdPs like Auth0, Okta)
 - Different issuers have different `iss` claim values (multi-tenant)
 - Sub-second failover is required (DNS TTL is too slow)

@@ -1,6 +1,6 @@
 # Storage Architecture
 
-This document covers the unix-oidc-agent storage subsystem: how the backend is
+This document covers the prmana-agent storage subsystem: how the backend is
 selected, how credentials are migrated between backends, and how to deploy and
 troubleshoot on headless (no-GUI) servers.
 
@@ -10,10 +10,10 @@ The agent stores four credential keys:
 
 | Key | Contents |
 |-----|----------|
-| `unix-oidc-dpop-private` | P-256 DPoP private key (EC scalar, SEC1 DER-encoded) |
-| `unix-oidc-access-token` | OAuth access token (JWT) |
-| `unix-oidc-refresh-token` | OAuth refresh token |
-| `unix-oidc-token-metadata` | OIDC config for refresh (issuer, client ID, expiry, etc.) |
+| `prmana-dpop-private` | P-256 DPoP private key (EC scalar, SEC1 DER-encoded) |
+| `prmana-access-token` | OAuth access token (JWT) |
+| `prmana-refresh-token` | OAuth refresh token |
+| `prmana-token-metadata` | OIDC config for refresh (issuer, client ID, expiry, etc.) |
 
 All keys are stored with `0600` permissions (or the equivalent keyring ACL).
 Key material is subject to the memory protection invariants described in CLAUDE.md
@@ -29,7 +29,7 @@ to construct successfully but fail on I/O.
 ### Detection chain (priority order)
 
 ```
-UNIX_OIDC_STORAGE_BACKEND set?
+PRMANA_STORAGE_BACKEND set?
     Yes → probe only the requested backend; return Err on failure (no fallthrough)
     No  → auto-detection:
 
@@ -44,7 +44,7 @@ Diagram:
 ```
 StorageRouter::detect()
         │
-        ├─ UNIX_OIDC_STORAGE_BACKEND set? ──► probe forced backend
+        ├─ PRMANA_STORAGE_BACKEND set? ──► probe forced backend
         │                                         success → use it
         │                                         failure → Err (no fallthrough)
         │
@@ -64,7 +64,7 @@ StorageRouter::detect()
 
 ### Environment variable override
 
-Set `UNIX_OIDC_STORAGE_BACKEND` to one of:
+Set `PRMANA_STORAGE_BACKEND` to one of:
 
 | Value | Backend |
 |-------|---------|
@@ -81,7 +81,7 @@ will not start. Use this for diagnosis, not for production pinning.
 ### Why migration exists
 
 Prior to the storage router, all credentials were stored in plain files under
-`$XDG_DATA_HOME/unix-oidc-agent/` (or `~/.local/share/unix-oidc-agent/` if
+`$XDG_DATA_HOME/prmana-agent/` (or `~/.local/share/prmana-agent/` if
 `XDG_DATA_HOME` is unset). When a keyring backend becomes available (e.g., after
 installing `gnome-keyring` on a previously headless system), the agent automatically
 migrates credentials to the new backend on its first run.
@@ -90,8 +90,8 @@ migrates credentials to the new backend on its first run.
 
 Migration is attempted at two points:
 
-1. **Daemon startup** (`unix-oidc-agent serve`) — before loading any in-memory state.
-2. **Login** (`unix-oidc-agent login`) — after a successful authentication, giving
+1. **Daemon startup** (`prmana-agent serve`) — before loading any in-memory state.
+2. **Login** (`prmana-agent login`) — after a successful authentication, giving
    the upgraded backend an opportunity to absorb new credentials immediately.
 
 ### Migration semantics
@@ -116,7 +116,7 @@ at the default data directory and then calls `maybe_migrate_from(&file_storage)`
 
 ### Migration status
 
-`unix-oidc-agent status` shows the migration outcome:
+`prmana-agent status` shows the migration outcome:
 
 | Status | Meaning |
 |--------|---------|
@@ -139,13 +139,13 @@ keyctl show @u          # list current user keyring contents
 keyctl list @s          # show session keyring (for comparison)
 ```
 
-The agent probes keyutils automatically. If the probe succeeds, `unix-oidc-agent
+The agent probes keyutils automatically. If the probe succeeds, `prmana-agent
 status` will show `Storage: keyring (keyutils @u)`.
 
 ### Persistence across daemon restarts
 
 The Linux kernel user keyring (`@u`) is **persistent** within a login session.
-Credentials survive daemon restarts (stop and start `unix-oidc-agent serve`) without
+Credentials survive daemon restarts (stop and start `prmana-agent serve`) without
 requiring re-authentication — provided the user session remains active.
 
 **Keyring lifetime and expiry:**
@@ -162,7 +162,7 @@ systemd-based systems, `loginctl` session management governs when `@u` is destro
 
 For long-running server deployments, consider:
 - Using PAM `pam_keyinit.so` to ensure the keyring is initialized at login.
-- Token refresh via `unix-oidc-agent refresh` (or `Refresh` IPC request) before
+- Token refresh via `prmana-agent refresh` (or `Refresh` IPC request) before
   the access token expires.
 
 ### Container deployments
@@ -174,12 +174,12 @@ explicitly persisted (e.g., via a volume or secrets manager).
 
 The probe chain handles containers naturally: if keyutils probes fail (e.g., in a
 minimal container without the keyutils subsystem), the agent falls back to file
-storage. Set `UNIX_OIDC_STORAGE_BACKEND=file` to bypass probing in environments
+storage. Set `PRMANA_STORAGE_BACKEND=file` to bypass probing in environments
 where keyutils is unavailable and avoid probe-failure log noise.
 
 ## Status Reporting
 
-`unix-oidc-agent status` reports storage information in two modes:
+`prmana-agent status` reports storage information in two modes:
 
 **Daemon running:**
 
@@ -198,7 +198,7 @@ Status: Logged in
 ```
 Status: Agent not running
   Error: Connection refused
-  Start the agent with: unix-oidc-agent serve
+  Start the agent with: prmana-agent serve
   Storage: keyring (keyutils @u)
   Migration: n/a
   DPoP keypair: stored
@@ -212,7 +212,7 @@ reflects the most recent migration outcome from the daemon startup.
 
 ### Secret Service probe fails
 
-**Symptom:** `unix-oidc-agent serve` logs `Secret Service probe failed`.
+**Symptom:** `prmana-agent serve` logs `Secret Service probe failed`.
 
 **Cause:** No D-Bus session bus is running, or `gnome-keyring`/`kwallet` is not
 started. Common on headless servers and SSH sessions without a display.
@@ -221,7 +221,7 @@ started. Common on headless servers and SSH sessions without a display.
 - Headless servers: expected — the agent falls back to keyutils automatically.
 - Desktop sessions: start `gnome-keyring-daemon --start --daemonize` or ensure
   your display manager starts it automatically.
-- To force keyutils on a desktop: `UNIX_OIDC_STORAGE_BACKEND=keyutils unix-oidc-agent serve`.
+- To force keyutils on a desktop: `PRMANA_STORAGE_BACKEND=keyutils prmana-agent serve`.
 
 ### D-Bus unavailable in SSH sessions
 
@@ -235,7 +235,7 @@ storage automatically.
 
 ### Migration not triggering
 
-**Symptom:** `unix-oidc-agent status` shows `Storage: keyring (...)` but
+**Symptom:** `prmana-agent status` shows `Storage: keyring (...)` but
 `Migration: n/a`, even though file credentials exist.
 
 **Possible causes:**
@@ -244,11 +244,11 @@ storage automatically.
 3. File credentials were already migrated in a previous run (files deleted after
    successful migration).
 
-**Debug with:** `RUST_LOG=debug unix-oidc-agent serve --foreground 2>&1 | grep -i migrat`
+**Debug with:** `RUST_LOG=debug prmana-agent serve --foreground 2>&1 | grep -i migrat`
 
 ### Keyutils probe fails
 
-**Symptom:** `unix-oidc-agent serve` logs `keyutils probe failed`.
+**Symptom:** `prmana-agent serve` logs `keyutils probe failed`.
 
 **Cause:** The kernel keyutils subsystem is not available or the user keyring is
 not initialized.
@@ -257,14 +257,14 @@ not initialized.
 1. Verify: `keyctl show @u` — if this fails, keyutils is unavailable.
 2. In containers: run `keyctl new_session` or check if the host exposes keyutils
    to the container's user namespace.
-3. Force file storage: `UNIX_OIDC_STORAGE_BACKEND=file`.
+3. Force file storage: `PRMANA_STORAGE_BACKEND=file`.
 
 ### Diagnostic: force a specific backend
 
 ```bash
 # Test a specific backend without modifying configuration
-UNIX_OIDC_STORAGE_BACKEND=keyutils unix-oidc-agent status
-UNIX_OIDC_STORAGE_BACKEND=file unix-oidc-agent status
+PRMANA_STORAGE_BACKEND=keyutils prmana-agent status
+PRMANA_STORAGE_BACKEND=file prmana-agent status
 ```
 
 If the forced backend probe fails, the status command will error with a descriptive
@@ -275,7 +275,7 @@ message indicating which backend was probed and why it failed.
 ### File fallback
 
 When no keyring is available, credentials are stored in plain files under
-`$XDG_DATA_HOME/unix-oidc-agent/` with permissions `0600`. On deletion, the agent
+`$XDG_DATA_HOME/prmana-agent/` with permissions `0600`. On deletion, the agent
 applies a three-pass DoD 5220.22-M overwrite (random, complement, random) followed
 by `unlink`.
 
@@ -309,13 +309,13 @@ systems, the file overwrite limitations described above apply.
 ## Architecture Diagram
 
 ```
-unix-oidc-agent serve / login
+prmana-agent serve / login
          │
          ▼
 StorageRouter::detect()
          │
     ┌────┴────────────────────────────────┐
-    │  UNIX_OIDC_STORAGE_BACKEND set?     │
+    │  PRMANA_STORAGE_BACKEND set?     │
     │  Yes → forced probe (no fallthrough)│
     │  No  → auto probe chain             │
     └────┬────────────────────────────────┘

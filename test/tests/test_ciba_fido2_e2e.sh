@@ -10,7 +10,7 @@
 #   - FIDO2 ACR delegation: request with acr_values=phr → token acr claim equals "phr"
 #     (Keycloak LoA 3 mapped to "phr" via acr.loa.map realm attribute)
 #   - Concurrent step-up guard: two simultaneous CIBA requests; agent-level guard
-#     enforced in unix-oidc-agent/src/daemon/socket.rs handle_step_up()
+#     enforced in prmana-agent/src/daemon/socket.rs handle_step_up()
 #   - CIBA timeout: request not approved → poll returns authorization_pending / slow_down
 #
 # Extends test_ciba_integration.sh (does NOT replace it).
@@ -21,7 +21,7 @@
 #   assigned to the "phr" ACR value in the realm configuration.
 #
 # ACR note: This test uses the short-form ACR value "phr" as configured in the
-#   Keycloak realm's acr.loa.map. The production code (pam-unix-oidc) validates
+#   Keycloak realm's acr.loa.map. The production code (pam-prmana) validates
 #   full URI ACR values (ACR_PHR, ACR_PHRH from OpenID EAP ACR Values 1.0).
 #   The short-form "phr" key is a Keycloak-level alias for the phishing-resistant
 #   LoA level 3; the token claim value depends on realm configuration.
@@ -32,7 +32,7 @@ set -euo pipefail
 
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
 REALM="ciba-test"
-CLIENT_ID="unix-oidc-ciba"
+CLIENT_ID="prmana-ciba"
 CLIENT_SECRET="ciba-test-secret"
 TEST_USERNAME="cibauser"
 TEST_PASSWORD="cibapass"
@@ -319,8 +319,8 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 # Test 3: Concurrent step-up guard
 # ══════════════════════════════════════════════════════════════════════════════
-# The concurrent step-up guard is enforced in the unix-oidc-agent IPC handler
-# (unix-oidc-agent/src/daemon/socket.rs handle_step_up(), lines ~1559-1571).
+# The concurrent step-up guard is enforced in the prmana-agent IPC handler
+# (prmana-agent/src/daemon/socket.rs handle_step_up(), lines ~1559-1571).
 #
 # Guard logic: Before initiating a new CIBA request, handle_step_up() checks
 # pending_step_ups for any active (not yet finished) entry for the same username.
@@ -332,7 +332,7 @@ fi
 # cannot be driven from a shell script without a running agent daemon.
 #
 # Unit test coverage for the concurrent guard is the authoritative assertion.
-# See: unix-oidc-agent/src/daemon/socket.rs "Guard: concurrent step-up for same username"
+# See: prmana-agent/src/daemon/socket.rs "Guard: concurrent step-up for same username"
 # ══════════════════════════════════════════════════════════════════════════════
 
 echo ""
@@ -368,7 +368,7 @@ if [ -n "$AUTH_REQ_1" ] && [ -n "$AUTH_REQ_2" ]; then
     echo "  auth_req_id_1: ${AUTH_REQ_1:0:20}..."
     echo "  auth_req_id_2: ${AUTH_REQ_2:0:20}..."
     echo "  NOTE: Agent-level concurrent step-up guard (STEP_UP_IN_PROGRESS) is enforced"
-    echo "        in unix-oidc-agent/src/daemon/socket.rs handle_step_up() lines ~1559-1571."
+    echo "        in prmana-agent/src/daemon/socket.rs handle_step_up() lines ~1559-1571."
     echo "        The guard prevents two simultaneous IPC-level step-up requests per user."
     echo "        Unit test coverage is the authoritative assertion for this invariant."
 elif [ -n "$AUTH_REQ_1" ] || [ -n "$AUTH_REQ_2" ]; then

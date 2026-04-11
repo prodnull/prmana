@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="unix-oidc logo" width="120" height="120">
+  <img src="assets/logo.svg" alt="prmana logo" width="120" height="120">
 </p>
 
-<h1 align="center">unix-oidc</h1>
+<h1 align="center">prmana</h1>
 
 <p align="center">
   <strong>Step-up authentication layer for Linux SSH and sudo with OIDC</strong>
@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="#why-unix-oidc">Why?</a> •
+  <a href="#why-prmana">Why?</a> •
   <a href="#features">Features</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#deployment">Deployment</a> •
@@ -30,11 +30,11 @@
 
 ---
 
-## Why unix-oidc?
+## Why prmana?
 
 A senior engineer leaves. They had SSH keys on dozens of servers — production, staging, internal tools. Nobody knows where all the keys are. Finding them is archaeology: grepping `authorized_keys` files across every host, hoping you don't miss one. Meanwhile, those keys still work.
 
-This isn't a hypothetical. It's the norm. SSH keys get copied, shared, never rotated, and rarely audited. When someone leaves, their access doesn't leave with them — it lingers until someone finds it. unix-oidc fixes this: authentication flows through your IdP (Okta, Entra, Keycloak). Disable the user in your IdP, and their server access dies instantly. No key hunting.
+This isn't a hypothetical. It's the norm. SSH keys get copied, shared, never rotated, and rarely audited. When someone leaves, their access doesn't leave with them — it lingers until someone finds it. prmana fixes this: authentication flows through your IdP (Okta, Entra, Keycloak). Disable the user in your IdP, and their server access dies instantly. No key hunting.
 
 **[OpenID Connect (OIDC)](https://openid.net/specs/openid-connect-core-1_0.html)** solves identity, but existing tools have significant limitations:
 
@@ -57,7 +57,7 @@ Good question. These are serious products. Here's the honest answer.
 |---|---|---|
 | **Gateway/Proxy** | All SSH routes through a central proxy that issues short-lived certs from its own CA | Teleport, StrongDM, Boundary |
 | **Vault/Broker** | A privileged access manager brokers and records SSH sessions, manages credential rotation | CyberArk, BeyondTrust, Delinea |
-| **PAM drop-in** | A module on the server validates OIDC tokens directly against the IdP. No proxy, no CA, no new infra | **unix-oidc** |
+| **PAM drop-in** | A module on the server validates OIDC tokens directly against the IdP. No proxy, no CA, no new infra | **prmana** |
 
 **When to use them instead of us:**
 - You want session recording, RBAC policies, and a managed gateway → **Teleport**
@@ -75,11 +75,11 @@ Good question. These are serious products. Here's the honest answer.
 
 Teleport and StrongDM issue short-lived x509 certificates. These are bearer credentials — if exfiltrated from `/tmp` or memory during their 5-15 minute validity window, an attacker can use them from any machine. DPoP (RFC 9449) binds every token to the client's ephemeral private key. The token is useless without the key, even during its validity window. This is the same proof-of-possession model used by banking APIs.
 
-**Complementary at worst, sufficient at best.** If you have Teleport on your managed fleet, unix-oidc covers the long tail. If you don't want gateway architecture, unix-oidc is the lightweight path to IdP-backed SSH.
+**Complementary at worst, sufficient at best.** If you have Teleport on your managed fleet, prmana covers the long tail. If you don't want gateway architecture, prmana is the lightweight path to IdP-backed SSH.
 
 ### Feature Comparison
 
-| Feature | unix-oidc | Teleport | StrongDM | CyberArk |
+| Feature | prmana | Teleport | StrongDM | CyberArk |
 |---------|-----------|----------|----------|----------|
 | SSH OIDC auth | ✅ | Enterprise | ✅ | Via proxy |
 | DPoP token binding (RFC 9449) | ✅ | ❌ (bearer certs) | API only | ❌ |
@@ -97,22 +97,22 @@ Teleport and StrongDM issue short-lived x509 certificates. These are bearer cred
 
 Most SSH identity solutions — gateways (Teleport, StrongDM), vaults (CyberArk, Delinea), and MFA-for-SSH tools (Duo Unix, Okta PAM) — challenge at login or session start. Once you're in, `sudo` either just works, relies on a proprietary agent command (`dzdo`), or requires a separate MFA product bolted onto PAM.
 
-unix-oidc treats `sudo` as a fresh trust boundary, not an extension of the login session. Via [CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) (Client-Initiated Backchannel Authentication), your phone receives a push notification with the **specific command** — "Approve `sudo apt install nginx` on server-01" — and the command only executes after you confirm. This is OIDC-native: the step-up challenge flows through your existing IdP as a fresh, locally validated token — not a separate MFA integration, not a proprietary agent, not a session-level blanket approval.
+prmana treats `sudo` as a fresh trust boundary, not an extension of the login session. Via [CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) (Client-Initiated Backchannel Authentication), your phone receives a push notification with the **specific command** — "Approve `sudo apt install nginx` on server-01" — and the command only executes after you confirm. This is OIDC-native: the step-up challenge flows through your existing IdP as a fresh, locally validated token — not a separate MFA integration, not a proprietary agent, not a session-level blanket approval.
 
 ### Why This Matters Now
 
 Recent attacks prove that static credentials and bearer tokens are no longer defensible:
 
-| Attack | CVE | What happened | What unix-oidc changes |
+| Attack | CVE | What happened | What prmana changes |
 |--------|-----|---------------|----------------------|
 | **xz/liblzma backdoor** | [CVE-2024-3094](https://nvd.nist.gov/vuln/detail/cve-2024-3094) | Supply chain backdoor in a compression library hijacked OpenSSH's `RSA_public_decrypt`, enabling remote auth bypass. Static SSH keys meant the backdoor granted persistent access to any server the key was authorized for. | DPoP-bound tokens expire. Even a backdoored sshd that intercepts a token cannot reuse it — the attacker lacks the DPoP private key. Blast radius is bounded by token lifetime, not key lifetime. |
 | **GitHub Actions secret leak** | [CVE-2025-30066](https://github.com/advisories/GHSA-mrrh-fwg8-r2c3) | Compromised GitHub Action exfiltrated SSH keys and access tokens from 23,000+ repo CI pipelines to workflow logs. Any bearer token in those logs was immediately usable. | DPoP-bound tokens leaked to logs are inert — they require a corresponding private key to use. The key never appears in logs. |
-| **PuTTY key recovery** | [CVE-2024-31497](https://nvd.nist.gov/vuln/detail/cve-2024-31497) | Biased ECDSA nonces in PuTTY allowed private key recovery from ~60 signatures. A rogue SSH server could harvest enough signatures during normal logins to steal the key permanently. | unix-oidc tokens are short-lived — stolen credentials have a bounded window. TPM-backed DPoP keys (hardware non-exportable) cannot be recovered even with full nonce bias exploitation. |
-| **JWT algorithm confusion** | [CVE-2023-48223](https://github.com/advisories/GHSA-c2ff-88x2-x9pg) | JWT libraries accepted HMAC signatures verified with RSA public keys, enabling token forgery with zero knowledge of private keys. | unix-oidc enforces an asymmetric-only algorithm allowlist and pins the token's algorithm to the JWKS-advertised algorithm. HMAC algorithms are rejected at every verification point. |
+| **PuTTY key recovery** | [CVE-2024-31497](https://nvd.nist.gov/vuln/detail/cve-2024-31497) | Biased ECDSA nonces in PuTTY allowed private key recovery from ~60 signatures. A rogue SSH server could harvest enough signatures during normal logins to steal the key permanently. | prmana tokens are short-lived — stolen credentials have a bounded window. TPM-backed DPoP keys (hardware non-exportable) cannot be recovered even with full nonce bias exploitation. |
+| **JWT algorithm confusion** | [CVE-2023-48223](https://github.com/advisories/GHSA-c2ff-88x2-x9pg) | JWT libraries accepted HMAC signatures verified with RSA public keys, enabling token forgery with zero knowledge of private keys. | prmana enforces an asymmetric-only algorithm allowlist and pins the token's algorithm to the JWKS-advertised algorithm. HMAC algorithms are rejected at every verification point. |
 
 **What we honestly cannot prevent:** If the PAM module binary itself is backdoored (analogous to xz targeting our `.so`), the attacker controls verification. DPoP cannot help if the verifier is compromised. Mitigations: code signing, SLSA provenance, reproducible builds. These are tracked in our [security roadmap](docs/security-guide.md).
 
-**unix-oidc** was built to address these gaps:
+**prmana** was built to address these gaps:
 
 - **[DPoP token binding](https://datatracker.ietf.org/doc/html/rfc9449)** (RFC 9449): Tokens are cryptographically bound to a key pair. Even if an attacker intercepts a token, they can't use it without the private key. This is the same security model used by modern banking APIs.
 
@@ -126,9 +126,9 @@ Recent attacks prove that static credentials and bearer tokens are no longer def
 
 ### Developer & User Experience
 
-Enterprise MFA solutions often create friction that developers actively work around. unix-oidc was designed with usability as a core requirement:
+Enterprise MFA solutions often create friction that developers actively work around. prmana was designed with usability as a core requirement:
 
-| Pain Point | Traditional MFA | unix-oidc |
+| Pain Point | Traditional MFA | prmana |
 |------------|----------------|-----------|
 | Password fatigue | Yet another password to remember | **No passwords**—use your existing IdP (Google, Azure AD, Okta) |
 | Token management | Hardware tokens to carry, batteries that die | **Phone-based**—device flow works with authenticator apps you already have |
@@ -196,13 +196,13 @@ This collaboration demonstrates that human expertise and AI capabilities can com
 cargo build --release
 
 # Install the PAM module
-sudo cp target/release/libpam_unix_oidc.so /lib/security/pam_unix_oidc.so
+sudo cp target/release/libpam_prmana.so /lib/security/pam_prmana.so
 
 # Create configuration directory
-sudo mkdir -p /etc/unix-oidc
+sudo mkdir -p /etc/prmana
 
 # Copy example policy
-sudo cp examples/policy.yaml /etc/unix-oidc/policy.yaml
+sudo cp examples/policy.yaml /etc/prmana/policy.yaml
 ```
 
 ### Configuration
@@ -211,20 +211,20 @@ Set environment variables:
 
 ```bash
 export OIDC_ISSUER="https://your-idp.example.com/realms/your-realm"
-export OIDC_CLIENT_ID="unix-oidc"
+export OIDC_CLIENT_ID="prmana"
 ```
 
 Configure PAM for SSH (`/etc/pam.d/sshd`):
 
 ```
-auth    sufficient    pam_unix_oidc.so
+auth    sufficient    pam_prmana.so
 auth    required      pam_unix.so try_first_pass
 ```
 
 Configure PAM for sudo (`/etc/pam.d/sudo`):
 
 ```
-auth    required    pam_unix_oidc.so
+auth    required    pam_prmana.so
 auth    required    pam_unix.so try_first_pass
 ```
 
@@ -286,7 +286,7 @@ make dev-down
 ## Documentation
 
 ### User Documentation
-- [Installation Guide](docs/installation.md) - Installing and configuring unix-oidc
+- [Installation Guide](docs/installation.md) - Installing and configuring prmana
 - [Community Testing Guide](docs/community-testing-guide.md) - Help us test on different platforms
 - [User Guide](docs/user-guide.md) - Day-to-day usage for end users
 - [Sudo Step-Up Authentication](docs/sudo-step-up.md) - Step-up configuration reference
@@ -305,7 +305,7 @@ make dev-down
 
 ## Architecture
 
-unix-oidc works with **any OIDC-compliant Identity Provider**:
+prmana works with **any OIDC-compliant Identity Provider**:
 
 | Provider | Status | Notes |
 |----------|--------|-------|
@@ -321,7 +321,7 @@ unix-oidc works with **any OIDC-compliant Identity Provider**:
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   SSH/Sudo   │────>│  PAM Module  │────>│   OIDC IdP   │
-│   Client     │     │  (unix-oidc) │     │  (Your IdP)  │
+│   Client     │     │  (prmana) │     │  (Your IdP)  │
 └──────────────┘     └──────┬───────┘     └──────────────┘
                            │
                            v
@@ -334,7 +334,7 @@ unix-oidc works with **any OIDC-compliant Identity Provider**:
 ### Deployment Patterns
 
 **Pattern A: Direct to Cloud IdP** (Simplest)
-- Point unix-oidc directly at Azure AD, Auth0, Google, or Okta
+- Point prmana directly at Azure AD, Auth0, Google, or Okta
 - Users authenticate with their existing cloud identity
 - Best for: Organizations already using a cloud IdP
 
@@ -380,7 +380,7 @@ This is a **beta release**. While the core security mechanisms (DPoP binding, to
 - **Scale testing**: We haven't yet tested with hundreds of concurrent authentications
 - **HA/failover**: Document your high-availability setup if you deploy one
 
-**We welcome contributions!** If you test unix-oidc with an IdP or OS not listed above, please:
+**We welcome contributions!** If you test prmana with an IdP or OS not listed above, please:
 1. Open an issue with your test results
 2. Submit a PR to update this table
 3. Share your deployment configuration (sanitized) to help others
@@ -399,7 +399,7 @@ This testing infrastructure is **not** a requirement for production—use whatev
 
 ## Security Design
 
-unix-oidc is designed with defense in depth for key material. This section summarizes the memory and storage protection model for operators and contributors.
+prmana is designed with defense in depth for key material. This section summarizes the memory and storage protection model for operators and contributors.
 
 ### Memory protection
 
@@ -429,9 +429,9 @@ See `CLAUDE.md` — **Memory Protection Invariants** section — for the complet
 
 | File | What it protects |
 |------|-----------------|
-| `unix-oidc-agent/src/crypto/protected_key.rs` | DPoP key lifecycle (zeroize, mlock, Box-only) |
-| `unix-oidc-agent/src/storage/secure_delete.rs` | Three-pass overwrite, CoW/SSD detection |
-| `unix-oidc-agent/src/security.rs` | Core dump disabling (`prctl`/`ptrace`) |
+| `prmana-agent/src/crypto/protected_key.rs` | DPoP key lifecycle (zeroize, mlock, Box-only) |
+| `prmana-agent/src/storage/secure_delete.rs` | Three-pass overwrite, CoW/SSD detection |
+| `prmana-agent/src/security.rs` | Core dump disabling (`prctl`/`ptrace`) |
 
 ## Security
 

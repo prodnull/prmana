@@ -21,7 +21,7 @@ permissions:
 
 env:
   AWS_REGION: us-west-2
-  AMI_NAME_PREFIX: unix-oidc-ci-arm64
+  AMI_NAME_PREFIX: prmana-ci-arm64
   MAX_AMIS_TO_KEEP: 2
   INSTANCE_TYPE: t4g.small
 
@@ -46,7 +46,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: unix-oidc-ami-build-${{ github.run_id }}
+          role-session-name: prmana-ami-build-${{ github.run_id }}
 
       - name: Check if rebuild needed
         id: check
@@ -55,7 +55,7 @@ jobs:
           # Check if we have a recent AMI (less than 30 days old)
           LATEST_AMI=$(aws ec2 describe-images \
             --owners self \
-            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=unix-oidc-ci" \
+            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=prmana-ci" \
             --query 'sort_by(Images, &CreationDate)[-1].[ImageId,CreationDate]' \
             --output text)
 
@@ -94,7 +94,7 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: |
           SG_ID=$(aws ec2 describe-security-groups \
-            --filters "Name=tag:Project,Values=unix-oidc-ci" "Name=group-name,Values=unix-oidc-ci-test-instances" \
+            --filters "Name=tag:Project,Values=prmana-ci" "Name=group-name,Values=prmana-ci-test-instances" \
             --query 'SecurityGroups[0].GroupId' \
             --output text)
           echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
@@ -111,9 +111,9 @@ jobs:
             --image-id "$BASE_AMI" \
             --instance-type "$INSTANCE_TYPE" \
             --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
-            --iam-instance-profile Name=unix-oidc-ci-instance-profile \
+            --iam-instance-profile Name=prmana-ci-instance-profile \
             --security-group-ids "$SG_ID" \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=unix-oidc-ci},{Key=Purpose,Value=ami-build},{Key=GitHubRun,Value=$GH_RUN_ID}]" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=prmana-ci},{Key=Purpose,Value=ami-build},{Key=GitHubRun,Value=$GH_RUN_ID}]" \
             --metadata-options 'HttpTokens=required' \
             --query 'Instances[0].InstanceId' \
             --output text)
@@ -225,8 +225,8 @@ jobs:
             --instance-id "$INSTANCE_ID" \
             --name "$AMI_NAME" \
             --no-reboot \
-            --description "unix-oidc CI ARM64 test AMI with Docker and pre-pulled images" \
-            --tag-specifications "ResourceType=image,Tags=[{Key=Project,Value=unix-oidc-ci},{Key=Component,Value=arm64-test-ami},{Key=BuildRun,Value=$GH_RUN_ID}]" \
+            --description "prmana CI ARM64 test AMI with Docker and pre-pulled images" \
+            --tag-specifications "ResourceType=image,Tags=[{Key=Project,Value=prmana-ci},{Key=Component,Value=arm64-test-ami},{Key=BuildRun,Value=$GH_RUN_ID}]" \
             --query 'ImageId' \
             --output text)
 
@@ -247,7 +247,7 @@ jobs:
           # Get all our AMIs sorted by creation date (newest first)
           AMIS=$(aws ec2 describe-images \
             --owners self \
-            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=unix-oidc-ci" \
+            --filters "Name=name,Values=$AMI_NAME_PREFIX-*" "Name=tag:Project,Values=prmana-ci" \
             --query 'sort_by(Images, &CreationDate) | reverse(@) | [*].[ImageId,Name,CreationDate]' \
             --output text)
 
@@ -304,7 +304,7 @@ jobs:
           GH_RUN_ID: ${{ github.run_id }}
         run: |
           if [ "$JOB_STATUS" = "success" ]; then
-            SUBJECT="[unix-oidc] ARM64 AMI Build Succeeded"
+            SUBJECT="[prmana] ARM64 AMI Build Succeeded"
             MESSAGE="AMI build completed successfully.
 
           New AMI: $AMI_ID
@@ -312,14 +312,14 @@ jobs:
 
           Run: $GH_SERVER/$GH_REPO/actions/runs/$GH_RUN_ID"
           else
-            SUBJECT="[unix-oidc] ARM64 AMI Build Failed"
+            SUBJECT="[prmana] ARM64 AMI Build Failed"
             MESSAGE="AMI build failed.
 
           Check the logs: $GH_SERVER/$GH_REPO/actions/runs/$GH_RUN_ID"
           fi
 
           # Get SNS topic ARN
-          SNS_TOPIC=$(aws sns list-topics --query "Topics[?contains(TopicArn, 'unix-oidc-ci-notifications')].TopicArn" --output text)
+          SNS_TOPIC=$(aws sns list-topics --query "Topics[?contains(TopicArn, 'prmana-ci-notifications')].TopicArn" --output text)
 
           if [ -n "$SNS_TOPIC" ]; then
             aws sns publish \

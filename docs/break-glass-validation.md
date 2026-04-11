@@ -32,7 +32,7 @@ When automated validation passes, do a real login test:
 ### 1. Verify the break-glass account can SSH in
 
 ```bash
-# From a machine that does NOT have the unix-oidc-agent installed
+# From a machine that does NOT have the prmana-agent installed
 # (simulates "IdP is completely down" scenario)
 ssh breakglass@server.example.com
 # Enter the break-glass password when prompted
@@ -44,7 +44,7 @@ If `alert_on_use: true` is set (it should be), the `BREAK_GLASS_AUTH` audit even
 
 ```bash
 # On the server, check the audit log
-sudo grep BREAK_GLASS_AUTH /var/log/unix-oidc-audit.log
+sudo grep BREAK_GLASS_AUTH /var/log/prmana-audit.log
 ```
 
 ### 3. Verify sudo works under break-glass

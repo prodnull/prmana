@@ -1,0 +1,58 @@
+[package]
+name = "prmana-scim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SCIM 2.0 provisioning service for prmana user lifecycle management"
+
+[[bin]]
+name = "prmana-scim"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP framework
+axum = "0.7"
+
+# Async runtime
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# JWT validation
+jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
+
+# Configuration
+figment = { version = "0.10", features = ["yaml", "env"] }
+
+# Identity
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Unix user management
+uzers = "0.12"
+
+# HTTP client for JWKS fetch (OIDC discovery + key retrieval)
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+# Reuse PAM crate's policy config and validation for SCIM endpoint auth
+pam-prmana = { path = "../pam-prmana" }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.11", features = ["json"] }
+tokio-test = "0.4"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

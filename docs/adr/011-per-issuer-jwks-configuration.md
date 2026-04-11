@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-unix-oidc validates tokens from multiple issuers. Those issuers have different JWKS
+prmana validates tokens from multiple issuers. Those issuers have different JWKS
 rotation schedules, uptime characteristics, and latency profiles.
 
 Two approaches were considered:

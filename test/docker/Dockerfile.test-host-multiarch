@@ -15,13 +15,13 @@ WORKDIR /build
 
 # Copy source code (all workspace members)
 COPY Cargo.toml Cargo.lock ./
-COPY pam-unix-oidc ./pam-unix-oidc
-COPY unix-oidc-agent ./unix-oidc-agent
+COPY pam-prmana ./pam-prmana
+COPY prmana-agent ./prmana-agent
 COPY examples ./examples
 
 # Build release binaries for the target architecture
 # Only build the packages we need (skip examples)
-RUN cargo build --release --locked -p pam-unix-oidc -p unix-oidc-agent
+RUN cargo build --release --locked -p pam-prmana -p prmana-agent
 
 # Runtime image
 FROM ubuntu:22.04
@@ -53,12 +53,12 @@ RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/s
 RUN useradd -m -s /bin/bash testuser
 
 # Copy built binaries from builder
-COPY --from=builder /build/target/release/libpam_unix_oidc.so /usr/lib/security/
-COPY --from=builder /build/target/release/unix-oidc-agent /usr/local/bin/
+COPY --from=builder /build/target/release/libpam_prmana.so /usr/lib/security/
+COPY --from=builder /build/target/release/prmana-agent /usr/local/bin/
 
 # Make PAM module available
-RUN ln -sf /usr/lib/security/libpam_unix_oidc.so /lib/x86_64-linux-gnu/security/ 2>/dev/null || \
-    ln -sf /usr/lib/security/libpam_unix_oidc.so /lib/aarch64-linux-gnu/security/ 2>/dev/null || \
+RUN ln -sf /usr/lib/security/libpam_prmana.so /lib/x86_64-linux-gnu/security/ 2>/dev/null || \
+    ln -sf /usr/lib/security/libpam_prmana.so /lib/aarch64-linux-gnu/security/ 2>/dev/null || \
     true
 
 # Copy SSSD configuration template
@@ -66,12 +66,12 @@ COPY test/fixtures/sssd/sssd.conf /etc/sssd/sssd.conf
 RUN chmod 600 /etc/sssd/sssd.conf
 
 # Copy PAM configuration
-COPY test/fixtures/pam/sshd /etc/pam.d/sshd.unix-oidc
-COPY test/fixtures/pam/sudo /etc/pam.d/sudo.unix-oidc
+COPY test/fixtures/pam/sshd /etc/pam.d/sshd.prmana
+COPY test/fixtures/pam/sudo /etc/pam.d/sudo.prmana
 
 # Copy policy configuration
-RUN mkdir -p /etc/unix-oidc
-COPY test/fixtures/policy/policy-step-up.yaml /etc/unix-oidc/policy.yaml
+RUN mkdir -p /etc/prmana
+COPY test/fixtures/policy/policy-step-up.yaml /etc/prmana/policy.yaml
 
 # Startup script
 COPY test/docker/entrypoint.sh /entrypoint.sh

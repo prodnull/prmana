@@ -52,21 +52,21 @@ Record the output. You'll use this to verify all users can authenticate via OIDC
 
 ```bash
 # Debian/Ubuntu
-sudo cp libpam_unix_oidc.so /lib/security/
+sudo cp libpam_prmana.so /lib/security/
 # RHEL/Rocky
-sudo cp libpam_unix_oidc.so /lib64/security/
+sudo cp libpam_prmana.so /lib64/security/
 ```
 
 Or use the Ansible role: `deploy/ansible/roles/prmana/`
 
 ### Step 3: Configure the Policy
 
-Create `/etc/unix-oidc/policy.yaml`:
+Create `/etc/prmana/policy.yaml`:
 
 ```yaml
 issuers:
   - issuer_url: https://your-idp.example.com/realms/corp
-    client_id: unix-oidc
+    client_id: prmana
     dpop_enforcement: strict
 
 break_glass:
@@ -93,7 +93,7 @@ Edit `/etc/pam.d/sshd` to add OIDC as an **additional** auth method (not replace
 @include common-auth
 
 # Add OIDC authentication — sufficient means "if OIDC succeeds, allow login"
-auth    sufficient    pam_unix_oidc.so
+auth    sufficient    pam_prmana.so
 ```
 
 With `sufficient`, OIDC success grants access. OIDC failure falls through to existing auth (keys/password). This is the safe parallel-running configuration.
@@ -112,7 +112,7 @@ See `docs/break-glass-validation.md` for the full procedure.
 
 ```bash
 # User installs the agent (no root needed)
-unix-oidc-agent login --issuer https://your-idp.example.com/realms/corp
+prmana-agent login --issuer https://your-idp.example.com/realms/corp
 ```
 
 This triggers the device flow or auth code + PKCE flow. The user authenticates via their browser, and the agent stores the token.
@@ -146,7 +146,7 @@ Once all users are validated, change PAM to make OIDC the primary auth method:
 
 ```
 # OIDC first, fall through to password only if OIDC fails
-auth    sufficient    pam_unix_oidc.so
+auth    sufficient    pam_prmana.so
 auth    required      pam_unix.so
 ```
 
@@ -174,7 +174,7 @@ For fleet-wide deployment, use the provided Ansible role:
 ```bash
 ansible-playbook -i inventory deploy/ansible/site.yml \
     -e prmana_issuer_url=https://your-idp.example.com/realms/corp \
-    -e prmana_client_id=unix-oidc
+    -e prmana_client_id=prmana
 ```
 
 The role handles: PAM module installation, policy configuration, break-glass setup, and PAM config. See `deploy/ansible/roles/prmana/` for details.
@@ -187,18 +187,18 @@ At any point during migration, you can revert:
 
 ```bash
 # Comment out the OIDC PAM line
-sudo sed -i 's/^auth.*pam_unix_oidc/#&/' /etc/pam.d/sshd
+sudo sed -i 's/^auth.*pam_prmana/#&/' /etc/pam.d/sshd
 ```
 
 ### Rollback completely
 
 ```bash
 # Remove PAM module
-sudo rm /lib/security/pam_unix_oidc.so  # or /lib64/security/
+sudo rm /lib/security/pam_prmana.so  # or /lib64/security/
 # Remove config
-sudo rm -rf /etc/unix-oidc/
+sudo rm -rf /etc/prmana/
 # Restore original PAM config
-sudo sed -i '/pam_unix_oidc/d' /etc/pam.d/sshd
+sudo sed -i '/pam_prmana/d' /etc/pam.d/sshd
 ```
 
 SSH key auth continues to work throughout — keys are never touched by the install or uninstall.
@@ -207,7 +207,7 @@ SSH key auth continues to work throughout — keys are never touched by the inst
 
 | Issue | Cause | Fix |
 |---|---|---|
-| "Authentication failed" after OIDC install | Token not acquired — agent not running or not configured | Run `unix-oidc-agent login` on the client |
+| "Authentication failed" after OIDC install | Token not acquired — agent not running or not configured | Run `prmana-agent login` on the client |
 | OIDC works, but fall-through to keys is slow | PAM tries OIDC first, times out, then falls through | Set `request_timeout_secs` in policy to 5-10s |
 | User exists in IdP but SSH fails | Unix username doesn't match IdP `preferred_username` | Configure `claim_mapping` in issuer config |
 | Break-glass doesn't work | Password hash format wrong or break-glass not enabled | Verify with `scripts/validate-break-glass.sh` |

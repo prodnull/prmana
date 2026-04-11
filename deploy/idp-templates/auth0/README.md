@@ -1,12 +1,12 @@
-# Auth0 Configuration for unix-oidc
+# Auth0 Configuration for prmana
 
-This guide walks you through configuring Auth0 as an Identity Provider for unix-oidc.
+This guide walks you through configuring Auth0 as an Identity Provider for prmana.
 
 ## Prerequisites
 
 - An Auth0 tenant (free tier works for testing)
 - Admin access to your Auth0 dashboard
-- unix-oidc installed on your Linux server(s)
+- prmana installed on your Linux server(s)
 
 ## Quick Setup
 
@@ -32,7 +32,7 @@ This guide walks you through configuring Auth0 as an Identity Provider for unix-
 3. Click **+ Create Application**
 
 4. Configure the application:
-   - **Name**: `unix-oidc` (or your preferred name)
+   - **Name**: `prmana` (or your preferred name)
    - **Application Type**: Select **Native**
 
    > **Important**: You must select "Native" for Device Authorization Grant support. Regular Web Application and SPA types do not support this flow.
@@ -48,7 +48,7 @@ This guide walks you through configuring Auth0 as an Identity Provider for unix-
 2. Select the **Grant Types** tab
 
 3. Ensure these grants are enabled:
-   - [x] **Device Code** (required for unix-oidc)
+   - [x] **Device Code** (required for prmana)
    - [x] **Refresh Token** (recommended for token refresh)
 
 4. Click **Save Changes**
@@ -67,18 +67,18 @@ Auth0 includes standard OIDC scopes by default. Verify your API settings:
    - `email` - User email address
    - `offline_access` - For refresh tokens
 
-For unix-oidc, the default Auth0 configuration typically works. If you need custom scopes:
+For prmana, the default Auth0 configuration typically works. If you need custom scopes:
 
 1. Navigate to **Applications** > **APIs**
 2. Click **+ Create API**
 3. Configure:
-   - **Name**: `unix-oidc-api`
-   - **Identifier**: `https://unix-oidc.example.com` (your choice)
+   - **Name**: `prmana-api`
+   - **Identifier**: `https://prmana.example.com` (your choice)
 4. Add custom scopes in the **Permissions** tab if needed
 
 ### Step 4: Configure Username Claim
 
-Auth0 does not include `preferred_username` in tokens by default. unix-oidc needs this claim to map OIDC identity to Unix usernames.
+Auth0 does not include `preferred_username` in tokens by default. prmana needs this claim to map OIDC identity to Unix usernames.
 
 #### Option A: Auth0 Action (Recommended)
 
@@ -97,10 +97,10 @@ Actions are the modern way to customize Auth0 behavior.
 
 ```javascript
 /**
- * Add preferred_username claim for unix-oidc compatibility
+ * Add preferred_username claim for prmana compatibility
  *
  * This action adds the preferred_username claim to both the ID token
- * and access token, which unix-oidc uses to map OIDC identity to
+ * and access token, which prmana uses to map OIDC identity to
  * Unix usernames.
  */
 exports.onExecutePostLogin = async (event, api) => {
@@ -119,7 +119,7 @@ exports.onExecutePostLogin = async (event, api) => {
   const username = customUsername || nickname || emailUsername;
 
   if (username) {
-    // Add to ID token (used by unix-oidc)
+    // Add to ID token (used by prmana)
     api.idToken.setCustomClaim('preferred_username', username);
 
     // Add to access token (useful for APIs)
@@ -230,7 +230,7 @@ For importing many users, use Auth0's bulk import:
 
 ### Step 6: Get Configuration Values
 
-Gather the values needed for unix-oidc configuration:
+Gather the values needed for prmana configuration:
 
 1. **Issuer URL**: `https://YOUR-TENANT.auth0.com/`
    - Find your tenant name in the top-left of the dashboard
@@ -240,10 +240,10 @@ Gather the values needed for unix-oidc configuration:
 
 3. **Device Authorization Endpoint**: `https://YOUR-TENANT.auth0.com/oauth/device/code`
 
-Configure unix-oidc:
+Configure prmana:
 
 ```bash
-# /etc/unix-oidc/config.yaml
+# /etc/prmana/config.yaml
 oidc:
   issuer: "https://YOUR-TENANT.auth0.com/"
   client_id: "YOUR_CLIENT_ID"
@@ -375,7 +375,7 @@ ssh alice@your-server.example.com
 3. Test the Action using Auth0's built-in testing
 4. Check the Action logs for errors: **Monitoring** > **Logs**
 
-### "User not found" in unix-oidc
+### "User not found" in prmana
 
 **Cause**: The `preferred_username` doesn't match a local Unix user.
 
@@ -420,7 +420,7 @@ ssh alice@your-server.example.com
 
 ### Multi-Factor Authentication
 
-Auth0 supports MFA which integrates well with unix-oidc's step-up authentication:
+Auth0 supports MFA which integrates well with prmana's step-up authentication:
 
 1. Navigate to **Security** > **Multi-factor Auth**
 2. Enable your preferred factors (Push, OTP, WebAuthn)
@@ -431,7 +431,7 @@ Auth0 supports MFA which integrates well with unix-oidc's step-up authentication
 If using a custom domain with Auth0:
 
 1. Your issuer URL will be `https://auth.yourdomain.com/`
-2. Update unix-oidc configuration accordingly
+2. Update prmana configuration accordingly
 3. All endpoints use the custom domain
 
 ### Enterprise Connections
@@ -440,7 +440,7 @@ Auth0 can federate to enterprise IdPs:
 
 1. Navigate to **Authentication** > **Enterprise**
 2. Add connections for SAML, Azure AD, Google Workspace, etc.
-3. Users from these connections can authenticate to unix-oidc
+3. Users from these connections can authenticate to prmana
 
 ### Tenant Regions
 
@@ -460,4 +460,4 @@ Use the correct regional domain in your configuration.
 - [Auth0 Device Authorization Flow Documentation](https://auth0.com/docs/get-started/authentication-and-authorization-flow/device-authorization-flow)
 - [Auth0 Actions Documentation](https://auth0.com/docs/customize/actions)
 - [Auth0 Token Customization](https://auth0.com/docs/secure/tokens/json-web-tokens/create-custom-claims)
-- [unix-oidc Documentation](../../../docs/)
+- [prmana Documentation](../../../docs/)

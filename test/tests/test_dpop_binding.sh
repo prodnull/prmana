@@ -10,11 +10,11 @@
 
 set -e
 
-# Configuration (env vars with defaults matching unix-oidc-test realm)
+# Configuration (env vars with defaults matching prmana-test realm)
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${REALM:-unix-oidc-test}"
-CLIENT_ID="${CLIENT_ID:-unix-oidc}"
-CLIENT_SECRET="${CLIENT_SECRET:-unix-oidc-test-secret}"
+REALM="${REALM:-prmana-test}"
+CLIENT_ID="${CLIENT_ID:-prmana}"
+CLIENT_SECRET="${CLIENT_SECRET:-prmana-test-secret}"
 TEST_USERNAME="${TEST_USERNAME:-testuser}"
 TEST_PASSWORD="${TEST_PASSWORD:-testpass}"
 

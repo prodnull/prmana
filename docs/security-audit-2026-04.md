@@ -2,13 +2,13 @@
 
 **Audit Date:** 2026-04-08/09
 **Reviewers:** Codex (source audit), Gemini (architectural review), Claude (implementation + cross-examination)
-**Scope:** Full source review of pam-unix-oidc and unix-oidc-agent crates
+**Scope:** Full source review of pam-prmana and prmana-agent crates
 
 ---
 
 ## Executive Summary
 
-A three-model adversarial security review identified 5 findings across the unix-oidc codebase. Four findings were fixed in the same session; one was accepted as inherent to the design model with documented mitigations and a v3.1 hardening plan.
+A three-model adversarial security review identified 5 findings across the prmana codebase. Four findings were fixed in the same session; one was accepted as inherent to the design model with documented mitigations and a v3.1 hardening plan.
 
 | # | Severity | Finding | Status | Commit |
 |---|----------|---------|--------|--------|
@@ -33,7 +33,7 @@ Additionally, Phase 31 (Security Hardening Sweep) addressed 5 categories of proa
 ## Finding 1 (High): Introspection Cache Key Collision
 
 **Reporter:** Codex
-**File:** `pam-unix-oidc/src/oidc/introspection.rs`
+**File:** `pam-prmana/src/oidc/introspection.rs`
 **Risk:** A revoked token from Issuer A could inherit a cached `active=true` result from Issuer B if they shared a JTI value or token prefix.
 
 ### Root Cause
@@ -58,7 +58,7 @@ Cache key now includes the introspection endpoint URL as scope:
 ## Finding 2 (Medium): Agent IPC Same-UID Broker Authority
 
 **Reporter:** Codex
-**File:** `unix-oidc-agent/src/daemon/peer_cred.rs`, `socket.rs`
+**File:** `prmana-agent/src/daemon/peer_cred.rs`, `socket.rs`
 **Risk:** Any process running as the same UID can use the agent socket to request DPoP proofs, trigger token refresh, shut down the daemon, or wipe credentials.
 
 ### Assessment
@@ -91,12 +91,12 @@ If your threat model includes malware under the authenticated user:
 ## Finding 3 (Medium): Socket Hijacking in Sudo/Session PAM Paths
 
 **Reporter:** Codex
-**File:** `pam-unix-oidc/src/sudo.rs`, `pam-unix-oidc/src/lib.rs`
-**Risk:** In sudo and session-close PAM paths (running as root), the agent socket was resolved from user-controlled environment variables (`UNIX_OIDC_AGENT_SOCKET`, `XDG_RUNTIME_DIR`). An attacker could redirect root to a malicious socket.
+**File:** `pam-prmana/src/sudo.rs`, `pam-prmana/src/lib.rs`
+**Risk:** In sudo and session-close PAM paths (running as root), the agent socket was resolved from user-controlled environment variables (`PRMANA_AGENT_SOCKET`, `XDG_RUNTIME_DIR`). An attacker could redirect root to a malicious socket.
 
 ### Fix
 
-Socket path resolution now uses `uzers::get_current_uid()` to derive `/run/user/{uid}/unix-oidc-agent.sock`. Environment variable override is restricted to `#[cfg(feature = "test-mode")]`.
+Socket path resolution now uses `uzers::get_current_uid()` to derive `/run/user/{uid}/prmana-agent.sock`. Environment variable override is restricted to `#[cfg(feature = "test-mode")]`.
 
 ### Residual Risk
 
@@ -107,12 +107,12 @@ If `/run/user/{uid}/` is writable by an attacker (misconfigured system), the soc
 ## Finding 4 (Low): Env-Policy Override Bypasses Validation
 
 **Reporter:** Codex
-**File:** `pam-unix-oidc/src/policy/config.rs`
-**Risk:** `UNIX_OIDC_POLICY_YAML` environment variable could inject arbitrary policy, silently relaxing security enforcement (e.g., changing `strict` to `disabled`).
+**File:** `pam-prmana/src/policy/config.rs`
+**Risk:** `PRMANA_POLICY_YAML` environment variable could inject arbitrary policy, silently relaxing security enforcement (e.g., changing `strict` to `disabled`).
 
 ### Fix
 
-`UNIX_OIDC_POLICY_YAML` inline config restricted to `#[cfg(feature = "test-mode")]`. Production policy must come from the file-based path which runs through `load_from()` validation.
+`PRMANA_POLICY_YAML` inline config restricted to `#[cfg(feature = "test-mode")]`. Production policy must come from the file-based path which runs through `load_from()` validation.
 
 ### Codex Follow-Up (v2)
 
@@ -123,7 +123,7 @@ Codex noted that even in test-mode, the inline YAML path returns the config with
 ## Finding 5 (Low): Session File Permission TOCTOU Race
 
 **Reporter:** Codex
-**File:** `pam-unix-oidc/src/session/mod.rs`
+**File:** `pam-prmana/src/session/mod.rs`
 **Risk:** `File::create()` followed by `set_permissions(0o600)` has a brief window where the file exists with default umask permissions.
 
 ### Fix

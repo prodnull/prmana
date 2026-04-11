@@ -1,10 +1,10 @@
-# unix-oidc AWS Terraform Module
+# prmana AWS Terraform Module
 
-This Terraform module deploys an EC2 instance with unix-oidc pre-installed and configured for OIDC-based SSH authentication.
+This Terraform module deploys an EC2 instance with prmana pre-installed and configured for OIDC-based SSH authentication.
 
 ## Features
 
-- Creates an EC2 instance with unix-oidc PAM module installed
+- Creates an EC2 instance with prmana PAM module installed
 - Optionally creates a new VPC or uses an existing one
 - Configures security groups for SSH access
 - Auto-detects Ubuntu 22.04 LTS AMI
@@ -14,15 +14,15 @@ This Terraform module deploys an EC2 instance with unix-oidc pre-installed and c
 ## Quick Start
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/aws"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/aws"
 
   oidc_issuer = "https://login.example.com/realms/myorg"
   key_name    = "my-ssh-key"
 }
 
 output "ssh_command" {
-  value = module.unix_oidc.ssh_command
+  value = module.prmana.ssh_command
 }
 ```
 
@@ -37,15 +37,15 @@ output "ssh_command" {
 
 1. AWS credentials configured
 2. An SSH key pair created in AWS
-3. An OIDC provider configured with unix-oidc client
+3. An OIDC provider configured with prmana client
 
 ## Usage
 
 ### Basic Usage (Creates New VPC)
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/aws"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/aws"
 
   oidc_issuer = "https://login.example.com/realms/myorg"
   key_name    = "my-ssh-key"
@@ -55,8 +55,8 @@ module "unix_oidc" {
 ### Using Existing VPC
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/aws"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/aws"
 
   oidc_issuer = "https://login.example.com/realms/myorg"
   key_name    = "my-ssh-key"
@@ -70,12 +70,12 @@ module "unix_oidc" {
 ### Production Configuration
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/aws"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/aws"
 
   # OIDC Configuration
   oidc_issuer    = "https://login.example.com/realms/myorg"
-  oidc_client_id = "unix-oidc-prod"
+  oidc_client_id = "prmana-prod"
   enable_dpop    = true
 
   # Instance Configuration
@@ -102,8 +102,8 @@ module "unix_oidc" {
 ### Custom AMI
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/aws"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/aws"
 
   oidc_issuer = "https://login.example.com/realms/myorg"
   key_name    = "my-ssh-key"
@@ -119,12 +119,12 @@ module "unix_oidc" {
 |------|-------------|------|---------|:--------:|
 | oidc_issuer | OIDC issuer URL | `string` | n/a | yes |
 | key_name | SSH key pair name | `string` | n/a | yes |
-| oidc_client_id | OIDC client ID | `string` | `"unix-oidc"` | no |
-| install_agent | Install unix-oidc-agent | `bool` | `true` | no |
+| oidc_client_id | OIDC client ID | `string` | `"prmana"` | no |
+| install_agent | Install prmana-agent | `bool` | `true` | no |
 | enable_dpop | Enable DPoP token binding | `bool` | `true` | no |
 | instance_type | EC2 instance type | `string` | `"t3.micro"` | no |
 | ami_id | AMI ID (auto-detects Ubuntu 22.04 if empty) | `string` | `""` | no |
-| instance_name | Name tag for the instance | `string` | `"unix-oidc-server"` | no |
+| instance_name | Name tag for the instance | `string` | `"prmana-server"` | no |
 | root_volume_size | Root volume size in GB | `number` | `20` | no |
 | root_volume_type | Root volume type | `string` | `"gp3"` | no |
 | vpc_id | Existing VPC ID | `string` | `""` | no |
@@ -163,11 +163,11 @@ module "unix_oidc" {
 
 ## Post-Deployment
 
-After deployment, connect using the unix-oidc agent:
+After deployment, connect using the prmana agent:
 
 ```bash
 # Get your OIDC token (varies by IdP)
-export OIDC_TOKEN=$(unix-oidc-agent get-token)
+export OIDC_TOKEN=$(prmana-agent get-token)
 
 # SSH to the instance
 ssh -o "SetEnv OIDC_TOKEN=$OIDC_TOKEN" ubuntu@<instance-ip>
@@ -180,7 +180,7 @@ Or check the installation logs:
 ssh -i ~/.ssh/your-key.pem ubuntu@<instance-ip>
 
 # Check installation log
-sudo cat /var/log/unix-oidc-install.log
+sudo cat /var/log/prmana-install.log
 
 # Verify PAM module
 pamtester sshd ubuntu authenticate
@@ -201,10 +201,10 @@ pamtester sshd ubuntu authenticate
 2. Verify the instance has a public IP or you have VPN access
 3. Check instance state in AWS console
 
-### unix-oidc not working
+### prmana not working
 
 1. SSH with your key pair first
-2. Check installation log: `sudo cat /var/log/unix-oidc-install.log`
+2. Check installation log: `sudo cat /var/log/prmana-install.log`
 3. Verify PAM config: `cat /etc/pam.d/sshd`
 4. Test OIDC issuer: `curl -s $OIDC_ISSUER/.well-known/openid-configuration`
 
@@ -212,7 +212,7 @@ pamtester sshd ubuntu authenticate
 
 1. Verify your OIDC token is valid
 2. Check that `preferred_username` claim matches your Unix username
-3. Review unix-oidc logs: `sudo journalctl -u sshd | grep pam_unix_oidc`
+3. Review prmana logs: `sudo journalctl -u sshd | grep pam_prmana`
 
 ## License
 

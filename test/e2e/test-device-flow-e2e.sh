@@ -15,9 +15,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="unix-oidc-test"
-CLIENT_ID="unix-oidc"
-CLIENT_SECRET="unix-oidc-test-secret"
+REALM="prmana-test"
+CLIENT_ID="prmana"
+CLIENT_SECRET="prmana-test-secret"
 SCREENSHOTS_DIR="${SCRIPT_DIR}/screenshots"
 
 # Colors for output

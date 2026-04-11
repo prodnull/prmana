@@ -14,11 +14,11 @@ WORKDIR /build
 
 # Copy source
 COPY Cargo.toml Cargo.lock* ./
-COPY pam-unix-oidc ./pam-unix-oidc
-COPY unix-oidc-agent ./unix-oidc-agent
+COPY pam-prmana ./pam-prmana
+COPY prmana-agent ./prmana-agent
 COPY examples ./examples
 
 # Build
 RUN cargo build --release
 
-# Output is at /build/target/release/libpam_unix_oidc.so
+# Output is at /build/target/release/libpam_prmana.so

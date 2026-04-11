@@ -5,9 +5,9 @@
 * @unix-oidc-project
 
 # Security-critical code requires security review
-/pam-unix-oidc/src/dpop/ @unix-oidc-project
-/pam-unix-oidc/src/validation/ @unix-oidc-project
-/pam-unix-oidc/src/crypto/ @unix-oidc-project
+/pam-prmana/src/dpop/ @unix-oidc-project
+/pam-prmana/src/validation/ @unix-oidc-project
+/pam-prmana/src/crypto/ @unix-oidc-project
 SECURITY.md @unix-oidc-project
 
 # Documentation

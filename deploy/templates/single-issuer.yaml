@@ -3,11 +3,11 @@
 # The simplest production configuration. One IdP, DPoP enforced,
 # break-glass enabled.
 #
-# Usage: Copy to /etc/unix-oidc/policy.yaml and fill in your values.
+# Usage: Copy to /etc/prmana/policy.yaml and fill in your values.
 
 issuers:
   - issuer_url: "https://your-idp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     # client_secret: "your-secret-here"  # Uncomment for confidential clients
     dpop_enforcement: strict
 

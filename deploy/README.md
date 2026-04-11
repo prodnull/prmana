@@ -1,6 +1,6 @@
-# unix-oidc Deployment
+# prmana Deployment
 
-This directory contains comprehensive deployment automation for unix-oidc, supporting everything from quick demos to production infrastructure.
+This directory contains comprehensive deployment automation for prmana, supporting everything from quick demos to production infrastructure.
 
 ## Quick Start
 
@@ -27,8 +27,8 @@ Choose your path based on available time and goals:
 ```
 deploy/
 ├── installer/           # Standalone installer scripts
-│   ├── install.sh       # Install unix-oidc
-│   ├── uninstall.sh     # Remove unix-oidc
+│   ├── install.sh       # Install prmana
+│   ├── uninstall.sh     # Remove prmana
 │   └── demo.sh          # Run self-contained demo
 ├── quickstart/          # Getting started guides
 │   ├── 5-minute-demo.md
@@ -44,11 +44,11 @@ deploy/
 │   ├── gcp/             # Google Cloud deployment
 │   └── azure/           # Azure deployment
 ├── ansible/             # Ansible role
-│   └── roles/unix_oidc/
+│   └── roles/prmana/
 ├── chef/                # Chef cookbook
-│   └── cookbooks/unix_oidc/
+│   └── cookbooks/prmana/
 ├── puppet/              # Puppet module
-│   └── modules/unix_oidc/
+│   └── modules/prmana/
 └── vagrant/             # Vagrant development images
     ├── minimal/         # Minimal testing VM
     └── demo/            # Full demo with Keycloak
@@ -56,34 +56,34 @@ deploy/
 
 ## Installer Scripts
 
-The installer scripts provide the quickest path to getting unix-oidc running.
+The installer scripts provide the quickest path to getting prmana running.
 
 ### install.sh
 
-Install unix-oidc on a Linux server:
+Install prmana on a Linux server:
 
 ```bash
 # Basic installation
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh | bash
 
 # With configuration options
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh | bash -s -- \
   --issuer https://your-idp.example.com \
   --client-id your-client-id
 
 # Dry run (preview what would happen)
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | bash -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh | bash -s -- --dry-run
 ```
 
 ### uninstall.sh
 
-Completely remove unix-oidc:
+Completely remove prmana:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/uninstall.sh | bash
 
 # Preview removal
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/uninstall.sh | bash -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/uninstall.sh | bash -s -- --dry-run
 ```
 
 ### demo.sh
@@ -91,7 +91,7 @@ curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/inst
 Run a self-contained demo with Keycloak:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/demo.sh | bash
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/demo.sh | bash
 ```
 
 ## IdP Templates
@@ -126,14 +126,14 @@ Infrastructure as Code for cloud deployments.
 
 ### Shared Module
 
-The `modules/unix-oidc-instance` module provides a cloud-agnostic base:
+The `modules/prmana-instance` module provides a cloud-agnostic base:
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/modules/unix-oidc-instance"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/modules/prmana-instance"
 
   oidc_issuer    = "https://your-idp.example.com"
-  oidc_client_id = "unix-oidc"
+  oidc_client_id = "prmana"
 }
 ```
 
@@ -148,12 +148,12 @@ module "unix_oidc" {
 ### Example: AWS Deployment
 
 ```hcl
-module "unix_oidc_server" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/aws"
+module "prmana_server" {
+  source = "github.com/prodnull/prmana//deploy/terraform/aws"
 
   instance_type  = "t3.medium"
   oidc_issuer    = "https://your-idp.example.com"
-  oidc_client_id = "unix-oidc"
+  oidc_client_id = "prmana"
 
   # Optional
   vpc_id    = "vpc-12345678"
@@ -167,7 +167,7 @@ See [terraform/aws/README.md](terraform/aws/README.md) for full documentation.
 
 ### Ansible
 
-The Ansible role installs and configures unix-oidc.
+The Ansible role installs and configures prmana.
 
 **Requirements:**
 - Ansible 2.9+
@@ -177,12 +177,12 @@ The Ansible role installs and configures unix-oidc.
 
 ```bash
 # Add to requirements.yml
-- src: https://github.com/prodnull/unix-oidc
-  name: unix_oidc
+- src: https://github.com/prodnull/prmana
+  name: prmana
   path: deploy/ansible/roles
 
 # Or copy directly
-cp -r deploy/ansible/roles/unix_oidc /etc/ansible/roles/
+cp -r deploy/ansible/roles/prmana /etc/ansible/roles/
 ```
 
 **Usage:**
@@ -190,19 +190,19 @@ cp -r deploy/ansible/roles/unix_oidc /etc/ansible/roles/
 ```yaml
 - hosts: servers
   roles:
-    - role: unix_oidc
+    - role: prmana
       vars:
-        unix_oidc_issuer: "https://your-idp.example.com"
-        unix_oidc_client_id: "unix-oidc"
-        unix_oidc_enable_ssh: true
-        unix_oidc_enable_sudo: true
+        prmana_issuer: "https://your-idp.example.com"
+        prmana_client_id: "prmana"
+        prmana_enable_ssh: true
+        prmana_enable_sudo: true
 ```
 
-See [ansible/roles/unix_oidc/README.md](ansible/roles/unix_oidc/README.md) for full documentation.
+See [ansible/roles/prmana/README.md](ansible/roles/prmana/README.md) for full documentation.
 
 ### Chef
 
-The Chef cookbook installs and configures unix-oidc.
+The Chef cookbook installs and configures prmana.
 
 **Requirements:**
 - Chef Infra Client 16+
@@ -212,29 +212,29 @@ The Chef cookbook installs and configures unix-oidc.
 
 ```ruby
 # In Berksfile
-cookbook 'unix_oidc', git: 'https://github.com/prodnull/unix-oidc', rel: 'deploy/chef/cookbooks/unix_oidc'
+cookbook 'prmana', git: 'https://github.com/prodnull/prmana', rel: 'deploy/chef/cookbooks/prmana'
 
 # Or copy directly
-cp -r deploy/chef/cookbooks/unix_oidc /var/chef/cookbooks/
+cp -r deploy/chef/cookbooks/prmana /var/chef/cookbooks/
 ```
 
 **Usage:**
 
 ```ruby
 # In a recipe
-include_recipe 'unix_oidc::default'
+include_recipe 'prmana::default'
 
 # Or with attributes
-node.default['unix_oidc']['oidc_issuer'] = 'https://your-idp.example.com'
-node.default['unix_oidc']['oidc_client_id'] = 'unix-oidc'
-include_recipe 'unix_oidc::default'
+node.default['prmana']['oidc_issuer'] = 'https://your-idp.example.com'
+node.default['prmana']['oidc_client_id'] = 'prmana'
+include_recipe 'prmana::default'
 ```
 
-See [chef/cookbooks/unix_oidc/README.md](chef/cookbooks/unix_oidc/README.md) for full documentation.
+See [chef/cookbooks/prmana/README.md](chef/cookbooks/prmana/README.md) for full documentation.
 
 ### Puppet
 
-The Puppet module installs and configures unix-oidc.
+The Puppet module installs and configures prmana.
 
 **Requirements:**
 - Puppet 6+
@@ -244,24 +244,24 @@ The Puppet module installs and configures unix-oidc.
 
 ```bash
 # Install from Puppet Forge (future)
-puppet module install cbchhaya-unix_oidc
+puppet module install cbchhaya-prmana
 
 # Or copy directly
-cp -r deploy/puppet/modules/unix_oidc /etc/puppetlabs/code/environments/production/modules/
+cp -r deploy/puppet/modules/prmana /etc/puppetlabs/code/environments/production/modules/
 ```
 
 **Usage:**
 
 ```puppet
-class { 'unix_oidc':
+class { 'prmana':
   oidc_issuer    => 'https://your-idp.example.com',
-  oidc_client_id => 'unix-oidc',
+  oidc_client_id => 'prmana',
   enable_ssh     => true,
   enable_sudo    => true,
 }
 ```
 
-See [puppet/modules/unix_oidc/README.md](puppet/modules/unix_oidc/README.md) for full documentation.
+See [puppet/modules/prmana/README.md](puppet/modules/prmana/README.md) for full documentation.
 
 ## Vagrant Images
 
@@ -269,7 +269,7 @@ Vagrant images for local development and testing.
 
 ### Minimal Image
 
-A bare-bones Ubuntu VM with unix-oidc pre-installed:
+A bare-bones Ubuntu VM with prmana pre-installed:
 
 ```bash
 cd deploy/vagrant/minimal
@@ -277,7 +277,7 @@ vagrant up
 vagrant ssh
 ```
 
-Best for: Testing unix-oidc installation on a clean system.
+Best for: Testing prmana installation on a clean system.
 
 See [vagrant/minimal/README.md](vagrant/minimal/README.md) for details.
 
@@ -313,9 +313,9 @@ See [vagrant/demo/README.md](vagrant/demo/README.md) for details.
 
 | Your Team Uses | Start With |
 |----------------|------------|
-| Ansible | `ansible/roles/unix_oidc` |
-| Chef | `chef/cookbooks/unix_oidc` |
-| Puppet | `puppet/modules/unix_oidc` |
+| Ansible | `ansible/roles/prmana` |
+| Chef | `chef/cookbooks/prmana` |
+| Puppet | `puppet/modules/prmana` |
 | Terraform | `terraform/aws/`, `terraform/gcp/`, or `terraform/azure/` |
 | None of the above | Installer script |
 
@@ -337,7 +337,7 @@ Before going to production, ensure you have:
 - [ ] **Audit logging enabled** - Sending logs to your SIEM
 - [ ] **Fallback authentication** - Break-glass access configured
 - [ ] **Monitoring** - Alerting on authentication failures
-- [ ] **Backup configuration** - `/etc/unix-oidc/` backed up
+- [ ] **Backup configuration** - `/etc/prmana/` backed up
 - [ ] **Tested failover** - What happens when IdP is unreachable?
 - [ ] **Documentation** - Runbooks for your operations team
 
@@ -345,6 +345,6 @@ See [docs/security-guide.md](../docs/security-guide.md) for detailed hardening g
 
 ## Getting Help
 
-- **Issues**: [GitHub Issues](https://github.com/prodnull/unix-oidc/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/prodnull/unix-oidc/discussions)
+- **Issues**: [GitHub Issues](https://github.com/prodnull/prmana/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/prodnull/prmana/discussions)
 - **Security**: See [SECURITY.md](../SECURITY.md) for vulnerability reporting

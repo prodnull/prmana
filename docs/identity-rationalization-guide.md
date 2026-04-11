@@ -1,11 +1,11 @@
 # Identity Rationalization Guide
 
-**Deploying unix-oidc alongside FreeIPA and Azure Entra ID**
+**Deploying prmana alongside FreeIPA and Azure Entra ID**
 
 **Target audience:** Enterprise identity architects and Linux system administrators managing mixed
 Active Directory, FreeIPA, and cloud identity (Azure Entra ID, Okta) environments.
 
-**What this guide covers:** How to configure unix-oidc when FreeIPA and Entra coexist, how OIDC
+**What this guide covers:** How to configure prmana when FreeIPA and Entra coexist, how OIDC
 token claims map to Unix UIDs, why groups always come from SSSD, and how to audit and revoke access
 when an employee departs.
 
@@ -54,12 +54,12 @@ To revoke Alice's access you must:
 - Compliance audits ("show me who could access production last December") require parsing logs
   from dozens of sources
 
-### The unix-oidc Approach
+### The prmana Approach
 
-unix-oidc replaces SSH key authentication with OIDC token authentication:
+prmana replaces SSH key authentication with OIDC token authentication:
 
 ```
-Traditional                               unix-oidc
+Traditional                               prmana
 ───────────────────────────────────────   ─────────────────────────────────────────
 authorized_keys on every server           Identity Provider (Keycloak/Entra) is the
                                           single source of truth
@@ -80,7 +80,7 @@ User's Machine                              Linux Server
 ┌────────────────────────────────┐         ┌──────────────────────────────┐
 │  oidc-ssh-agent                │         │  sshd                        │
 │  ┌──────────────────────────┐  │         │  ┌──────────────────────┐   │
-│  │ OIDC access token        │  │─SSH────▶│  │ PAM (pam_unix_oidc)  │   │
+│  │ OIDC access token        │  │─SSH────▶│  │ PAM (pam_prmana)  │   │
 │  │ DPoP proof (per-request) │  │         │  │ Token + DPoP verify  │   │
 │  └──────────────────────────┘  │         │  └──────────┬───────────┘   │
 │         ▲                      │         │             │               │
@@ -98,7 +98,7 @@ User's Machine                              Linux Server
 1. Disable her account in the IdP (Keycloak or Entra)
 2. Her active tokens expire within their TTL (default ≤ 1 hour)
 3. If you need immediate revocation: enable token introspection (see §6.2)
-4. Audit log query: `jq 'select(.username=="alice")' /var/log/unix-oidc/audit.log`
+4. Audit log query: `jq 'select(.username=="alice")' /var/log/prmana/audit.log`
 
 No archaeology. No per-server key hunting.
 
@@ -106,7 +106,7 @@ No archaeology. No per-server key hunting.
 
 ## 2. Design Anchor: SSSD is the Source of Truth for Groups
 
-> **Key decision (Phase 8, confirmed Phase 26):** Group membership in unix-oidc is **always**
+> **Key decision (Phase 8, confirmed Phase 26):** Group membership in prmana is **always**
 > resolved from SSSD/NSS. Groups in OIDC token claims are never used for access control decisions.
 
 ### Why SSSD, Not Token Claims?
@@ -119,7 +119,7 @@ could come from:
    Directory via `getgrouplist(3)`.
 2. **OIDC token claims** — a `groups` claim that some IdPs include in access tokens.
 
-unix-oidc uses **SSSD/NSS exclusively**. Here is why:
+prmana uses **SSSD/NSS exclusively**. Here is why:
 
 | Concern | Token claims | SSSD/NSS |
 |---------|-------------|----------|
@@ -131,7 +131,7 @@ unix-oidc uses **SSSD/NSS exclusively**. Here is why:
 
 ### Implementation Reference
 
-The `GroupSource` enum in `pam-unix-oidc/src/policy/config.rs` reflects this decision:
+The `GroupSource` enum in `pam-prmana/src/policy/config.rs` reflects this decision:
 
 ```rust
 /// Previously included a `TokenClaim` variant, removed in DEBT-03 (Phase 26):
@@ -155,7 +155,7 @@ SSSD/NSS. They cannot be Entra object IDs, Keycloak group paths, or token claim 
 ```yaml
 issuers:
   - issuer_url: "https://keycloak.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     group_mapping:
       source: nss_only        # default; explicit for clarity
 
@@ -176,7 +176,7 @@ group_mapping:
 
 ### SSSD Configuration Prerequisite
 
-Before unix-oidc group policies can work, SSSD must be configured and returning group membership
+Before prmana group policies can work, SSSD must be configured and returning group membership
 for your users. Verify this with:
 
 ```bash
@@ -194,7 +194,7 @@ sssctl domain-status corp.example.com
 
 ## 3. UPN-to-UID Mapping: Worked Examples
 
-The username mapping pipeline is implemented in `pam-unix-oidc/src/identity/mapper.rs`. It extracts
+The username mapping pipeline is implemented in `pam-prmana/src/identity/mapper.rs`. It extracts
 a claim from the OIDC token and applies a sequence of transforms to produce the Unix username.
 
 ### 3.1 FreeIPA Native Users (No Mapping Needed)
@@ -215,7 +215,7 @@ Unix user:   alice
 ```yaml
 issuers:
   - issuer_url: "https://keycloak.corp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     dpop_enforcement: strict
     # No claim_mapping section — defaults to preferred_username, no transforms
 ```
@@ -265,7 +265,7 @@ issuers:
         - lowercase                     # normalize case (Entra may capitalize)
 ```
 
-**Implementation:** `UsernameTransform::StripDomain` in `pam-unix-oidc/src/identity/mapper.rs`
+**Implementation:** `UsernameTransform::StripDomain` in `pam-prmana/src/identity/mapper.rs`
 splits on `@` and returns the local part. If the value contains no `@`, it is returned unchanged.
 
 **Important: `allow_unsafe_identity_pipeline`**
@@ -322,7 +322,7 @@ so ReDoS attacks are not possible.
 
 ### 3.5 Identity Collision Detection
 
-unix-oidc validates at config-load time that the transform pipeline is injective — that no two
+prmana validates at config-load time that the transform pipeline is injective — that no two
 IdP identities can map to the same local Unix user. When `strip_domain` is used with
 `allow_unsafe_identity_pipeline: false` (the safe default), the following is a hard-fail:
 
@@ -331,7 +331,7 @@ alice@corp.example.com  → strip_domain → alice   ← collision!
 alice@other.example.com → strip_domain → alice   ← collision!
 ```
 
-If you configure two issuers where the same local username could result from both, unix-oidc
+If you configure two issuers where the same local username could result from both, prmana
 refuses to start with a `PolicyError::ConfigError` describing the collision.
 
 **Resolution options:**
@@ -374,7 +374,7 @@ security_modes:
 
 issuers:
   - issuer_url: "https://keycloak.corp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     dpop_enforcement: strict
     allowed_algorithms:
       - ES256
@@ -405,8 +405,8 @@ ipa_domain = corp.example.com
 **Architecture:**
 
 ```
-FreeIPA users → Keycloak → unix-oidc  (issuer 1)
-Entra users   → Entra    → unix-oidc  (issuer 2)
+FreeIPA users → Keycloak → prmana  (issuer 1)
+Entra users   → Entra    → prmana  (issuer 2)
                               │
                          SSSD/NSS (group resolution for both)
                          ┌──────────────────────────────┐
@@ -420,7 +420,7 @@ This pattern supports a migration period or permanent coexistence where FreeIPA 
 users both need SSH access to the same Linux servers.
 
 **Critical requirements:**
-- FreeIPA UIDs and Entra UIDs must not collide. If `alice` exists in both, unix-oidc cannot
+- FreeIPA UIDs and Entra UIDs must not collide. If `alice` exists in both, prmana cannot
   distinguish which `alice` authenticated. Use domain-namespaced UIDs (e.g., FreeIPA: `alice`,
   Entra: `alice-corp`) or explicit static maps.
 - Both sets of users must exist in SSSD/NSS for group policy to work.
@@ -436,7 +436,7 @@ security_modes:
 issuers:
   # Issuer 1: FreeIPA users via Keycloak
   - issuer_url: "https://keycloak.corp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     dpop_enforcement: strict
     allowed_algorithms:
       - ES256
@@ -486,7 +486,7 @@ ad_server = dc01.corp.example.com
 **Architecture:**
 
 ```
-Azure Entra ID users → Entra → unix-oidc
+Azure Entra ID users → Entra → prmana
                                     │
                                SSSD (Entra Domain Services or AD sync)
 ```
@@ -553,7 +553,7 @@ Active Directory           FreeIPA
 **Setup:** See [FreeIPA cross-forest trust documentation](https://www.freeipa.org/page/Trusts).
 
 **Pros:**
-- Transparent to unix-oidc — group membership is correct from day one
+- Transparent to prmana — group membership is correct from day one
 - Changes to AD group membership appear in SSSD within the cache TTL (typically 5 minutes)
 - Supports complex multi-forest enterprise environments
 
@@ -663,7 +663,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ### 6.1 Finding All Access for a Departing User
 
-unix-oidc emits structured audit events for every authentication attempt. Each event includes:
+prmana emits structured audit events for every authentication attempt. Each event includes:
 
 ```json
 {
@@ -681,32 +681,32 @@ unix-oidc emits structured audit events for every authentication attempt. Each e
 
 ```bash
 # JSON audit log (structured output)
-jq 'select(.username == "alice")' /var/log/unix-oidc/audit.log.json \
+jq 'select(.username == "alice")' /var/log/prmana/audit.log.json \
   | jq 'select(.timestamp > "2026-02-14T00:00:00Z")'
 
 # With date filtering and summary
 jq -r 'select(.username == "alice") | [.timestamp, .event_type, .server, .source_ip] | @tsv' \
-  /var/log/unix-oidc/audit.log.json \
+  /var/log/prmana/audit.log.json \
   | sort
 
 # Count events per server
-jq -r 'select(.username == "alice") | .server' /var/log/unix-oidc/audit.log.json \
+jq -r 'select(.username == "alice") | .server' /var/log/prmana/audit.log.json \
   | sort | uniq -c | sort -rn
 ```
 
 **Syslog (fallback if JSON log is not configured):**
 ```bash
 # Search syslog for alice's authentication events
-grep 'unix-oidc.*alice' /var/log/auth.log | grep -E 'AUTH_SUCCESS|AUTH_FAILURE|SUDO_STEPUP'
+grep 'prmana.*alice' /var/log/auth.log | grep -E 'AUTH_SUCCESS|AUTH_FAILURE|SUDO_STEPUP'
 
 # Across multiple servers (requires log aggregation — see §6.3)
-journalctl -u sshd --since "30 days ago" | grep 'unix_oidc.*alice'
+journalctl -u sshd --since "30 days ago" | grep 'prmana.*alice'
 ```
 
 **Find all sudo step-up events for alice:**
 ```bash
 jq 'select(.username == "alice" and .event_type == "SUDO_STEPUP")' \
-  /var/log/unix-oidc/audit.log.json
+  /var/log/prmana/audit.log.json
 ```
 
 **Verify no sessions remain open after offboarding:**
@@ -714,7 +714,7 @@ jq 'select(.username == "alice" and .event_type == "SUDO_STEPUP")' \
 # Sessions opened after offboarding timestamp
 OFFBOARD_TS="2026-03-15T17:00:00Z"
 jq "select(.username == \"alice\" and .event_type == \"AUTH_SUCCESS\" and .timestamp > \"$OFFBOARD_TS\")" \
-  /var/log/unix-oidc/audit.log.json
+  /var/log/prmana/audit.log.json
 ```
 
 ### 6.2 Revoking Access
@@ -740,13 +740,13 @@ Configure token introspection to poll the IdP's revocation endpoint:
 # policy.yaml
 issuers:
   - issuer_url: "https://keycloak.corp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     # token_introspection is planned — see docs/standards-compliance-matrix.md
     # For immediate revocation today: reduce token TTL at IdP level
     jwks_cache_ttl_secs: 60   # Reduces key cache window
 ```
 
-**Current limitation:** unix-oidc v2.2 does not implement token introspection. The effective
+**Current limitation:** prmana v2.2 does not implement token introspection. The effective
 revocation window is the token TTL configured at the IdP level. For high-security environments,
 configure the IdP to issue short-lived tokens (5-15 minutes). This is the recommended
 configuration for SSH access regardless of revocation requirements.
@@ -772,7 +772,7 @@ sss_cache -u alice         # Invalidate user cache for alice
 ### 6.3 Audit Log Query Examples for SIEM Integration
 
 For log aggregation tools (Splunk, Elastic, Loki), structure queries around the OCSF fields
-emitted by unix-oidc:
+emitted by prmana:
 
 ```
 # Find all auth events for alice across all servers
@@ -788,7 +788,7 @@ event_type="SUDO_STEPUP" AND timestamp:[now-7d TO now] | stats count by username
 username IN offboarded_users_list AND event_type="AUTH_SUCCESS"
 ```
 
-The HMAC chain in unix-oidc v2.2 audit logs covers every event field (including OCSF enrichment).
+The HMAC chain in prmana v2.2 audit logs covers every event field (including OCSF enrichment).
 This means the log sequence cannot be tampered with or events deleted without breaking the chain.
 See `docs/` for audit verification instructions.
 
@@ -805,11 +805,11 @@ See `docs/` for audit verification instructions.
 | DPoP validation failure on Entra tokens | Entra uses SHR (Signed HTTP Requests), not RFC 9449 DPoP | Set `dpop_enforcement: disabled` on the Entra issuer. Entra's SHR is not interoperable with RFC 9449. |
 | ACR mismatch between issuers | Keycloak and Entra use different ACR value strings | Use `acr_mapping.mappings` to normalize IdP-specific ACR values. Or set `enforcement: warn` and `required_acr: null` for the Entra issuer if ACR is not enforced there. |
 | `preferred_username` missing from Entra token | Optional claim not configured in app registration | Add optional claim in Entra portal → Token configuration → Access token → preferred_username. See `docs/entra-setup-guide.md` Step 5. |
-| Token audience mismatch | Entra app configured with Application ID URI (`api://...`) | Set `expected_audience: "api://unix-oidc"` in the Entra issuer config. See `docs/entra-setup-guide.md` §Verify Token Claims. |
+| Token audience mismatch | Entra app configured with Application ID URI (`api://...`) | Set `expected_audience: "api://prmana"` in the Entra issuer config. See `docs/entra-setup-guide.md` §Verify Token Claims. |
 | FreeIPA user works but Entra user denied | Two-issuer policy only matching first issuer | Verify `issuer_url` for Entra issuer exactly matches `iss` claim. Check with `jq .iss` on the token. |
-| alice@corp.example.com maps to wrong user | Multiple transforms producing unexpected result | Test transform pipeline with `UNIX_OIDC_TEST_MODE=1 pam-unix-oidc --dry-run --user alice@corp.example.com` (test-only binary). |
+| alice@corp.example.com maps to wrong user | Multiple transforms producing unexpected result | Test transform pipeline with `PRMANA_TEST_MODE=1 pam-prmana --dry-run --user alice@corp.example.com` (test-only binary). |
 | SSSD returns empty group list | SSSD not joined to domain, or cache not populated | Run `sssctl user-checks alice` and `sssctl domain-status`. Ensure SSSD is enrolled and online. |
-| Issuer marked degraded (auth fails) | JWKS endpoint unreachable for 3+ consecutive attempts | Check IdP connectivity from server: `curl -v https://idp.example.com/.well-known/openid-configuration`. Review issuer health files: `ls /run/unix-oidc/issuer-health/`. |
+| Issuer marked degraded (auth fails) | JWKS endpoint unreachable for 3+ consecutive attempts | Check IdP connectivity from server: `curl -v https://idp.example.com/.well-known/openid-configuration`. Review issuer health files: `ls /run/prmana/issuer-health/`. |
 
 ---
 
@@ -818,7 +818,7 @@ See `docs/` for audit verification instructions.
 ### Pattern A: FreeIPA-Only (Keycloak)
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 # Pattern A: FreeIPA users via Keycloak
 # Use case: greenfield deployment, no Microsoft dependency
 
@@ -827,7 +827,7 @@ security_modes:
 
 issuers:
   - issuer_url: "https://keycloak.corp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     dpop_enforcement: strict
     allowed_algorithms:
       - ES256         # ES256 only if Keycloak is configured for EC keys
@@ -852,7 +852,7 @@ break_glass:
 ### Pattern B: FreeIPA + Entra (Dual-Issuer)
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 # Pattern B: FreeIPA users + Entra users, dual-issuer
 # Use case: migration period or permanent coexistence
 
@@ -862,7 +862,7 @@ security_modes:
 issuers:
   # Issuer 1: FreeIPA users via Keycloak
   - issuer_url: "https://keycloak.corp.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     dpop_enforcement: strict
     allowed_algorithms:
       - ES256
@@ -900,7 +900,7 @@ break_glass:
 ### Pattern C: Entra-Only
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 # Pattern C: Entra-only, no FreeIPA
 # Use case: Azure-native enterprises
 
@@ -912,7 +912,7 @@ issuers:
     client_id: "YOUR_ENTRA_CLIENT_ID"
     dpop_enforcement: disabled
     allow_unsafe_identity_pipeline: true
-    # expected_audience: "api://unix-oidc"  # uncomment if Application ID URI is set
+    # expected_audience: "api://prmana"  # uncomment if Application ID URI is set
     claim_mapping:
       username_claim: email
       transforms:
@@ -938,10 +938,10 @@ break_glass:
 
 The username transform pipeline is implemented across two files:
 
-- **`pam-unix-oidc/src/identity/mapper.rs`** — `UsernameMapper`, `UsernameTransform`
+- **`pam-prmana/src/identity/mapper.rs`** — `UsernameMapper`, `UsernameTransform`
   (StripDomain, Lowercase, Regex), transform application and validation logic
 
-- **`pam-unix-oidc/src/policy/config.rs`** — `IssuerConfig`, `IdentityConfig`,
+- **`pam-prmana/src/policy/config.rs`** — `IssuerConfig`, `IdentityConfig`,
   `TransformConfig`, `GroupMappingConfig`, `GroupSource` (NssOnly), `AcrMappingConfig`
 
 These files are the authoritative implementation reference. If behavior described in this guide
@@ -949,5 +949,5 @@ conflicts with the code, the code takes precedence.
 
 ---
 
-*Guide version: 2026-03-16 — reflects unix-oidc v2.2 (Phase 26 SSSD-only group model,
+*Guide version: 2026-03-16 — reflects prmana v2.2 (Phase 26 SSSD-only group model,
 Phase 27 issuer health and audit, Phase 28 identity rationalization DOC-02).*

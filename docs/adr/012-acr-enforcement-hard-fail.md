@@ -8,7 +8,7 @@ Accepted
 
 Some issuers attach an Authentication Context Class Reference (ACR) claim describing
 the assurance level of the authentication event. When an operator configures
-`required_acr`, unix-oidc must choose whether non-matching tokens are rejected or
+`required_acr`, prmana must choose whether non-matching tokens are rejected or
 merely logged.
 
 Two approaches were considered:

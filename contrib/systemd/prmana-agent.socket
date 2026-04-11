@@ -1,0 +1,13 @@
+[Unit]
+Description=OIDC Authentication Agent Socket
+Documentation=https://github.com/prodnull/unix-oidc
+
+[Socket]
+# %t expands to $XDG_RUNTIME_DIR (per-user runtime directory, e.g. /run/user/1000)
+# SocketMode=0600 ensures only the owning user can connect — PAM module and SSH client
+# run as the same UID, so this does not impede normal operation.
+ListenStream=%t/prmana-agent.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

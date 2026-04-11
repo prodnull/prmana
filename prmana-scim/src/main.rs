@@ -1,0 +1,117 @@
+//! prmana-scim: SCIM 2.0 provisioning service for prmana.
+//!
+//! Provides RFC 7644 SCIM protocol endpoints for automated user lifecycle
+//! management. Designed to run as a privileged service that receives
+//! provisioning webhooks from OIDC identity providers.
+//!
+//! # Security
+//!
+//! The service refuses to start unless one of:
+//! - `oidc_issuer` is configured (real JWT validation)
+//! - `--insecure-no-auth` is passed (development only, logs CRITICAL warning)
+
+use std::sync::Arc;
+
+use anyhow::{bail, Result};
+use clap::Parser;
+use figment::providers::Format; // Required for Yaml::file()
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{fmt, EnvFilter};
+
+use prmana_scim::auth::{AuthMode, JwksCache};
+use prmana_scim::config::ScimConfig;
+use prmana_scim::provisioner::Provisioner;
+use prmana_scim::routes::build_router;
+
+/// prmana-scim: SCIM 2.0 provisioning service for prmana
+#[derive(Parser)]
+#[command(name = "prmana-scim", version)]
+struct Args {
+    /// Config file path.
+    #[arg(long, default_value = "/etc/prmana/scim.yaml")]
+    config: String,
+
+    /// DANGEROUS: Disable Bearer token validation entirely.
+    /// For development/testing only. Production deployments MUST NOT use this flag.
+    #[arg(long, hide = true)]
+    insecure_no_auth: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("prmana_scim=info,warn"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer())
+        .init();
+
+    let args = Args::parse();
+
+    // Load config from YAML file via figment with env-var overrides.
+    // Missing file is not fatal when --insecure-no-auth is set (dev mode).
+    let config: ScimConfig = match figment::Figment::new()
+        .merge(figment::providers::Yaml::file(&args.config))
+        .merge(figment::providers::Env::prefixed("PRMANA_SCIM_").split("__"))
+        .extract()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            if args.insecure_no_auth {
+                tracing::warn!(
+                    config_path = %args.config,
+                    error = %e,
+                    "Config file not loadable — using defaults (--insecure-no-auth active)"
+                );
+                ScimConfig::default()
+            } else {
+                bail!(
+                    "Failed to load config from {}: {}\n\
+                     Ensure the config file exists or pass --insecure-no-auth for development.",
+                    args.config,
+                    e,
+                );
+            }
+        }
+    };
+
+    // Determine auth mode — refuse to start without explicit auth config
+    // or explicit bypass flag. This service can call useradd/userdel, so
+    // accepting any Bearer token is a production-blocking auth bypass.
+    let auth_mode = if args.insecure_no_auth {
+        tracing::error!("╔══════════════════════════════════════════════════════════════╗");
+        tracing::error!("║  CRITICAL: --insecure-no-auth is active.                   ║");
+        tracing::error!("║  Bearer token validation is DISABLED.                      ║");
+        tracing::error!("║  ANY request with a non-empty Bearer token will be         ║");
+        tracing::error!("║  accepted. DO NOT use this in production.                  ║");
+        tracing::error!("╚══════════════════════════════════════════════════════════════╝");
+        AuthMode::Insecure
+    } else if config.oidc_issuer.is_empty() {
+        bail!(
+            "oidc_issuer is not configured and --insecure-no-auth was not passed.\n\
+             The SCIM service refuses to start without authentication.\n\
+             Either configure oidc_issuer in {} or pass --insecure-no-auth for development.",
+            args.config,
+        );
+    } else {
+        tracing::info!(issuer = %config.oidc_issuer, "OIDC token validation enabled");
+        AuthMode::Validated {
+            issuer: config.oidc_issuer.clone(),
+            audience: config.oidc_audience.clone(),
+            jwks_cache: Arc::new(JwksCache::new(std::time::Duration::from_secs(
+                config.jwks_cache_ttl_secs,
+            ))),
+        }
+    };
+
+    let listen_addr = config.listen_addr.clone();
+    let provisioner = Arc::new(Provisioner::new(config));
+    let app = build_router(provisioner, auth_mode);
+
+    tracing::info!(addr = %listen_addr, "prmana-scim starting");
+
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}

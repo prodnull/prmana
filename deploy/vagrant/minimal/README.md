@@ -1,6 +1,6 @@
-# unix-oidc Minimal Vagrant Image
+# prmana Minimal Vagrant Image
 
-A minimal Vagrant environment with unix-oidc pre-installed, ready for integration with your own OIDC provider (BYOIDP - Bring Your Own Identity Provider).
+A minimal Vagrant environment with prmana pre-installed, ready for integration with your own OIDC provider (BYOIDP - Bring Your Own Identity Provider).
 
 ## Prerequisites
 
@@ -11,8 +11,8 @@ A minimal Vagrant environment with unix-oidc pre-installed, ready for integratio
 
 ```bash
 # Clone the repository (if not already done)
-git clone https://github.com/prodnull/unix-oidc.git
-cd unix-oidc/deploy/vagrant/minimal
+git clone https://github.com/prodnull/prmana.git
+cd prmana/deploy/vagrant/minimal
 
 # Start the VM
 vagrant up
@@ -24,8 +24,8 @@ vagrant ssh
 ## What's Included
 
 - Ubuntu 22.04 LTS base
-- unix-oidc PAM module and agent (placeholder for binary installation)
-- Configuration templates at `/etc/unix-oidc/`
+- prmana PAM module and agent (placeholder for binary installation)
+- Configuration templates at `/etc/prmana/`
 - Test user: `testuser` / `testpass`
 - pamtester for PAM testing
 
@@ -33,11 +33,11 @@ vagrant ssh
 
 ### 1. Configure Your OIDC Provider
 
-Edit `/etc/unix-oidc/config.env` with your IdP settings:
+Edit `/etc/prmana/config.env` with your IdP settings:
 
 ```bash
 vagrant ssh
-sudo nano /etc/unix-oidc/config.env
+sudo nano /etc/prmana/config.env
 ```
 
 Example configurations:
@@ -45,7 +45,7 @@ Example configurations:
 **Keycloak:**
 ```bash
 OIDC_ISSUER="https://keycloak.example.com/realms/your-realm"
-OIDC_CLIENT_ID="unix-oidc"
+OIDC_CLIENT_ID="prmana"
 ```
 
 **Okta:**
@@ -66,11 +66,11 @@ OIDC_ISSUER="https://login.microsoftonline.com/{tenant-id}/v2.0"
 OIDC_CLIENT_ID="your-client-id"
 ```
 
-### 2. Install unix-oidc Binaries
+### 2. Install prmana Binaries
 
 ```bash
 vagrant ssh
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh | sudo bash
 ```
 
 ### 3. Apply PAM Configuration
@@ -79,13 +79,13 @@ curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/inst
 
 ```bash
 # Review the recommended configuration
-cat /etc/unix-oidc/pam.d-sshd.recommended
+cat /etc/prmana/pam.d-sshd.recommended
 
 # Backup existing config
 sudo cp /etc/pam.d/sshd /etc/pam.d/sshd.backup
 
-# Apply unix-oidc PAM config
-sudo cp /etc/unix-oidc/pam.d-sshd.recommended /etc/pam.d/sshd
+# Apply prmana PAM config
+sudo cp /etc/prmana/pam.d-sshd.recommended /etc/pam.d/sshd
 ```
 
 ## Testing
@@ -109,11 +109,11 @@ OIDC_TOKEN="your-access-token" ssh -p 2222 testuser@localhost
 ### Verify Configuration
 
 ```bash
-# Check unix-oidc configuration
-cat /etc/unix-oidc/config.env
+# Check prmana configuration
+cat /etc/prmana/config.env
 
 # Test OIDC issuer connectivity
-curl -s "$(grep OIDC_ISSUER /etc/unix-oidc/config.env | cut -d'=' -f2 | tr -d '"')/.well-known/openid-configuration" | jq
+curl -s "$(grep OIDC_ISSUER /etc/prmana/config.env | cut -d'=' -f2 | tr -d '"')/.well-known/openid-configuration" | jq
 ```
 
 ## Network Configuration
@@ -126,11 +126,11 @@ curl -s "$(grep OIDC_ISSUER /etc/unix-oidc/config.env | cut -d'=' -f2 | tr -d '"
 
 | Path | Description |
 |------|-------------|
-| `/etc/unix-oidc/config.env` | Main configuration file |
-| `/etc/unix-oidc/pam.d-sshd.recommended` | Recommended SSHD PAM config |
-| `/etc/unix-oidc/pam.d-sudo.recommended` | Recommended sudo PAM config |
-| `/lib/security/pam_unix_oidc.so` | PAM module (after installation) |
-| `/usr/local/bin/unix-oidc-agent` | Agent binary (after installation) |
+| `/etc/prmana/config.env` | Main configuration file |
+| `/etc/prmana/pam.d-sshd.recommended` | Recommended SSHD PAM config |
+| `/etc/prmana/pam.d-sudo.recommended` | Recommended sudo PAM config |
+| `/lib/security/pam_prmana.so` | PAM module (after installation) |
+| `/usr/local/bin/prmana-agent` | Agent binary (after installation) |
 
 ## Vagrant Commands
 
@@ -157,7 +157,7 @@ vagrant destroy
 
 ```bash
 # Check if the module exists
-ls -la /lib/security/pam_unix_oidc.so
+ls -la /lib/security/pam_prmana.so
 
 # Check PAM configuration syntax
 pamtester sshd testuser authenticate

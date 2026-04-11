@@ -1,6 +1,6 @@
 # Deployment Patterns
 
-unix-oidc is designed to work with any OIDC-compliant Identity Provider. This guide covers
+prmana is designed to work with any OIDC-compliant Identity Provider. This guide covers
 the most common deployment patterns and helps you choose the right one for your organization.
 
 ## Overview
@@ -15,11 +15,11 @@ the most common deployment patterns and helps you choose the right one for your 
 
 ## Pattern A: Direct to Cloud IdP
 
-**The simplest deployment.** Point unix-oidc directly at your existing cloud IdP.
+**The simplest deployment.** Point prmana directly at your existing cloud IdP.
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────────────┐
-│ Linux Host  │────>│  unix-oidc  │────>│   Cloud IdP         │
+│ Linux Host  │────>│  prmana  │────>│   Cloud IdP         │
 │             │     │  PAM Module │     │ (Azure AD/Auth0/    │
 │             │     │             │     │  Google/Okta)       │
 └─────────────┘     └─────────────┘     └─────────────────────┘
@@ -46,14 +46,14 @@ export OIDC_CLIENT_ID="<application-id>"
 
 **Azure AD App Registration:**
 1. Azure Portal → App registrations → New registration
-2. Name: `unix-oidc`
+2. Name: `prmana`
 3. Supported account types: Single tenant (or multi-tenant)
 4. Authentication → Advanced → Allow public client flows: **Yes**
 5. Token configuration → Add optional claim → `preferred_username`
 
 **Username Mapping:**
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 identity:
   username_claim: preferred_username  # or upn, email
   transforms:
@@ -120,7 +120,7 @@ export OIDC_CLIENT_ID="<client-id>"
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────────────┐
-│ Linux Host  │────>│  unix-oidc  │────>│   Self-hosted IdP   │
+│ Linux Host  │────>│  prmana  │────>│   Self-hosted IdP   │
 │             │     │  PAM Module │     │   (Keycloak/etc)    │
 └─────────────┘     └─────────────┘     └──────────┬──────────┘
                                                    │
@@ -168,16 +168,16 @@ services:
       - "8443:8443"
 ```
 
-**unix-oidc Configuration:**
+**prmana Configuration:**
 ```bash
 export OIDC_ISSUER="https://auth.example.com/realms/your-realm"
-export OIDC_CLIENT_ID="unix-oidc"
+export OIDC_CLIENT_ID="prmana"
 ```
 
 **Keycloak Realm Setup:**
 1. Create realm (e.g., `production`)
 2. User Federation → Add LDAP provider
-3. Clients → Create `unix-oidc` client
+3. Clients → Create `prmana` client
    - Client authentication: Off (public client)
    - OAuth 2.0 Device Authorization Grant: On
 4. Authentication → Configure step-up flows
@@ -206,7 +206,7 @@ export OIDC_CLIENT_ID="unix-oidc"
                                    ┌───>│     Azure AD        │
                                    │    └─────────────────────┘
 ┌─────────────┐     ┌─────────────┐     ┌─────────────────────┐
-│ Linux Host  │────>│  unix-oidc  │────>│   Keycloak Broker   │
+│ Linux Host  │────>│  prmana  │────>│   Keycloak Broker   │
 │             │     │  PAM Module │     │                     │
 └─────────────┘     └─────────────┘     └──────────┬──────────┘
                                                    │
@@ -229,11 +229,11 @@ export OIDC_CLIENT_ID="unix-oidc"
 ### How It Works
 
 1. User initiates SSH login
-2. unix-oidc contacts Keycloak (the broker)
+2. prmana contacts Keycloak (the broker)
 3. Keycloak shows identity provider selection (or auto-detects via email domain)
 4. User authenticates with their home IdP (Azure AD, Google, etc.)
 5. Keycloak normalizes claims and issues a token
-6. unix-oidc validates the Keycloak token
+6. prmana validates the Keycloak token
 
 ### Keycloak Identity Brokering Setup
 
@@ -253,11 +253,11 @@ Template: ${CLAIM.preferred_username | localpart}
 
 This transforms `alice@corp.com` → `alice` for all federated users.
 
-**unix-oidc Configuration:**
+**prmana Configuration:**
 ```bash
 # Always point to Keycloak, never to upstream IdPs
 export OIDC_ISSUER="https://keycloak.example.com/realms/production"
-export OIDC_CLIENT_ID="unix-oidc"
+export OIDC_CLIENT_ID="prmana"
 ```
 
 ### Advantages
@@ -317,10 +317,10 @@ Regardless of pattern, you need to map OIDC identities to Linux usernames.
 | UPN | `alice@corp.com` → `alice` | `identity.username_claim: upn` + `identity.transforms: [strip_domain]` |
 | Subject | `sub: abc123` → `abc123` | `identity.username_claim: sub` |
 
-### Configuring in unix-oidc
+### Configuring in prmana
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 identity:
   username_claim: preferred_username  # OIDC claim to extract username from
   transforms:
@@ -338,7 +338,7 @@ identity:
 3. Or create custom claim via Claims mapping policy
 
 **Keycloak - Protocol Mapper:**
-1. Clients → unix-oidc → Client scopes
+1. Clients → prmana → Client scopes
 2. Add mapper → User Attribute
 3. Name: `linux_username`, Claim: `unix_username`
 
@@ -378,7 +378,7 @@ identity:
 
 ### From Password-only SSH
 
-1. Deploy unix-oidc alongside existing PAM
+1. Deploy prmana alongside existing PAM
 2. Configure as `sufficient` (falls back to password)
 3. Test with pilot users
 4. Monitor adoption via audit logs
@@ -396,6 +396,6 @@ identity:
 
 ## Next Steps
 
-- [Installation Guide](installation.md) - Install unix-oidc
+- [Installation Guide](installation.md) - Install prmana
 - [Security Guide](security-guide.md) - Harden your deployment
 - [Testing Guide](testing.md) - Validate your configuration

@@ -6,7 +6,7 @@ Proposed
 
 ## Context
 
-When a user connects through a multi-hop SSH path (e.g., `user → jump-host-a → jump-host-b → target`), the unix-oidc-agent needs to request tokens with the correct audiences for each hop. Currently, the agent only accepts a single `target` parameter and has no knowledge of the full hop chain.
+When a user connects through a multi-hop SSH path (e.g., `user → jump-host-a → jump-host-b → target`), the prmana-agent needs to request tokens with the correct audiences for each hop. Currently, the agent only accepts a single `target` parameter and has no knowledge of the full hop chain.
 
 **Problem**: How does the client-side agent know what audiences to include in the initial token?
 
@@ -17,7 +17,7 @@ Per ADR-005, the token exchange flow requires:
 
 ## Decision
 
-We will implement **SSH config introspection** in unix-oidc-agent to automatically discover the hop chain from `~/.ssh/config` and generate tokens with appropriate audiences.
+We will implement **SSH config introspection** in prmana-agent to automatically discover the hop chain from `~/.ssh/config` and generate tokens with appropriate audiences.
 
 ### SSH Config Format
 
@@ -68,10 +68,10 @@ Response includes discovered hop chain from SSH config.
 
 ```bash
 # Automatic introspection
-unix-oidc-agent get-proof --target db-prod.example.com
+prmana-agent get-proof --target db-prod.example.com
 
 # Query what would be discovered
-unix-oidc-agent discover-audiences db-prod.example.com
+prmana-agent discover-audiences db-prod.example.com
 ```
 
 ## References

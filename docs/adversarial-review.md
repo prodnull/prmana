@@ -1,6 +1,6 @@
-# Adversarial Design Review: unix-oidc
+# Adversarial Design Review: prmana
 
-> **Methodology**: Three independent expert personas each examined the unix-oidc architecture from an adversarial angle. Each persona identified threats and gaps specific to their concern model. A cross-examination table consolidates findings, followed by prioritized recommendations. This review covers v2.0 (50/50 requirements complete) and is intended for iterative update as the system evolves.
+> **Methodology**: Three independent expert personas each examined the prmana architecture from an adversarial angle. Each persona identified threats and gaps specific to their concern model. A cross-examination table consolidates findings, followed by prioritized recommendations. This review covers v2.0 (50/50 requirements complete) and is intended for iterative update as the system evolves.
 
 ---
 
@@ -138,7 +138,7 @@ The JWKS endpoint URL is resolved from the OpenID Connect discovery document at 
 There is no tooling to generate a formatted compliance report (SOC2, FedRAMP, ISO 27001) from audit event data. Structured logs provide the raw evidence, but an auditor would need to query and format them manually.
 
 **Audit events + structured logs as SOC2 evidence — PARTIAL**
-The audit event schema covers the access control (CC6) and logical access (CC6.1, CC6.2) control domains. Change management, availability, and processing integrity controls require evidence from outside the unix-oidc scope (CI/CD pipeline, deployment records). Evidence collection is achievable but requires operational tooling investment.
+The audit event schema covers the access control (CC6) and logical access (CC6.1, CC6.2) control domains. Change management, availability, and processing integrity controls require evidence from outside the prmana scope (CI/CD pipeline, deployment records). Evidence collection is achievable but requires operational tooling investment.
 
 **Test coverage — EVIDENCE OF DUE DILIGENCE**
 Approximately 460 unit tests plus integration tests against live IdP instances (Keycloak, Auth0, Google Cloud Identity) provide documented evidence of pre-release validation. Security-specific test cases cover replay protection, algorithm confusion rejection, and expiration enforcement.
@@ -213,7 +213,7 @@ The introspection cache is bounded with entry count and TTL limits, preventing u
 ### Rollback Safety
 
 **PAM module disabled by one-line edit — MITIGATED**
-The PAM module is loaded via a single line in `/etc/pam.d/sshd`. Commenting out that line disables unix-oidc entirely and restores the prior authentication behavior. No package removal or system restart is required.
+The PAM module is loaded via a single line in `/etc/pam.d/sshd`. Commenting out that line disables prmana entirely and restores the prior authentication behavior. No package removal or system restart is required.
 
 **Documented rollback procedure — MITIGATED**
 CLAUDE.md contains a step-by-step rollback procedure including the `sed` command for in-place disable, full uninstall steps, and a reminder that break-glass provides immediate access during rollback if OIDC is the only working auth path at the time of the incident.
@@ -300,11 +300,11 @@ Expose a Prometheus scrape endpoint on a configurable local port (default: `127.
 Add an optional `tls_pin_sha256: [<hex>]` configuration field accepting a list of SubjectPublicKeyInfo SHA-256 hashes. When set, TLS connections to the IdP are rejected if the presented certificate's SPKI hash does not match. This is an opt-in control for environments with a threat model that includes CA compromise.
 
 **8. Centralized audit log shipping**
-Add optional syslog output (RFC 5424 structured data format) alongside the existing `tracing` output. This allows standard log forwarders (syslog-ng, rsyslog, Fluentd) to ship audit events to a SIEM without requiring custom integration. The unix-oidc side of this is a structured syslog formatter; the shipping infrastructure is out of scope.
+Add optional syslog output (RFC 5424 structured data format) alongside the existing `tracing` output. This allows standard log forwarders (syslog-ng, rsyslog, Fluentd) to ship audit events to a SIEM without requiring custom integration. The prmana side of this is a structured syslog formatter; the shipping infrastructure is out of scope.
 
 ---
 
 *Reviewed: 2026-03-12*
 *Methodology: Three-persona adversarial review — red team attacker, enterprise security architect, ops engineer*
-*Codebase: unix-oidc v2.0 — 50/50 requirements complete*
+*Codebase: prmana v2.0 — 50/50 requirements complete*
 *Standards references: RFC 9449 (DPoP), RFC 7009 (Token Revocation), NIST SP 800-63B §5.1.9, NIST SP 800-88 Rev 1 §2.5*

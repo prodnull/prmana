@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-unix-oidc emits audit events that are enriched into OCSF before being written to the
+prmana emits audit events that are enriched into OCSF before being written to the
 final audit sink. The integrity chain must be verifiable against what operators
 actually consume.
 

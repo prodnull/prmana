@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a new feature for unix-oidc
+description: Suggest a new feature for prmana
 title: "[Feature]: "
 labels: ["enhancement", "triage"]
 body:
@@ -22,7 +22,7 @@ body:
     attributes:
       label: Proposed Solution
       description: Describe the solution you'd like
-      placeholder: I would like unix-oidc to...
+      placeholder: I would like prmana to...
     validations:
       required: true
 
@@ -39,8 +39,8 @@ body:
       label: Component
       description: Which component would this affect?
       options:
-        - PAM Module (pam-unix-oidc)
-        - Client Agent (unix-oidc-agent)
+        - PAM Module (pam-prmana)
+        - Client Agent (prmana-agent)
         - Policy Engine
         - Device Flow
         - DPoP

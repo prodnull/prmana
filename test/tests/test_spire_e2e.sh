@@ -9,14 +9,14 @@
 # 4. SPIFFE ID maps to Unix username via configured strategy
 #
 # Requires: docker compose -f docker-compose.spire-test.yaml up -d
-# Environment: UNIX_OIDC_SPIRE_SOCKET (default: /tmp/spire-agent/public/api.sock)
+# Environment: PRMANA_SPIRE_SOCKET (default: /tmp/spire-agent/public/api.sock)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="docker-compose.spire-test.yaml"
-SPIRE_SOCKET="${UNIX_OIDC_SPIRE_SOCKET:-/tmp/spire-agent/public/api.sock}"
+SPIRE_SOCKET="${PRMANA_SPIRE_SOCKET:-/tmp/spire-agent/public/api.sock}"
 
 # Colors
 RED='\033[0;31m'
@@ -52,7 +52,7 @@ echo ""
 # ── Test 1: SpireSigner unit + integration tests ────────────────────────────
 
 echo "Test 1: SpireSigner Rust tests (unit + integration)..."
-if cargo test -p unix-oidc-agent --features spire --lib -- spire 2>/dev/null | grep -q "test result: ok"; then
+if cargo test -p prmana-agent --features spire --lib -- spire 2>/dev/null | grep -q "test result: ok"; then
     pass "SpireSigner unit tests"
 else
     fail "SpireSigner unit tests"
@@ -60,8 +60,8 @@ fi
 
 echo ""
 echo "Test 2: SpireSigner live SPIRE integration tests..."
-if UNIX_OIDC_SPIRE_SOCKET="$SPIRE_SOCKET" \
-    cargo test -p unix-oidc-agent --features spire -- --ignored spire 2>&1 | grep -q "test result: ok"; then
+if PRMANA_SPIRE_SOCKET="$SPIRE_SOCKET" \
+    cargo test -p prmana-agent --features spire -- --ignored spire 2>&1 | grep -q "test result: ok"; then
     pass "SpireSigner live SVID fetch + caching"
 else
     fail "SpireSigner live SVID fetch"
@@ -71,7 +71,7 @@ fi
 
 echo ""
 echo "Test 3: SPIFFE username mapping (PAM module)..."
-if cargo test -p pam-unix-oidc --lib -- spiffe 2>/dev/null | grep -q "test result: ok"; then
+if cargo test -p pam-prmana --lib -- spiffe 2>/dev/null | grep -q "test result: ok"; then
     pass "SPIFFE ID → Unix username mapping (all strategies)"
 else
     fail "SPIFFE username mapping tests"
@@ -81,7 +81,7 @@ fi
 
 echo ""
 echo "Test 4: Reserved username denylist enforcement..."
-if cargo test -p pam-unix-oidc --lib -- "reserved_username\|validate_username" 2>/dev/null | grep -q "test result: ok"; then
+if cargo test -p pam-prmana --lib -- "reserved_username\|validate_username" 2>/dev/null | grep -q "test result: ok"; then
     pass "Reserved username denylist (root, sshd, nobody, etc.)"
 else
     fail "Reserved username denylist"
@@ -91,7 +91,7 @@ fi
 
 echo ""
 echo "Test 5: DPoP proof generation (ephemeral keys, ADR-016)..."
-if cargo test -p unix-oidc-agent --features spire --lib -- "spire_signer.*proof" 2>/dev/null | grep -q "test result: ok"; then
+if cargo test -p prmana-agent --features spire --lib -- "spire_signer.*proof" 2>/dev/null | grep -q "test result: ok"; then
     pass "DPoP proofs from ephemeral keys (not SVID keys)"
 else
     fail "DPoP proof generation"
@@ -101,7 +101,7 @@ fi
 
 echo ""
 echo "Test 6: Workload API protobuf stubs..."
-if cargo test -p unix-oidc-agent --features spire --lib -- "workload_api" 2>/dev/null | grep -q "test result: ok"; then
+if cargo test -p prmana-agent --features spire --lib -- "workload_api" 2>/dev/null | grep -q "test result: ok"; then
     pass "FetchJWTSVID request/response protobuf round-trip"
 else
     fail "Protobuf stub tests"

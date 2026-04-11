@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd plist for prmana-agent
+     Managed by `prmana-agent install` — do not edit by hand.
+     To reinstall: prmana-agent install
+     To remove:    prmana-agent uninstall
+-->
+<plist version="1.0">
+<dict>
+    <!-- Unique reverse-DNS label; used as the service identifier in launchctl. -->
+    <key>Label</key>
+    <string>com.prmana.agent</string>
+
+    <!-- Program and arguments.  {{BINARY_PATH}} is substituted by `install` with the
+         absolute path returned by std::env::current_exe() (or --binary-path override).
+         The `serve` subcommand starts the daemon in foreground mode; launchd manages
+         process lifetime via KeepAlive.  No --socket flag is needed because the socket
+         is provided by launchd socket activation (Sockets dict below). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{BINARY_PATH}}</string>
+        <string>serve</string>
+    </array>
+
+    <!-- Restart the agent if it exits for any reason (crash, OOM, etc.).
+         This mirrors the Restart=on-failure behaviour of the systemd unit. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Start the agent immediately when the user logs in and on every boot.
+         Combined with KeepAlive this ensures the socket is always available. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- launchd-managed socket.  The kernel binds the socket before the agent starts,
+         so clients can connect before the first `prmana-agent serve` invocation.
+         The agent calls launch_activate_socket("Listeners") at startup to inherit
+         the pre-bound file descriptor (RFC 9449 §9.3 parallel to sd_listen_fds). -->
+    <key>Sockets</key>
+    <dict>
+        <!-- "Listeners" is the name passed to launch_activate_socket(). -->
+        <key>Listeners</key>
+        <dict>
+            <!-- Unix-domain socket; equivalent to AF_UNIX. -->
+            <key>SockFamily</key>
+            <string>Unix</string>
+
+            <!-- {{SOCKET_PATH}} is substituted with $TMPDIR/prmana-agent.sock.
+                 macOS sets $TMPDIR to a per-user directory under /var/folders/,
+                 so multiple users on the same host do not share a socket. -->
+            <key>SockPathName</key>
+            <string>{{SOCKET_PATH}}</string>
+
+            <!-- Owner-only permissions (0600 decimal = 384).
+                 Prevents other users from connecting to the agent socket. -->
+            <key>SockPathMode</key>
+            <integer>384</integer>
+        </dict>
+    </dict>
+
+    <!-- Redirect stdout and stderr to a per-user log file.
+         {{HOME}} is substituted with the user's home directory at install time.
+         Create ~/Library/Logs/ if absent before writing the plist. -->
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/Library/Logs/prmana-agent.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/Library/Logs/prmana-agent.log</string>
+</dict>
+</plist>

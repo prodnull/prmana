@@ -1,10 +1,10 @@
-# unix-oidc GCP Terraform Module
+# prmana GCP Terraform Module
 
-This Terraform module deploys a GCE instance with unix-oidc pre-installed and configured for OIDC-based SSH authentication.
+This Terraform module deploys a GCE instance with prmana pre-installed and configured for OIDC-based SSH authentication.
 
 ## Features
 
-- Creates a GCE instance with unix-oidc PAM module installed
+- Creates a GCE instance with prmana PAM module installed
 - Optionally creates a new VPC network or uses an existing one
 - Configures firewall rules for SSH access and OIDC outbound traffic
 - Uses Ubuntu 22.04 LTS by default
@@ -14,8 +14,8 @@ This Terraform module deploys a GCE instance with unix-oidc pre-installed and co
 ## Quick Start
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/gcp"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/gcp"
 
   project_id     = "my-gcp-project"
   oidc_issuer    = "https://login.example.com/realms/myorg"
@@ -24,7 +24,7 @@ module "unix_oidc" {
 }
 
 output "ssh_command" {
-  value = module.unix_oidc.ssh_command
+  value = module.prmana.ssh_command
 }
 ```
 
@@ -40,15 +40,15 @@ output "ssh_command" {
 1. GCP credentials configured (`gcloud auth application-default login`)
 2. A GCP project with Compute Engine API enabled
 3. An SSH key pair for instance access
-4. An OIDC provider configured with unix-oidc client
+4. An OIDC provider configured with prmana client
 
 ## Usage
 
 ### Basic Usage (Creates New VPC)
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/gcp"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/gcp"
 
   project_id     = "my-gcp-project"
   oidc_issuer    = "https://login.example.com/realms/myorg"
@@ -60,8 +60,8 @@ module "unix_oidc" {
 ### Using Existing VPC
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/gcp"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/gcp"
 
   project_id     = "my-gcp-project"
   oidc_issuer    = "https://login.example.com/realms/myorg"
@@ -77,8 +77,8 @@ module "unix_oidc" {
 ### Production Configuration
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/gcp"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/gcp"
 
   # Project Configuration
   project_id = "my-gcp-project"
@@ -87,7 +87,7 @@ module "unix_oidc" {
 
   # OIDC Configuration
   oidc_issuer    = "https://login.example.com/realms/myorg"
-  oidc_client_id = "unix-oidc-prod"
+  oidc_client_id = "prmana-prod"
   enable_dpop    = true
 
   # Instance Configuration
@@ -115,8 +115,8 @@ module "unix_oidc" {
 ### Custom Image
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/gcp"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/gcp"
 
   project_id     = "my-gcp-project"
   oidc_issuer    = "https://login.example.com/realms/myorg"
@@ -137,15 +137,15 @@ module "unix_oidc" {
 | project_id | GCP project ID | `string` | n/a | yes |
 | ssh_user | SSH username | `string` | n/a | yes |
 | ssh_public_key | SSH public key | `string` | n/a | yes |
-| oidc_client_id | OIDC client ID | `string` | `"unix-oidc"` | no |
-| install_agent | Install unix-oidc-agent | `bool` | `true` | no |
+| oidc_client_id | OIDC client ID | `string` | `"prmana"` | no |
+| install_agent | Install prmana-agent | `bool` | `true` | no |
 | enable_dpop | Enable DPoP token binding | `bool` | `true` | no |
 | region | GCP region | `string` | `"us-central1"` | no |
 | zone | GCP zone | `string` | `"us-central1-a"` | no |
 | machine_type | GCE machine type | `string` | `"e2-micro"` | no |
 | image_family | OS image family | `string` | `"ubuntu-2204-lts"` | no |
 | image_project | OS image project | `string` | `"ubuntu-os-cloud"` | no |
-| instance_name | Instance name | `string` | `"unix-oidc-server"` | no |
+| instance_name | Instance name | `string` | `"prmana-server"` | no |
 | boot_disk_size | Boot disk size in GB | `number` | `20` | no |
 | boot_disk_type | Boot disk type | `string` | `"pd-balanced"` | no |
 | preemptible | Use preemptible (spot) VM | `bool` | `false` | no |
@@ -188,11 +188,11 @@ module "unix_oidc" {
 
 ## Post-Deployment
 
-After deployment, connect using the unix-oidc agent:
+After deployment, connect using the prmana agent:
 
 ```bash
 # Get your OIDC token (varies by IdP)
-export OIDC_TOKEN=$(unix-oidc-agent get-token)
+export OIDC_TOKEN=$(prmana-agent get-token)
 
 # SSH to the instance
 ssh -o "SetEnv OIDC_TOKEN=$OIDC_TOKEN" ubuntu@<instance-ip>
@@ -202,10 +202,10 @@ Or use gcloud SSH (with your SSH key):
 
 ```bash
 # SSH via gcloud
-gcloud compute ssh ubuntu@unix-oidc-server --zone=us-central1-a --project=my-project
+gcloud compute ssh ubuntu@prmana-server --zone=us-central1-a --project=my-project
 
 # Check installation log
-sudo cat /var/log/unix-oidc-install.log
+sudo cat /var/log/prmana-install.log
 
 # Verify PAM module
 pamtester sshd ubuntu authenticate
@@ -228,10 +228,10 @@ pamtester sshd ubuntu authenticate
 3. Check instance status in GCP Console
 4. Ensure SSH key is correctly configured
 
-### unix-oidc not working
+### prmana not working
 
 1. SSH with your key first
-2. Check installation log: `sudo cat /var/log/unix-oidc-install.log`
+2. Check installation log: `sudo cat /var/log/prmana-install.log`
 3. Verify PAM config: `cat /etc/pam.d/sshd`
 4. Test OIDC issuer: `curl -s $OIDC_ISSUER/.well-known/openid-configuration`
 
@@ -239,7 +239,7 @@ pamtester sshd ubuntu authenticate
 
 1. Verify your OIDC token is valid
 2. Check that `preferred_username` claim matches your Unix username
-3. Review unix-oidc logs: `sudo journalctl -u sshd | grep pam_unix_oidc`
+3. Review prmana logs: `sudo journalctl -u sshd | grep pam_prmana`
 
 ### Startup script issues
 
@@ -248,7 +248,7 @@ pamtester sshd ubuntu authenticate
 sudo journalctl -u google-startup-scripts.service
 
 # Check serial console output
-gcloud compute instances get-serial-port-output unix-oidc-server \
+gcloud compute instances get-serial-port-output prmana-server \
   --zone=us-central1-a --project=my-project
 ```
 

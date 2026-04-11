@@ -1,12 +1,12 @@
 {
-  "name": "unix_oidc",
+  "name": "prmana",
   "version": "0.1.0",
-  "author": "unix-oidc contributors",
+  "author": "prmana contributors",
   "license": "Apache-2.0",
-  "summary": "Install and configure unix-oidc PAM module",
-  "source": "https://github.com/unix-oidc/unix-oidc",
-  "project_page": "https://github.com/unix-oidc/unix-oidc",
-  "issues_url": "https://github.com/unix-oidc/unix-oidc/issues",
+  "summary": "Install and configure prmana PAM module",
+  "source": "https://github.com/prmana/prmana",
+  "project_page": "https://github.com/prmana/prmana",
+  "issues_url": "https://github.com/prmana/prmana/issues",
   "operatingsystem_support": [
     {
       "operatingsystem": "Ubuntu",

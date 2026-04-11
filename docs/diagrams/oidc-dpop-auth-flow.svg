@@ -56,7 +56,7 @@
   <text class="actor-label" x="810" y="93">sshd</text>
 
   <rect class="actor-box" x="950" y="70" width="140" height="35"/>
-  <text class="actor-label" x="1020" y="93">pam_unix_oidc</text>
+  <text class="actor-label" x="1020" y="93">pam_prmana</text>
 
   <!-- Lifelines -->
   <line class="lifeline" x1="130" y1="105" x2="130" y2="1080"/>

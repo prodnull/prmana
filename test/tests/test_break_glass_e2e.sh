@@ -11,8 +11,8 @@
 #
 # Architecture notes:
 #   - Break-glass users are configured in policy.yaml under break_glass.accounts.
-#     pam-unix-oidc returns PAM_IGNORE for break-glass users, which falls through
-#     to pam_unix (local password auth). See pam-unix-oidc/src/lib.rs §break_glass.
+#     pam-prmana returns PAM_IGNORE for break-glass users, which falls through
+#     to pam_unix (local password auth). See pam-prmana/src/lib.rs §break_glass.
 #   - login_groups policy is enforced via pam_access or NSS/SSSD group membership.
 #     Users not in the configured group receive PAM_PERM_DENIED with a group policy
 #     denial message in auth.log.
@@ -20,7 +20,7 @@
 # Prerequisites:
 #   - docker compose stack running (docker-compose.test.yaml by default)
 #   - sshpass available for break-glass password auth, OR expect
-#   - Keycloak configured for realm unix-oidc with testuser in login_groups
+#   - Keycloak configured for realm prmana with testuser in login_groups
 #   - break-glass user configured in policy.yaml (default: breakglass)
 #   - testuser2 (or equivalent) NOT in login_groups (see TODO below)
 #   - test/e2e/ssh-askpass-e2e.sh present for OIDC flow
@@ -38,8 +38,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # ---------------------------------------------------------------------------
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.test.yaml}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${REALM:-unix-oidc}"
-CLIENT_ID="${CLIENT_ID:-unix-oidc}"
+REALM="${REALM:-prmana}"
+CLIENT_ID="${CLIENT_ID:-prmana}"
 CONTAINER="${CONTAINER:-test-host}"
 SSH_PORT="${SSH_PORT:-2222}"
 
@@ -49,8 +49,8 @@ BREAK_GLASS_PASS="${BREAK_GLASS_PASS:-breakglass-secret}"
 NORMAL_USER_IN_GROUP="${NORMAL_USER_IN_GROUP:-testuser}"
 NORMAL_USER_PASS="${NORMAL_USER_PASS:-testpass}"
 
-# testuser2 is a system user NOT in unix_oidc_users (the configured login_group).
-# Created in Dockerfile.test-host; excluded from unix_oidc_users group.
+# testuser2 is a system user NOT in prmana_users (the configured login_group).
+# Created in Dockerfile.test-host; excluded from prmana_users group.
 # Policy fixture: test/fixtures/policy/policy-break-glass-e2e.yaml
 # Mounted into container via docker-compose.test.yaml volume override.
 NORMAL_USER_NOT_IN_GROUP="${NORMAL_USER_NOT_IN_GROUP:-testuser2}"
@@ -135,7 +135,7 @@ echo "--- Test 1: Break-glass SSH when IdP is down (E2ET-02 positive) ---"
 
 # Clear audit log.
 docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \
-    bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" \
+    bash -c "truncate -s0 /var/log/prmana-audit.log 2>/dev/null; true" \
     >/dev/null 2>&1
 
 # Stop Keycloak.
@@ -171,7 +171,7 @@ if [ "$SSHPASS_AVAILABLE" = true ]; then
 
         # Check audit log for BREAK_GLASS_AUTH event.
         BG_AUDIT=$(docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \
-            cat /var/log/unix-oidc-audit.log 2>/dev/null || echo "")
+            cat /var/log/prmana-audit.log 2>/dev/null || echo "")
 
         if echo "$BG_AUDIT" | grep -qEi "BREAK_GLASS_AUTH|break_glass"; then
             pass "Audit log contains BREAK_GLASS_AUTH / break_glass event"
@@ -298,7 +298,7 @@ else
         skip "Test 3 skipped — OIDC token acquisition failed (Keycloak not ready or not configured)"
         echo "    Response: $TOKEN_RESPONSE"
     else
-        TOKEN_FILE_3=$(mktemp /tmp/unix-oidc-bg-e2e-XXXXXX)
+        TOKEN_FILE_3=$(mktemp /tmp/prmana-bg-e2e-XXXXXX)
         echo -n "$ACCESS_TOKEN" >"$TOKEN_FILE_3"
         chmod 600 "$TOKEN_FILE_3"
         trap 'rm -f "$TOKEN_FILE_3"' EXIT
@@ -308,7 +308,7 @@ else
         NORM_RESULT=$(DISPLAY=:0 \
             SSH_ASKPASS="$ASKPASS_SCRIPT" \
             SSH_ASKPASS_REQUIRE=force \
-            UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE_3" \
+            PRMANA_E2E_TOKEN_FILE="$TOKEN_FILE_3" \
             ssh -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/dev/null \
                 -o PreferredAuthentications=keyboard-interactive \

@@ -1,49 +1,49 @@
 ---
-# defaults/main.yml - Default variables for unix_oidc role
+# defaults/main.yml - Default variables for prmana role
 
-# Version of unix-oidc to install
+# Version of prmana to install
 # Use "latest" for the most recent release or specify a version like "v1.0.0"
-unix_oidc_version: "latest"
+prmana_version: "latest"
 
 # OIDC issuer URL (Required)
 # Example: "https://login.microsoftonline.com/{tenant-id}/v2.0"
-unix_oidc_issuer: ""
+prmana_issuer: ""
 
 # OIDC client ID
-unix_oidc_client_id: "unix-oidc"
+prmana_client_id: "prmana"
 
 # Whether to install the user agent for authentication
-unix_oidc_install_agent: true
+prmana_install_agent: true
 
 # Enable DPoP (Demonstrating Proof of Possession) for enhanced security
-unix_oidc_enable_dpop: false
+prmana_enable_dpop: false
 
 # List of PAM services to configure
 # Example: [sshd, sudo]
-unix_oidc_pam_services: []
+prmana_pam_services: []
 
 # Required Authentication Context Class Reference (ACR)
 # Example: "urn:mace:incommon:iap:silver"
-unix_oidc_required_acr: ""
+prmana_required_acr: ""
 
 # Token lifetime configuration (in seconds)
-unix_oidc_token_lifetime: 3600
+prmana_token_lifetime: 3600
 
 # Allowed groups for authentication (optional)
 # If set, only users in these groups can authenticate
-unix_oidc_allowed_groups: []
+prmana_allowed_groups: []
 
 # Custom claims mapping (optional)
-unix_oidc_custom_claims: {}
+prmana_custom_claims: {}
 
 # Installation directory
-unix_oidc_install_dir: "/opt/unix-oidc"
+prmana_install_dir: "/opt/prmana"
 
 # Configuration directory
-unix_oidc_config_dir: "/etc/unix-oidc"
+prmana_config_dir: "/etc/prmana"
 
 # Log level (debug, info, warn, error)
-unix_oidc_log_level: "info"
+prmana_log_level: "info"
 
 # Whether to verify SSL certificates
-unix_oidc_verify_ssl: true
+prmana_verify_ssl: true

@@ -13,7 +13,7 @@
   "ssoSessionMaxLifespan": 36000,
   "clients": [
     {
-      "clientId": "unix-oidc-agent",
+      "clientId": "prmana-agent",
       "name": "Unix OIDC Agent (User Machine)",
       "description": "Public client representing the user's machine with DPoP support",
       "enabled": true,
@@ -67,7 +67,7 @@
           "protocolMapper": "oidc-audience-mapper",
           "consentRequired": false,
           "config": {
-            "included.client.audience": "unix-oidc-agent",
+            "included.client.audience": "prmana-agent",
             "id.token.claim": "true",
             "access.token.claim": "true"
           }

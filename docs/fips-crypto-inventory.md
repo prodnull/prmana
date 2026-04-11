@@ -1,6 +1,6 @@
 # FIPS Cryptographic Algorithm Inventory
 
-**Purpose:** Catalog all cryptographic operations in unix-oidc for FIPS 140-3 readiness assessment.
+**Purpose:** Catalog all cryptographic operations in prmana for FIPS 140-3 readiness assessment.
 **Date:** 2026-04-09
 **Status:** Phase 32-02 — inventory complete, no code changes required.
 
@@ -29,10 +29,10 @@
 
 | Callsite | Operation | Key Source |
 |----------|-----------|------------|
-| `unix-oidc-agent/src/crypto/protected_key.rs` | Key generation, signing | In-memory (mlock'd, ZeroizeOnDrop) |
-| `unix-oidc-agent/src/crypto/signer.rs` | DPoP proof construction | ProtectedSigningKey |
-| `pam-unix-oidc/src/oidc/dpop.rs` | DPoP proof verification | JWKS (IdP-published) |
-| `pam-unix-oidc/src/auth.rs` | JWT signature verification | JWKS (IdP-published) |
+| `prmana-agent/src/crypto/protected_key.rs` | Key generation, signing | In-memory (mlock'd, ZeroizeOnDrop) |
+| `prmana-agent/src/crypto/signer.rs` | DPoP proof construction | ProtectedSigningKey |
+| `pam-prmana/src/oidc/dpop.rs` | DPoP proof verification | JWKS (IdP-published) |
+| `pam-prmana/src/auth.rs` | JWT signature verification | JWKS (IdP-published) |
 
 **FIPS status:** ES256 is FIPS-approved (FIPS 186-5). The `p256` crate uses constant-time field arithmetic but is not FIPS-validated. For FIPS compliance, replace with `ring` (BoringCrypto) or AWS-LC.
 
@@ -42,9 +42,9 @@
 
 | Callsite | Operation | Key Source |
 |----------|-----------|------------|
-| `pam-unix-oidc/src/audit.rs` | Chain hash computation | `UNIX_OIDC_AUDIT_HMAC_KEY` env var |
-| `pam-unix-oidc/src/bin/audit_verify.rs` | Chain verification | `--key` / `--key-file` CLI arg |
-| `pam-unix-oidc/src/approval/webhook.rs` | Request signature | `UNIX_OIDC_WEBHOOK_HMAC_SECRET` env var |
+| `pam-prmana/src/audit.rs` | Chain hash computation | `PRMANA_AUDIT_HMAC_KEY` env var |
+| `pam-prmana/src/bin/audit_verify.rs` | Chain verification | `--key` / `--key-file` CLI arg |
+| `pam-prmana/src/approval/webhook.rs` | Request signature | `PRMANA_WEBHOOK_HMAC_SECRET` env var |
 
 **FIPS status:** HMAC-SHA256 is FIPS-approved (FIPS 198-1). The `hmac` + `sha2` crates are not FIPS-validated. For FIPS compliance, replace with `ring` or AWS-LC.
 
@@ -54,9 +54,9 @@
 
 | Callsite | Operation |
 |----------|-----------|
-| `pam-unix-oidc/src/security/fs_store.rs` | `SHA-256(scope + ":" + value)` → 64-char hex filename |
-| `pam-unix-oidc/src/oidc/introspection.rs` | Cache key hashing |
-| `pam-unix-oidc/src/policy/config.rs` | Issuer URL → filename mapping |
+| `pam-prmana/src/security/fs_store.rs` | `SHA-256(scope + ":" + value)` → 64-char hex filename |
+| `pam-prmana/src/oidc/introspection.rs` | Cache key hashing |
+| `pam-prmana/src/policy/config.rs` | Issuer URL → filename mapping |
 
 **FIPS status:** SHA-256 is FIPS-approved (FIPS 180-4). Same crate caveat as above.
 
@@ -66,8 +66,8 @@
 
 | Callsite | Operation | Feature Gate |
 |----------|-----------|:---:|
-| `unix-oidc-agent/src/crypto/pqc_signer.rs` | Hybrid sign/verify | `pqc` |
-| `pam-unix-oidc/src/oidc/dpop.rs` | PQC verification | `pqc` |
+| `prmana-agent/src/crypto/pqc_signer.rs` | Hybrid sign/verify | `pqc` |
+| `pam-prmana/src/oidc/dpop.rs` | PQC verification | `pqc` |
 
 **FIPS status:** ML-DSA is FIPS-approved under FIPS 204. The `ml-dsa` crate (v0.1.0-rc.7) is not FIPS-validated.
 
@@ -77,10 +77,10 @@
 
 | Callsite | Entropy Source |
 |----------|---------------|
-| `pam-unix-oidc/src/security/session.rs` | `getrandom::fill()` (128-bit) |
-| `pam-unix-oidc/src/approval/provider.rs` | `getrandom::fill()` (128-bit) |
-| `pam-unix-oidc/src/security/fs_store.rs` | `getrandom::fill()` (8-bit, sweep gate) |
-| `unix-oidc-agent/src/storage/secure_delete.rs` | `OsRng` (overwrite passes) |
+| `pam-prmana/src/security/session.rs` | `getrandom::fill()` (128-bit) |
+| `pam-prmana/src/approval/provider.rs` | `getrandom::fill()` (128-bit) |
+| `pam-prmana/src/security/fs_store.rs` | `getrandom::fill()` (8-bit, sweep gate) |
+| `prmana-agent/src/storage/secure_delete.rs` | `OsRng` (overwrite passes) |
 
 **FIPS status:** `getrandom` uses `/dev/urandom` (Linux) or `CryptGenRandom` (Windows). The OS CSPRNG is typically FIPS-validated as part of the kernel module.
 

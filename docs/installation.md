@@ -1,6 +1,6 @@
 # Installation Guide
 
-This guide covers installing and configuring unix-oidc for production use.
+This guide covers installing and configuring prmana for production use.
 
 ## Prerequisites
 
@@ -28,14 +28,14 @@ source ~/.cargo/env
 ### Clone and Build
 
 ```bash
-git clone https://github.com/your-org/unix-oidc.git
-cd unix-oidc
+git clone https://github.com/your-org/prmana.git
+cd prmana
 
 # Build release binary
 cargo build --release
 
 # The PAM module will be at:
-# target/release/libpam_unix_oidc.so
+# target/release/libpam_prmana.so
 ```
 
 ## Installation
@@ -44,30 +44,30 @@ cargo build --release
 
 ```bash
 # Copy the PAM module to the system PAM directory
-sudo cp target/release/libpam_unix_oidc.so /lib/security/pam_unix_oidc.so
+sudo cp target/release/libpam_prmana.so /lib/security/pam_prmana.so
 
 # Set permissions
-sudo chmod 644 /lib/security/pam_unix_oidc.so
-sudo chown root:root /lib/security/pam_unix_oidc.so
+sudo chmod 644 /lib/security/pam_prmana.so
+sudo chown root:root /lib/security/pam_prmana.so
 ```
 
 ### 2. Create Configuration Directory
 
 ```bash
-sudo mkdir -p /etc/unix-oidc
-sudo chmod 755 /etc/unix-oidc
+sudo mkdir -p /etc/prmana
+sudo chmod 755 /etc/prmana
 ```
 
 ### 3. Configure Environment Variables
 
-Create `/etc/unix-oidc/env`:
+Create `/etc/prmana/env`:
 
 ```bash
 # Required: OIDC Issuer URL
 OIDC_ISSUER=https://your-idp.example.com/realms/your-realm
 
-# Optional: Client ID (default: unix-oidc)
-OIDC_CLIENT_ID=unix-oidc
+# Optional: Client ID (default: prmana)
+OIDC_CLIENT_ID=prmana
 
 # Optional: Client secret (if required by IdP)
 OIDC_CLIENT_SECRET=your-client-secret
@@ -79,24 +79,24 @@ OIDC_CLIENT_SECRET=your-client-secret
 # OIDC_MAX_AUTH_AGE=3600
 
 # Optional: Audit log file path
-# UNIX_OIDC_AUDIT_LOG=/var/log/unix-oidc/audit.log
+# PRMANA_AUDIT_LOG=/var/log/prmana/audit.log
 
 # Optional: Webhook approval provider (for custom approval workflows)
-# UNIX_OIDC_WEBHOOK_URL=https://approvals.example.com/api
-# UNIX_OIDC_WEBHOOK_AUTH=Bearer your-secret-token
-# UNIX_OIDC_WEBHOOK_TIMEOUT=30
+# PRMANA_WEBHOOK_URL=https://approvals.example.com/api
+# PRMANA_WEBHOOK_AUTH=Bearer your-secret-token
+# PRMANA_WEBHOOK_TIMEOUT=30
 ```
 
 Set permissions:
 
 ```bash
-sudo chmod 600 /etc/unix-oidc/env
-sudo chown root:root /etc/unix-oidc/env
+sudo chmod 600 /etc/prmana/env
+sudo chown root:root /etc/prmana/env
 ```
 
 ### 4. Configure Policy
 
-Create `/etc/unix-oidc/policy.yaml`:
+Create `/etc/prmana/policy.yaml`:
 
 ```yaml
 host:
@@ -126,7 +126,7 @@ See [examples/policy.yaml](../examples/policy.yaml) for a complete example, and 
 
 > **Never deploy OIDC authentication as the only authentication path.** If your IdP goes down, you will be locked out.
 
-Add a break-glass section to `/etc/unix-oidc/policy.yaml`:
+Add a break-glass section to `/etc/prmana/policy.yaml`:
 
 ```yaml
 break_glass:
@@ -158,8 +158,8 @@ See [Security Guide — Break-Glass Procedure](security-guide.md#break-glass-pro
 Edit `/etc/pam.d/sshd`:
 
 ```
-# unix-oidc authentication (primary)
-auth    sufficient    pam_unix_oidc.so
+# prmana authentication (primary)
+auth    sufficient    pam_prmana.so
 
 # Fallback to standard Unix auth (for break-glass)
 auth    required      pam_unix.so try_first_pass
@@ -174,8 +174,8 @@ session required      pam_unix.so
 Edit `/etc/pam.d/sudo`:
 
 ```
-# unix-oidc step-up authentication
-auth    required      pam_unix_oidc.so
+# prmana step-up authentication
+auth    required      pam_prmana.so
 
 # Fallback to standard Unix auth
 auth    required      pam_unix.so try_first_pass
@@ -213,15 +213,15 @@ sudo systemctl restart sshd
 Create audit log directory:
 
 ```bash
-sudo mkdir -p /var/log/unix-oidc
-sudo chmod 750 /var/log/unix-oidc
+sudo mkdir -p /var/log/prmana
+sudo chmod 750 /var/log/prmana
 ```
 
-Configure rsyslog to capture unix-oidc events:
+Configure rsyslog to capture prmana events:
 
 ```bash
-# /etc/rsyslog.d/unix-oidc.conf
-:programname, isequal, "unix-oidc-audit" /var/log/unix-oidc/audit.log
+# /etc/rsyslog.d/prmana.conf
+:programname, isequal, "prmana-audit" /var/log/prmana/audit.log
 ```
 
 ## Identity Provider Configuration
@@ -229,7 +229,7 @@ Configure rsyslog to capture unix-oidc events:
 ### Keycloak
 
 1. Create a new client:
-   - Client ID: `unix-oidc`
+   - Client ID: `prmana`
    - Client Protocol: `openid-connect`
    - Access Type: `confidential`
 
@@ -248,7 +248,7 @@ Configure rsyslog to capture unix-oidc events:
 ### Azure AD
 
 1. Register a new application:
-   - Name: `unix-oidc`
+   - Name: `prmana`
    - Supported account types: Your organization
 
 2. Configure authentication:
@@ -317,32 +317,32 @@ ssh testuser@localhost
 ### PAM module not found
 
 ```
-pam_unix_oidc.so: cannot open shared object file
+pam_prmana.so: cannot open shared object file
 ```
 
 Solution: Verify the module is in the correct path:
 ```bash
-ls -la /lib/security/pam_unix_oidc.so
+ls -la /lib/security/pam_prmana.so
 # Or on some systems:
-ls -la /lib64/security/pam_unix_oidc.so
+ls -la /lib64/security/pam_prmana.so
 ```
 
 ### OIDC_ISSUER not set
 
 ```
-unix-oidc: OIDC_ISSUER environment variable not set
+prmana: OIDC_ISSUER environment variable not set
 ```
 
 Solution: Ensure environment is loaded in PAM context:
 ```bash
-# Add to /etc/environment or /etc/profile.d/unix-oidc.sh
+# Add to /etc/environment or /etc/profile.d/prmana.sh
 export OIDC_ISSUER=https://your-idp.example.com/realms/your-realm
 ```
 
 ### Token validation failed
 
 ```
-unix-oidc: Token validation failed: issuer mismatch
+prmana: Token validation failed: issuer mismatch
 ```
 
 Solution: Verify the issuer URL exactly matches:
@@ -356,7 +356,7 @@ echo "$TOKEN" | cut -d'.' -f2 | base64 -d | jq '.iss'
 ### User not found
 
 ```
-unix-oidc: User 'username' not found in directory
+prmana: User 'username' not found in directory
 ```
 
 Solution: Verify SSSD is configured and user exists:
@@ -369,10 +369,10 @@ id username
 
 ```bash
 # Remove PAM module
-sudo rm /lib/security/pam_unix_oidc.so
+sudo rm /lib/security/pam_prmana.so
 
 # Remove configuration
-sudo rm -rf /etc/unix-oidc
+sudo rm -rf /etc/prmana
 
 # Restore original PAM configuration
 sudo cp /etc/pam.d/sshd.bak /etc/pam.d/sshd
@@ -384,6 +384,6 @@ sudo systemctl restart sshd
 
 ## Next Steps
 
-- [User Guide](user-guide.md) - How to use unix-oidc day-to-day
+- [User Guide](user-guide.md) - How to use prmana day-to-day
 - [Sudo Step-Up](sudo-step-up.md) - Configuring step-up authentication
 - [Testing Guide](testing.md) - Running tests

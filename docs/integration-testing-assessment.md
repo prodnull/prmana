@@ -1,11 +1,11 @@
 # Integration Testing Assessment
 
 **Date**: 2026-03-11
-**Scope**: Full assessment of unix-oidc integration testing infrastructure, including Phase 10 (CIBA step-up + FIDO2 via ACR delegation) testability.
+**Scope**: Full assessment of prmana integration testing infrastructure, including Phase 10 (CIBA step-up + FIDO2 via ACR delegation) testability.
 
 ## Executive Summary
 
-The unix-oidc project has substantial unit test coverage (~473 tests across both crates) and a functional Docker Compose-based integration environment. However, several critical integration gaps exist — most notably, CIBA backchannel authentication has no live IdP test infrastructure (Keycloak realm has `oidc.ciba.grant.enabled: false` in all realm configs), and the end-to-end step-up flow (PAM -> agent daemon IPC -> CIBA poll -> ACR validation) has no automated integration test. The token exchange flow and DPoP binding validation are partially tested with shell scripts but are not wired into CI.
+The prmana project has substantial unit test coverage (~473 tests across both crates) and a functional Docker Compose-based integration environment. However, several critical integration gaps exist — most notably, CIBA backchannel authentication has no live IdP test infrastructure (Keycloak realm has `oidc.ciba.grant.enabled: false` in all realm configs), and the end-to-end step-up flow (PAM -> agent daemon IPC -> CIBA poll -> ACR validation) has no automated integration test. The token exchange flow and DPoP binding validation are partially tested with shell scripts but are not wired into CI.
 
 ---
 
@@ -15,8 +15,8 @@ The unix-oidc project has substantial unit test coverage (~473 tests across both
 
 | Crate | Test Count | Files with Tests |
 |-------|-----------|-----------------|
-| pam-unix-oidc | ~313 | 27 source files |
-| unix-oidc-agent | ~160 | 17 source files |
+| pam-prmana | ~313 | 27 source files |
+| prmana-agent | ~160 | 17 source files |
 | **Total** | **~473** | **44 files** |
 
 Coverage threshold enforced in CI: 55% (target: 80%).
@@ -64,7 +64,7 @@ Coverage threshold enforced in CI: 55% (target: 80%).
 | `dpop-cross-language-tests/` | Rust, Go, Python DPoP proof generation + validation (16 cross-language combinations) |
 | `fuzz/fuzz_targets/` | 4 fuzz targets (token_parser, policy_parser, username_mapper, dpop_proof) |
 | `demo/tests/training-video.spec.ts` | Playwright-based demo recording for device flow |
-| `test/fixtures/keycloak/unix-oidc-test-realm.json` | Keycloak realm with unix-oidc client, device flow, ACR mapper, WebAuthn flows |
+| `test/fixtures/keycloak/prmana-test-realm.json` | Keycloak realm with prmana client, device flow, ACR mapper, WebAuthn flows |
 | `test/fixtures/keycloak/token-exchange-test-realm.json` | Keycloak realm for token exchange with DPoP-bound clients |
 | `test/fixtures/policy/policy-step-up.yaml` | Policy requiring step-up for sudo |
 | `test/fixtures/policy/policy-no-step-up.yaml` | Policy without step-up |
@@ -102,11 +102,11 @@ Coverage threshold enforced in CI: 55% (target: 80%).
 
 | Feature | Unit Tests | Integration Gap | Risk |
 |---------|-----------|----------------|------|
-| DPoP binding validation (cnf.jkt) | Unit-level proof verification | No live test with DPoP-bound tokens from Keycloak | **High** — the unix-oidc-test realm does not configure `dpop.bound.access.tokens: true`; only the token-exchange-test realm does, but it is not in CI |
+| DPoP binding validation (cnf.jkt) | Unit-level proof verification | No live test with DPoP-bound tokens from Keycloak | **High** — the prmana-test realm does not configure `dpop.bound.access.tokens: true`; only the token-exchange-test realm does, but it is not in CI |
 | Token exchange (RFC 8693) | N/A (shell/Python scripts only) | `docker-compose.token-exchange.yaml` not wired into any CI workflow; test scripts are untracked | **High** — critical for jump host / agent forwarding scenarios |
 | Device flow E2E | Device endpoint reachable test | Browser automation required to complete flow; Playwright scripts exist but require manual Claude Code MCP | **Medium** — endpoint tests are in CI; full flow requires browser |
 | Break-glass fallback | N/A | No test verifies PAM falls back to local auth when OIDC is unavailable | **Medium** — deployment invariant from CLAUDE.md |
-| End-to-end SSH with OIDC token | `test_ssh_oidc_valid.sh` exists | Test uses UNIX_OIDC_TEST_MODE=true (bypasses signature verification) | **Medium** — real crypto path untested in E2E |
+| End-to-end SSH with OIDC token | `test_ssh_oidc_valid.sh` exists | Test uses PRMANA_TEST_MODE=true (bypasses signature verification) | **Medium** — real crypto path untested in E2E |
 
 ### Not Testable (No Infrastructure Exists)
 
@@ -132,7 +132,7 @@ Coverage threshold enforced in CI: 55% (target: 80%).
 **Actions**:
 
 1. **Create a CIBA-enabled Keycloak realm configuration** (`test/fixtures/keycloak/ciba-test-realm.json`):
-   - Set `oidc.ciba.grant.enabled: true` on the unix-oidc client
+   - Set `oidc.ciba.grant.enabled: true` on the prmana client
    - Configure `backchannel_token_delivery_modes_supported: ["poll"]`
    - Set `ciba-authentication-request.expires_in: 120`
    - Configure an authentication flow that maps to ACR values (use Keycloak's built-in ACR LoA mapping)
@@ -173,14 +173,14 @@ Coverage threshold enforced in CI: 55% (target: 80%).
 
 ### P2: DPoP-Bound Token E2E Validation
 
-**Problem**: The primary test realm (`unix-oidc-test`) does not enable DPoP binding on access tokens. The `dpop.bound.access.tokens` attribute is absent. DPoP proof validation unit tests pass, but no integration test validates that:
+**Problem**: The primary test realm (`prmana-test`) does not enable DPoP binding on access tokens. The `dpop.bound.access.tokens` attribute is absent. DPoP proof validation unit tests pass, but no integration test validates that:
 - Keycloak embeds `cnf.jkt` in access tokens when DPoP proof is sent
 - PAM module correctly matches `cnf.jkt` against the DPoP proof thumbprint
 - Proof replay is rejected in a live multi-request scenario
 
 **Actions**:
 
-1. Add `"dpop.bound.access.tokens": "true"` to the unix-oidc client in `unix-oidc-test-realm.json`
+1. Add `"dpop.bound.access.tokens": "true"` to the prmana client in `prmana-test-realm.json`
 2. Extend `test_dpop_e2e.sh` to:
    - Generate a DPoP proof using openssl
    - Obtain a DPoP-bound token from Keycloak
@@ -197,7 +197,7 @@ Coverage threshold enforced in CI: 55% (target: 80%).
 
 **Actions**:
 
-1. Create a Rust integration test (`unix-oidc-agent/tests/step_up_integration.rs`) that:
+1. Create a Rust integration test (`prmana-agent/tests/step_up_integration.rs`) that:
    - Starts the agent daemon on a Unix socket
    - Sends a `StepUp` request
    - Receives `StepUpPending` with correlation_id
@@ -265,7 +265,7 @@ Coverage threshold enforced in CI: 55% (target: 80%).
 **Actions**:
 
 1. Create `test/tests/test_agent_daemon.sh` that:
-   - Starts `unix-oidc-agent serve` in background
+   - Starts `prmana-agent serve` in background
    - Sends JSON commands to the Unix socket using `socat` or `nc`
    - Validates `Status`, `GetProof`, `Refresh`, `Shutdown` responses
    - Cleans up

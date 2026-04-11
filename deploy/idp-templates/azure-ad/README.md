@@ -1,10 +1,10 @@
-# Azure AD (Microsoft Entra ID) Setup for unix-oidc
+# Azure AD (Microsoft Entra ID) Setup for prmana
 
 **Difficulty:** Medium
 **Time to complete:** 10-15 minutes
 **Last verified:** January 2026
 
-This guide walks you through configuring Azure AD (now Microsoft Entra ID) as an identity provider for unix-oidc. Azure AD provides enterprise-grade identity management with built-in MFA, conditional access, and seamless integration with Microsoft 365.
+This guide walks you through configuring Azure AD (now Microsoft Entra ID) as an identity provider for prmana. Azure AD provides enterprise-grade identity management with built-in MFA, conditional access, and seamless integration with Microsoft 365.
 
 ---
 
@@ -54,7 +54,7 @@ Before starting, ensure you have:
 
    | Field | Value |
    |-------|-------|
-   | **Name** | `unix-oidc` |
+   | **Name** | `prmana` |
    | **Supported account types** | "Accounts in this organizational directory only" |
    | **Redirect URI** | Leave empty (we'll use device code flow) |
 
@@ -127,7 +127,7 @@ Your permissions should look like:
 
 ### Step 4: Configure Token Claims
 
-By default, Azure AD includes `preferred_username` in ID tokens, which contains the user's UPN (e.g., `alice@contoso.com`). For unix-oidc, you may need to configure claims to match your Unix usernames.
+By default, Azure AD includes `preferred_username` in ID tokens, which contains the user's UPN (e.g., `alice@contoso.com`). For prmana, you may need to configure claims to match your Unix usernames.
 
 #### Option A: Use UPN Prefix (Recommended for Most Cases)
 
@@ -145,9 +145,9 @@ If your Unix usernames match the prefix of the UPN (e.g., UPN `alice@contoso.com
 
 5. Click **Add**
 
-6. Configure unix-oidc to extract the username prefix:
+6. Configure prmana to extract the username prefix:
    ```bash
-   # In /etc/unix-oidc/config.env
+   # In /etc/prmana/config.env
    OIDC_USERNAME_CLAIM=preferred_username
    OIDC_USERNAME_TRANSFORM=prefix  # Strips @domain.com
    ```
@@ -166,17 +166,17 @@ If you have Azure AD Connect syncing from on-premises AD and want to use sAMAcco
 
 5. For sAMAccountName, you may need to use a custom claims policy or directory extension
 
-#### Option C: Configure Username Mapping in unix-oidc
+#### Option C: Configure Username Mapping in prmana
 
 If your UPNs don't directly map to Unix usernames:
 
 ```bash
-# In /etc/unix-oidc/config.env
+# In /etc/prmana/config.env
 OIDC_USERNAME_CLAIM=preferred_username
-OIDC_USERNAME_MAPPING=/etc/unix-oidc/username-map.json
+OIDC_USERNAME_MAPPING=/etc/prmana/username-map.json
 ```
 
-Create `/etc/unix-oidc/username-map.json`:
+Create `/etc/prmana/username-map.json`:
 ```json
 {
   "alice@contoso.com": "alice",
@@ -189,7 +189,7 @@ Create `/etc/unix-oidc/username-map.json`:
 
 ### Step 5: Add Users
 
-Ensure the users who will authenticate via unix-oidc:
+Ensure the users who will authenticate via prmana:
 
 1. **Exist in Azure AD** with appropriate licenses
 
@@ -222,7 +222,7 @@ getent passwd alice
 
 ### Step 6: Get Configuration Values
 
-Collect these values for unix-oidc configuration:
+Collect these values for prmana configuration:
 
 | Setting | How to Find | Your Value |
 |---------|-------------|------------|
@@ -266,9 +266,9 @@ curl -s "https://login.microsoftonline.com/${TENANT_ID}/v2.0/.well-known/openid-
 
 ---
 
-## Configure unix-oidc
+## Configure prmana
 
-Create or update `/etc/unix-oidc/config.env`:
+Create or update `/etc/prmana/config.env`:
 
 ```bash
 # Azure AD Configuration
@@ -450,9 +450,9 @@ sudo pamtester sshd alice authenticate <<< "$OIDC_TOKEN"
 **Cause:** Azure AD returns the full UPN (e.g., `alice@contoso.com`) but your Unix user is just `alice`.
 
 **Solution:**
-Configure username transformation in unix-oidc:
+Configure username transformation in prmana:
 ```bash
-# In /etc/unix-oidc/config.env
+# In /etc/prmana/config.env
 OIDC_USERNAME_TRANSFORM=prefix
 ```
 
@@ -486,9 +486,9 @@ Azure AD Conditional Access can enforce additional security requirements:
 
 1. Go to **Azure AD** > **Security** > **Conditional Access**
 
-2. Create a policy for the unix-oidc app:
+2. Create a policy for the prmana app:
    - **Users**: All users (or specific groups)
-   - **Cloud apps**: Select your unix-oidc app
+   - **Cloud apps**: Select your prmana app
    - **Conditions**: Configure as needed (location, device state, etc.)
    - **Grant**: Require MFA, compliant device, etc.
 
@@ -504,8 +504,8 @@ Configure token lifetime policies to balance security and usability:
 Azure AD logs all authentication events:
 
 1. Go to **Azure AD** > **Sign-in logs**
-2. Filter by Application: `unix-oidc`
-3. Export logs to SIEM for correlation with unix-oidc audit logs
+2. Filter by Application: `prmana`
+3. Export logs to SIEM for correlation with prmana audit logs
 
 ---
 
@@ -526,4 +526,4 @@ Azure AD logs all authentication events:
 
 ---
 
-*This guide is part of the [unix-oidc deployment documentation](../../README.md).*
+*This guide is part of the [prmana deployment documentation](../../README.md).*

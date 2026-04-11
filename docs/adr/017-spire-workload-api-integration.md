@@ -38,9 +38,9 @@ Use tonic 0.12 with hand-written prost stubs (checked in, no build-time protoc)
 from the official SPIFFE Workload API specification. Feature-gated behind `spire`.
 
 Implementation details:
-- Protobuf stubs in `unix-oidc-agent/src/spire/workload_api.rs` (hand-written from spec)
-- Reference proto in `unix-oidc-agent/src/spire/workload.proto` (not used at build time)
-- `SpireSigner` in `unix-oidc-agent/src/crypto/spire_signer.rs`
+- Protobuf stubs in `prmana-agent/src/spire/workload_api.rs` (hand-written from spec)
+- Reference proto in `prmana-agent/src/spire/workload.proto` (not used at build time)
+- `SpireSigner` in `prmana-agent/src/crypto/spire_signer.rs`
 - UDS connection via `tower::service_fn` + `tokio::net::UnixStream` + `hyper_util::rt::TokioIo`
 - `workload.spiffe.io: true` metadata header on every gRPC call (spec requirement)
 - JWT-SVID cached by (audience, expiry) with proactive refresh at 50% lifetime

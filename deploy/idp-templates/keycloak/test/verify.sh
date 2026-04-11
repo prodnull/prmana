@@ -11,9 +11,9 @@
 #
 # Environment variables:
 #   KEYCLOAK_URL    - Keycloak base URL (default: http://localhost:8080)
-#   REALM           - Keycloak realm name (default: unix-oidc-test)
-#   CLIENT_ID       - OIDC client ID (default: unix-oidc)
-#   CLIENT_SECRET   - OIDC client secret (default: unix-oidc-test-secret)
+#   REALM           - Keycloak realm name (default: prmana-test)
+#   CLIENT_ID       - OIDC client ID (default: prmana)
+#   CLIENT_SECRET   - OIDC client secret (default: prmana-test-secret)
 #   TEST_USER       - Test username (default: testuser)
 #   TEST_PASS       - Test password (default: testpass)
 
@@ -21,9 +21,9 @@ set -euo pipefail
 
 # Configuration with defaults
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${REALM:-unix-oidc-test}"
-CLIENT_ID="${CLIENT_ID:-unix-oidc}"
-CLIENT_SECRET="${CLIENT_SECRET:-unix-oidc-test-secret}"
+REALM="${REALM:-prmana-test}"
+CLIENT_ID="${CLIENT_ID:-prmana}"
+CLIENT_SECRET="${CLIENT_SECRET:-prmana-test-secret}"
 TEST_USER="${TEST_USER:-testuser}"
 TEST_PASS="${TEST_PASS:-testpass}"
 
@@ -307,11 +307,11 @@ test_token_claims() {
         fi
     fi
 
-    # Check 'preferred_username' claim (CRITICAL for unix-oidc)
+    # Check 'preferred_username' claim (CRITICAL for prmana)
     local preferred_username
     preferred_username=$(echo "$payload" | jq -r '.preferred_username // empty')
     if [ -z "$preferred_username" ]; then
-        log_fail "Token missing 'preferred_username' claim (REQUIRED for unix-oidc)"
+        log_fail "Token missing 'preferred_username' claim (REQUIRED for prmana)"
         test_passed=false
     else
         log_info "preferred_username claim: $preferred_username"
@@ -359,9 +359,9 @@ test_pamtester() {
         return 0
     fi
 
-    # Check if unix-oidc PAM module is configured
-    if [ ! -f /etc/pam.d/unix-oidc ] && [ ! -f /etc/pam.d/sshd ]; then
-        log_skip "No unix-oidc PAM configuration found"
+    # Check if prmana PAM module is configured
+    if [ ! -f /etc/pam.d/prmana ] && [ ! -f /etc/pam.d/sshd ]; then
+        log_skip "No prmana PAM configuration found"
         return 0
     fi
 
@@ -374,8 +374,8 @@ test_pamtester() {
     log_info "Testing PAM authentication with pamtester"
 
     # Try to authenticate using the token as password
-    # This requires PAM to be configured for unix-oidc
-    local pam_service="unix-oidc"
+    # This requires PAM to be configured for prmana
+    local pam_service="prmana"
     if [ ! -f "/etc/pam.d/$pam_service" ]; then
         pam_service="sshd"
     fi

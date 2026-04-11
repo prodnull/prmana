@@ -57,7 +57,7 @@ resource "aws_instance" "fleet" {
   # This profile is already scoped to test-only actions in the legacy workflows.
   # T-DT0-01-07: over-scoping of this profile is a pre-existing issue, not
   # introduced by this module.
-  iam_instance_profile = "unix-oidc-ci-instance-profile"
+  iam_instance_profile = "prmana-ci-instance-profile"
 
   key_name               = aws_key_pair.fleet.key_name
   vpc_security_group_ids = [aws_security_group.fleet.id]

@@ -1,6 +1,6 @@
 # JTI Cache Architecture
 
-This document explains the JTI (JWT ID) replay-protection cache used in unix-oidc, why the current per-process design is sufficient for the sshd fork model, and how the DPoP server-issued nonce protocol provides the primary replay defense for DPoP proofs.
+This document explains the JTI (JWT ID) replay-protection cache used in prmana, why the current per-process design is sufficient for the sshd fork model, and how the DPoP server-issued nonce protocol provides the primary replay defense for DPoP proofs.
 
 **Target audiences:** Security auditors, contributors, enterprise operators evaluating distributed deployment.
 
@@ -23,7 +23,7 @@ This document explains the JTI (JWT ID) replay-protection cache used in unix-oid
 
 The `jti` (JWT ID) claim is defined in RFC 7519 §4.1.7 as a unique identifier for a JWT. For DPoP proofs (RFC 9449 §11.1), the server must check that each DPoP proof's `jti` claim is unique within the proof's lifetime to prevent replay attacks — an attacker who intercepts a valid DPoP proof must not be able to reuse it.
 
-The `jti` claim is optional in OIDC access tokens (RFC 7519 §4.1.7) but unix-oidc also records the access token JTI when present, configurable via `jti_enforcement = strict|warn|disabled` (CLAUDE.md §Security Check Decision Matrix).
+The `jti` claim is optional in OIDC access tokens (RFC 7519 §4.1.7) but prmana also records the access token JTI when present, configurable via `jti_enforcement = strict|warn|disabled` (CLAUDE.md §Security Check Decision Matrix).
 
 ---
 
@@ -36,12 +36,12 @@ sshd (listening, port 22)
     │
     ├── fork() ──▶ sshd-child (handles Alice's connection)
     │                  │
-    │                  └── pam_unix_oidc.so loaded in this process
+    │                  └── pam_prmana.so loaded in this process
     │                          JTI cache lives here (process-local)
     │
     └── fork() ──▶ sshd-child (handles Bob's connection)
                        │
-                       └── pam_unix_oidc.so loaded in this process
+                       └── pam_prmana.so loaded in this process
                                Separate JTI cache (different process)
 ```
 
@@ -57,7 +57,7 @@ Key facts:
 
 ## 3. Per-Process Cache Design
 
-The JTI cache is implemented in `pam-unix-oidc/src/oidc/dpop.rs`:
+The JTI cache is implemented in `pam-prmana/src/oidc/dpop.rs`:
 
 ```rust
 /// Maximum entries in the DPoP JTI cache before forced cleanup/rejection
@@ -83,7 +83,7 @@ The cache stores `(jti, expiry_instant)` entries in a `HashMap` behind a `parkin
 
 **Why cross-process replay is not a viable attack:**
 
-1. **DPoP proofs are bound to a specific `htu` (HTTP target URI).** In unix-oidc, the PAM module is not an HTTP server — DPoP proofs are validated against the PAM authentication context, not an HTTP URI. A proof from one SSH connection cannot satisfy the `htu` binding for a different SSH connection.
+1. **DPoP proofs are bound to a specific `htu` (HTTP target URI).** In prmana, the PAM module is not an HTTP server — DPoP proofs are validated against the PAM authentication context, not an HTTP URI. A proof from one SSH connection cannot satisfy the `htu` binding for a different SSH connection.
 
 2. **DPoP proofs are bound to a specific `htm` (HTTP method).** The method field further constrains reuse.
 
@@ -99,7 +99,7 @@ The cache stores `(jti, expiry_instant)` entries in a `HashMap` behind a `parkin
 
 ## 5. DPoP Nonces: The Actual Replay Defense
 
-unix-oidc implements RFC 9449 §8 server-issued DPoP nonces as the primary replay-prevention mechanism. The two-round PAM keyboard-interactive conversation is implemented at `pam-unix-oidc/src/lib.rs` line 150 (§"DPoP nonce challenge/response"):
+prmana implements RFC 9449 §8 server-issued DPoP nonces as the primary replay-prevention mechanism. The two-round PAM keyboard-interactive conversation is implemented at `pam-prmana/src/lib.rs` line 150 (§"DPoP nonce challenge/response"):
 
 ```
 Round 1:
@@ -120,7 +120,7 @@ The nonce is:
 
 This means: **even if an attacker intercepts and replays a DPoP proof immediately**, the nonce is already consumed. The JTI cache is a second line of defense (belt-and-suspenders), not the primary mechanism.
 
-Implementation: `pam-unix-oidc/src/lib.rs` line 150 ("DPoP nonce challenge/response"), `pam-unix-oidc/src/security/nonce_cache.rs`.
+Implementation: `pam-prmana/src/lib.rs` line 150 ("DPoP nonce challenge/response"), `pam-prmana/src/security/nonce_cache.rs`.
 
 ---
 
@@ -130,13 +130,13 @@ A common audit question: "Why not use Redis or a shared cache for cross-process 
 
 **Architectural reasons:**
 
-1. **sshd forks, not threads.** There is no long-running unix-oidc process to maintain a Redis connection pool. Each auth attempt is a fresh process that would need to establish, use, and tear down a Redis connection — adding 5–50ms latency to every SSH login.
+1. **sshd forks, not threads.** There is no long-running prmana process to maintain a Redis connection pool. Each auth attempt is a fresh process that would need to establish, use, and tear down a Redis connection — adding 5–50ms latency to every SSH login.
 
-2. **The unix-oidc agent daemon cannot be the cache.** The agent daemon runs in user space (per-user), not as a system service visible to all sshd forks. PAM modules run as root in the sshd context, which cannot contact a per-user socket reliably.
+2. **The prmana agent daemon cannot be the cache.** The agent daemon runs in user space (per-user), not as a system service visible to all sshd forks. PAM modules run as root in the sshd context, which cannot contact a per-user socket reliably.
 
 3. **Nonce binding makes it unnecessary.** Because each DPoP proof contains a server-issued single-use nonce, an attacker cannot replay the proof against any server — local or remote. The JTI cache is defense-in-depth, not the primary defense.
 
-4. **Operational complexity.** A Redis dependency would add infrastructure requirements that contradict the project's goal of being deployable with minimal dependencies. unix-oidc must work on air-gapped servers.
+4. **Operational complexity.** A Redis dependency would add infrastructure requirements that contradict the project's goal of being deployable with minimal dependencies. prmana must work on air-gapped servers.
 
 5. **The threat is bounded by token lifetime.** Cross-process replay requires the attacker to have an unexpired token and an unexpired (non-nonce-validated) DPoP proof. The nonce protocol closes this window entirely.
 
@@ -148,7 +148,7 @@ A common audit question: "Why not use Redis or a shared cache for cross-process 
 
 The cache is bounded at `MAX_JTI_CACHE_ENTRIES = 100_000` entries. This prevents memory exhaustion attacks where an adversary submits proofs with many unique JTIs.
 
-**Behavior at capacity (`pam-unix-oidc/src/oidc/dpop.rs`):**
+**Behavior at capacity (`pam-prmana/src/oidc/dpop.rs`):**
 
 1. Force cleanup: evict all expired entries (`entries.retain(|_, exp| *exp > now)`)
 2. If still at capacity after cleanup: reject the proof (return `false` from `check_and_record`)

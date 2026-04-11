@@ -17,8 +17,8 @@ Operator-facing checklist for deploying Prmana to production. Each section refer
 
 ### Infrastructure
 
-- [ ] PAM module binary (`libpam_unix_oidc.so`) built or downloaded for target architecture
-- [ ] Client agent binary (`unix-oidc-agent`) available for user workstations
+- [ ] PAM module binary (`libpam_prmana.so`) built or downloaded for target architecture
+- [ ] Client agent binary (`prmana-agent`) available for user workstations
 - [ ] SSH key inventory completed: `./scripts/ssh-key-inventory.sh` (see output)
 - [ ] Break-glass password generated and stored in emergency access vault
 - [ ] Monitoring/SIEM configured to receive syslog from target servers
@@ -37,7 +37,7 @@ Operator-facing checklist for deploying Prmana to production. Each section refer
 ### Install and Configure
 
 - [ ] PAM module installed: `deploy/ansible/` or manual copy to `/lib/security/`
-- [ ] Policy configured: `/etc/unix-oidc/policy.yaml` (use `deploy/templates/single-issuer.yaml` as starting point)
+- [ ] Policy configured: `/etc/prmana/policy.yaml` (use `deploy/templates/single-issuer.yaml` as starting point)
 - [ ] PAM configured in parallel mode (OIDC + existing auth)
 - [ ] Break-glass user created on the server
 - [ ] Break-glass validated: `./scripts/validate-break-glass.sh`
@@ -46,14 +46,14 @@ Operator-facing checklist for deploying Prmana to production. Each section refer
 
 - [ ] Test user can SSH via OIDC: `ssh testuser@pilot-server`
 - [ ] Test user can still SSH via existing key (parallel mode)
-- [ ] Audit log shows `SSH_LOGIN_SUCCESS` with OIDC fields: `sudo grep SSH_LOGIN_SUCCESS /var/log/unix-oidc-audit.log`
+- [ ] Audit log shows `SSH_LOGIN_SUCCESS` with OIDC fields: `sudo grep SSH_LOGIN_SUCCESS /var/log/prmana-audit.log`
 - [ ] If CIBA enabled: `sudo` triggers step-up on test user's phone
 - [ ] Break-glass SSH login works: `ssh breakglass@pilot-server`
 - [ ] SIEM received `BREAK_GLASS_AUTH` event from break-glass test
 
 ### Rollback Test
 
-- [ ] Comment out OIDC PAM line: `sudo sed -i 's/^auth.*pam_unix_oidc/#&/' /etc/pam.d/sshd`
+- [ ] Comment out OIDC PAM line: `sudo sed -i 's/^auth.*pam_prmana/#&/' /etc/pam.d/sshd`
 - [ ] Verify existing auth still works
 - [ ] Uncomment OIDC PAM line to restore
 
@@ -66,7 +66,7 @@ Operator-facing checklist for deploying Prmana to production. Each section refer
 ```bash
 ansible-playbook -i inventory deploy/ansible/site.yml \
     -e prmana_issuer_url=https://your-idp.example.com/realms/corp \
-    -e prmana_pam_module_src=./libpam_unix_oidc.so \
+    -e prmana_pam_module_src=./libpam_prmana.so \
     -e prmana_break_glass_password_hash='$6$...'
 ```
 

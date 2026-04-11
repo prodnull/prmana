@@ -1,8 +1,8 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 #
-# unix-oidc Minimal Vagrant Image
-# Provides unix-oidc PAM module + agent, ready for BYOIDP (Bring Your Own IdP)
+# prmana Minimal Vagrant Image
+# Provides prmana PAM module + agent, ready for BYOIDP (Bring Your Own IdP)
 #
 
 VAGRANTFILE_API_VERSION = "2"
@@ -10,7 +10,7 @@ VAGRANTFILE_API_VERSION = "2"
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   # Ubuntu 22.04 LTS base box
   config.vm.box = "ubuntu/jammy64"
-  config.vm.hostname = "unix-oidc-minimal"
+  config.vm.hostname = "prmana-minimal"
 
   # Network configuration
   # SSH port forwarding (guest 22 -> host 2222)
@@ -18,7 +18,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   # VirtualBox provider settings
   config.vm.provider "virtualbox" do |vb|
-    vb.name = "unix-oidc-minimal"
+    vb.name = "prmana-minimal"
     vb.memory = "1024"
     vb.cpus = 1
 
@@ -35,7 +35,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     set -euo pipefail
 
     echo "=========================================="
-    echo "unix-oidc Minimal Image Provisioning"
+    echo "prmana Minimal Image Provisioning"
     echo "=========================================="
 
     # Update system
@@ -53,14 +53,14 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       libpam0g \
       ca-certificates
 
-    # Create unix-oidc directories
-    echo "[3/6] Creating unix-oidc directories..."
-    mkdir -p /etc/unix-oidc
-    chmod 755 /etc/unix-oidc
+    # Create prmana directories
+    echo "[3/6] Creating prmana directories..."
+    mkdir -p /etc/prmana
+    chmod 755 /etc/prmana
 
-    # Download and install unix-oidc
-    echo "[4/6] Installing unix-oidc..."
-    GITHUB_REPO="prodnull/unix-oidc"
+    # Download and install prmana
+    echo "[4/6] Installing prmana..."
+    GITHUB_REPO="prodnull/prmana"
     VERSION="0.1.0"
     ARCH=$(uname -m)
 
@@ -72,12 +72,12 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
     # Download from GitHub releases (when available)
     # For now, create placeholder config indicating installation needed
-    echo "# unix-oidc is ready for installation" > /etc/unix-oidc/.installed
+    echo "# prmana is ready for installation" > /etc/prmana/.installed
 
     # Create configuration placeholder
     echo "[5/6] Creating configuration placeholder..."
-    cat > /etc/unix-oidc/config.env << 'EOF'
-# unix-oidc Configuration
+    cat > /etc/prmana/config.env << 'EOF'
+# prmana Configuration
 # ========================
 # Configure your OIDC provider settings below.
 # After editing, apply the PAM configuration.
@@ -90,8 +90,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 #   Azure AD:  https://login.microsoftonline.com/{tenant-id}/v2.0
 OIDC_ISSUER="https://your-idp.example.com/realms/your-realm"
 
-# Client ID registered with your IdP for unix-oidc
-OIDC_CLIENT_ID="unix-oidc"
+# Client ID registered with your IdP for prmana
+OIDC_CLIENT_ID="prmana"
 
 # Optional: Client secret (if using confidential client)
 # OIDC_CLIENT_SECRET=""
@@ -112,24 +112,24 @@ OIDC_CLIENT_ID="unix-oidc"
 # Default: Uses 'preferred_username' or 'sub' claim
 # OIDC_USERNAME_CLAIM="preferred_username"
 EOF
-    chmod 600 /etc/unix-oidc/config.env
+    chmod 600 /etc/prmana/config.env
 
     # Create PAM configuration templates
     echo "[6/6] Creating PAM configuration templates..."
 
     # SSHD PAM config
-    cat > /etc/unix-oidc/pam.d-sshd.recommended << 'EOF'
-# /etc/pam.d/sshd - Recommended configuration for unix-oidc
+    cat > /etc/prmana/pam.d-sshd.recommended << 'EOF'
+# /etc/pam.d/sshd - Recommended configuration for prmana
 # WARNING: Test thoroughly before applying!
 #
 # This configuration tries OIDC authentication first,
 # then falls back to standard Unix password authentication.
 
-# Load unix-oidc environment configuration
-auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
+# Load prmana environment configuration
+auth       required     pam_env.so envfile=/etc/prmana/config.env
 
-# Try unix-oidc first, fall back to standard auth if it fails
-auth       sufficient   pam_unix_oidc.so
+# Try prmana first, fall back to standard auth if it fails
+auth       sufficient   pam_prmana.so
 auth       required     pam_unix.so
 
 # Standard account, session, password handling
@@ -139,15 +139,15 @@ auth       required     pam_unix.so
 EOF
 
     # Sudo PAM config
-    cat > /etc/unix-oidc/pam.d-sudo.recommended << 'EOF'
-# /etc/pam.d/sudo - Recommended configuration for unix-oidc
+    cat > /etc/prmana/pam.d-sudo.recommended << 'EOF'
+# /etc/pam.d/sudo - Recommended configuration for prmana
 # WARNING: Test thoroughly before applying!
 
-# Load unix-oidc environment configuration
-auth       required     pam_env.so envfile=/etc/unix-oidc/config.env
+# Load prmana environment configuration
+auth       required     pam_env.so envfile=/etc/prmana/config.env
 
-# Try unix-oidc first, fall back to standard auth if it fails
-auth       sufficient   pam_unix_oidc.so
+# Try prmana first, fall back to standard auth if it fails
+auth       sufficient   pam_prmana.so
 auth       required     pam_unix.so
 
 # Standard account, session handling
@@ -165,16 +165,16 @@ EOF
 
     echo ""
     echo "=========================================="
-    echo "unix-oidc Minimal Image Ready!"
+    echo "prmana Minimal Image Ready!"
     echo "=========================================="
     echo ""
     echo "Next Steps:"
-    echo "1. Edit /etc/unix-oidc/config.env with your OIDC provider settings"
-    echo "2. Install unix-oidc binaries (when available):"
-    echo "   curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | sudo bash"
-    echo "3. Review PAM configs in /etc/unix-oidc/"
+    echo "1. Edit /etc/prmana/config.env with your OIDC provider settings"
+    echo "2. Install prmana binaries (when available):"
+    echo "   curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh | sudo bash"
+    echo "3. Review PAM configs in /etc/prmana/"
     echo "4. Apply PAM config (carefully!):"
-    echo "   sudo cp /etc/unix-oidc/pam.d-sshd.recommended /etc/pam.d/sshd"
+    echo "   sudo cp /etc/prmana/pam.d-sshd.recommended /etc/pam.d/sshd"
     echo "5. Test with: pamtester sshd testuser authenticate"
     echo ""
   SHELL

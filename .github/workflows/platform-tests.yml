@@ -97,7 +97,7 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-gnu
           mkdir -p artifacts/x86_64
           cp target/x86_64-unknown-linux-gnu/release/*.so artifacts/x86_64/ 2>/dev/null || true
-          cp target/x86_64-unknown-linux-gnu/release/unix-oidc* artifacts/x86_64/ 2>/dev/null || true
+          cp target/x86_64-unknown-linux-gnu/release/prmana* artifacts/x86_64/ 2>/dev/null || true
 
       # Note: arm64 builds happen on actual arm64 EC2 instances via AWS Platform Tests
       # Cross-compilation was removed due to complexity with Ubuntu 24.04 multiarch setup
@@ -118,27 +118,27 @@ jobs:
             *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
           esac
 
-          echo "Installing unix-oidc for $ARCH..."
+          echo "Installing prmana for $ARCH..."
 
           # Install PAM module
-          if [ -f "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" ]; then
-            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" /lib64/security/ 2>/dev/null || \
-            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" /lib/x86_64-linux-gnu/security/ 2>/dev/null || \
-            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/pam_oidc.so" /lib/security/
+          if [ -f "/tmp/prmana/$ARTIFACT_DIR/pam_oidc.so" ]; then
+            sudo cp "/tmp/prmana/$ARTIFACT_DIR/pam_oidc.so" /lib64/security/ 2>/dev/null || \
+            sudo cp "/tmp/prmana/$ARTIFACT_DIR/pam_oidc.so" /lib/x86_64-linux-gnu/security/ 2>/dev/null || \
+            sudo cp "/tmp/prmana/$ARTIFACT_DIR/pam_oidc.so" /lib/security/
           fi
 
           # Install NSS module
-          if [ -f "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" ]; then
-            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" /lib64/ 2>/dev/null || \
-            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" /lib/x86_64-linux-gnu/ 2>/dev/null || \
-            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/libnss_oidc.so.2" /lib/
+          if [ -f "/tmp/prmana/$ARTIFACT_DIR/libnss_oidc.so.2" ]; then
+            sudo cp "/tmp/prmana/$ARTIFACT_DIR/libnss_oidc.so.2" /lib64/ 2>/dev/null || \
+            sudo cp "/tmp/prmana/$ARTIFACT_DIR/libnss_oidc.so.2" /lib/x86_64-linux-gnu/ 2>/dev/null || \
+            sudo cp "/tmp/prmana/$ARTIFACT_DIR/libnss_oidc.so.2" /lib/
             sudo ldconfig
           fi
 
           # Install CLI tool
-          if [ -f "/tmp/unix-oidc/$ARTIFACT_DIR/unix-oidc" ]; then
-            sudo cp "/tmp/unix-oidc/$ARTIFACT_DIR/unix-oidc" /usr/local/bin/
-            sudo chmod +x /usr/local/bin/unix-oidc
+          if [ -f "/tmp/prmana/$ARTIFACT_DIR/prmana-agent" ]; then
+            sudo cp "/tmp/prmana/$ARTIFACT_DIR/prmana-agent" /usr/local/bin/
+            sudo chmod +x /usr/local/bin/prmana-agent
           fi
 
           echo "Installation complete"
@@ -149,7 +149,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: unix-oidc-artifacts
+          name: prmana-artifacts
           path: artifacts/
           retention-days: 1
 
@@ -210,7 +210,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: unix-oidc-artifacts
+          name: prmana-artifacts
           path: artifacts/
 
       - name: Configure AWS credentials (OIDC)
@@ -280,7 +280,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           # Create unique instance name
-          INSTANCE_NAME="unix-oidc-test-${PLATFORM}-${ARCH}-${RUN_ID}"
+          INSTANCE_NAME="prmana-test-${PLATFORM}-${ARCH}-${RUN_ID}"
 
           # Launch instance
           INSTANCE_ID=$(aws ec2 run-instances \
@@ -289,7 +289,7 @@ jobs:
             --key-name "$KEY_NAME" \
             --subnet-id "$SUBNET_ID" \
             --security-group-ids "$SECURITY_GROUP_ID" \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$INSTANCE_NAME},{Key=Purpose,Value=unix-oidc-ci},{Key=GitHubRunId,Value=$RUN_ID}]" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$INSTANCE_NAME},{Key=Purpose,Value=prmana-ci},{Key=GitHubRunId,Value=$RUN_ID}]" \
             --instance-initiated-shutdown-behavior terminate \
             --query "Instances[0].InstanceId" \
             --output text)
@@ -350,7 +350,7 @@ jobs:
           INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
         run: |
           scp -i ~/.ssh/ec2_key -r artifacts/ \
-            "${SSH_USER}@${INSTANCE_IP}:/tmp/unix-oidc/"
+            "${SSH_USER}@${INSTANCE_IP}:/tmp/prmana/"
 
       - name: Install dependencies
         env:
@@ -375,13 +375,13 @@ jobs:
           esac
           DEPS_EOF
 
-      - name: Install unix-oidc
+      - name: Install prmana
         env:
           SSH_USER: ${{ matrix.user }}
           INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
         run: |
           ssh -i ~/.ssh/ec2_key "${SSH_USER}@${INSTANCE_IP}" \
-            "chmod +x /tmp/unix-oidc/scripts/install.sh && /tmp/unix-oidc/scripts/install.sh"
+            "chmod +x /tmp/prmana/scripts/install.sh && /tmp/prmana/scripts/install.sh"
 
       - name: Run integration tests
         id: tests
@@ -420,8 +420,8 @@ jobs:
 
           # Check CLI tool
           echo -n "CLI tool: "
-          if command -v unix-oidc &>/dev/null; then
-            unix-oidc --version || echo "version check failed"
+          if command -v prmana-agent &>/dev/null; then
+            prmana-agent --version || echo "version check failed"
             echo "FOUND"
           else
             echo "NOT FOUND"
@@ -431,9 +431,9 @@ jobs:
           echo "=== Running Integration Tests ==="
 
           # Run test scripts if they exist
-          if [ -d /tmp/unix-oidc/scripts ] && [ -f /tmp/unix-oidc/scripts/run_tests.sh ]; then
-            chmod +x /tmp/unix-oidc/scripts/run_tests.sh
-            /tmp/unix-oidc/scripts/run_tests.sh
+          if [ -d /tmp/prmana/scripts ] && [ -f /tmp/prmana/scripts/run_tests.sh ]; then
+            chmod +x /tmp/prmana/scripts/run_tests.sh
+            /tmp/prmana/scripts/run_tests.sh
           else
             echo "No integration test scripts found, running basic verification only"
           fi
@@ -476,7 +476,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: unix-oidc-artifacts
+          name: prmana-artifacts
           path: artifacts/
 
       - name: Configure AWS credentials (OIDC)
@@ -515,7 +515,7 @@ jobs:
           SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          INSTANCE_NAME="unix-oidc-test-rhel9-x86_64-${RUN_ID}"
+          INSTANCE_NAME="prmana-test-rhel9-x86_64-${RUN_ID}"
 
           INSTANCE_ID=$(aws ec2 run-instances \
             --image-id "$AMI_ID" \
@@ -523,7 +523,7 @@ jobs:
             --key-name "$KEY_NAME" \
             --subnet-id "$SUBNET_ID" \
             --security-group-ids "$SECURITY_GROUP_ID" \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$INSTANCE_NAME},{Key=Purpose,Value=unix-oidc-ci-rhel},{Key=GitHubRunId,Value=$RUN_ID}]" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$INSTANCE_NAME},{Key=Purpose,Value=prmana-ci-rhel},{Key=GitHubRunId,Value=$RUN_ID}]" \
             --instance-initiated-shutdown-behavior terminate \
             --query "Instances[0].InstanceId" \
             --output text)
@@ -573,7 +573,7 @@ jobs:
           INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
         run: |
           scp -i ~/.ssh/ec2_key -r artifacts/ \
-            "ec2-user@${INSTANCE_IP}:/tmp/unix-oidc/"
+            "ec2-user@${INSTANCE_IP}:/tmp/prmana/"
 
       - name: Install dependencies
         env:
@@ -584,12 +584,12 @@ jobs:
           sudo dnf install -y pam-devel curl jq
           DEPS_EOF
 
-      - name: Install unix-oidc
+      - name: Install prmana
         env:
           INSTANCE_IP: ${{ steps.ec2.outputs.instance_ip }}
         run: |
           ssh -i ~/.ssh/ec2_key "ec2-user@${INSTANCE_IP}" \
-            "chmod +x /tmp/unix-oidc/scripts/install.sh && /tmp/unix-oidc/scripts/install.sh"
+            "chmod +x /tmp/prmana/scripts/install.sh && /tmp/prmana/scripts/install.sh"
 
       - name: Run integration tests
         env:
@@ -614,17 +614,17 @@ jobs:
           fi
 
           # Check CLI tool
-          if command -v unix-oidc &>/dev/null; then
-            unix-oidc --version || true
+          if command -v prmana-agent &>/dev/null; then
+            prmana-agent --version || true
             echo "CLI tool: FOUND"
           fi
 
           echo ""
           echo "=== Running Integration Tests ==="
 
-          if [ -f /tmp/unix-oidc/scripts/run_tests.sh ]; then
-            chmod +x /tmp/unix-oidc/scripts/run_tests.sh
-            /tmp/unix-oidc/scripts/run_tests.sh
+          if [ -f /tmp/prmana/scripts/run_tests.sh ]; then
+            chmod +x /tmp/prmana/scripts/run_tests.sh
+            /tmp/prmana/scripts/run_tests.sh
           else
             echo "Basic verification completed"
           fi

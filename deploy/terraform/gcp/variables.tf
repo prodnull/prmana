@@ -1,5 +1,5 @@
-# unix-oidc GCP Terraform Module - Variables
-# https://github.com/prodnull/unix-oidc
+# prmana GCP Terraform Module - Variables
+# https://github.com/prodnull/prmana
 
 # =============================================================================
 # Required Variables
@@ -40,13 +40,13 @@ variable "ssh_public_key" {
 # =============================================================================
 
 variable "oidc_client_id" {
-  description = "OIDC client ID for unix-oidc"
+  description = "OIDC client ID for prmana"
   type        = string
-  default     = "unix-oidc"
+  default     = "prmana"
 }
 
 variable "install_agent" {
-  description = "Whether to install the unix-oidc-agent"
+  description = "Whether to install the prmana-agent"
   type        = bool
   default     = true
 }
@@ -98,7 +98,7 @@ variable "image_project" {
 variable "instance_name" {
   description = "Name for the GCE instance"
   type        = string
-  default     = "unix-oidc-server"
+  default     = "prmana-server"
 }
 
 variable "boot_disk_size" {

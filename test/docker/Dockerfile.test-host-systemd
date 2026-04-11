@@ -41,25 +41,25 @@ RUN useradd -m -s /bin/bash testuser && \
 # (required for systemctl --user to work inside the container test)
 RUN mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/testuser
 
-# Copy the unix-oidc-agent binary (built by CI before docker build)
+# Copy the prmana-agent binary (built by CI before docker build)
 # ARG allows CI to specify the built binary path relative to the build context (repo root)
-ARG AGENT_BINARY=target/release/unix-oidc-agent
-COPY ${AGENT_BINARY} /usr/local/bin/unix-oidc-agent
-RUN chmod +x /usr/local/bin/unix-oidc-agent
+ARG AGENT_BINARY=target/release/prmana-agent
+COPY ${AGENT_BINARY} /usr/local/bin/prmana-agent
+RUN chmod +x /usr/local/bin/prmana-agent
 
 # Copy systemd user unit files to the system-wide user unit directory.
 # The test user's instance of systemd will discover them here.
-COPY contrib/systemd/unix-oidc-agent.service /etc/systemd/user/unix-oidc-agent.service
-COPY contrib/systemd/unix-oidc-agent.socket /etc/systemd/user/unix-oidc-agent.socket
+COPY contrib/systemd/prmana-agent.service /etc/systemd/user/prmana-agent.service
+COPY contrib/systemd/prmana-agent.socket /etc/systemd/user/prmana-agent.socket
 
 # Adjust ExecStart to use the PATH-installed binary rather than ~/.cargo/bin
 # (which does not exist in this container)
-RUN sed -i 's|ExecStart=%h/.cargo/bin/unix-oidc-agent|ExecStart=/usr/local/bin/unix-oidc-agent|' \
-    /etc/systemd/user/unix-oidc-agent.service
+RUN sed -i 's|ExecStart=%h/.cargo/bin/prmana-agent|ExecStart=/usr/local/bin/prmana-agent|' \
+    /etc/systemd/user/prmana-agent.service
 
 # Provide a minimal agent configuration so the daemon can start without error
-RUN mkdir -p /home/testuser/.config/unix-oidc && \
-    cat > /home/testuser/.config/unix-oidc/agent.toml << 'TOML'
+RUN mkdir -p /home/testuser/.config/prmana && \
+    cat > /home/testuser/.config/prmana/agent.toml << 'TOML'
 # Minimal agent config for E2E testing — no real IdP required for socket activation test
 [agent]
 socket_path = ""

@@ -1,11 +1,11 @@
 # Entra ID App Registration Setup Guide
 
 This guide walks through the complete setup of an Azure Entra ID (formerly Azure AD) application
-registration for use with unix-oidc. Follow each step in order before running integration tests
+registration for use with prmana. Follow each step in order before running integration tests
 or deploying to production.
 
 **Why Entra requires additional setup:** Entra access tokens use RS256 (RSA signatures), tenant-specific
-issuer URLs, UPN-based username claims, and do not implement RFC 9449 DPoP. The unix-oidc configuration
+issuer URLs, UPN-based username claims, and do not implement RFC 9449 DPoP. The prmana configuration
 for Entra differs from Keycloak in several important ways documented in this guide.
 
 ---
@@ -34,7 +34,7 @@ After completing setup, you will have:
 1. Open the [Azure Portal](https://portal.azure.com) and navigate to **Entra ID → App registrations**.
 2. Click **New registration**.
 3. Fill in the registration form:
-   - **Name:** `unix-oidc-integration` (or a site-specific name)
+   - **Name:** `prmana-integration` (or a site-specific name)
    - **Supported account types:** Select **"Accounts in this organizational directory only
      (Single tenant)"** — this is the critical setting that makes the single-tenant security
      model work. Multi-tenant would allow tokens from any Entra tenant, bypassing your
@@ -42,7 +42,7 @@ After completing setup, you will have:
    - **Redirect URI:** Leave blank for now — we add it in Step 3.
 4. Click **Register**.
 5. On the app's **Overview** page, copy the **Application (client) ID** and **Directory (tenant) ID**.
-   Store these; you will need them for the unix-oidc policy configuration and CI secrets.
+   Store these; you will need them for the prmana policy configuration and CI secrets.
 
 ---
 
@@ -80,7 +80,7 @@ automation against Entra login pages.
 
 ## Step 4: Configure API Permissions
 
-Add the OIDC scopes required for unix-oidc to validate tokens and extract username claims.
+Add the OIDC scopes required for prmana to validate tokens and extract username claims.
 
 1. Navigate to **API permissions** in your app.
 2. Click **Add a permission → Microsoft Graph → Delegated permissions**.
@@ -132,7 +132,7 @@ configure it. [Checklist item 6]
 
 **Username claim mapping in policy.yaml:**
 
-The default unix-oidc Entra fixture uses `username_claim: email` with `strip_domain` + `lowercase`
+The default prmana Entra fixture uses `username_claim: email` with `strip_domain` + `lowercase`
 transforms. For example:
 
 ```
@@ -153,8 +153,8 @@ ROPC requires a real Entra user with username + password. Create a dedicated tes
 
 1. Navigate to **Entra ID → Users → New user → Create new user**.
 2. Fill in the form:
-   - **User principal name:** `unix-oidc-ci@yourtenant.onmicrosoft.com` (or similar)
-   - **Display name:** `unix-oidc CI Test User`
+   - **User principal name:** `prmana-ci@yourtenant.onmicrosoft.com` (or similar)
+   - **Display name:** `prmana CI Test User`
    - **Password:** Generate or set a strong password — store it in your CI secrets vault immediately
 3. Click **Create**.
 
@@ -186,7 +186,7 @@ Add these repository secrets in **Settings → Secrets and variables → Actions
 |--------|-------|
 | `ENTRA_TENANT_ID` | Directory (tenant) ID from Entra ID Overview |
 | `ENTRA_CLIENT_ID` | Application (client) ID from App registrations |
-| `ENTRA_TEST_USER` | Full UPN of CI test user (e.g. `unix-oidc-ci@tenant.onmicrosoft.com`) |
+| `ENTRA_TEST_USER` | Full UPN of CI test user (e.g. `prmana-ci@tenant.onmicrosoft.com`) |
 | `ENTRA_TEST_PASSWORD` | CI test user password |
 
 These secrets are used by the CI workflow to acquire tokens for integration tests. Rotate the
@@ -203,7 +203,7 @@ registration is correct and the test user has no MFA blocks.
 # Substitute your actual values
 TENANT_ID="your-tenant-id"
 CLIENT_ID="your-client-id"
-USERNAME="unix-oidc-ci@yourtenant.onmicrosoft.com"
+USERNAME="prmana-ci@yourtenant.onmicrosoft.com"
 PASSWORD="your-test-password"
 
 curl -s -X POST \
@@ -233,7 +233,7 @@ ACCESS_TOKEN="eyJ..."   # paste access_token from Step 8
 echo "${ACCESS_TOKEN}" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 ```
 
-Expected claims for unix-oidc:
+Expected claims for prmana:
 
 | Claim | Expected value | Notes |
 |-------|---------------|-------|
@@ -244,13 +244,13 @@ Expected claims for unix-oidc:
 | `sub` | Stable subject identifier | Opaque GUID |
 | `uti` | Unique token identifier | Entra uses `uti`, not standard `jti` |
 
-**If aud is an api:// URI:** If you configured an Application ID URI (e.g. `api://unix-oidc`) in
-**Expose an API**, the `aud` claim will be `api://unix-oidc` instead of the GUID client ID.
-Uncomment and set `expected_audience: "api://unix-oidc"` in `policy-entra.yaml` to match.
+**If aud is an api:// URI:** If you configured an Application ID URI (e.g. `api://prmana`) in
+**Expose an API**, the `aud` claim will be `api://prmana` instead of the GUID client ID.
+Uncomment and set `expected_audience: "api://prmana"` in `policy-entra.yaml` to match.
 
 ---
 
-## Configuring unix-oidc Policy
+## Configuring prmana Policy
 
 Use `test/fixtures/policy/policy-entra.yaml` as a reference. For production, substitute the
 placeholder values:
@@ -264,7 +264,7 @@ issuers:
     client_id: "YOUR_CLIENT_ID"
     dpop_enforcement: disabled  # Entra uses SHR not RFC 9449 DPoP
     allow_unsafe_identity_pipeline: true  # strip_domain is safe for single-tenant Entra
-    # expected_audience: "api://unix-oidc"  # uncomment if Application ID URI is set
+    # expected_audience: "api://prmana"  # uncomment if Application ID URI is set
     claim_mapping:
       username_claim: email
       transforms:
@@ -283,7 +283,7 @@ issuers:
 ### uti vs jti
 
 Entra ID emits a `uti` claim (unique token identifier — proprietary) rather than the standard `jti`
-claim from RFC 7519. The unix-oidc replay prevention cache checks `jti`; because `uti` is not
+claim from RFC 7519. The prmana replay prevention cache checks `jti`; because `uti` is not
 recognized as `jti`, replay prevention falls back to warn mode. Set `jti_enforcement: warn` in
 `security_modes` (as shown in the fixture). Strict replay protection for Entra tokens requires
 a future enhancement to map `uti` to the JTI cache.
@@ -291,7 +291,7 @@ a future enhancement to map `uti` to the JTI cache.
 ### ROPC Deprecation
 
 ROPC (Resource Owner Password Credentials) is deprecated in OAuth 2.1 (draft) and Microsoft
-recommends against it for new applications. It is used in unix-oidc CI only because it avoids
+recommends against it for new applications. It is used in prmana CI only because it avoids
 browser automation against Entra login pages. The risk is bounded: ROPC is used only with a
 dedicated CI test user account, not with production accounts. If your organization's Conditional
 Access policies block ROPC entirely, consider the device code flow as an alternative (requires

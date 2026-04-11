@@ -2,7 +2,7 @@
 # test/docker/entrypoint.sh
 set -e
 
-echo "Starting unix-oidc test host..."
+echo "Starting prmana test host..."
 
 # Wait for LDAP to be ready (with timeout)
 MAX_RETRIES=30
@@ -26,13 +26,13 @@ sed -i "s|LDAP_BASE|$LDAP_BASE|g" /etc/sssd/sssd.conf
 sssd -D 2>/dev/null || echo "SSSD started (or already running)"
 
 # Install PAM module if present
-if [ -f /opt/unix-oidc/libpam_unix_oidc.so ]; then
+if [ -f /opt/prmana/libpam_prmana.so ]; then
     mkdir -p /lib/security
-    cp /opt/unix-oidc/libpam_unix_oidc.so /lib/security/pam_unix_oidc.so
-    cp /etc/pam.d/sshd.unix-oidc /etc/pam.d/sshd
+    cp /opt/prmana/libpam_prmana.so /lib/security/pam_prmana.so
+    cp /etc/pam.d/sshd.prmana /etc/pam.d/sshd
     # Install sudo PAM config for step-up authentication
-    if [ -f /etc/pam.d/sudo.unix-oidc ]; then
-        cp /etc/pam.d/sudo.unix-oidc /etc/pam.d/sudo
+    if [ -f /etc/pam.d/sudo.prmana ]; then
+        cp /etc/pam.d/sudo.prmana /etc/pam.d/sudo
     fi
     # Add testuser to sudoers (requires PAM auth for step-up demo)
     echo "testuser ALL=(ALL) ALL" >> /etc/sudoers.d/testuser
@@ -42,9 +42,9 @@ fi
 
 # Export OIDC configuration for PAM module
 # Note: Using localhost because the test-host container accesses Keycloak via localhost mapped port
-# For production, use internal DNS: http://keycloak:8080/realms/unix-oidc-test
-export OIDC_ISSUER="${OIDC_ISSUER:-http://keycloak:8080/realms/unix-oidc-test}"
-export OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-unix-oidc}"
+# For production, use internal DNS: http://keycloak:8080/realms/prmana-test
+export OIDC_ISSUER="${OIDC_ISSUER:-http://keycloak:8080/realms/prmana-test}"
+export OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-prmana}"
 echo "OIDC_ISSUER=$OIDC_ISSUER"
 
 # Start SSH

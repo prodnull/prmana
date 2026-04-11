@@ -1,10 +1,10 @@
 # User Guide
 
-This guide explains how to use unix-oidc for SSH login and sudo step-up authentication.
+This guide explains how to use prmana for SSH login and sudo step-up authentication.
 
 ## Overview
 
-unix-oidc provides OIDC-based authentication for Linux systems:
+prmana provides OIDC-based authentication for Linux systems:
 
 1. **SSH Login** - Authenticate to SSH using your organization's identity provider
 2. **Sudo Step-Up** - Additional verification when running privileged commands
@@ -13,7 +13,7 @@ unix-oidc provides OIDC-based authentication for Linux systems:
 
 ### Standard Login Flow
 
-When you SSH to a unix-oidc enabled server, you'll be prompted for an OIDC token instead of a password:
+When you SSH to a prmana enabled server, you'll be prompted for an OIDC token instead of a password:
 
 ```
 $ ssh server.example.com
@@ -131,7 +131,7 @@ sudo grep error /var/log/auth.log
 Your OIDC username must match your system username:
 
 ```
-unix-oidc: User 'alice@example.com' not found in directory
+prmana: User 'alice@example.com' not found in directory
 ```
 
 Contact your administrator - they may need to:
@@ -188,7 +188,7 @@ Contact your security team if you see:
 
 ## Observability & Metrics
 
-unix-oidc provides built-in metrics for monitoring authentication health and performance.
+prmana provides built-in metrics for monitoring authentication health and performance.
 
 ### Querying Metrics
 
@@ -196,10 +196,10 @@ The agent exposes metrics via IPC. Query current status:
 
 ```bash
 # Get metrics in JSON format
-echo '{"type":"metrics","format":"json"}' | sudo nc -U /var/run/unix-oidc/agent.sock | jq
+echo '{"type":"metrics","format":"json"}' | sudo nc -U /var/run/prmana/agent.sock | jq
 
 # Get metrics in Prometheus format
-echo '{"type":"metrics","format":"prometheus"}' | sudo nc -U /var/run/unix-oidc/agent.sock
+echo '{"type":"metrics","format":"prometheus"}' | sudo nc -U /var/run/prmana/agent.sock
 ```
 
 ### Key Metrics
@@ -218,12 +218,12 @@ echo '{"type":"metrics","format":"prometheus"}' | sudo nc -U /var/run/unix-oidc/
 
 ### Prometheus Integration
 
-Add a scrape job for the unix-oidc metrics exporter:
+Add a scrape job for the prmana metrics exporter:
 
 ```yaml
 # /etc/prometheus/prometheus.yml
 scrape_configs:
-  - job_name: 'unix-oidc'
+  - job_name: 'prmana'
     static_configs:
       - targets: ['localhost:9898']  # If using metrics exporter
     scrape_interval: 15s
@@ -234,7 +234,7 @@ Or use node_exporter textfile collector:
 ```bash
 # Write metrics to textfile
 echo '{"type":"metrics","format":"prometheus"}' | \
-  nc -U /var/run/unix-oidc/agent.sock > /var/lib/prometheus/node-exporter/unix_oidc.prom
+  nc -U /var/run/prmana/agent.sock > /var/lib/prometheus/node-exporter/prmana.prom
 ```
 
 ### Recommended Alerts
@@ -242,10 +242,10 @@ echo '{"type":"metrics","format":"prometheus"}' | \
 ```yaml
 # Example Prometheus alerting rules
 groups:
-  - name: unix-oidc
+  - name: prmana
     rules:
       - alert: UnixOidcHighFailureRate
-        expr: rate(unix_oidc_agent_proof_requests_total{status="failed"}[5m]) / rate(unix_oidc_agent_proof_requests_total[5m]) > 0.1
+        expr: rate(prmana_agent_proof_requests_total{status="failed"}[5m]) / rate(prmana_agent_proof_requests_total[5m]) > 0.1
         for: 5m
         labels:
           severity: warning
@@ -253,12 +253,12 @@ groups:
           summary: "High DPoP proof failure rate"
 
       - alert: UnixOidcAgentDown
-        expr: up{job="unix-oidc"} == 0
+        expr: up{job="prmana"} == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "unix-oidc agent is not responding"
+          summary: "prmana agent is not responding"
 ```
 
 For detailed observability documentation, see [docs/observability.md](observability.md).
@@ -323,7 +323,7 @@ Your organization may have break-glass procedures:
 
 ### Is my password ever sent to the server?
 
-No. unix-oidc uses token-based authentication:
+No. prmana uses token-based authentication:
 - You authenticate to your identity provider
 - The server receives only a signed token
 - Your password stays with the identity provider

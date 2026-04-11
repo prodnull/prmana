@@ -29,7 +29,7 @@ except ImportError as e:
 # Configuration
 KEYCLOAK_URL = "http://localhost:8080"
 REALM = "token-exchange-test"
-USER_CLIENT_ID = "unix-oidc-agent"
+USER_CLIENT_ID = "prmana-agent"
 JUMP_HOST_CLIENT_ID = "jump-host-a"
 JUMP_HOST_SECRET = "jump-host-secret"
 TARGET_AUDIENCE = "target-host-b"
@@ -301,12 +301,12 @@ def main():
     else:
         print_info("No act claim in exchanged token")
     
-    # Check x-unix-oidc-lineage claim
-    lineage = exchanged_payload.get("x-unix-oidc-lineage")
+    # Check x-prmana-lineage claim
+    lineage = exchanged_payload.get("x-prmana-lineage")
     if lineage:
         print_pass(f"Has lineage claim: {json.dumps(lineage)}")
     else:
-        print_info("No x-unix-oidc-lineage claim")
+        print_info("No x-prmana-lineage claim")
     
     # Check audience
     aud = exchanged_payload.get("aud")

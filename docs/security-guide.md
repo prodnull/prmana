@@ -1,6 +1,6 @@
 # Security Guide
 
-This guide documents the security posture of `unix-oidc` as it exists in the codebase today. It has two goals:
+This guide documents the security posture of `prmana` as it exists in the codebase today. It has two goals:
 
 1. Explain the security features the project provides.
 2. Explain why key architectural decisions were made, especially where the design trades convenience for stronger security properties.
@@ -35,15 +35,15 @@ This guide uses the following labels:
 
 ## System Security Model
 
-`unix-oidc` has three main security-sensitive components:
+`prmana` has three main security-sensitive components:
 
-1. `pam-unix-oidc`
+1. `pam-prmana`
    - Server-side authentication enforcement
    - Validates JWTs, DPoP proofs, issuer/audience/expiry, replay protections, and local identity mapping
-2. `unix-oidc-agent`
+2. `prmana-agent`
    - Client-side broker for token acquisition and proof generation
    - Holds user credentials and signer state behind a same-UID Unix socket boundary
-3. `unix-oidc-scim`
+3. `prmana-scim`
    - Separate provisioning service for SCIM user lifecycle management
    - Deliberately isolated from the PAM module because it mutates local system accounts
 
@@ -54,7 +54,7 @@ The core security thesis is:
 - local authorization comes from Unix and directory state,
 - and higher assurance comes from hardware-backed signers and auditable policy enforcement.
 
-`unix-oidc` is not a generic remote access fabric. Today it secures SSH and PAM-mediated privileged access on Unix-like systems.
+`prmana` is not a generic remote access fabric. Today it secures SSH and PAM-mediated privileged access on Unix-like systems.
 
 ---
 
@@ -81,8 +81,8 @@ Why this matters:
 
 Relevant code:
 
-- `pam-unix-oidc/src/oidc/validation.rs`
-- `pam-unix-oidc/src/auth.rs`
+- `pam-prmana/src/oidc/validation.rs`
+- `pam-prmana/src/auth.rs`
 
 The agent currently supports interactive token acquisition via:
 
@@ -115,8 +115,8 @@ Important limitation:
 
 Relevant code:
 
-- `pam-unix-oidc/src/oidc/dpop.rs`
-- `unix-oidc-agent/src/crypto/dpop.rs`
+- `pam-prmana/src/oidc/dpop.rs`
+- `prmana-agent/src/crypto/dpop.rs`
 
 ### 3. Replay Protection
 
@@ -137,8 +137,8 @@ Why this matters:
 
 Relevant code:
 
-- `pam-unix-oidc/src/security/jti_cache.rs`
-- `unix-oidc-agent/tests/jti_cross_fork.rs`
+- `pam-prmana/src/security/jti_cache.rs`
+- `prmana-agent/tests/jti_cross_fork.rs`
 
 ### 4. Same-UID Agent IPC with Peer Credential Checks
 
@@ -162,8 +162,8 @@ Important limitation:
 
 Relevant code:
 
-- `unix-oidc-agent/src/daemon/socket.rs`
-- `unix-oidc-agent/src/daemon/peer_cred.rs`
+- `prmana-agent/src/daemon/socket.rs`
+- `prmana-agent/src/daemon/peer_cred.rs`
 
 ### 5. Hardware-Backed Signers
 
@@ -194,9 +194,9 @@ Important limitation:
 
 Relevant code:
 
-- `unix-oidc-agent/src/crypto/tpm_signer.rs`
-- `unix-oidc-agent/src/crypto/yubikey_signer.rs`
-- `unix-oidc-agent/src/crypto/spire_signer.rs`
+- `prmana-agent/src/crypto/tpm_signer.rs`
+- `prmana-agent/src/crypto/yubikey_signer.rs`
+- `prmana-agent/src/crypto/spire_signer.rs`
 
 ### 6. Step-Up Authentication for Privileged Actions
 
@@ -217,8 +217,8 @@ Why this matters:
 
 Relevant code:
 
-- `pam-unix-oidc/src/sudo.rs`
-- `unix-oidc-agent/src/daemon/socket.rs`
+- `pam-prmana/src/sudo.rs`
+- `prmana-agent/src/daemon/socket.rs`
 
 ### 7. Break-Glass Resilience
 
@@ -237,8 +237,8 @@ Why this matters:
 
 Relevant code:
 
-- `pam-unix-oidc/src/otp.rs`
-- `pam-unix-oidc/src/policy/config.rs`
+- `pam-prmana/src/otp.rs`
+- `pam-prmana/src/policy/config.rs`
 
 ### 8. Audit Integrity and OCSF Enrichment
 
@@ -258,8 +258,8 @@ Why this matters:
 
 Relevant code:
 
-- `pam-unix-oidc/src/audit.rs`
-- `pam-unix-oidc/src/bin/audit_verify.rs`
+- `pam-prmana/src/audit.rs`
+- `pam-prmana/src/bin/audit_verify.rs`
 
 ### 9. SPIFFE / SPIRE Bridge
 
@@ -276,9 +276,9 @@ Why this matters:
 
 Relevant code:
 
-- `pam-unix-oidc/src/identity/mapper.rs`
-- `pam-unix-oidc/src/auth.rs`
-- `unix-oidc-agent/src/crypto/spire_signer.rs`
+- `pam-prmana/src/identity/mapper.rs`
+- `pam-prmana/src/auth.rs`
+- `prmana-agent/src/crypto/spire_signer.rs`
 
 ### 10. Token Exchange / Delegation
 
@@ -301,10 +301,10 @@ Current scope:
 
 Relevant code:
 
-- `pam-unix-oidc/src/auth.rs`
-- `pam-unix-oidc/src/oidc/token.rs`
-- `pam-unix-oidc/src/oidc/validation.rs`
-- `unix-oidc-agent/src/exchange.rs`
+- `pam-prmana/src/auth.rs`
+- `pam-prmana/src/oidc/token.rs`
+- `pam-prmana/src/oidc/validation.rs`
+- `prmana-agent/src/exchange.rs`
 
 ### 11. TPM Attestation
 
@@ -528,7 +528,7 @@ Related ADR:
 
 The most important non-obvious trust statement is:
 
-- `unix-oidc-agent` is not designed to defend against same-UID malware.
+- `prmana-agent` is not designed to defend against same-UID malware.
 - it is designed to defend against cross-user access, token replay, raw key export in stronger signer modes, and unauthenticated remote use.
 
 ---
@@ -549,14 +549,14 @@ The most important non-obvious trust statement is:
 Suggested baseline:
 
 ```bash
-chmod 755 /lib/security/pam_unix_oidc.so
-chown root:root /lib/security/pam_unix_oidc.so
+chmod 755 /lib/security/pam_prmana.so
+chown root:root /lib/security/pam_prmana.so
 
-chmod 600 /etc/unix-oidc/policy.yaml
-chown root:root /etc/unix-oidc/policy.yaml
+chmod 600 /etc/prmana/policy.yaml
+chown root:root /etc/prmana/policy.yaml
 
-chmod 640 /var/log/unix-oidc/audit.log
-chown root:adm /var/log/unix-oidc/audit.log
+chmod 640 /var/log/prmana/audit.log
+chown root:adm /var/log/prmana/audit.log
 ```
 
 ### Break-Glass Seed Protection

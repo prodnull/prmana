@@ -1,6 +1,6 @@
 # Observability Guide
 
-This guide covers monitoring and observability for unix-oidc deployments.
+This guide covers monitoring and observability for prmana deployments.
 
 Related docs:
 
@@ -8,16 +8,16 @@ Related docs:
 
 ## Agent Metrics
 
-The unix-oidc-agent exposes metrics via IPC for monitoring health and performance.
+The prmana-agent exposes metrics via IPC for monitoring health and performance.
 
 ### Querying Metrics
 
 ```bash
 # JSON format (default)
-echo '{"action":"metrics"}' | nc -U $XDG_RUNTIME_DIR/unix-oidc-agent.sock
+echo '{"action":"metrics"}' | nc -U $XDG_RUNTIME_DIR/prmana-agent.sock
 
 # Prometheus format
-echo '{"action":"metrics","format":"prometheus"}' | nc -U $XDG_RUNTIME_DIR/unix-oidc-agent.sock
+echo '{"action":"metrics","format":"prometheus"}' | nc -U $XDG_RUNTIME_DIR/prmana-agent.sock
 ```
 
 ### Available Metrics
@@ -76,9 +76,9 @@ For Prometheus scraping, you can create a simple exporter:
 
 ```bash
 #!/bin/bash
-# /usr/local/bin/unix-oidc-metrics
+# /usr/local/bin/prmana-metrics
 echo '{"action":"metrics","format":"prometheus"}' | \
-  nc -U $XDG_RUNTIME_DIR/unix-oidc-agent.sock 2>/dev/null | \
+  nc -U $XDG_RUNTIME_DIR/prmana-agent.sock 2>/dev/null | \
   jq -r '.text // empty'
 ```
 
@@ -94,23 +94,23 @@ into filtered JSON or CSV bundles without requiring a separate management plane.
 ### Audit Log Location
 
 - **Syslog**: AUTH facility (typically `/var/log/auth.log` or `/var/log/secure`)
-- **Dedicated file**: `/var/log/unix-oidc-audit.log` (configurable via `UNIX_OIDC_AUDIT_LOG`)
+- **Dedicated file**: `/var/log/prmana-audit.log` (configurable via `PRMANA_AUDIT_LOG`)
 
 ### Evidence Export CLI
 
 Generate a local posture snapshot from `policy.yaml`:
 
 ```bash
-unix-oidc-evidence-export posture \
-  --policy /etc/unix-oidc/policy.yaml
+prmana-evidence-export posture \
+  --policy /etc/prmana/policy.yaml
 ```
 
 Generate a filtered evidence bundle from the audit log:
 
 ```bash
-unix-oidc-evidence-export export \
-  --file /var/log/unix-oidc-audit.log \
-  --policy /etc/unix-oidc/policy.yaml \
+prmana-evidence-export export \
+  --file /var/log/prmana-audit.log \
+  --policy /etc/prmana/policy.yaml \
   --event STEP_UP_FAILED \
   --event BREAK_GLASS_AUTH
 ```
@@ -175,20 +175,20 @@ CSV output is available with `--format csv`.
 
 ```yaml
 groups:
-  - name: unix-oidc
+  - name: prmana
     rules:
       - alert: UnixOIDCAgentDown
-        expr: up{job="unix-oidc-agent"} == 0
+        expr: up{job="prmana-agent"} == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "unix-oidc-agent is down"
+          summary: "prmana-agent is down"
 
       - alert: UnixOIDCHighProofFailureRate
         expr: |
-          rate(unix_oidc_agent_proof_requests_total{status="failed"}[5m]) /
-          rate(unix_oidc_agent_proof_requests_total[5m]) > 0.1
+          rate(prmana_agent_proof_requests_total{status="failed"}[5m]) /
+          rate(prmana_agent_proof_requests_total[5m]) > 0.1
         for: 5m
         labels:
           severity: critical
@@ -196,7 +196,7 @@ groups:
           summary: "High proof failure rate (>10%)"
 
       - alert: UnixOIDCHighLatency
-        expr: unix_oidc_agent_proof_latency_us{quantile="0.99"} > 5000000
+        expr: prmana_agent_proof_latency_us{quantile="0.99"} > 5000000
         for: 5m
         labels:
           severity: warning
@@ -210,16 +210,16 @@ groups:
 
 ```bash
 # Recent authentication failures
-journalctl -u sshd --since "1 hour ago" | grep "unix-oidc" | grep "FAILED"
+journalctl -u sshd --since "1 hour ago" | grep "prmana" | grep "FAILED"
 
 # Count events by type
-grep "unix-oidc" /var/log/auth.log | jq -r '.event' | sort | uniq -c
+grep "prmana" /var/log/auth.log | jq -r '.event' | sort | uniq -c
 
 # Failed logins by source IP
-grep "SSH_LOGIN_FAILED" /var/log/unix-oidc-audit.log | jq -r '.source_ip' | sort | uniq -c | sort -rn
+grep "SSH_LOGIN_FAILED" /var/log/prmana-audit.log | jq -r '.source_ip' | sort | uniq -c | sort -rn
 
 # Token validation errors
-grep "TOKEN_VALIDATION_FAILED" /var/log/unix-oidc-audit.log | jq -r '.reason' | sort | uniq -c
+grep "TOKEN_VALIDATION_FAILED" /var/log/prmana-audit.log | jq -r '.reason' | sort | uniq -c
 ```
 
 ## Dashboards
@@ -252,20 +252,20 @@ grep "TOKEN_VALIDATION_FAILED" /var/log/unix-oidc-audit.log | jq -r '.reason' | 
 
 ```bash
 # Check if agent is running
-pgrep -f unix-oidc-agent
+pgrep -f prmana-agent
 
 # Check socket exists
-ls -la $XDG_RUNTIME_DIR/unix-oidc-agent.sock
+ls -la $XDG_RUNTIME_DIR/prmana-agent.sock
 
 # Test connectivity
-echo '{"action":"status"}' | nc -U $XDG_RUNTIME_DIR/unix-oidc-agent.sock
+echo '{"action":"status"}' | nc -U $XDG_RUNTIME_DIR/prmana-agent.sock
 ```
 
 ### High Latency
 
 ```bash
 # Get current latency metrics
-echo '{"action":"metrics"}' | nc -U $XDG_RUNTIME_DIR/unix-oidc-agent.sock | \
+echo '{"action":"metrics"}' | nc -U $XDG_RUNTIME_DIR/prmana-agent.sock | \
   jq '{p50: .proof_latency_p50_us, p95: .proof_latency_p95_us, p99: .proof_latency_p99_us}'
 
 # Check network to IdP
@@ -276,9 +276,9 @@ curl -w "@curl-format.txt" -o /dev/null -s https://your-idp.com/.well-known/open
 
 ```bash
 # Check token status
-echo '{"action":"status"}' | nc -U $XDG_RUNTIME_DIR/unix-oidc-agent.sock | jq .
+echo '{"action":"status"}' | nc -U $XDG_RUNTIME_DIR/prmana-agent.sock | jq .
 
 # Check refresh metrics
-echo '{"action":"metrics"}' | nc -U $XDG_RUNTIME_DIR/unix-oidc-agent.sock | \
+echo '{"action":"metrics"}' | nc -U $XDG_RUNTIME_DIR/prmana-agent.sock | \
   jq '{total: .token_refresh_total, success: .token_refresh_success, failed: .token_refresh_failed}'
 ```

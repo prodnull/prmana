@@ -1,5 +1,5 @@
-# unix-oidc Policy Configuration Example
-# Copy to /etc/unix-oidc/policy.yaml and customize for your environment.
+# prmana Policy Configuration Example
+# Copy to /etc/prmana/policy.yaml and customize for your environment.
 #
 # For additional templates (failover, multi-IdP, CIBA step-up, privilege policy),
 # see deploy/templates/.
@@ -10,7 +10,7 @@
 
 issuers:
   - issuer_url: "https://keycloak.example.com/realms/corp"
-    client_id: "unix-oidc"
+    client_id: "prmana"
     # client_secret: "your-secret-here"  # Uncomment for confidential clients
     dpop_enforcement: strict  # strict | warn | disabled
     # claim_mapping:
@@ -126,5 +126,5 @@ break_glass:
 # ── Audit ────────────────────────────────────────────────────────────────────
 
 audit:
-  log_file: "/var/log/unix-oidc-audit.log"
+  log_file: "/var/log/prmana-audit.log"
   syslog_enabled: true

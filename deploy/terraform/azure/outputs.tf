@@ -1,5 +1,5 @@
-# unix-oidc Azure Terraform Module - Outputs
-# https://github.com/prodnull/unix-oidc
+# prmana Azure Terraform Module - Outputs
+# https://github.com/prodnull/prmana
 
 # =============================================================================
 # VM Outputs
@@ -7,22 +7,22 @@
 
 output "vm_id" {
   description = "Azure VM resource ID"
-  value       = azurerm_linux_virtual_machine.unix_oidc.id
+  value       = azurerm_linux_virtual_machine.prmana.id
 }
 
 output "vm_name" {
   description = "Name of the VM"
-  value       = azurerm_linux_virtual_machine.unix_oidc.name
+  value       = azurerm_linux_virtual_machine.prmana.name
 }
 
 output "vm_private_ip" {
   description = "Private IP address of the VM"
-  value       = azurerm_network_interface.unix_oidc.private_ip_address
+  value       = azurerm_network_interface.prmana.private_ip_address
 }
 
 output "vm_public_ip" {
   description = "Public IP address of the VM (if created)"
-  value       = var.create_public_ip ? azurerm_public_ip.unix_oidc[0].ip_address : null
+  value       = var.create_public_ip ? azurerm_public_ip.prmana[0].ip_address : null
 }
 
 # =============================================================================
@@ -31,12 +31,12 @@ output "vm_public_ip" {
 
 output "ssh_command" {
   description = "SSH command to connect to the VM"
-  value = var.create_public_ip ? "ssh ${var.admin_username}@${azurerm_public_ip.unix_oidc[0].ip_address}" : "ssh ${var.admin_username}@${azurerm_network_interface.unix_oidc.private_ip_address}"
+  value = var.create_public_ip ? "ssh ${var.admin_username}@${azurerm_public_ip.prmana[0].ip_address}" : "ssh ${var.admin_username}@${azurerm_network_interface.prmana.private_ip_address}"
 }
 
 output "ssh_host" {
   description = "SSH host for connection"
-  value       = var.create_public_ip ? azurerm_public_ip.unix_oidc[0].ip_address : azurerm_network_interface.unix_oidc.private_ip_address
+  value       = var.create_public_ip ? azurerm_public_ip.prmana[0].ip_address : azurerm_network_interface.prmana.private_ip_address
 }
 
 output "admin_username" {
@@ -70,17 +70,17 @@ output "subnet_id" {
 
 output "network_interface_id" {
   description = "Network interface ID attached to the VM"
-  value       = azurerm_network_interface.unix_oidc.id
+  value       = azurerm_network_interface.prmana.id
 }
 
 output "network_security_group_id" {
   description = "Network security group ID"
-  value       = azurerm_network_security_group.unix_oidc.id
+  value       = azurerm_network_security_group.prmana.id
 }
 
 output "public_ip_id" {
   description = "Public IP resource ID (if created)"
-  value       = var.create_public_ip ? azurerm_public_ip.unix_oidc[0].id : null
+  value       = var.create_public_ip ? azurerm_public_ip.prmana[0].id : null
 }
 
 # =============================================================================

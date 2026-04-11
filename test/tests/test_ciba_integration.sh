@@ -14,7 +14,7 @@ set -e
 # Configuration
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
 REALM="ciba-test"
-CLIENT_ID="unix-oidc-ciba"
+CLIENT_ID="prmana-ciba"
 CLIENT_SECRET="ciba-test-secret"
 TEST_USERNAME="cibauser"
 TEST_PASSWORD="cibapass"

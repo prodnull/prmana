@@ -1,5 +1,5 @@
 {
-  "realm": "unix-oidc",
+  "realm": "prmana",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,
@@ -32,7 +32,7 @@
   "oauth2DeviceCodeLifespan": 300,
   "oauth2DevicePollingInterval": 5,
   "defaultSignatureAlgorithm": "RS256",
-  "webAuthnPolicyRpEntityName": "unix-oidc",
+  "webAuthnPolicyRpEntityName": "prmana",
   "webAuthnPolicySignatureAlgorithms": ["ES256"],
   "webAuthnPolicyRpId": "",
   "webAuthnPolicyAttestationConveyancePreference": "not specified",
@@ -42,7 +42,7 @@
   "webAuthnPolicyCreateTimeout": 0,
   "webAuthnPolicyAvoidSameAuthenticatorRegister": false,
   "webAuthnPolicyAcceptableAaguids": [],
-  "webAuthnPolicyPasswordlessRpEntityName": "unix-oidc",
+  "webAuthnPolicyPasswordlessRpEntityName": "prmana",
   "webAuthnPolicyPasswordlessSignatureAlgorithms": ["ES256"],
   "webAuthnPolicyPasswordlessRpId": "",
   "webAuthnPolicyPasswordlessAttestationConveyancePreference": "not specified",
@@ -55,9 +55,9 @@
   "passwordPolicy": "length(8) and digits(1) and upperCase(1) and lowerCase(1) and notUsername",
   "clients": [
     {
-      "clientId": "unix-oidc",
+      "clientId": "prmana",
       "name": "Unix OIDC Client",
-      "description": "OpenID Connect client for unix-oidc PAM authentication",
+      "description": "OpenID Connect client for prmana PAM authentication",
       "enabled": true,
       "alwaysDisplayInConsole": false,
       "clientAuthenticatorType": "client-secret",
@@ -142,7 +142,7 @@
           "protocolMapper": "oidc-audience-mapper",
           "consentRequired": false,
           "config": {
-            "included.client.audience": "unix-oidc",
+            "included.client.audience": "prmana",
             "id.token.claim": "true",
             "access.token.claim": "true"
           }
@@ -152,8 +152,8 @@
   ],
   "authenticationFlows": [
     {
-      "alias": "unix-oidc-mfa",
-      "description": "MFA flow for unix-oidc - Username/password with optional OTP",
+      "alias": "prmana-mfa",
+      "description": "MFA flow for prmana - Username/password with optional OTP",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
@@ -171,8 +171,8 @@
       ]
     },
     {
-      "alias": "unix-oidc-webauthn",
-      "description": "WebAuthn passwordless flow for unix-oidc privileged access",
+      "alias": "prmana-webauthn",
+      "description": "WebAuthn passwordless flow for prmana privileged access",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,

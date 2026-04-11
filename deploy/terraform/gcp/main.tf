@@ -1,7 +1,7 @@
-# unix-oidc GCP Terraform Module
-# https://github.com/prodnull/unix-oidc
+# prmana GCP Terraform Module
+# https://github.com/prodnull/prmana
 #
-# This module creates a GCE instance with unix-oidc installed and configured.
+# This module creates a GCE instance with prmana installed and configured.
 # It can create a new VPC or use an existing one.
 
 terraform {
@@ -28,21 +28,21 @@ locals {
   # Common labels
   common_labels = merge(
     {
-      "project"     = "unix-oidc"
+      "project"     = "prmana"
       "environment" = var.environment
       "managed-by"  = "terraform"
     },
     var.labels
   )
 
-  # User data script for installing unix-oidc
+  # User data script for installing prmana
   startup_script = <<-EOF
     #!/bin/bash
     set -euo pipefail
 
     # Log to both console and file
-    exec > >(tee /var/log/unix-oidc-install.log) 2>&1
-    echo "Starting unix-oidc installation at $(date)"
+    exec > >(tee /var/log/prmana-install.log) 2>&1
+    echo "Starting prmana installation at $(date)"
 
     # Wait for cloud-init to complete (if applicable)
     if command -v cloud-init >/dev/null 2>&1; then
@@ -60,7 +60,7 @@ locals {
     fi
 
     # Download and run installer
-    curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh -o /tmp/install.sh
+    curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh -o /tmp/install.sh
     chmod +x /tmp/install.sh
 
     # Run installer with provided configuration
@@ -72,25 +72,25 @@ locals {
 
     # Configure DPoP if enabled
     if [ "${var.enable_dpop}" = "true" ]; then
-      if [ -f /etc/unix-oidc/config.env ]; then
-        echo "" >> /etc/unix-oidc/config.env
-        echo "# DPoP token binding enabled" >> /etc/unix-oidc/config.env
-        echo "OIDC_DPOP_REQUIRED=true" >> /etc/unix-oidc/config.env
+      if [ -f /etc/prmana/config.env ]; then
+        echo "" >> /etc/prmana/config.env
+        echo "# DPoP token binding enabled" >> /etc/prmana/config.env
+        echo "OIDC_DPOP_REQUIRED=true" >> /etc/prmana/config.env
       fi
     fi
 
     # Apply PAM configuration for sshd
     # This copies the recommended config - adjust for your security requirements
-    if [ -f /etc/unix-oidc/pam.d-sshd.recommended ]; then
+    if [ -f /etc/prmana/pam.d-sshd.recommended ]; then
       cp /etc/pam.d/sshd /etc/pam.d/sshd.backup.$(date +%Y%m%d%H%M%S)
-      cp /etc/unix-oidc/pam.d-sshd.recommended /etc/pam.d/sshd
+      cp /etc/prmana/pam.d-sshd.recommended /etc/pam.d/sshd
       echo "PAM configuration applied for sshd"
     fi
 
     # Restart SSH to pick up PAM changes
     systemctl restart sshd || systemctl restart ssh
 
-    echo "unix-oidc installation completed at $(date)"
+    echo "prmana installation completed at $(date)"
     EOF
 }
 
@@ -104,7 +104,7 @@ resource "google_compute_network" "main" {
   name                    = "${var.instance_name}-network"
   project                 = var.project_id
   auto_create_subnetworks = false
-  description             = "VPC network for unix-oidc instance"
+  description             = "VPC network for prmana instance"
 }
 
 resource "google_compute_subnetwork" "main" {
@@ -133,7 +133,7 @@ resource "google_compute_firewall" "allow_ssh" {
   name        = "${var.instance_name}-allow-ssh"
   project     = var.project_id
   network     = local.network
-  description = "Allow SSH access to unix-oidc instance"
+  description = "Allow SSH access to prmana instance"
 
   allow {
     protocol = "tcp"
@@ -141,7 +141,7 @@ resource "google_compute_firewall" "allow_ssh" {
   }
 
   source_ranges = var.allowed_ssh_cidrs
-  target_tags   = ["unix-oidc"]
+  target_tags   = ["prmana"]
 
   priority = 1000
 }
@@ -159,7 +159,7 @@ resource "google_compute_firewall" "allow_egress" {
   }
 
   destination_ranges = ["0.0.0.0/0"]
-  target_tags        = ["unix-oidc"]
+  target_tags        = ["prmana"]
 
   priority = 1000
 }
@@ -168,13 +168,13 @@ resource "google_compute_firewall" "allow_egress" {
 # GCE Instance
 # =============================================================================
 
-resource "google_compute_instance" "unix_oidc" {
+resource "google_compute_instance" "prmana" {
   name         = var.instance_name
   project      = var.project_id
   zone         = var.zone
   machine_type = var.machine_type
 
-  tags = ["unix-oidc"]
+  tags = ["prmana"]
 
   labels = local.common_labels
 
@@ -240,5 +240,5 @@ resource "google_compute_address" "static_ip" {
   project      = var.project_id
   region       = var.region
   address_type = "EXTERNAL"
-  description  = "Static external IP for unix-oidc instance"
+  description  = "Static external IP for prmana instance"
 }

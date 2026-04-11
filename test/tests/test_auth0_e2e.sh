@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test_auth0_e2e.sh — Auth0 Live E2E Tests (Phase 40)
 #
-# Validates unix-oidc against a live Auth0 tenant:
+# Validates prmana against a live Auth0 tenant:
 #   1. OIDC discovery and JWKS fetch
 #   2. ROPC token acquisition with JWT access token
 #   3. Namespaced custom claim extraction (preferred_username)
@@ -14,7 +14,7 @@
 # Prerequisites:
 #   AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_TEST_USER,
 #   AUTH0_PASSWORD — set in environment or .auth0 file.
-#   AUTH0_AUDIENCE — API identifier (default: https://unix-oidc.dev/api)
+#   AUTH0_AUDIENCE — API identifier (default: https://prmana.dev/api)/api)
 #
 # Usage:
 #   ./test/tests/test_auth0_e2e.sh           # uses .auth0 file
@@ -42,8 +42,8 @@ AUTH0_CLIENT_ID="${AUTH0_CLIENT_ID:?AUTH0_CLIENT_ID not set}"
 AUTH0_CLIENT_SECRET="${AUTH0_CLIENT_SECRET:?AUTH0_CLIENT_SECRET not set}"
 AUTH0_TEST_USER="${AUTH0_TEST_USER:?AUTH0_TEST_USER not set}"
 AUTH0_PASSWORD="${AUTH0_PASSWORD:?AUTH0_PASSWORD not set}"
-AUTH0_AUDIENCE="${AUTH0_AUDIENCE:-https://unix-oidc.dev/api}"
-AUTH0_CLAIM_NAMESPACE="${AUTH0_CLAIM_NAMESPACE:-https://unix-oidc.dev/}"
+AUTH0_AUDIENCE="${AUTH0_AUDIENCE:-https://prmana.dev/api}"
+AUTH0_CLAIM_NAMESPACE="${AUTH0_CLAIM_NAMESPACE:-https://prmana.dev/}"
 
 PASS=0
 FAIL=0

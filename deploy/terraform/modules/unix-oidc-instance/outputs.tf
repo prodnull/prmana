@@ -1,27 +1,27 @@
-# unix-oidc-instance module outputs
+# prmana-instance module outputs
 
 output "install_complete" {
-  description = "Indicates that unix-oidc installation is complete"
+  description = "Indicates that prmana installation is complete"
   value       = true
-  depends_on  = [null_resource.unix_oidc_validate]
+  depends_on  = [null_resource.prmana_validate]
 }
 
 output "config_path" {
-  description = "Path to the unix-oidc configuration file"
-  value       = "/etc/unix-oidc/config.env"
+  description = "Path to the prmana configuration file"
+  value       = "/etc/prmana/config.env"
 }
 
 output "pam_module_paths" {
   description = "Possible paths to the PAM module (depends on OS)"
   value = [
-    "/lib/security/pam_unix_oidc.so",
-    "/lib64/security/pam_unix_oidc.so"
+    "/lib/security/pam_prmana.so",
+    "/lib64/security/pam_prmana.so"
   ]
 }
 
 output "agent_path" {
-  description = "Path to the unix-oidc-agent binary (if installed)"
-  value       = var.install_agent ? "/usr/local/bin/unix-oidc-agent" : null
+  description = "Path to the prmana-agent binary (if installed)"
+  value       = var.install_agent ? "/usr/local/bin/prmana-agent" : null
 }
 
 output "oidc_issuer" {

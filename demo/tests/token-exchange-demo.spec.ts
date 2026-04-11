@@ -10,7 +10,7 @@ import { test, expect, Page } from '@playwright/test';
 
 const KEYCLOAK_URL = 'http://localhost:8080';
 const REALM = 'token-exchange-test';
-const USER_CLIENT_ID = 'unix-oidc-agent';
+const USER_CLIENT_ID = 'prmana-agent';
 const JUMP_HOST_CLIENT_ID = 'jump-host-a';
 const JUMP_HOST_SECRET = 'jump-host-secret';
 const TEST_USER = 'testuser';
@@ -266,7 +266,7 @@ test.describe('Token Exchange Demo', () => {
         <pre style="font-size: 12px;">
 <span class="json-key">"sub"</span>: <span class="json-string">"${userTokenClaims.sub?.substring(0, 30) || 'user-uuid'}..."</span>
 <span class="json-key">"preferred_username"</span>: <span class="json-string">"${userTokenClaims.preferred_username || TEST_USER}"</span>
-<span class="json-key">"aud"</span>: <span class="json-string">${JSON.stringify(userTokenClaims.aud || ['unix-oidc-agent'])}</span>
+<span class="json-key">"aud"</span>: <span class="json-string">${JSON.stringify(userTokenClaims.aud || ['prmana-agent'])}</span>
 <span class="json-key">"cnf"</span>: { <span class="json-key">"jkt"</span>: <span class="json-string">"${userTokenClaims.cnf?.jkt || 'user-dpop-jkt'}"</span> }</pre>
       </div>
     `);

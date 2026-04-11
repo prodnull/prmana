@@ -10,15 +10,15 @@ to align with emerging IETF patterns. This avoids:
 
 ## Changes Required
 
-### 1. Remove `x-unix-oidc-lineage` Custom Claim
+### 1. Remove `x-prmana-lineage` Custom Claim
 
-**Problem**: Our custom `x-unix-oidc-lineage` claim duplicates RFC 8693's `act` claim.
+**Problem**: Our custom `x-prmana-lineage` claim duplicates RFC 8693's `act` claim.
 
 **Before (non-standard)**:
 ```json
 {
   "act": { "sub": "alice@example.com" },
-  "x-unix-oidc-lineage": {
+  "x-prmana-lineage": {
     "origin": { "sub": "alice@example.com", "dpop_jkt": "..." },
     "path": [{ "actor": "jump-host-a", "actor_dpop_jkt": "..." }]
   }
@@ -144,7 +144,7 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 ### Remove Custom Protocol Mappers
 
 **Delete**:
-- `x-unix-oidc-lineage-mapper` (hardcoded claim mapper)
+- `x-prmana-lineage-mapper` (hardcoded claim mapper)
 
 **Keep**:
 - `act-claim-mapper` - but verify it uses RFC 8693 format
@@ -165,7 +165,7 @@ Keycloak doesn't currently support `subject_token_dpop`. Options:
 
 ## Audit Trail Without Custom Claims
 
-Instead of `x-unix-oidc-lineage`, use:
+Instead of `x-prmana-lineage`, use:
 
 1. **Structured Logging** (server-side):
 ```json
@@ -200,7 +200,7 @@ The audit trail is in the observability system, not the token itself.
 
 | Component | Before | After |
 |-----------|--------|-------|
-| Delegation chain | `x-unix-oidc-lineage` | RFC 8693 `act` (nested) |
+| Delegation chain | `x-prmana-lineage` | RFC 8693 `act` (nested) |
 | Attestation param | `x_lineage_attestation` | Remove (not needed) |
 | Subject proof | None | `subject_token_dpop` (when IdPs support) |
 | Audit trail | Custom claims | OpenTelemetry + structured logs |

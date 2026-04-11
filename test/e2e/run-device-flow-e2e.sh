@@ -3,7 +3,7 @@
 # PLAY-02: Shell + Playwright coordination for device flow E2E.
 #
 # Protocol:
-#   1. This script runs unix-oidc-agent login (which generates DPoP proofs)
+#   1. This script runs prmana-agent login (which generates DPoP proofs)
 #   2. Captures the verification URI from agent stdout via a FIFO
 #   3. Writes the URI to TMPFILE for Playwright
 #   4. Playwright automates browser login + consent
@@ -12,18 +12,18 @@
 #
 # Prerequisites:
 #   - Keycloak running and healthy (docker-compose.e2e.yaml)
-#   - unix-oidc-agent binary on PATH (or AGENT_BIN set)
+#   - prmana-agent binary on PATH (or AGENT_BIN set)
 #   - Playwright browsers installed (npx playwright install chromium)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${KEYCLOAK_REALM:-unix-oidc}"
-CLIENT_ID="${KEYCLOAK_CLIENT_ID:-unix-oidc}"
-AGENT_BIN="${AGENT_BIN:-unix-oidc-agent}"
-TMPFILE="${DEVICE_FLOW_TMPFILE:-/tmp/unix-oidc-device-flow-uri}"
-AGENT_OUTPUT="/tmp/unix-oidc-agent-output-$$"
+REALM="${KEYCLOAK_REALM:-prmana}"
+CLIENT_ID="${KEYCLOAK_CLIENT_ID:-prmana}"
+AGENT_BIN="${AGENT_BIN:-prmana-agent}"
+TMPFILE="${DEVICE_FLOW_TMPFILE:-/tmp/prmana-device-flow-uri}"
+AGENT_OUTPUT="/tmp/prmana-agent-output-$$"
 AGENT_PID=""
 PW_PID=""
 
@@ -50,19 +50,19 @@ echo ""
 if ! command -v "$AGENT_BIN" >/dev/null 2>&1; then
     # Try local native build (macOS host → Linux server testing)
     PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-    LOCAL_AGENT="${PROJECT_ROOT}/target/release/unix-oidc-agent"
+    LOCAL_AGENT="${PROJECT_ROOT}/target/release/prmana-agent"
     if [ -x "$LOCAL_AGENT" ]; then
         AGENT_BIN="$LOCAL_AGENT"
         echo "Using local agent: $AGENT_BIN"
     else
-        echo "FATAL: unix-oidc-agent not found on PATH or at $LOCAL_AGENT"
-        echo "Build with: cargo build --release -p unix-oidc-agent"
+        echo "FATAL: prmana-agent not found on PATH or at $LOCAL_AGENT"
+        echo "Build with: cargo build --release -p prmana-agent"
         exit 1
     fi
 fi
 
 # Step 1: Start agent login in background, capturing stdout
-echo "Step 1: Starting unix-oidc-agent login (device flow + DPoP)..."
+echo "Step 1: Starting prmana-agent login (device flow + DPoP)..."
 OIDC_ISSUER="${KEYCLOAK_URL}/realms/${REALM}" \
 OIDC_CLIENT_ID="${CLIENT_ID}" \
     "$AGENT_BIN" login \

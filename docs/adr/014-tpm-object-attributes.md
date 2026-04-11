@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-unix-oidc uses TPM 2.0 for hardware-backed DPoP signing keys. The TPM key template
+prmana uses TPM 2.0 for hardware-backed DPoP signing keys. The TPM key template
 must select object attributes that enforce non-exportability while still allowing
 unrestricted P-256 ECDSA signing for RFC 9449 DPoP proofs.
 

@@ -59,7 +59,7 @@
   <text class="protection-detail" x="60" y="180">Volatile write to zero before deallocation</text>
   <text class="protection-detail" x="60" y="195">No zeroize feature flag needed on p256 = "0.13"</text>
   <rect class="code-ref" x="60" y="200" width="320" height="18"/>
-  <text class="code-text" x="68" y="213">unix-oidc-agent/src/crypto/protected_key.rs</text>
+  <text class="code-text" x="68" y="213">prmana-agent/src/crypto/protected_key.rs</text>
 
   <!-- MEM-04: mlock -->
   <rect class="protection" x="50" y="240" width="340" height="115"/>
@@ -175,7 +175,7 @@
   <text class="protection-detail" x="820" y="215">Then: unlink (remove file)</text>
   <text class="protection-detail" x="820" y="235" style="fill: #f1c40f;">Overwrite failures: best-effort WARN, still unlink</text>
   <rect class="code-ref" x="820" y="245" width="320" height="18"/>
-  <text class="code-text" x="828" y="258">unix-oidc-agent/src/storage/secure_delete.rs</text>
+  <text class="code-text" x="828" y="258">prmana-agent/src/storage/secure_delete.rs</text>
 
   <!-- MEM-06: CoW Advisory -->
   <rect class="limitation" x="810" y="285" width="340" height="100"/>

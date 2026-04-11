@@ -1,6 +1,6 @@
 # Sudo Step-Up Authentication
 
-This document describes how to configure and use sudo step-up authentication with unix-oidc, including the Phase 44 risk-aware privilege policy model.
+This document describes how to configure and use sudo step-up authentication with prmana, including the Phase 44 risk-aware privilege policy model.
 
 ## Overview
 
@@ -37,7 +37,7 @@ The step-up flow can use the OAuth 2.0 Device Authorization Grant (RFC 8628) or 
 
 ### Policy File
 
-Create `/etc/unix-oidc/policy.yaml`:
+Create `/etc/prmana/policy.yaml`:
 
 ```yaml
 # Host classification affects default SSH and sudo policy decisions.
@@ -98,17 +98,17 @@ Set these in the PAM environment or system-wide:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OIDC_ISSUER` | Yes | OIDC issuer URL (e.g., `https://keycloak.example.com/realms/myrealm`) |
-| `OIDC_CLIENT_ID` | No | Client ID (default: `unix-oidc`) |
+| `OIDC_CLIENT_ID` | No | Client ID (default: `prmana`) |
 | `OIDC_CLIENT_SECRET` | No | Client secret if required by IdP |
-| `UNIX_OIDC_POLICY_FILE` | No | Path to policy file (default: `/etc/unix-oidc/policy.yaml`) |
+| `PRMANA_POLICY_FILE` | No | Path to policy file (default: `/etc/prmana/policy.yaml`) |
 
 ### PAM Configuration
 
-Add unix-oidc to `/etc/pam.d/sudo`:
+Add prmana to `/etc/pam.d/sudo`:
 
 ```
 # Unix-oidc step-up authentication
-auth    required    pam_unix_oidc.so
+auth    required    pam_prmana.so
 
 # Fallback to standard Unix auth (for break-glass)
 auth    required    pam_unix.so try_first_pass
@@ -159,7 +159,7 @@ Policy decisions and step-up events are logged for security monitoring:
 
 Events are written to:
 - stderr (typically captured by syslog)
-- `$UNIX_OIDC_AUDIT_LOG` file if configured
+- `$PRMANA_AUDIT_LOG` file if configured
 
 ## Troubleshooting
 

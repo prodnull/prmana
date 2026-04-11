@@ -1,6 +1,6 @@
-# OAuth 2.0 and OIDC: A Deep Dive Through unix-oidc
+# OAuth 2.0 and OIDC: A Deep Dive Through prmana
 
-*From first principles to hardware-bound token delegation — how modern identity works, why it works that way, and how unix-oidc implements every layer.*
+*From first principles to hardware-bound token delegation — how modern identity works, why it works that way, and how prmana implements every layer.*
 
 ---
 
@@ -11,10 +11,10 @@ This document serves three audiences simultaneously:
 | Audience | Start here | Key sections |
 |----------|------------|-------------|
 | **New to OAuth/OIDC** | Section 1 (The Problem) | Sections 1-5 build the mental model |
-| **OAuth practitioner, new to unix-oidc** | Section 6 (Architecture) | Sections 6-12 map concepts to code |
+| **OAuth practitioner, new to prmana** | Section 6 (Architecture) | Sections 6-12 map concepts to code |
 | **Security auditor** | Section 13 (Security Analysis) | Sections 13-16 cover threat model and invariants |
 
-Every concept introduced in the theory sections is immediately grounded with a code reference showing where unix-oidc implements it. References use the format `file.rs:line` — follow them to see the actual implementation.
+Every concept introduced in the theory sections is immediately grounded with a code reference showing where prmana implements it. References use the format `file.rs:line` — follow them to see the actual implementation.
 
 ---
 
@@ -25,7 +25,7 @@ Every concept introduced in the theory sections is immediately grounded with a c
 3. [OpenID Connect: The Identity Layer](#3-openid-connect)
 4. [JWTs: The Currency of Trust](#4-jwts)
 5. [JWKS: Distributing Trust at Scale](#5-jwks)
-6. [unix-oidc Architecture](#6-architecture)
+6. [prmana Architecture](#6-architecture)
 7. [DPoP: Proof of Possession](#7-dpop)
 8. [The Authentication Flows](#8-flows)
 9. [Token Exchange: Multi-Hop Delegation](#9-token-exchange)
@@ -60,7 +60,7 @@ This model has three critical failures in a modern enterprise:
 
 The identity infrastructure that enterprises already have — Okta, Azure AD (Entra ID), Google Workspace, Keycloak — already solves these problems for web applications. Single sign-on, MFA, session management, audit logs, automatic deprovisioning. The gap is bringing that same infrastructure to Unix PAM authentication.
 
-That's what unix-oidc does: it bridges OIDC (the same protocol behind "Sign in with Google") to Linux PAM, with DPoP token binding to prevent token theft.
+That's what prmana does: it bridges OIDC (the same protocol behind "Sign in with Google") to Linux PAM, with DPoP token binding to prevent token theft.
 
 ---
 
@@ -81,10 +81,10 @@ The classic example: you want a photo printing service to access your Google Pho
 
 The key participants in this exchange have formal names:
 
-| Role | In the example | In unix-oidc |
+| Role | In the example | In prmana |
 |------|---------------|-------------|
 | **Resource Owner** | You (the person with photos) | The Unix user |
-| **Client** | The photo printing service | `unix-oidc-agent` daemon |
+| **Client** | The photo printing service | `prmana-agent` daemon |
 | **Authorization Server (AS)** | Google's login page | Keycloak, Okta, Entra ID |
 | **Resource Server** | Google Photos API | The Linux server (via PAM) |
 
@@ -112,9 +112,9 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=<which_flow>&...parameters...
 ```
 
-The `grant_type` parameter tells the AS which flow is being used. unix-oidc supports four:
+The `grant_type` parameter tells the AS which flow is being used. prmana supports four:
 
-| Grant Type | RFC | Purpose | unix-oidc usage |
+| Grant Type | RFC | Purpose | prmana usage |
 |------------|-----|---------|-----------------|
 | `urn:ietf:params:oauth:grant-type:device_code` | RFC 8628 | Headless/CLI device login | Primary login flow |
 | `authorization_code` | RFC 6749 | Browser-based login with redirect | Alternative login flow |
@@ -149,7 +149,7 @@ This document lists every endpoint the AS supports:
 }
 ```
 
-**In unix-oidc:** The `OidcDiscovery` struct in `pam-unix-oidc/src/oidc/jwks.rs` models this document. The agent fetches it at the start of every flow — login, token exchange, CIBA step-up — to discover the correct endpoints for the configured issuer. This means unix-oidc works with *any* compliant OIDC provider without hardcoding provider-specific URLs.
+**In prmana:** The `OidcDiscovery` struct in `pam-prmana/src/oidc/jwks.rs` models this document. The agent fetches it at the start of every flow — login, token exchange, CIBA step-up — to discover the correct endpoints for the configured issuer. This means prmana works with *any* compliant OIDC provider without hardcoding provider-specific URLs.
 
 ---
 
@@ -206,7 +206,7 @@ A **claim** is a name-value pair that asserts something about the user. OIDC def
 | `cnf` | Token is bound to a key (`jkt` thumbprint) | DPoP verification |
 | `act` | Delegation chain (who exchanged this token) | Multi-hop SSH |
 
-**In unix-oidc:** The `TokenClaims` struct in `pam-unix-oidc/src/oidc/token.rs` models every claim listed above. Each field maps directly to an OIDC standard claim. The `extra` field (a `HashMap<String, Value>`) captures any non-standard claims that IdPs might include — used by the username mapping pipeline when operators configure custom claim sources.
+**In prmana:** The `TokenClaims` struct in `pam-prmana/src/oidc/token.rs` models every claim listed above. Each field maps directly to an OIDC standard claim. The `extra` field (a `HashMap<String, Value>`) captures any non-standard claims that IdPs might include — used by the username mapping pipeline when operators configure custom claim sources.
 
 ### The Username Problem
 
@@ -219,7 +219,7 @@ The mapping from OIDC claims to Unix usernames is not straightforward:
 - Google puts it in `email`
 - Some IdPs use custom claims
 
-unix-oidc solves this with a configurable **username mapping pipeline**:
+prmana solves this with a configurable **username mapping pipeline**:
 
 ```yaml
 # policy.yaml
@@ -232,7 +232,7 @@ issuers:
         - lowercase                  # Alice → alice
 ```
 
-**In unix-oidc:** `pam-unix-oidc/src/identity/mapper.rs` implements `UsernameMapper` with a pipeline of transforms. `pam-unix-oidc/src/policy/config.rs` defines `IdentityConfig` with `username_claim` and `transforms`. The pipeline is checked for *injectivity* — if two different OIDC identities could map to the same Unix username, authentication is rejected (`check_collision_safety()` in `pam-unix-oidc/src/identity/collision.rs`).
+**In prmana:** `pam-prmana/src/identity/mapper.rs` implements `UsernameMapper` with a pipeline of transforms. `pam-prmana/src/policy/config.rs` defines `IdentityConfig` with `username_claim` and `transforms`. The pipeline is checked for *injectivity* — if two different OIDC identities could map to the same Unix username, authentication is rejected (`check_collision_safety()` in `pam-prmana/src/identity/collision.rs`).
 
 ---
 
@@ -262,7 +262,7 @@ Three parts separated by dots:
 {
   "sub": "alice",
   "iss": "https://idp.example.com",
-  "aud": "unix-oidc",
+  "aud": "prmana",
   "exp": 1712678400,
   "iat": 1712674800,
   "jti": "550e8400-e29b-41d4-a716-446655440000"
@@ -280,11 +280,11 @@ The signature is computed over the first two parts joined by a dot. Anyone with 
 
 JWTs use base64url encoding (RFC 4648 §5), not standard base64. The difference: `+` becomes `-`, `/` becomes `_`, and padding `=` is omitted. This makes JWTs safe to include in URLs, HTTP headers, and form parameters without escaping.
 
-**In unix-oidc:** `TokenClaims::from_token()` in `pam-unix-oidc/src/oidc/token.rs` manually decodes the base64url payload for cases where we need to read claims without full signature verification (e.g., extracting the `iss` claim for routing before we know which JWKS to use). The `base64::engine::general_purpose::URL_SAFE_NO_PAD` engine is used consistently throughout the codebase.
+**In prmana:** `TokenClaims::from_token()` in `pam-prmana/src/oidc/token.rs` manually decodes the base64url payload for cases where we need to read claims without full signature verification (e.g., extracting the `iss` claim for routing before we know which JWKS to use). The `base64::engine::general_purpose::URL_SAFE_NO_PAD` engine is used consistently throughout the codebase.
 
 ### Signing Algorithms: The First Line of Defense
 
-The `alg` header field declares which cryptographic algorithm was used to sign the token. unix-oidc accepts only asymmetric algorithms:
+The `alg` header field declares which cryptographic algorithm was used to sign the token. prmana accepts only asymmetric algorithms:
 
 | Algorithm | Type | Curve/Key | Security Level |
 |-----------|------|-----------|----------------|
@@ -295,13 +295,13 @@ The `alg` header field declares which cryptographic algorithm was used to sign t
 | PS256, PS384, PS512 | RSA-PSS | 2048+ bit | 112-bit+ |
 | EdDSA | Edwards curve | Ed25519/Ed448 | 128-bit+ |
 
-**What unix-oidc explicitly rejects:**
+**What prmana explicitly rejects:**
 
 - **`alg: "none"`** — The "none" algorithm means "no signature." Accepting it means anyone can forge any token by omitting the signature. This is not a theoretical attack — CVE-2015-9235 and similar vulnerabilities in JWT libraries accepted `alg: none` and allowed full authentication bypass.
 
 - **HMAC algorithms (HS256, HS384, HS512)** — These are *symmetric* algorithms that use the same key for signing and verification. In a public-key context (where the signing key is private and the verification key is public), accepting HMAC enables the **algorithm confusion attack**: an attacker takes the server's public RSA key (which is, by definition, public), uses it as an HMAC secret to sign a forged token with `alg: HS256`, and the server verifies it successfully because it uses the same "key" for HMAC verification. This is CVE-2016-5431.
 
-**In unix-oidc:** `DEFAULT_ALLOWED_ALGORITHMS` in `pam-unix-oidc/src/oidc/validation.rs` defines the allowlist — only the asymmetric algorithms above. `key_algorithm_to_algorithm()` performs an exhaustive match on the `KeyAlgorithm` enum, explicitly rejecting HS* and encryption-only algorithms. The SCIM service has its own algorithm check in `unix-oidc-scim/src/auth.rs` that enforces the same policy at the middleware level.
+**In prmana:** `DEFAULT_ALLOWED_ALGORITHMS` in `pam-prmana/src/oidc/validation.rs` defines the allowlist — only the asymmetric algorithms above. `key_algorithm_to_algorithm()` performs an exhaustive match on the `KeyAlgorithm` enum, explicitly rejecting HS* and encryption-only algorithms. The SCIM service has its own algorithm check in `prmana-scim/src/auth.rs` that enforces the same policy at the middleware level.
 
 ---
 
@@ -358,11 +358,11 @@ IdPs periodically rotate their signing keys. The standard practice:
 
 This is why servers must *cache* the JWKS but also *refresh* it periodically — to pick up new keys.
 
-### JWKS Caching in unix-oidc
+### JWKS Caching in prmana
 
 The PAM module implements a sophisticated caching strategy:
 
-**`JwksProvider`** (`pam-unix-oidc/src/oidc/jwks.rs`) caches JWKS with a configurable TTL (default 300 seconds). Each issuer gets its own isolated cache via `IssuerJwksRegistry`. The TTL is configurable per-issuer in `policy.yaml`:
+**`JwksProvider`** (`pam-prmana/src/oidc/jwks.rs`) caches JWKS with a configurable TTL (default 300 seconds). Each issuer gets its own isolated cache via `IssuerJwksRegistry`. The TTL is configurable per-issuer in `policy.yaml`:
 
 ```yaml
 issuers:
@@ -371,7 +371,7 @@ issuers:
     http_timeout_secs: 5         # JWKS fetch timeout
 ```
 
-The SCIM service uses a different cache implementation (`JwksCache` in `unix-oidc-scim/src/auth.rs`) with TTL-based refresh and **kid-miss forced refresh** — if a JWT presents a `kid` not in the cached JWKS, the cache is immediately refreshed before rejecting. This handles key rotation mid-TTL.
+The SCIM service uses a different cache implementation (`JwksCache` in `prmana-scim/src/auth.rs`) with TTL-based refresh and **kid-miss forced refresh** — if a JWT presents a `kid` not in the cached JWKS, the cache is immediately refreshed before rejecting. This handles key rotation mid-TTL.
 
 ### JWK Thumbprints: Key Identity
 
@@ -388,22 +388,22 @@ For an EC key on P-256:
 {"crv":"P-256","kty":"EC","x":"<base64url>","y":"<base64url>"}
 ```
 
-**In unix-oidc:** `pam-unix-oidc/src/oidc/dpop.rs` computes thumbprints with hardcoded canonical field names — never from user-supplied `kty`/`crv` values. An attacker who could control the `kty` field could change the thumbprint (e.g., supplying `"kty":"oct"` to produce a different hash). The thumbprint computation in the agent (`unix-oidc-agent/src/crypto/tpm_signer.rs`) uses the same hardcoded approach.
+**In prmana:** `pam-prmana/src/oidc/dpop.rs` computes thumbprints with hardcoded canonical field names — never from user-supplied `kty`/`crv` values. An attacker who could control the `kty` field could change the thumbprint (e.g., supplying `"kty":"oct"` to produce a different hash). The thumbprint computation in the agent (`prmana-agent/src/crypto/tpm_signer.rs`) uses the same hardcoded approach.
 
 ---
 
-## 6. unix-oidc Architecture {#6-architecture}
+## 6. prmana Architecture {#6-architecture}
 
 ### The Two-Component Model
 
-unix-oidc separates concerns into two binaries that communicate via IPC:
+prmana separates concerns into two binaries that communicate via IPC:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              User's Machine                                  │
 │                                                                              │
 │   ┌─────────────────┐     Unix Socket IPC     ┌──────────────────────────┐ │
-│   │  SSH Client      │ ────────────────────── │  unix-oidc-agent          │ │
+│   │  SSH Client      │ ────────────────────── │  prmana-agent          │ │
 │   │  (via SSH_ASKPASS)│                        │  (long-lived daemon)      │ │
 │   └─────────────────┘                          │                          │ │
 │                                                 │  - Manages DPoP keys     │ │
@@ -419,7 +419,7 @@ unix-oidc separates concerns into two binaries that communicate via IPC:
 │                              Linux Server                                    │
 │                                                                              │
 │   ┌─────────────────┐     PAM stack     ┌──────────────────────────────────┐ │
-│   │  sshd            │ ─────────────── │  pam_unix_oidc.so                 │ │
+│   │  sshd            │ ─────────────── │  pam_prmana.so                 │ │
 │   │                  │                  │  (shared library, loaded by sshd) │ │
 │   └─────────────────┘                   │                                  │ │
 │                                          │  - Validates JWT signatures     │ │
@@ -438,7 +438,7 @@ The PAM module runs inside `sshd` — a privileged process that handles network 
 
 The agent daemon runs in userspace. It maintains the DPoP signing key, manages token lifecycle (refresh, revocation), and handles interactive flows (device flow login, CIBA step-up). It communicates with the PAM module via JSON-over-Unix-socket IPC.
 
-**IPC Protocol** (`unix-oidc-agent/src/daemon/protocol.rs`):
+**IPC Protocol** (`prmana-agent/src/daemon/protocol.rs`):
 
 ```json
 // Request: PAM → Agent
@@ -517,14 +517,14 @@ The header embeds the full public key (not just a `kid` reference). This allows 
 | `htu` | HTTP URI this proof is bound to |
 | `iat` | Issued at — proof must be fresh (within clock skew tolerance) |
 
-**In unix-oidc:**
+**In prmana:**
 
-The agent builds DPoP proofs in `unix-oidc-agent/src/crypto/dpop.rs`:
+The agent builds DPoP proofs in `prmana-agent/src/crypto/dpop.rs`:
 - `build_dpop_message()` constructs the header and payload
 - `assemble_dpop_proof()` combines the message with the signature
-- The `DPoPSigner` trait (`unix-oidc-agent/src/crypto/signer.rs`) abstracts over different signing backends: `SoftwareSigner` (in-memory P-256 key), `TpmSigner` (TPM 2.0 hardware key), `SpireSigner` (SPIRE JWT-SVID), and `YubiKeySigner` (PIV smart card)
+- The `DPoPSigner` trait (`prmana-agent/src/crypto/signer.rs`) abstracts over different signing backends: `SoftwareSigner` (in-memory P-256 key), `TpmSigner` (TPM 2.0 hardware key), `SpireSigner` (SPIRE JWT-SVID), and `YubiKeySigner` (PIV smart card)
 
-The PAM module verifies DPoP proofs in `pam-unix-oidc/src/oidc/dpop.rs`:
+The PAM module verifies DPoP proofs in `pam-prmana/src/oidc/dpop.rs`:
 - `validate_dpop_proof()` checks the `typ`, extracts the JWK, verifies the ECDSA signature, computes the thumbprint, and checks `htm`/`htu` binding
 - Replay protection uses both an in-memory `JtiCache` and a persistent `FsAtomicStore` for cross-fork protection (since sshd forks per connection)
 
@@ -532,20 +532,20 @@ The PAM module verifies DPoP proofs in `pam-unix-oidc/src/oidc/dpop.rs`:
 
 The DPoP specification recommends ephemeral key pairs — generated fresh for each session. This limits the blast radius: if a key is somehow compromised, only the current session is affected.
 
-In unix-oidc, the DPoP key is generated at `login` time and stored in the secure credential store (keyring or encrypted file). It persists across SSH connections within a session but is destroyed on `logout` or `reset`.
+In prmana, the DPoP key is generated at `login` time and stored in the secure credential store (keyring or encrypted file). It persists across SSH connections within a session but is destroyed on `logout` or `reset`.
 
 The key is protected in memory by:
 - `ZeroizeOnDrop` (via the `p256` crate) — key material is overwritten with zeros when dropped
 - `mlock(2)` — prevents the OS from swapping key pages to disk
 - Core dump disabled via `prctl(PR_SET_DUMPABLE, 0)` (Linux) or `ptrace(PT_DENY_ATTACH)` (macOS)
 
-See `unix-oidc-agent/src/crypto/protected_key.rs` for the full memory protection implementation.
+See `prmana-agent/src/crypto/protected_key.rs` for the full memory protection implementation.
 
 ---
 
 ## 8. The Authentication Flows {#8-flows}
 
-unix-oidc supports four OAuth grant types, each designed for a different scenario.
+prmana supports four OAuth grant types, each designed for a different scenario.
 
 ### 8.1 Device Authorization Grant (RFC 8628)
 
@@ -589,7 +589,7 @@ User's Terminal                    IdP (Keycloak/Okta)              User's Phone
 
 The agent polls the token endpoint every few seconds until the user completes authentication. The polling response is either `"authorization_pending"` (keep waiting) or the actual tokens.
 
-**In unix-oidc:** `run_login()` in `unix-oidc-agent/src/main.rs` implements the full flow: OIDC discovery → device authorization request → user code display → token endpoint polling with DPoP proof → token storage. The polling interval respects the `interval` field from the device authorization response and handles `slow_down` responses by adding 5 seconds (per RFC 8628 §3.5).
+**In prmana:** `run_login()` in `prmana-agent/src/main.rs` implements the full flow: OIDC discovery → device authorization request → user code display → token endpoint polling with DPoP proof → token storage. The polling interval respects the `interval` field from the device authorization response and handles `slow_down` responses by adding 5 seconds (per RFC 8628 §3.5).
 
 ### 8.2 Authorization Code + PKCE (RFC 6749 + RFC 7636)
 
@@ -608,7 +608,7 @@ The agent polls the token endpoint every few seconds until the user completes au
 
 An interceptor who sees the `code_challenge` cannot derive the `code_verifier` (SHA-256 is one-way). So even if they steal the authorization code, they can't exchange it without the verifier.
 
-**In unix-oidc:** `unix-oidc-agent/src/auth_code.rs` implements:
+**In prmana:** `prmana-agent/src/auth_code.rs` implements:
 - `generate_pkce()` — generates verifier and S256 challenge
 - `start_callback_listener()` — ephemeral localhost HTTP server on a random port to receive the redirect
 - `exchange_code()` — POST to token endpoint with `code_verifier` and DPoP proof
@@ -651,10 +651,10 @@ PAM (sudo)              Agent Daemon              IdP                User's Phon
 
 The `binding_message` is critical for security — it's a human-readable string displayed on the user's phone (e.g., "Approve sudo on server-01: apt install nginx"). The user verifies they initiated this specific action, preventing an attacker from piggybacking on an existing CIBA session.
 
-**In unix-oidc:** The CIBA flow spans three modules:
-- `pam-unix-oidc/src/ciba/client.rs` — builds the backchannel auth request parameters
-- `unix-oidc-agent/src/daemon/socket.rs` — `handle_step_up()` initiates the flow, `poll_ciba()` runs the async poll loop with DPoP proofs on each poll
-- `pam-unix-oidc/src/sudo.rs` — the PAM entry point that triggers step-up via agent IPC
+**In prmana:** The CIBA flow spans three modules:
+- `pam-prmana/src/ciba/client.rs` — builds the backchannel auth request parameters
+- `prmana-agent/src/daemon/socket.rs` — `handle_step_up()` initiates the flow, `poll_ciba()` runs the async poll loop with DPoP proofs on each poll
+- `pam-prmana/src/sudo.rs` — the PAM entry point that triggers step-up via agent IPC
 
 ACR enforcement is **hard-fail**: if the policy requires `urn:mfa` and the IdP returns a token without it, the step-up is rejected regardless of enforcement mode settings. This is a security invariant documented in CLAUDE.md.
 
@@ -709,13 +709,13 @@ The `act` claim supports recursive nesting for multi-hop chains:
 }
 ```
 
-**In unix-oidc:**
-- `pam-unix-oidc/src/oidc/token.rs` — `ActClaim` struct with recursive `Box<ActClaim>`, `delegation_depth()` method
-- `pam-unix-oidc/src/policy/config.rs` — `DelegationConfig` with `allowed_exchangers`, `max_depth`, `exchanged_token_max_lifetime_secs`
-- `pam-unix-oidc/src/oidc/validation.rs` — `validate_delegation()` checks exchanger allowlist and depth
-- `unix-oidc-agent/src/exchange.rs` — RFC 8693 HTTP client
-- `unix-oidc-agent/src/daemon/socket.rs` — daemon handler with OIDC discovery for token endpoint
-- `pam-unix-oidc/src/auth.rs` — delegation validation wired into the PAM auth path (fail closed: tokens with `act` are rejected unless delegation is explicitly configured)
+**In prmana:**
+- `pam-prmana/src/oidc/token.rs` — `ActClaim` struct with recursive `Box<ActClaim>`, `delegation_depth()` method
+- `pam-prmana/src/policy/config.rs` — `DelegationConfig` with `allowed_exchangers`, `max_depth`, `exchanged_token_max_lifetime_secs`
+- `pam-prmana/src/oidc/validation.rs` — `validate_delegation()` checks exchanger allowlist and depth
+- `prmana-agent/src/exchange.rs` — RFC 8693 HTTP client
+- `prmana-agent/src/daemon/socket.rs` — daemon handler with OIDC discovery for token endpoint
+- `pam-prmana/src/auth.rs` — delegation validation wired into the PAM auth path (fail closed: tokens with `act` are rejected unless delegation is explicitly configured)
 
 ---
 
@@ -729,7 +729,7 @@ For high-security environments, the private key must be **non-exportable** — g
 
 ### TPM 2.0 Integration
 
-unix-oidc supports TPM 2.0 (Trusted Platform Module) as a DPoP signing backend. The TPM is a dedicated security chip present on most modern servers and laptops.
+prmana supports TPM 2.0 (Trusted Platform Module) as a DPoP signing backend. The TPM is a dedicated security chip present on most modern servers and laptops.
 
 Key properties:
 - The private key is generated *inside* the TPM (`sensitiveDataOrigin` attribute)
@@ -737,7 +737,7 @@ Key properties:
 - It cannot be moved to another TPM
 - All signing operations happen inside the TPM — the software only sends data to be signed and receives the signature
 
-**In unix-oidc:** `TpmSigner` in `unix-oidc-agent/src/crypto/tpm_signer.rs` implements the `DPoPSigner` trait using `tss-esapi`. Each `sign_proof()` call opens a fresh TPM context, signs, and closes it (open-sign-close pattern).
+**In prmana:** `TpmSigner` in `prmana-agent/src/crypto/tpm_signer.rs` implements the `DPoPSigner` trait using `tss-esapi`. Each `sign_proof()` call opens a fresh TPM context, signs, and closes it (open-sign-close pattern).
 
 ### TPM Attestation: Proving Hardware Binding
 
@@ -745,10 +745,10 @@ Having a TPM key is one thing. *Proving to a remote server* that the key is TPM-
 
 TPM2_CC_Certify solves this: the TPM signs a statement ("certification") asserting that a specific key was created by and resides in this TPM. The certification contains the key's **Name** — a SHA-256 hash of its public area — which the verifier matches against the DPoP proof's JWK.
 
-**In unix-oidc:**
+**In prmana:**
 - Agent side: `TpmSigner::certify()` produces `AttestationEvidence` (certify_info + AK signature + AK public key)
 - Transport: Evidence is embedded in the DPoP proof JWT header as an `attest` field
-- PAM side: `pam-unix-oidc/src/oidc/attestation.rs` performs:
+- PAM side: `pam-prmana/src/oidc/attestation.rs` performs:
   1. AK ECDSA signature verification over certify_info
   2. TPMS_ATTEST parsing to extract the certified key Name
   3. Name matching against the DPoP JWK's reconstructed TPMT_PUBLIC
@@ -766,7 +766,7 @@ SPIFFE (Secure Production Identity Framework for Everyone) provides a standard f
 
 SPIRE (the SPIFFE Runtime Environment) is the reference implementation that issues **JWT-SVIDs** (SPIFFE Verifiable Identity Documents) — JWTs that carry the SPIFFE ID as the `sub` claim.
 
-**In unix-oidc:** The `SpireSigner` (`unix-oidc-agent/src/crypto/spire_signer.rs`) fetches JWT-SVIDs from the local SPIRE agent via gRPC Workload API, then uses ephemeral P-256 DPoP keys for the actual SSH authentication. The SPIFFE ID is mapped to a Unix username via `SpiffeUsernameMapper` (`pam-unix-oidc/src/identity/mapper.rs`).
+**In prmana:** The `SpireSigner` (`prmana-agent/src/crypto/spire_signer.rs`) fetches JWT-SVIDs from the local SPIRE agent via gRPC Workload API, then uses ephemeral P-256 DPoP keys for the actual SSH authentication. The SPIFFE ID is mapped to a Unix username via `SpiffeUsernameMapper` (`pam-prmana/src/identity/mapper.rs`).
 
 ---
 
@@ -774,23 +774,23 @@ SPIRE (the SPIFFE Runtime Environment) is the reference implementation that issu
 
 ### Real-World Attacks That Validate This Architecture
 
-The defenses in unix-oidc are not theoretical. Each was motivated by attacks that have occurred in production systems. Here are verified CVEs that demonstrate why each defense layer exists.
+The defenses in prmana are not theoretical. Each was motivated by attacks that have occurred in production systems. Here are verified CVEs that demonstrate why each defense layer exists.
 
 #### Bearer token theft → DPoP proof-of-possession
 
 **CVE-2024-3094** (xz/liblzma, March 2024) — A supply chain backdoor was embedded in the xz compression library, which is loaded by OpenSSH's sshd via systemd. The payload redirected `RSA_public_decrypt` to a malicious implementation, enabling remote authentication bypass. With traditional SSH keys, a compromised sshd grants persistent access. With DPoP-bound tokens, even a backdoored sshd can only use intercepted tokens for their remaining lifetime — and cannot produce valid DPoP proofs for new requests because the attacker lacks the client's private key.
 
-*unix-oidc defense: DPoP binding (Section 7), short-lived tokens, per-request proof freshness.*
+*prmana defense: DPoP binding (Section 7), short-lived tokens, per-request proof freshness.*
 
 **CVE-2025-30066** (tj-actions/changed-files, March 2025) — A supply chain attack on a GitHub Action used by 23,000+ repositories exfiltrated CI/CD secrets — including SSH keys and access tokens — by dumping them to workflow logs. Bearer tokens leaked this way are immediately usable by anyone who reads the logs. DPoP-bound tokens are not: the attacker has the token but not the DPoP private key that the token is bound to.
 
-*unix-oidc defense: DPoP binding makes stolen tokens useless without the corresponding key.*
+*prmana defense: DPoP binding makes stolen tokens useless without the corresponding key.*
 
 #### SSH key compromise → why tokens replace keys
 
-**CVE-2024-31497** (PuTTY, April 2024) — A bias in PuTTY's ECDSA nonce generation for the P-521 curve allowed an attacker to recover the private key from approximately 60 signatures. An attacker operating a rogue SSH server (or compromising a legitimate one) could collect enough signatures during normal logins to extract the key. With traditional SSH keys, this is permanent compromise — the stolen key works forever. With unix-oidc's token model, access is bounded by token expiration. With a TPM-backed DPoP key (Section 9), the private key cannot be extracted even with full software compromise.
+**CVE-2024-31497** (PuTTY, April 2024) — A bias in PuTTY's ECDSA nonce generation for the P-521 curve allowed an attacker to recover the private key from approximately 60 signatures. An attacker operating a rogue SSH server (or compromising a legitimate one) could collect enough signatures during normal logins to extract the key. With traditional SSH keys, this is permanent compromise — the stolen key works forever. With prmana's token model, access is bounded by token expiration. With a TPM-backed DPoP key (Section 9), the private key cannot be extracted even with full software compromise.
 
-*unix-oidc defense: Short-lived tokens replace permanent keys. TPM non-exportability prevents key extraction.*
+*prmana defense: Short-lived tokens replace permanent keys. TPM non-exportability prevents key extraction.*
 
 #### Algorithm confusion → asymmetric-only allowlist
 
@@ -798,13 +798,13 @@ The defenses in unix-oidc are not theoretical. Each was motivated by attacks tha
 
 **GHSA-f67f-6cw9-8mq4** (Hono framework, 2025) — The Hono web framework's JWK authentication middleware fell back to the JWT header's `alg` field when the matched JWK key lacked an explicit `alg`. An attacker could supply `alg: HS256` in the JWT header, causing the middleware to use HMAC verification with the RSA public key — the same class of attack as CVE-2023-48223, rediscovered in a different library.
 
-*unix-oidc defense: `DEFAULT_ALLOWED_ALGORITHMS` in `validation.rs` is an asymmetric-only allowlist. `key_algorithm_to_algorithm()` exhaustive match explicitly rejects HS256/HS384/HS512. Algorithm pinning (SHRD-01) prevents the token's `alg` from differing from the JWKS key's advertised algorithm.*
+*prmana defense: `DEFAULT_ALLOWED_ALGORITHMS` in `validation.rs` is an asymmetric-only allowlist. `key_algorithm_to_algorithm()` exhaustive match explicitly rejects HS256/HS384/HS512. Algorithm pinning (SHRD-01) prevents the token's `alg` from differing from the JWKS key's advertised algorithm.*
 
 #### Type confusion → strict claim validation
 
-**GHSA-h395-gr6q-cpjc** (jsonwebtoken Rust, February 2026) — The jsonwebtoken crate (versions before 10.3.0) had a type confusion vulnerability: when a time-based claim like `nbf` was sent as a JSON String instead of a Number, the library marked it as "FailedToParse" and treated it identically to "NotPresent." If `validate_nbf` was enabled but `nbf` was not in `required_spec_claims`, the check was silently skipped — allowing an attacker to bypass "not before" restrictions with a token that should not yet be valid. unix-oidc upgraded to 10.3.0 within 15 minutes of the Dependabot alert.
+**GHSA-h395-gr6q-cpjc** (jsonwebtoken Rust, February 2026) — The jsonwebtoken crate (versions before 10.3.0) had a type confusion vulnerability: when a time-based claim like `nbf` was sent as a JSON String instead of a Number, the library marked it as "FailedToParse" and treated it identically to "NotPresent." If `validate_nbf` was enabled but `nbf` was not in `required_spec_claims`, the check was silently skipped — allowing an attacker to bypass "not before" restrictions with a token that should not yet be valid. prmana upgraded to 10.3.0 within 15 minutes of the Dependabot alert.
 
-*unix-oidc defense: Prompt dependency patching, `cargo audit` in CI, minimal dependency surface in the PAM module.*
+*prmana defense: Prompt dependency patching, `cargo audit` in CI, minimal dependency surface in the PAM module.*
 
 #### What we honestly cannot prevent
 
@@ -812,7 +812,7 @@ Not every supply chain attack is mitigated by token binding:
 
 - **If the PAM module itself is backdoored** (analogous to the xz attack targeting our `.so` instead of liblzma), the attacker controls the verification logic. DPoP cannot help if the verifier is compromised. Mitigation: code signing, SLSA provenance, reproducible builds.
 - **Social engineering the step-up approval**: An attacker who compromises a user's session can trigger a CIBA step-up, and the user might approve a push notification they didn't initiate. Mitigation: the `binding_message` shows the specific command being approved, but user vigilance is still required.
-- **IdP compromise**: If the Authorization Server itself is compromised, the attacker can issue valid tokens for any user. unix-oidc trusts the IdP's signatures — it cannot detect a legitimately-signed malicious token. Mitigation: multi-IdP redundancy (Phase 41), anomaly detection in SIEM.
+- **IdP compromise**: If the Authorization Server itself is compromised, the attacker can issue valid tokens for any user. prmana trusts the IdP's signatures — it cannot detect a legitimately-signed malicious token. Mitigation: multi-IdP redundancy (Phase 41), anomaly detection in SIEM.
 
 ### The Validation Pipeline
 
@@ -833,7 +833,7 @@ Every token that arrives at the PAM module passes through a rigorous validation 
 13. **User resolution** — Verify the username exists in NSS/SSSD
 14. **Group policy** — Verify the user's groups intersect with `login_groups` allowlist
 
-**In unix-oidc:** `authenticate_multi_issuer()` in `pam-unix-oidc/src/auth.rs` implements this pipeline. Each step has a corresponding error type in `AuthError` and emits OCSF audit events on failure.
+**In prmana:** `authenticate_multi_issuer()` in `pam-prmana/src/auth.rs` implements this pipeline. Each step has a corresponding error type in `AuthError` and emits OCSF audit events on failure.
 
 ### Replay Protection
 
@@ -845,7 +845,7 @@ JTI (JWT ID) replay protection prevents an attacker from capturing and re-using 
 
 The challenge: sshd forks a new process for each connection. An in-memory cache isn't shared across forks.
 
-**Solution:** `FsAtomicStore` (`pam-unix-oidc/src/security/fs_store.rs`) provides cross-fork persistence via filesystem-based atomic operations. JTIs are scoped by issuer URL to prevent cross-issuer collisions.
+**Solution:** `FsAtomicStore` (`pam-prmana/src/security/fs_store.rs`) provides cross-fork persistence via filesystem-based atomic operations. JTIs are scoped by issuer URL to prevent cross-issuer collisions.
 
 ### The Security Check Matrix
 
@@ -874,7 +874,7 @@ OIDC handles *authentication* — proving who you are. But Unix systems also nee
 
 SCIM 2.0 (System for Cross-domain Identity Management, RFC 7643/7644) is the standard protocol for provisioning user accounts. When an IdP creates, modifies, or disables a user, it pushes SCIM events to the provisioning endpoint.
 
-**In unix-oidc:** `unix-oidc-scim` is a standalone axum HTTP service that:
+**In prmana:** `prmana-scim` is a standalone axum HTTP service that:
 - Receives SCIM `/Users` CRUD operations from the IdP
 - Validates requests with JWKS-verified Bearer tokens
 - Translates SCIM operations to `useradd`/`usermod`/`userdel` system calls
@@ -892,7 +892,7 @@ Traditional mitigations (break-glass accounts) work but require pre-planned cred
 
 ### Phase 41: Active-Passive Failover (v1)
 
-unix-oidc implements explicit failover pairs in the agent daemon:
+prmana implements explicit failover pairs in the agent daemon:
 
 ```yaml
 failover_pairs:
@@ -971,7 +971,7 @@ failover_chain:
 
 The state machine walks from highest to lowest priority on availability failures. This handles multi-region disaster recovery (primary in us-east-1, secondary in eu-west-1, DR in ap-southeast-1) and federated enterprise deployments with multiple IdP vendors.
 
-**In unix-oidc:** See `unix-oidc-agent/src/failover.rs` for the state machine, `docs/adr/020-active-passive-idp-redundancy.md` for the full architectural decision record.
+**In prmana:** See `prmana-agent/src/failover.rs` for the state machine, `docs/adr/020-active-passive-idp-redundancy.md` for the full architectural decision record.
 
 ---
 
@@ -980,7 +980,7 @@ The state machine walks from highest to lowest priority on availability failures
 Here is the complete flow from `ssh user@server` to shell, annotating every security check:
 
 ```
-1. User runs: unix-oidc-agent login --issuer https://idp.example.com
+1. User runs: prmana-agent login --issuer https://idp.example.com
    → Agent discovers OIDC endpoints
    → Agent generates DPoP key pair (P-256)
    → Agent initiates Device Authorization Grant
@@ -989,13 +989,13 @@ Here is the complete flow from `ssh user@server` to shell, annotating every secu
    → Token and key stored in secure credential store
 
 2. User runs: ssh alice@server
-   → SSH invokes SSH_ASKPASS (unix-oidc-agent ssh-askpass)
+   → SSH invokes SSH_ASKPASS (prmana-agent ssh-askpass)
    → Agent generates fresh DPoP proof (bound to method=SSH, target=server)
    → If TPM signer: attestation evidence embedded in proof header
    → SSH sends token + proof to server
 
 3. sshd receives connection
-   → PAM module loaded (pam_unix_oidc.so)
+   → PAM module loaded (pam_prmana.so)
    → Token extracted from keyboard-interactive prompt
 
 4. PAM validation pipeline:
@@ -1034,7 +1034,7 @@ Every step in this flow has a corresponding code path, audit event, and test. Th
 
 ## References
 
-| Standard | Title | How unix-oidc uses it |
+| Standard | Title | How prmana uses it |
 |----------|-------|----------------------|
 | RFC 6749 | OAuth 2.0 Authorization Framework | Core token model, grant types |
 | RFC 6750 | OAuth 2.0 Bearer Token Usage | Token transport (replaced by DPoP) |
@@ -1069,184 +1069,184 @@ Every concept in this guide maps to specific source files. This appendix provide
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/oidc/jwks.rs:57-82` | `OidcDiscovery` struct — all endpoint URLs |
-| `pam-unix-oidc/src/oidc/jwks.rs:246-270` | `fetch_discovery()` — GETs `.well-known/openid-configuration` |
-| `unix-oidc-scim/src/auth.rs:25-62` | `fetch_jwks()` — async discovery + JWKS fetch for SCIM |
-| `pam-unix-oidc/src/device_flow/client.rs:33-55` | `DeviceFlowClient::from_discovery()` — reads device endpoint |
-| `pam-unix-oidc/src/ciba/client.rs:31-53` | `CibaClient::new()` — reads CIBA endpoint |
+| `pam-prmana/src/oidc/jwks.rs:57-82` | `OidcDiscovery` struct — all endpoint URLs |
+| `pam-prmana/src/oidc/jwks.rs:246-270` | `fetch_discovery()` — GETs `.well-known/openid-configuration` |
+| `prmana-scim/src/auth.rs:25-62` | `fetch_jwks()` — async discovery + JWKS fetch for SCIM |
+| `pam-prmana/src/device_flow/client.rs:33-55` | `DeviceFlowClient::from_discovery()` — reads device endpoint |
+| `pam-prmana/src/ciba/client.rs:31-53` | `CibaClient::new()` — reads CIBA endpoint |
 
 ### JWT Structure and Claims
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/oidc/token.rs:39-95` | `TokenClaims` — all standard claims (sub, iss, aud, exp, iat, acr, amr, jti, cnf, act) |
-| `pam-unix-oidc/src/oidc/token.rs:27-37` | `ActClaim` — RFC 8693 delegation chain with recursive nesting |
-| `pam-unix-oidc/src/oidc/token.rs:122-127` | `ConfirmationClaim` — DPoP binding via `cnf.jkt` |
-| `pam-unix-oidc/src/oidc/token.rs:211-222` | `from_token()` — base64url decode without signature verification |
-| `pam-unix-oidc/src/oidc/token.rs:148-157` | `delegation_depth()` — walks recursive `act` chain |
+| `pam-prmana/src/oidc/token.rs:39-95` | `TokenClaims` — all standard claims (sub, iss, aud, exp, iat, acr, amr, jti, cnf, act) |
+| `pam-prmana/src/oidc/token.rs:27-37` | `ActClaim` — RFC 8693 delegation chain with recursive nesting |
+| `pam-prmana/src/oidc/token.rs:122-127` | `ConfirmationClaim` — DPoP binding via `cnf.jkt` |
+| `pam-prmana/src/oidc/token.rs:211-222` | `from_token()` — base64url decode without signature verification |
+| `pam-prmana/src/oidc/token.rs:148-157` | `delegation_depth()` — walks recursive `act` chain |
 
 ### JWT Validation Pipeline
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/oidc/validation.rs:275-404` | `TokenValidator::validate()` — full pipeline: sig → iss → aud → exp → JTI → ACR |
-| `pam-unix-oidc/src/oidc/validation.rs:407-500` | `verify_and_decode()` — JWKS key lookup, algorithm pinning, signature check |
-| `pam-unix-oidc/src/oidc/validation.rs:22-32` | `DEFAULT_ALLOWED_ALGORITHMS` — asymmetric-only allowlist |
-| `pam-unix-oidc/src/oidc/validation.rs:59-81` | `key_algorithm_to_algorithm()` — exhaustive KeyAlgorithm → Algorithm mapping |
-| `pam-unix-oidc/src/oidc/validation.rs:430-452` | Algorithm pinning (SHRD-01) — rejects token if `alg` differs from JWKS key |
+| `pam-prmana/src/oidc/validation.rs:275-404` | `TokenValidator::validate()` — full pipeline: sig → iss → aud → exp → JTI → ACR |
+| `pam-prmana/src/oidc/validation.rs:407-500` | `verify_and_decode()` — JWKS key lookup, algorithm pinning, signature check |
+| `pam-prmana/src/oidc/validation.rs:22-32` | `DEFAULT_ALLOWED_ALGORITHMS` — asymmetric-only allowlist |
+| `pam-prmana/src/oidc/validation.rs:59-81` | `key_algorithm_to_algorithm()` — exhaustive KeyAlgorithm → Algorithm mapping |
+| `pam-prmana/src/oidc/validation.rs:430-452` | Algorithm pinning (SHRD-01) — rejects token if `alg` differs from JWKS key |
 
 ### JWKS Caching
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/oidc/jwks.rs:93-101` | `JwksProvider` — TTL-based cache with RwLock |
-| `pam-unix-oidc/src/oidc/jwks.rs:316-360` | `IssuerJwksRegistry` — per-issuer isolated providers |
-| `unix-oidc-scim/src/auth.rs:72-166` | `JwksCache` — async TTL cache with kid-miss forced refresh |
-| `unix-oidc-scim/src/auth.rs:126-145` | `decoding_key_with_refresh()` — kid-miss triggers immediate JWKS reload |
+| `pam-prmana/src/oidc/jwks.rs:93-101` | `JwksProvider` — TTL-based cache with RwLock |
+| `pam-prmana/src/oidc/jwks.rs:316-360` | `IssuerJwksRegistry` — per-issuer isolated providers |
+| `prmana-scim/src/auth.rs:72-166` | `JwksCache` — async TTL cache with kid-miss forced refresh |
+| `prmana-scim/src/auth.rs:126-145` | `decoding_key_with_refresh()` — kid-miss triggers immediate JWKS reload |
 
 ### JWK Thumbprints (RFC 7638)
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/oidc/dpop.rs:398-413` | `compute_jwk_thumbprint()` — PAM-side, hardcoded canonical JSON |
-| `unix-oidc-agent/src/crypto/thumbprint.rs:11-23` | `compute_ec_thumbprint()` — agent-side |
+| `pam-prmana/src/oidc/dpop.rs:398-413` | `compute_jwk_thumbprint()` — PAM-side, hardcoded canonical JSON |
+| `prmana-agent/src/crypto/thumbprint.rs:11-23` | `compute_ec_thumbprint()` — agent-side |
 | `rust-oauth-dpop/src/thumbprint.rs:27-34` | `compute_thumbprint_from_coordinates()` — library implementation |
 
 ### DPoP Proof Generation (Agent Side)
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-agent/src/crypto/dpop.rs:64-94` | `build_dpop_message()` — header + payload with embedded JWK |
-| `unix-oidc-agent/src/crypto/dpop.rs:121-158` | `build_dpop_message_with_attestation()` — adds `attest` to header |
-| `unix-oidc-agent/src/crypto/dpop.rs:175-181` | `assemble_dpop_proof()` — attaches 64-byte r‖s signature |
-| `unix-oidc-agent/src/crypto/signer.rs` | `DPoPSigner` trait — abstracts Software/TPM/YubiKey/SPIRE backends |
+| `prmana-agent/src/crypto/dpop.rs:64-94` | `build_dpop_message()` — header + payload with embedded JWK |
+| `prmana-agent/src/crypto/dpop.rs:121-158` | `build_dpop_message_with_attestation()` — adds `attest` to header |
+| `prmana-agent/src/crypto/dpop.rs:175-181` | `assemble_dpop_proof()` — attaches 64-byte r‖s signature |
+| `prmana-agent/src/crypto/signer.rs` | `DPoPSigner` trait — abstracts Software/TPM/YubiKey/SPIRE backends |
 
 ### DPoP Proof Verification (PAM Side)
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/oidc/dpop.rs:165-352` | `validate_dpop_proof()` — verifies typ, sig, htm, htu, iat, JTI replay |
-| `pam-unix-oidc/src/oidc/dpop.rs:356-368` | `verify_dpop_binding()` — constant-time cnf.jkt comparison |
-| `pam-unix-oidc/src/oidc/dpop.rs:287-328` | JTI replay block — cross-fork persistent store |
+| `pam-prmana/src/oidc/dpop.rs:165-352` | `validate_dpop_proof()` — verifies typ, sig, htm, htu, iat, JTI replay |
+| `pam-prmana/src/oidc/dpop.rs:356-368` | `verify_dpop_binding()` — constant-time cnf.jkt comparison |
+| `pam-prmana/src/oidc/dpop.rs:287-328` | JTI replay block — cross-fork persistent store |
 
 ### Device Authorization Grant (RFC 8628)
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/device_flow/client.rs:114-163` | `start_authorization()` — POST to device endpoint |
-| `pam-unix-oidc/src/device_flow/client.rs:174-207` | `poll_for_token()` — blocking poll with slow_down backoff |
-| `pam-unix-oidc/src/device_flow/types.rs:47-68` | `DeviceAuthResponse` — device_code, user_code, verification_uri |
-| `unix-oidc-agent/src/main.rs` | `run_login()` / `run_device_flow()` — agent CLI integration |
+| `pam-prmana/src/device_flow/client.rs:114-163` | `start_authorization()` — POST to device endpoint |
+| `pam-prmana/src/device_flow/client.rs:174-207` | `poll_for_token()` — blocking poll with slow_down backoff |
+| `pam-prmana/src/device_flow/types.rs:47-68` | `DeviceAuthResponse` — device_code, user_code, verification_uri |
+| `prmana-agent/src/main.rs` | `run_login()` / `run_device_flow()` — agent CLI integration |
 
 ### Auth Code + PKCE (RFC 7636)
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-agent/src/auth_code.rs:73-79` | `generate_pkce()` — verifier + S256 challenge |
-| `unix-oidc-agent/src/auth_code.rs:87-106` | `build_authorization_url()` — all required params |
-| `unix-oidc-agent/src/auth_code.rs:109-160` | `start_callback_listener()` — ephemeral localhost server |
-| `unix-oidc-agent/src/auth_code.rs:194-235` | `exchange_code()` — POST with code_verifier + DPoP header |
+| `prmana-agent/src/auth_code.rs:73-79` | `generate_pkce()` — verifier + S256 challenge |
+| `prmana-agent/src/auth_code.rs:87-106` | `build_authorization_url()` — all required params |
+| `prmana-agent/src/auth_code.rs:109-160` | `start_callback_listener()` — ephemeral localhost server |
+| `prmana-agent/src/auth_code.rs:194-235` | `exchange_code()` — POST with code_verifier + DPoP header |
 
 ### Token Exchange (RFC 8693)
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-agent/src/exchange.rs:80-164` | `perform_token_exchange()` — RFC 8693 HTTP client |
-| `pam-unix-oidc/src/oidc/validation.rs:507-549` | `validate_delegation()` — exchanger allowlist + depth check |
-| `pam-unix-oidc/src/policy/config.rs:335-348` | `DelegationConfig` — allowed_exchangers, max_depth, max_lifetime |
-| `pam-unix-oidc/src/auth.rs:290-340` | Delegation wiring in PAM auth path (fail closed) |
+| `prmana-agent/src/exchange.rs:80-164` | `perform_token_exchange()` — RFC 8693 HTTP client |
+| `pam-prmana/src/oidc/validation.rs:507-549` | `validate_delegation()` — exchanger allowlist + depth check |
+| `pam-prmana/src/policy/config.rs:335-348` | `DelegationConfig` — allowed_exchangers, max_depth, max_lifetime |
+| `pam-prmana/src/auth.rs:290-340` | Delegation wiring in PAM auth path (fail closed) |
 
 ### CIBA Step-Up Authentication
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/ciba/client.rs:60-80` | `build_backchannel_auth_params()` — login_hint, scope, binding_message |
-| `pam-unix-oidc/src/ciba/client.rs:119-147` | `build_binding_message()` — 64-byte UTF-8 safe truncation |
-| `pam-unix-oidc/src/ciba/types.rs:119-128` | `satisfies_acr()` — phrh satisfies phr |
-| `unix-oidc-agent/src/daemon/socket.rs` | `handle_step_up()` / `poll_ciba()` — async CIBA poll loop with DPoP |
-| `pam-unix-oidc/src/sudo.rs` | PAM sudo entry point triggering CIBA via agent IPC |
+| `pam-prmana/src/ciba/client.rs:60-80` | `build_backchannel_auth_params()` — login_hint, scope, binding_message |
+| `pam-prmana/src/ciba/client.rs:119-147` | `build_binding_message()` — 64-byte UTF-8 safe truncation |
+| `pam-prmana/src/ciba/types.rs:119-128` | `satisfies_acr()` — phrh satisfies phr |
+| `prmana-agent/src/daemon/socket.rs` | `handle_step_up()` / `poll_ciba()` — async CIBA poll loop with DPoP |
+| `pam-prmana/src/sudo.rs` | PAM sudo entry point triggering CIBA via agent IPC |
 
 ### TPM Attestation (ADR-018)
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-agent/src/crypto/tpm_signer.rs:40-50` | `AttestationEvidence` struct (agent side) |
-| `unix-oidc-agent/src/crypto/tpm_signer.rs` | `TpmSigner::certify()` — TPM2_CC_Certify call |
-| `pam-unix-oidc/src/oidc/attestation.rs:130-175` | `verify_ak_signature()` — P-256 ECDSA over certify_info |
-| `pam-unix-oidc/src/oidc/attestation.rs:177-216` | `parse_certified_name()` — TPMS_ATTEST binary parsing |
-| `pam-unix-oidc/src/oidc/attestation.rs:218-274` | `match_name_to_jwk()` — Name ↔ JWK thumbprint matching |
+| `prmana-agent/src/crypto/tpm_signer.rs:40-50` | `AttestationEvidence` struct (agent side) |
+| `prmana-agent/src/crypto/tpm_signer.rs` | `TpmSigner::certify()` — TPM2_CC_Certify call |
+| `pam-prmana/src/oidc/attestation.rs:130-175` | `verify_ak_signature()` — P-256 ECDSA over certify_info |
+| `pam-prmana/src/oidc/attestation.rs:177-216` | `parse_certified_name()` — TPMS_ATTEST binary parsing |
+| `pam-prmana/src/oidc/attestation.rs:218-274` | `match_name_to_jwk()` — Name ↔ JWK thumbprint matching |
 
 ### SPIFFE/SPIRE Workload Identity
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-agent/src/crypto/spire_signer.rs:106-115` | `SpireSigner` — ephemeral DPoP keys + SVID caching |
-| `unix-oidc-agent/src/crypto/spire_signer.rs:181-193` | `fetch_svid_async()` — gRPC Workload API call |
-| `pam-unix-oidc/src/policy/config.rs:258-282` | `SpiffeMappingConfig` — SPIFFE ID → Unix username strategies |
-| `pam-unix-oidc/src/identity/mapper.rs` | `SpiffeUsernameMapper` — path_suffix/regex/static_map |
+| `prmana-agent/src/crypto/spire_signer.rs:106-115` | `SpireSigner` — ephemeral DPoP keys + SVID caching |
+| `prmana-agent/src/crypto/spire_signer.rs:181-193` | `fetch_svid_async()` — gRPC Workload API call |
+| `pam-prmana/src/policy/config.rs:258-282` | `SpiffeMappingConfig` — SPIFFE ID → Unix username strategies |
+| `pam-prmana/src/identity/mapper.rs` | `SpiffeUsernameMapper` — path_suffix/regex/static_map |
 
 ### Client Attestation PoP
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-agent/src/crypto/attestation_pop.rs:68-95` | `build_client_attestation()` — long-lived JWT |
-| `unix-oidc-agent/src/crypto/attestation_pop.rs:98-116` | `build_client_attestation_pop()` — per-request PoP JWT |
-| `unix-oidc-agent/src/crypto/attestation_pop.rs:137-153` | `attach_client_attestation()` — adds both HTTP headers |
+| `prmana-agent/src/crypto/attestation_pop.rs:68-95` | `build_client_attestation()` — long-lived JWT |
+| `prmana-agent/src/crypto/attestation_pop.rs:98-116` | `build_client_attestation_pop()` — per-request PoP JWT |
+| `prmana-agent/src/crypto/attestation_pop.rs:137-153` | `attach_client_attestation()` — adds both HTTP headers |
 
 ### JTI Replay Protection
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/security/jti_cache.rs:76-83` | `JtiCache` — in-memory RwLock HashMap |
-| `pam-unix-oidc/src/security/fs_store.rs:74-77` | `FsAtomicStore` — cross-fork filesystem persistence |
-| `pam-unix-oidc/src/security/fs_store.rs:155-212` | `check_and_record()` — O_CREAT|O_EXCL atomic creation |
-| `pam-unix-oidc/src/security/jti_cache.rs:339-418` | `check_and_record_fs()` — routes through FsAtomicStore |
+| `pam-prmana/src/security/jti_cache.rs:76-83` | `JtiCache` — in-memory RwLock HashMap |
+| `pam-prmana/src/security/fs_store.rs:74-77` | `FsAtomicStore` — cross-fork filesystem persistence |
+| `pam-prmana/src/security/fs_store.rs:155-212` | `check_and_record()` — O_CREAT|O_EXCL atomic creation |
+| `pam-prmana/src/security/jti_cache.rs:339-418` | `check_and_record_fs()` — routes through FsAtomicStore |
 
 ### Session Management
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/security/session.rs:43-57` | `generate_secure_session_id()` — 128-bit CSPRNG |
-| `pam-unix-oidc/src/session/mod.rs:124-158` | `write_session_record()` — atomic write via rename(2) |
-| `pam-unix-oidc/src/session/mod.rs:167-198` | `delete_session_record()` — session duration computation |
+| `pam-prmana/src/security/session.rs:43-57` | `generate_secure_session_id()` — 128-bit CSPRNG |
+| `pam-prmana/src/session/mod.rs:124-158` | `write_session_record()` — atomic write via rename(2) |
+| `pam-prmana/src/session/mod.rs:167-198` | `delete_session_record()` — session duration computation |
 
 ### Clock Skew Handling
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/oidc/validation.rs:178-186` | `clock_skew_tolerance_secs` — configurable, default 60s |
-| `pam-unix-oidc/src/oidc/validation.rs:299-303` | `exp` check — `claims.exp + tolerance < now` |
-| `pam-unix-oidc/src/oidc/dpop.rs:63-83` | `DPoPConfig.clock_skew_future_secs` — DPoP iat tolerance |
+| `pam-prmana/src/oidc/validation.rs:178-186` | `clock_skew_tolerance_secs` — configurable, default 60s |
+| `pam-prmana/src/oidc/validation.rs:299-303` | `exp` check — `claims.exp + tolerance < now` |
+| `pam-prmana/src/oidc/dpop.rs:63-83` | `DPoPConfig.clock_skew_future_secs` — DPoP iat tolerance |
 
 ### SCIM Provisioning (RFC 7643/7644)
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-scim/src/schema.rs:80-109` | `ScimUser` — RFC 7643 User resource |
-| `unix-oidc-scim/src/routes.rs:37-219` | CRUD handlers — POST/GET/PUT/DELETE /Users |
-| `unix-oidc-scim/src/provisioner.rs` | `Provisioner` — useradd/userdel with username validation |
-| `unix-oidc-scim/src/auth.rs:212-318` | Bearer token middleware with JWKS verification |
+| `prmana-scim/src/schema.rs:80-109` | `ScimUser` — RFC 7643 User resource |
+| `prmana-scim/src/routes.rs:37-219` | CRUD handlers — POST/GET/PUT/DELETE /Users |
+| `prmana-scim/src/provisioner.rs` | `Provisioner` — useradd/userdel with username validation |
+| `prmana-scim/src/auth.rs:212-318` | Bearer token middleware with JWKS verification |
 
 ### Audit and Observability
 
 | File | Key symbols |
 |------|-------------|
-| `pam-unix-oidc/src/audit.rs:250+` | `AuditEvent` enum — 20+ event variants |
-| `pam-unix-oidc/src/audit.rs:1002-1055` | `ocsf_fields()` — OCSF 1.3.0 enrichment |
-| `pam-unix-oidc/src/audit.rs:1157+` | `enriched_log_json()` — HMAC chain + OCSF fields |
+| `pam-prmana/src/audit.rs:250+` | `AuditEvent` enum — 20+ event variants |
+| `pam-prmana/src/audit.rs:1002-1055` | `ocsf_fields()` — OCSF 1.3.0 enrichment |
+| `pam-prmana/src/audit.rs:1157+` | `enriched_log_json()` — HMAC chain + OCSF fields |
 
 ### IdP Failover (Phase 41, ADR-020)
 
 | File | Key symbols |
 |------|-------------|
-| `unix-oidc-agent/src/failover.rs` | `FailoverRuntime` — three-state machine, failure classifier, cooldown logic |
-| `unix-oidc-agent/src/failover.rs` | `FailoverPairConfig` — primary/secondary pair with timeout/cooldown |
-| `unix-oidc-agent/src/failover.rs` | `classify_http_status()`, `classify_reqwest_error()` — availability vs policy |
-| `unix-oidc-agent/src/config.rs` | `AgentConfig.failover_pairs` — YAML/figment config loading |
-| `unix-oidc-agent/src/daemon/socket.rs` | `failover_aware_discovery()` — exchange path with failover |
-| `unix-oidc-agent/src/daemon/socket.rs` | `failover_aware_full_discovery()` — CIBA path with failover |
-| `unix-oidc-agent/src/daemon/socket.rs` | `AgentState.failover_runtimes` — persistent runtime state |
-| `pam-unix-oidc/src/audit.rs` | `IdpFailoverActivated`, `IdpFailoverRecovered`, `IdpFailoverExhausted` |
+| `prmana-agent/src/failover.rs` | `FailoverRuntime` — three-state machine, failure classifier, cooldown logic |
+| `prmana-agent/src/failover.rs` | `FailoverPairConfig` — primary/secondary pair with timeout/cooldown |
+| `prmana-agent/src/failover.rs` | `classify_http_status()`, `classify_reqwest_error()` — availability vs policy |
+| `prmana-agent/src/config.rs` | `AgentConfig.failover_pairs` — YAML/figment config loading |
+| `prmana-agent/src/daemon/socket.rs` | `failover_aware_discovery()` — exchange path with failover |
+| `prmana-agent/src/daemon/socket.rs` | `failover_aware_full_discovery()` — CIBA path with failover |
+| `prmana-agent/src/daemon/socket.rs` | `AgentState.failover_runtimes` — persistent runtime state |
+| `pam-prmana/src/audit.rs` | `IdpFailoverActivated`, `IdpFailoverRecovered`, `IdpFailoverExhausted` |
 | `docs/adr/020-active-passive-idp-redundancy.md` | ADR with DNS and N-issuer chain evolution |
 
 ---
@@ -1278,7 +1278,7 @@ OIDC is a standard, but every IdP implements it with its own edges. This section
 
 | Claim | Keycloak | Auth0 | Entra ID |
 |-------|----------|-------|----------|
-| `preferred_username` | Always present with `profile` scope | **Requires custom claim rule** — Auth0 namespaces custom claims (e.g., `https://unix-oidc.dev/preferred_username`) | Present with `profile` scope + optional claims config |
+| `preferred_username` | Always present with `profile` scope | **Requires custom claim rule** — Auth0 namespaces custom claims (e.g., `https://prmana.dev/preferred_username`) | Present with `profile` scope + optional claims config |
 | `email` | Present with `email` scope | Present with `email` scope | **Requires both** `email` scope AND the user must have a `mail` attribute in the directory. Test users on `@onmicrosoft.com` domains often lack this. Enterprise users synced from AD/Exchange have it. |
 | `sub` | Always present | Always present | Always present |
 | `acr` / `amr` | Present (configurable) | `amr` present | `acr` present, `amr` present |
@@ -1307,8 +1307,8 @@ OIDC is a standard, but every IdP implements it with its own edges. This section
 **Keycloak (recommended for development and self-hosted):**
 ```yaml
 issuers:
-  - issuer_url: "https://keycloak.example/realms/unix-oidc"
-    client_id: "unix-oidc"
+  - issuer_url: "https://keycloak.example/realms/prmana"
+    client_id: "prmana"
     dpop_enforcement: strict  # Full DPoP support
     jti_enforcement: strict   # Standard jti claim
     claim_mapping:
@@ -1323,7 +1323,7 @@ issuers:
     dpop_enforcement: disabled  # No DPoP on Device Auth Grant
     jti_enforcement: strict     # Standard jti
     claim_mapping:
-      username_claim: "https://unix-oidc.dev/preferred_username"  # namespaced
+      username_claim: "https://prmana.dev/preferred_username"  # namespaced
 ```
 
 **Entra ID (bearer-only, UPN mapping):**
@@ -1353,8 +1353,8 @@ issuers:
 
 5. **`email` is not universally reliable.** Keycloak and Auth0 emit it consistently. Entra requires a directory `mail` attribute. Design claim mapping to fall back to `preferred_username` when `email` is absent.
 
-**In unix-oidc:** Provider-specific behavior is handled through per-issuer configuration in `policy.yaml`. The multi-issuer pipeline (`authenticate_multi_issuer` in `pam-unix-oidc/src/auth.rs`) routes tokens by `iss` claim and applies issuer-specific DPoP enforcement, JTI handling, and claim mapping. See `test/fixtures/policy/` for working examples of each provider configuration.
+**In prmana:** Provider-specific behavior is handled through per-issuer configuration in `policy.yaml`. The multi-issuer pipeline (`authenticate_multi_issuer` in `pam-prmana/src/auth.rs`) routes tokens by `iss` claim and applies issuer-specific DPoP enforcement, JTI handling, and claim mapping. See `test/fixtures/policy/` for working examples of each provider configuration.
 
 ---
 
-*This document is part of the unix-oidc project. It evolves with the codebase — when new OAuth/OIDC primitives are added, this guide should be updated to explain both the standard and the implementation.*
+*This document is part of the prmana project. It evolves with the codebase — when new OAuth/OIDC primitives are added, this guide should be updated to explain both the standard and the implementation.*

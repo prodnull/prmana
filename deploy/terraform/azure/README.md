@@ -1,10 +1,10 @@
-# unix-oidc Azure Terraform Module
+# prmana Azure Terraform Module
 
-This Terraform module deploys an Azure Linux VM with unix-oidc pre-installed and configured for OIDC-based SSH authentication.
+This Terraform module deploys an Azure Linux VM with prmana pre-installed and configured for OIDC-based SSH authentication.
 
 ## Features
 
-- Creates an Azure Linux VM with unix-oidc PAM module installed
+- Creates an Azure Linux VM with prmana PAM module installed
 - Optionally creates a new Resource Group or uses an existing one
 - Optionally creates a new VNet/Subnet or uses existing ones
 - Configures Network Security Group for SSH access
@@ -15,8 +15,8 @@ This Terraform module deploys an Azure Linux VM with unix-oidc pre-installed and
 ## Quick Start
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/azure"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/azure"
 
   oidc_issuer          = "https://login.example.com/realms/myorg"
   admin_username       = "azureuser"
@@ -24,7 +24,7 @@ module "unix_oidc" {
 }
 
 output "ssh_command" {
-  value = module.unix_oidc.ssh_command
+  value = module.prmana.ssh_command
 }
 ```
 
@@ -39,7 +39,7 @@ output "ssh_command" {
 
 1. Azure CLI authenticated or service principal configured
 2. An SSH key pair for VM access
-3. An OIDC provider configured with unix-oidc client
+3. An OIDC provider configured with prmana client
 
 ## Provider Configuration
 
@@ -54,8 +54,8 @@ provider "azurerm" {
 ### Basic Usage (Creates New Resource Group and VNet)
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/azure"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/azure"
 
   oidc_issuer          = "https://login.example.com/realms/myorg"
   admin_username       = "azureuser"
@@ -66,8 +66,8 @@ module "unix_oidc" {
 ### Using Existing Resource Group and VNet
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/azure"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/azure"
 
   oidc_issuer          = "https://login.example.com/realms/myorg"
   admin_username       = "azureuser"
@@ -83,12 +83,12 @@ module "unix_oidc" {
 ### Production Configuration
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/azure"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/azure"
 
   # OIDC Configuration
   oidc_issuer    = "https://login.example.com/realms/myorg"
-  oidc_client_id = "unix-oidc-prod"
+  oidc_client_id = "prmana-prod"
   enable_dpop    = true
 
   # VM Configuration
@@ -117,8 +117,8 @@ module "unix_oidc" {
 ### Different Azure Region
 
 ```hcl
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/azure"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/azure"
 
   oidc_issuer          = "https://login.example.com/realms/myorg"
   admin_username       = "azureuser"
@@ -136,13 +136,13 @@ module "unix_oidc" {
 | oidc_issuer | OIDC issuer URL | `string` | n/a | yes |
 | admin_username | Admin username for the VM | `string` | n/a | yes |
 | admin_ssh_public_key | SSH public key for admin user | `string` | n/a | yes |
-| oidc_client_id | OIDC client ID | `string` | `"unix-oidc"` | no |
-| install_agent | Install unix-oidc-agent | `bool` | `true` | no |
+| oidc_client_id | OIDC client ID | `string` | `"prmana"` | no |
+| install_agent | Install prmana-agent | `bool` | `true` | no |
 | enable_dpop | Enable DPoP token binding | `bool` | `true` | no |
 | resource_group_name | Existing resource group name | `string` | `""` | no |
 | location | Azure region | `string` | `"eastus"` | no |
 | vm_size | Azure VM size | `string` | `"Standard_B1s"` | no |
-| vm_name | Name for the VM | `string` | `"unix-oidc-server"` | no |
+| vm_name | Name for the VM | `string` | `"prmana-server"` | no |
 | os_disk_size_gb | OS disk size in GB | `number` | `30` | no |
 | os_disk_type | OS disk type | `string` | `"StandardSSD_LRS"` | no |
 | vnet_name | Existing VNet name | `string` | `""` | no |
@@ -181,11 +181,11 @@ module "unix_oidc" {
 
 ## Post-Deployment
 
-After deployment, connect using the unix-oidc agent:
+After deployment, connect using the prmana agent:
 
 ```bash
 # Get your OIDC token (varies by IdP)
-export OIDC_TOKEN=$(unix-oidc-agent get-token)
+export OIDC_TOKEN=$(prmana-agent get-token)
 
 # SSH to the VM
 ssh -o "SetEnv OIDC_TOKEN=$OIDC_TOKEN" azureuser@<vm-public-ip>
@@ -198,7 +198,7 @@ Or check the installation logs:
 ssh azureuser@<vm-public-ip>
 
 # Check installation log
-sudo cat /var/log/unix-oidc-install.log
+sudo cat /var/log/prmana-install.log
 
 # Verify PAM module
 pamtester sshd azureuser authenticate
@@ -229,10 +229,10 @@ The module creates an NSG with the following rules:
 3. Check VM state in Azure Portal
 4. Review boot diagnostics in Azure Portal
 
-### unix-oidc not working
+### prmana not working
 
 1. SSH with your key pair first
-2. Check installation log: `sudo cat /var/log/unix-oidc-install.log`
+2. Check installation log: `sudo cat /var/log/prmana-install.log`
 3. Verify PAM config: `cat /etc/pam.d/sshd`
 4. Test OIDC issuer: `curl -s $OIDC_ISSUER/.well-known/openid-configuration`
 
@@ -246,7 +246,7 @@ The module creates an NSG with the following rules:
 
 1. Verify your OIDC token is valid
 2. Check that `preferred_username` claim matches your Unix username
-3. Review unix-oidc logs: `sudo journalctl -u sshd | grep pam_unix_oidc`
+3. Review prmana logs: `sudo journalctl -u sshd | grep pam_prmana`
 
 ## License
 

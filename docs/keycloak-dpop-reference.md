@@ -5,10 +5,10 @@
 Keycloak 26.0+ is the reference implementation for DPoP-bound token issuance on the
 Device Authorization Grant flow. This is the only commercially deployable IdP that
 supports full proof-of-possession (PoP) for Device Auth Grant as of Keycloak 26.x.
-This document covers the configuration required and how to verify it works with unix-oidc.
+This document covers the configuration required and how to verify it works with prmana.
 
 The canonical runnable example is `docker-compose.e2e.yaml`. The configuration
-documented here is extracted directly from `test/fixtures/keycloak/e2e/unix-oidc-realm.json`
+documented here is extracted directly from `test/fixtures/keycloak/e2e/prmana-realm.json`
 and verified against Keycloak 26.5.5.
 
 ## What This Proves
@@ -53,11 +53,11 @@ PASS: Token request without DPoP correctly rejected (400)
 
 ### Realm-Level: Enable DPoP
 
-In `unix-oidc-realm.json`, the realm `attributes` section enables DPoP globally:
+In `prmana-realm.json`, the realm `attributes` section enables DPoP globally:
 
 ```json
 {
-  "realm": "unix-oidc",
+  "realm": "prmana",
   "enabled": true,
   "attributes": {
     "dpopEnabled": "true"
@@ -69,11 +69,11 @@ In `unix-oidc-realm.json`, the realm `attributes` section enables DPoP globally:
 
 ### Client Configuration
 
-The `unix-oidc` client requires three settings in its `attributes` block:
+The `prmana` client requires three settings in its `attributes` block:
 
 ```json
 {
-  "clientId": "unix-oidc",
+  "clientId": "prmana",
   "publicClient": true,
   "directAccessGrantsEnabled": true,
   "attributes": {
@@ -94,8 +94,8 @@ The `unix-oidc` client requires three settings in its `attributes` block:
 
 **Admin Console path:** Clients → [client] → Settings → Advanced Settings → DPoP Bound Access Tokens (toggle on).
 
-**Public client note:** The unix-oidc client is `publicClient: true` (no `client_secret`
-required). This matches how `unix-oidc-agent` acquires tokens — it presents the DPoP proof
+**Public client note:** The prmana client is `publicClient: true` (no `client_secret`
+required). This matches how `prmana-agent` acquires tokens — it presents the DPoP proof
 as the binding mechanism rather than a shared secret.
 
 ### Token Lifetime
@@ -132,7 +132,7 @@ Expected output structure:
   "cnf": {
     "jkt": "<base64url-encoded-SHA-256-thumbprint>"
   },
-  "iss": "http://localhost:8080/realms/unix-oidc",
+  "iss": "http://localhost:8080/realms/prmana",
   "exp": 1712345678
 }
 ```
@@ -174,4 +174,4 @@ Authorization Grant). Commercial IdP configurations are covered in subsequent ph
 - RFC 7638 — JSON Web Key (JWK) Thumbprint
   — Canonical serialization, SHA-256 hash procedure
 - RFC 8628 — OAuth 2.0 Device Authorization Grant
-  — Device code flow that unix-oidc uses for interactive login
+  — Device code flow that prmana uses for interactive login

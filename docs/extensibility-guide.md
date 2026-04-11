@@ -1,6 +1,6 @@
 # Extensibility Guide
 
-This guide covers extending and customizing unix-oidc for advanced use cases.
+This guide covers extending and customizing prmana for advanced use cases.
 
 ## Table of Contents
 
@@ -14,7 +14,7 @@ This guide covers extending and customizing unix-oidc for advanced use cases.
 
 ## Plugin Architecture
 
-unix-oidc is designed with extensibility in mind. Key extension points:
+prmana is designed with extensibility in mind. Key extension points:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -50,7 +50,7 @@ unix-oidc is designed with extensibility in mind. Key extension points:
 ### Standard Mappings
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 defaults:
   # Use email claim, strip domain
   username_claim: email
@@ -89,8 +89,8 @@ username_regex:
 For complex mappings, implement the `UsernameMapper` trait:
 
 ```rust
-use unix_oidc::auth::UsernameMapper;
-use unix_oidc::claims::Claims;
+use prmana::auth::UsernameMapper;
+use prmana::claims::Claims;
 
 pub struct CustomMapper;
 
@@ -136,7 +136,7 @@ Webhooks enable external systems to participate in authentication decisions.
 ### Webhook Request Format
 
 ```http
-POST /api/unix-oidc/authorize HTTP/1.1
+POST /api/prmana/authorize HTTP/1.1
 Host: approvals.example.com
 Content-Type: application/json
 X-Unix-OIDC-Signature: sha256=...
@@ -194,7 +194,7 @@ X-Unix-OIDC-Signature: sha256=...
 ### Configuring Webhooks
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 webhooks:
   # Global webhook for all step-ups
   step_up:
@@ -254,7 +254,7 @@ def verify_signature(payload, signature, secret):
 Create a webhook that implements the step-up flow:
 
 ```yaml
-# /etc/unix-oidc/policy.yaml
+# /etc/prmana/policy.yaml
 step_up:
   methods:
     - name: slack_approval
@@ -278,7 +278,7 @@ step_up:
   "request_id": "step-abc123",
   "user": "alice",
   "reason": "sudo systemctl restart nginx",
-  "callback_url": "https://unix-oidc.example.com/callback"
+  "callback_url": "https://prmana.example.com/callback"
 }
 ```
 
@@ -306,7 +306,7 @@ step_up:
 ### PAM Module Arguments
 
 ```
-auth required pam_unix_oidc.so [options]
+auth required pam_prmana.so [options]
 
 Options:
   debug           Enable debug logging
@@ -323,18 +323,18 @@ Options:
 | `OIDC_ISSUER` | OIDC issuer URL | Required |
 | `OIDC_CLIENT_ID` | OAuth client ID | Required |
 | `OIDC_CLIENT_SECRET` | OAuth client secret | Optional |
-| `UNIX_OIDC_CONFIG` | Config file path | `/etc/unix-oidc/policy.yaml` |
-| `UNIX_OIDC_CACHE_DIR` | Cache directory | `/var/cache/unix-oidc` |
-| `UNIX_OIDC_DEBUG` | Enable debug mode | `0` |
-| `UNIX_OIDC_TIMEOUT` | HTTP timeout (seconds) | `30` |
+| `PRMANA_CONFIG` | Config file path | `/etc/prmana/policy.yaml` |
+| `PRMANA_CACHE_DIR` | Cache directory | `/var/cache/prmana` |
+| `PRMANA_DEBUG` | Enable debug mode | `0` |
+| `PRMANA_TIMEOUT` | HTTP timeout (seconds) | `30` |
 
 ### Rust API
 
 ```rust
-use unix_oidc::{Config, Authenticator, Claims};
+use prmana::{Config, Authenticator, Claims};
 
 // Load configuration
-let config = Config::from_file("/etc/unix-oidc/policy.yaml")?;
+let config = Config::from_file("/etc/prmana/policy.yaml")?;
 
 // Create authenticator
 let auth = Authenticator::new(config)?;

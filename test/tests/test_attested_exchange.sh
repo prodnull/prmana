@@ -5,7 +5,7 @@
 # Prerequisites:
 # - swtpm running (docker compose -f docker-compose.tpm-test.yaml up -d)
 # - Keycloak running with token-exchange realm (docker compose -f docker-compose.token-exchange.yaml up -d)
-# - unix-oidc-agent built with --features tpm
+# - prmana-agent built with --features tpm
 #
 # This test validates the complete flow:
 # 1. Provision TPM key on "jump host"
@@ -27,7 +27,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
 REALM="${REALM:-token-exchange-test}"
 TOKEN_ENDPOINT="${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token"
-CLIENT_ID="${CLIENT_ID:-unix-oidc-agent}"
+CLIENT_ID="${CLIENT_ID:-prmana-agent}"
 TEST_USER="${TEST_USER:-testuser}"
 TEST_PASS="${TEST_PASS:-testpass}"
 TARGET_AUDIENCE="${TARGET_AUDIENCE:-target-host-b}"
@@ -37,26 +37,26 @@ echo ""
 echo "This test requires:"
 echo "  1. swtpm running (docker compose -f docker-compose.tpm-test.yaml up -d)"
 echo "  2. Keycloak running (docker compose -f docker-compose.token-exchange.yaml up -d)"
-echo "  3. unix-oidc-agent built with --features tpm"
+echo "  3. prmana-agent built with --features tpm"
 echo ""
 
 # Step 1: Check prerequisites
 echo "Step 1: Checking prerequisites..."
 
-if ! command -v unix-oidc-agent &>/dev/null; then
-    AGENT="${PROJECT_ROOT}/target/debug/unix-oidc-agent"
+if ! command -v prmana-agent &>/dev/null; then
+    AGENT="${PROJECT_ROOT}/target/debug/prmana-agent"
     if [ ! -f "$AGENT" ]; then
-        echo "SKIP: unix-oidc-agent not found. Build with: cargo build -p unix-oidc-agent --features tpm"
+        echo "SKIP: prmana-agent not found. Build with: cargo build -p prmana-agent --features tpm"
         exit 0
     fi
 else
-    AGENT="unix-oidc-agent"
+    AGENT="prmana-agent"
 fi
 
 # Verify TPM feature is compiled in
 if ! "$AGENT" --help 2>&1 | grep -q "tpm\|provision"; then
-    echo "SKIP: unix-oidc-agent does not appear to have TPM support compiled in."
-    echo "  Rebuild with: cargo build -p unix-oidc-agent --features tpm"
+    echo "SKIP: prmana-agent does not appear to have TPM support compiled in."
+    echo "  Rebuild with: cargo build -p prmana-agent --features tpm"
     exit 0
 fi
 
@@ -79,7 +79,7 @@ echo ""
 
 # Step 2: Provision TPM key
 echo "Step 2: Provisioning TPM key..."
-export UNIX_OIDC_TPM_TCTI="swtpm"
+export PRMANA_TPM_TCTI="swtpm"
 PROVISION_OUTPUT=$("$AGENT" provision --signer tpm 2>&1) || {
     echo "FAIL: TPM key provisioning failed."
     echo "$PROVISION_OUTPUT"

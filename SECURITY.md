@@ -4,13 +4,13 @@
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-unix-oidc takes security seriously. As authentication infrastructure, vulnerabilities in this
+prmana takes security seriously. As authentication infrastructure, vulnerabilities in this
 project could have significant impact. We appreciate your efforts to responsibly disclose
 your findings.
 
 ### How to Report
 
-Send vulnerability reports to: **security@unix-oidc.dev** (or create a private security
+Send vulnerability reports to: **security@prmana.dev** (or create a private security
 advisory on GitHub)
 
 Include as much of the following information as possible:
@@ -63,7 +63,7 @@ The following are considered security vulnerabilities:
 
 ## Security Design Principles
 
-unix-oidc follows these security principles aligned with NIST guidelines:
+prmana follows these security principles aligned with NIST guidelines:
 
 ### NIST SP 800-63B Compliance
 
@@ -114,23 +114,23 @@ Security advisories are published through:
 
 ### Pre-Deployment Security Checklist
 
-Complete this checklist before deploying unix-oidc to production:
+Complete this checklist before deploying prmana to production:
 
 #### Binary Verification
 - [ ] Downloaded binaries from official GitHub releases
 - [ ] Verified Sigstore signatures on all binaries:
   ```bash
-  cosign verify-blob --certificate unix-oidc-*.pem \
-    --signature unix-oidc-*.sig \
+  cosign verify-blob --certificate prmana-*.pem \
+    --signature prmana-*.sig \
     --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    unix-oidc-*
+    prmana-*
   ```
 - [ ] Verified SHA256 checksums match release notes
 
 #### Identity Provider Configuration
 - [ ] Using HTTPS for all IdP communication (no HTTP)
-- [ ] Configured dedicated OIDC client for unix-oidc (not shared with other apps)
+- [ ] Configured dedicated OIDC client for prmana (not shared with other apps)
 - [ ] Client configured as confidential (not public) if supported
 - [ ] Enabled PKCE for authorization code flow
 - [ ] Restricted redirect URIs to localhost only
@@ -141,11 +141,11 @@ Complete this checklist before deploying unix-oidc to production:
 - [ ] Enabled DPoP if IdP supports it
 
 #### File Permissions
-- [ ] Configuration file restricted: `chmod 600 /etc/unix-oidc/policy.yaml`
-- [ ] Configuration owned by root: `chown root:root /etc/unix-oidc/policy.yaml`
-- [ ] PAM module permissions: `chmod 755 /usr/lib/security/pam_unix_oidc.so`
-- [ ] Agent socket directory: `chmod 750 /run/unix-oidc`
-- [ ] Log directory permissions: `chmod 750 /var/log/unix-oidc`
+- [ ] Configuration file restricted: `chmod 600 /etc/prmana/policy.yaml`
+- [ ] Configuration owned by root: `chown root:root /etc/prmana/policy.yaml`
+- [ ] PAM module permissions: `chmod 755 /usr/lib/security/pam_prmana.so`
+- [ ] Agent socket directory: `chmod 750 /run/prmana`
+- [ ] Log directory permissions: `chmod 750 /var/log/prmana`
 
 #### Secret Management
 - [ ] Client secrets not stored in version control
@@ -169,13 +169,13 @@ Complete this checklist before deploying unix-oidc to production:
 - [ ] Offline access disabled unless specifically needed
 
 #### PAM Configuration
-- [ ] PAM stack order correct (unix-oidc after local auth for fallback)
+- [ ] PAM stack order correct (prmana after local auth for fallback)
 - [ ] Tested with non-privileged user first
 - [ ] Emergency local account configured (break-glass)
 - [ ] `pam_faillock` or equivalent configured for brute-force protection
 
 #### Logging and Monitoring
-- [ ] Audit logging enabled (set `UNIX_OIDC_AUDIT_LOG` env var or configure syslog)
+- [ ] Audit logging enabled (set `PRMANA_AUDIT_LOG` env var or configure syslog)
 - [ ] Log forwarding to SIEM configured
 - [ ] Alerts configured for:
   - [ ] Authentication failures > threshold
@@ -200,26 +200,26 @@ Complete this checklist before deploying unix-oidc to production:
 #### Documentation
 - [ ] Runbook created for common operations
 - [ ] Incident response procedure documented
-- [ ] On-call team trained on unix-oidc
+- [ ] On-call team trained on prmana
 - [ ] User documentation distributed
 
 ### Quick Hardening Commands
 
 ```bash
 # Verify binary signatures before deployment
-cosign verify-blob --certificate unix-oidc-agent.pem \
-  --signature unix-oidc-agent.sig \
+cosign verify-blob --certificate prmana-agent.pem \
+  --signature prmana-agent.sig \
   --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  unix-oidc-agent
+  prmana-agent
 
 # Set strict file permissions
-chmod 600 /etc/unix-oidc/policy.yaml
-chown root:root /etc/unix-oidc/policy.yaml
-chmod 755 /usr/lib/security/pam_unix_oidc.so
+chmod 600 /etc/prmana/policy.yaml
+chown root:root /etc/prmana/policy.yaml
+chmod 755 /usr/lib/security/pam_prmana.so
 
 # Enable audit logging
-export UNIX_OIDC_AUDIT_LOG=/var/log/unix-oidc/audit.log
+export PRMANA_AUDIT_LOG=/var/log/prmana/audit.log
 
 # Verify PAM configuration
 pamtester sshd testuser authenticate
@@ -263,16 +263,16 @@ legal action against security researchers who:
 
 ## Security Contacts
 
-- **Primary**: security@unix-oidc.dev
+- **Primary**: security@prmana.dev
 - **GitHub**: [Create private security advisory](https://github.com/prodnull/unix-oidc/security/advisories/new)
 
 ## Acknowledgments
 
-We gratefully acknowledge security researchers who help improve unix-oidc:
+We gratefully acknowledge security researchers who help improve prmana:
 
 <!-- Security researchers will be acknowledged here after coordinated disclosure -->
 
-*No vulnerabilities have been reported yet. Be the first to help secure unix-oidc!*
+*No vulnerabilities have been reported yet. Be the first to help secure prmana!*
 
 ---
 

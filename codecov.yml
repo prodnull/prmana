@@ -13,9 +13,9 @@ coverage:
         threshold: 2%  # Allow 2% drop without failing
 
       # Critical security code requires higher coverage
-      pam-unix-oidc:
+      pam-prmana:
         paths:
-          - "pam-unix-oidc/src/**"
+          - "pam-prmana/src/**"
         target: 80%
         threshold: 1%
 
@@ -25,9 +25,9 @@ coverage:
         target: 80%
         threshold: 1%
 
-      unix-oidc-agent:
+      prmana-agent:
         paths:
-          - "unix-oidc-agent/src/**"
+          - "prmana-agent/src/**"
         target: 75%  # Agent has more I/O, slightly lower threshold
         threshold: 2%
 

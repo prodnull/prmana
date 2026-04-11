@@ -1,11 +1,11 @@
-# Threat Model: unix-oidc
+# Threat Model: prmana
 
 > **Version:** 3.1
 > **Date:** 2026-04-09
 > **Classification:** Public
 > **Method:** STRIDE per trust boundary (Microsoft SDL)
 
-STRIDE-based threat model for the unix-oidc project -- a PAM module bridging OpenID Connect authentication to Linux/macOS with DPoP token binding (RFC 9449).
+STRIDE-based threat model for the prmana project -- a PAM module bridging OpenID Connect authentication to Linux/macOS with DPoP token binding (RFC 9449).
 
 **Standards referenced**: RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint), RFC 7519 (JWT), RFC 6749 (OAuth 2.0), NIST SP 800-63B (Digital Identity Authentication), NIST SP 800-88 Rev 1 (Media Sanitization).
 
@@ -13,7 +13,7 @@ STRIDE-based threat model for the unix-oidc project -- a PAM module bridging Ope
 
 ## 1. System Overview
 
-unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`pam-unix-oidc`). A client-side agent daemon (`unix-oidc-agent`) acquires tokens from an Identity Provider (IdP) via device flow, authorization code + PKCE, or SPIRE JWT-SVID acquisition, generates DPoP proofs for proof-of-possession binding (RFC 9449), and delivers signed proofs over a Unix domain socket to an SSH client. The SSH session transports the token and DPoP proof to the server, where the PAM module validates the token signature against the IdP's JWKS, enforces issuer/audience/expiration checks, verifies the DPoP proof signature and binding, checks replay protections, optionally enforces delegation (`act`) and TPM attestation policy, and maps the validated identity to a local Unix account via SSSD/NSS. Trust boundaries exist at six points: (1) the TLS-protected channel between agent and IdP, (2) the Unix domain socket IPC between agent and SSH client, (3) the SSH-encrypted channel carrying credentials to the server, (4) the PAM module's interface with sshd and the local OS, (5) the credential storage backends (keyrings, files) on the client, and (6) the PAM module's JWKS fetch channel to the IdP.
+prmana authenticates Unix users via OIDC tokens validated by a PAM module (`pam-prmana`). A client-side agent daemon (`prmana-agent`) acquires tokens from an Identity Provider (IdP) via device flow, authorization code + PKCE, or SPIRE JWT-SVID acquisition, generates DPoP proofs for proof-of-possession binding (RFC 9449), and delivers signed proofs over a Unix domain socket to an SSH client. The SSH session transports the token and DPoP proof to the server, where the PAM module validates the token signature against the IdP's JWKS, enforces issuer/audience/expiration checks, verifies the DPoP proof signature and binding, checks replay protections, optionally enforces delegation (`act`) and TPM attestation policy, and maps the validated identity to a local Unix account via SSSD/NSS. Trust boundaries exist at six points: (1) the TLS-protected channel between agent and IdP, (2) the Unix domain socket IPC between agent and SSH client, (3) the SSH-encrypted channel carrying credentials to the server, (4) the PAM module's interface with sshd and the local OS, (5) the credential storage backends (keyrings, files) on the client, and (6) the PAM module's JWKS fetch channel to the IdP.
 
 ---
 
@@ -21,12 +21,12 @@ unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`p
 
 | ID | Boundary | From | To | Transport | Key Assumption |
 |----|----------|------|----|-----------|----------------|
-| TB-1 | Agent <-> IdP | `unix-oidc-agent` | OIDC Identity Provider | HTTPS/TLS 1.2+ | IdP is a trusted third party; TLS cert chain is valid |
-| TB-2 | Agent <-> SSH Client (IPC) | `unix-oidc-agent` daemon | SSH client process | Unix domain socket (0600) | Only the owning UID can connect; kernel enforces file permissions |
+| TB-1 | Agent <-> IdP | `prmana-agent` | OIDC Identity Provider | HTTPS/TLS 1.2+ | IdP is a trusted third party; TLS cert chain is valid |
+| TB-2 | Agent <-> SSH Client (IPC) | `prmana-agent` daemon | SSH client process | Unix domain socket (0600) | Only the owning UID can connect; kernel enforces file permissions |
 | TB-3 | SSH Client <-> sshd (Network) | SSH client (user machine) | sshd (server) | SSH encrypted channel | SSH transport integrity assumed; token/proof carried in keyboard-interactive |
-| TB-4 | PAM Module <-> sshd/OS | `pam_unix_oidc.so` | sshd, NSS/SSSD, audit subsystem | In-process (shared library) + NSS calls | PAM module runs as root within sshd; must never panic |
-| TB-5 | Agent <-> Storage | `unix-oidc-agent` | Keyring (Secret Service/keyutils/Keychain) or file fallback | D-Bus / kernel keyring / filesystem | Keyring access is UID-scoped; file fallback uses 0600 permissions |
-| TB-6 | PAM Module <-> IdP (JWKS) | `pam_unix_oidc.so` | IdP JWKS endpoint | HTTPS/TLS | JWKS fetched only from configured issuer URL; cache survives transient failures |
+| TB-4 | PAM Module <-> sshd/OS | `pam_prmana.so` | sshd, NSS/SSSD, audit subsystem | In-process (shared library) + NSS calls | PAM module runs as root within sshd; must never panic |
+| TB-5 | Agent <-> Storage | `prmana-agent` | Keyring (Secret Service/keyutils/Keychain) or file fallback | D-Bus / kernel keyring / filesystem | Keyring access is UID-scoped; file fallback uses 0600 permissions |
+| TB-6 | PAM Module <-> IdP (JWKS) | `pam_prmana.so` | IdP JWKS endpoint | HTTPS/TLS | JWKS fetched only from configured issuer URL; cache survives transient failures |
 
 ---
 
@@ -68,7 +68,7 @@ unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`p
 | Threat | Category | Description | Severity |
 |--------|----------|-------------|----------|
 | T4.1 | Spoofing | Attacker crafts a token with forged `preferred_username` to impersonate another Unix user | Critical |
-| T4.2 | Tampering | `UNIX_OIDC_TEST_MODE` env var set in production, bypassing signature verification | Critical |
+| T4.2 | Tampering | `PRMANA_TEST_MODE` env var set in production, bypassing signature verification | Critical |
 | T4.3 | Repudiation | Authentication events not logged; attacker denies access | Medium |
 | T4.4 | Info Disclosure | Verbose error messages leak IdP configuration, key IDs, or internal paths to the client | Medium |
 | T4.5 | DoS | PAM module panic locks users out of system | Critical |
@@ -101,7 +101,7 @@ unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`p
 
 **Scenario**: Attacker intercepts the access token but does not possess the ephemeral DPoP private key.
 
-**Analysis**: The PAM module verifies that the DPoP proof's JWK thumbprint matches the token's `cnf.jkt` claim (`pam-unix-oidc/src/oidc/dpop.rs:371-383`, `verify_dpop_binding()`). Without the private key, the attacker cannot produce a valid ES256 signature over a fresh proof. The token is unusable. This is the core security property of RFC 9449.
+**Analysis**: The PAM module verifies that the DPoP proof's JWK thumbprint matches the token's `cnf.jkt` claim (`pam-prmana/src/oidc/dpop.rs:371-383`, `verify_dpop_binding()`). Without the private key, the attacker cannot produce a valid ES256 signature over a fresh proof. The token is unusable. This is the core security property of RFC 9449.
 
 **Residual risk**: If `dpop_required` is set to `Warn` or `Disabled` in policy, a stolen bearer token without DPoP proof may be accepted.
 
@@ -110,11 +110,11 @@ unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`p
 **Scenario**: Attacker compromises the agent process and extracts both the access token and the DPoP signing key.
 
 **Analysis**: Full credential compromise. The attacker can forge valid DPoP proofs for any target server. Mitigations are defense-in-depth:
-- `mlock(2)` prevents swap exposure (`unix-oidc-agent/src/crypto/protected_key.rs:120-139`)
+- `mlock(2)` prevents swap exposure (`prmana-agent/src/crypto/protected_key.rs:120-139`)
 - Core dumps disabled via `prctl(PR_SET_DUMPABLE, 0)` / `ptrace(PT_DENY_ATTACH, 0)`
 - `ZeroizeOnDrop` on `SigningKey` limits temporal window of key exposure in freed memory
 - Token `exp` claim limits validity window
-- `SecretString` wrapping prevents accidental token logging (`unix-oidc-agent/src/daemon/socket.rs:94-100`)
+- `SecretString` wrapping prevents accidental token logging (`prmana-agent/src/daemon/socket.rs:94-100`)
 
 ### 4.3 DPoP Proof Replay
 
@@ -157,26 +157,26 @@ unix-oidc authenticates Unix users via OIDC tokens validated by a PAM module (`p
 
 | Threat ID | Threat | Mitigation | Code Reference | Status |
 |-----------|--------|-----------|----------------|--------|
-| T1.1 | IdP spoofing | TLS certificate validation on all IdP connections; JWKS fetched only from configured issuer URL | `pam-unix-oidc/src/oidc/jwks.rs` | Implemented |
-| T1.4 | Token interception | TLS transport; DPoP binding makes intercepted tokens unusable without private key | `pam-unix-oidc/src/oidc/dpop.rs` (full file) | Implemented |
-| T1.5 | IdP unavailable | JWKS cache survives transient IdP failures; break-glass accounts for emergency access | `pam-unix-oidc/src/lib.rs:92-107` | Implemented |
-| T2.1 | Rogue IPC client | Socket permissions 0600 (owner-only); `get_peer_credentials()` for UID verification | `unix-oidc-agent/src/daemon/socket.rs:80-87` | Implemented |
-| T2.3 | IPC token leak | Unix socket 0600; `SecretString` wrapping prevents token logging | `unix-oidc-agent/src/daemon/socket.rs:94-100` | Implemented |
-| T2.5 | Key extraction via swap | `mlock(2)` on key pages; `ZeroizeOnDrop`; Box-only constructors | `unix-oidc-agent/src/crypto/protected_key.rs:120-139, 156-167` | Best-effort |
-| T3.1 | Proof replay to other server | `htu` (target URI) binding in DPoP proof; server validates `htu` match | `pam-unix-oidc/src/oidc/dpop.rs:335-339` | Implemented |
-| T3.4 | Auth flooding | Per-user and per-IP rate limiting before OIDC processing | `pam-unix-oidc/src/lib.rs:110-114` | Implemented |
-| T3.5 | Stolen bearer token | DPoP `cnf.jkt` binding; constant-time thumbprint comparison | `pam-unix-oidc/src/oidc/dpop.rs:371-383` | Implemented |
-| T4.1 | Username spoofing | `preferred_username` from validated token compared to PAM_USER; SSSD existence check | `pam-unix-oidc/src/auth.rs` | Implemented |
-| T4.2 | Test mode in production | Explicit `"true"`/`"1"` check (not presence); `#[cfg(feature = "test-mode")]` compile gate | `pam-unix-oidc/src/lib.rs:60-64`, `validation.rs:149` | Implemented |
-| T4.3 | Missing audit trail | `AuditEvent` logged for all auth attempts (success, failure, break-glass, rate-limit) | `pam-unix-oidc/src/lib.rs:104, 111` | Implemented |
-| T4.5 | PAM panic lockout | `#![deny(unsafe_code)]`, `#![deny(clippy::unwrap_used)]`; all paths return `PamError` codes | `pam-unix-oidc/src/lib.rs:18-19` | Implemented |
+| T1.1 | IdP spoofing | TLS certificate validation on all IdP connections; JWKS fetched only from configured issuer URL | `pam-prmana/src/oidc/jwks.rs` | Implemented |
+| T1.4 | Token interception | TLS transport; DPoP binding makes intercepted tokens unusable without private key | `pam-prmana/src/oidc/dpop.rs` (full file) | Implemented |
+| T1.5 | IdP unavailable | JWKS cache survives transient IdP failures; break-glass accounts for emergency access | `pam-prmana/src/lib.rs:92-107` | Implemented |
+| T2.1 | Rogue IPC client | Socket permissions 0600 (owner-only); `get_peer_credentials()` for UID verification | `prmana-agent/src/daemon/socket.rs:80-87` | Implemented |
+| T2.3 | IPC token leak | Unix socket 0600; `SecretString` wrapping prevents token logging | `prmana-agent/src/daemon/socket.rs:94-100` | Implemented |
+| T2.5 | Key extraction via swap | `mlock(2)` on key pages; `ZeroizeOnDrop`; Box-only constructors | `prmana-agent/src/crypto/protected_key.rs:120-139, 156-167` | Best-effort |
+| T3.1 | Proof replay to other server | `htu` (target URI) binding in DPoP proof; server validates `htu` match | `pam-prmana/src/oidc/dpop.rs:335-339` | Implemented |
+| T3.4 | Auth flooding | Per-user and per-IP rate limiting before OIDC processing | `pam-prmana/src/lib.rs:110-114` | Implemented |
+| T3.5 | Stolen bearer token | DPoP `cnf.jkt` binding; constant-time thumbprint comparison | `pam-prmana/src/oidc/dpop.rs:371-383` | Implemented |
+| T4.1 | Username spoofing | `preferred_username` from validated token compared to PAM_USER; SSSD existence check | `pam-prmana/src/auth.rs` | Implemented |
+| T4.2 | Test mode in production | Explicit `"true"`/`"1"` check (not presence); `#[cfg(feature = "test-mode")]` compile gate | `pam-prmana/src/lib.rs:60-64`, `validation.rs:149` | Implemented |
+| T4.3 | Missing audit trail | `AuditEvent` logged for all auth attempts (success, failure, break-glass, rate-limit) | `pam-prmana/src/lib.rs:104, 111` | Implemented |
+| T4.5 | PAM panic lockout | `#![deny(unsafe_code)]`, `#![deny(clippy::unwrap_used)]`; all paths return `PamError` codes | `pam-prmana/src/lib.rs:18-19` | Implemented |
 | T4.6 | Cache memory exhaustion | JTI cache capped at 100K entries with forced cleanup; nonce cache uses moka bounded capacity + TTL | `dpop.rs:24,72-87`, `nonce_cache.rs:82-88` | Implemented |
-| T4.7 | Algorithm confusion (DPoP) | `alg == "ES256"` enforced; `kty`/`crv` validated independently; P-256 coordinate length check | `pam-unix-oidc/src/oidc/dpop.rs:264, 386, 401` | Implemented |
-| T4.8 | Break-glass misconfiguration | Requires `break_glass.enabled == true` AND user in accounts list; audit event always logged | `pam-unix-oidc/src/lib.rs:45-53, 99-107` | Implemented |
-| T5.1 | CoW filesystem key recovery | `detect_cow_filesystem()` warns at startup; three-pass DoD 5220.22-M overwrite (best-effort) | `unix-oidc-agent/src/storage/secure_delete.rs` | Advisory |
-| T5.2 | Swap exposure | `mlock(2)` best-effort; `mlock_probe()` at startup | `unix-oidc-agent/src/crypto/protected_key.rs:73-112` | Best-effort |
-| T5.4 | Core dump key leak | `prctl(PR_SET_DUMPABLE, 0)` (Linux) / `ptrace(PT_DENY_ATTACH)` (macOS) | `unix-oidc-agent/src/security` | Best-effort |
-| T6.1 | JWKS cache poisoning | JWKS fetched only from configured issuer URL over TLS; never from token claims | `pam-unix-oidc/src/oidc/jwks.rs` | Implemented |
+| T4.7 | Algorithm confusion (DPoP) | `alg == "ES256"` enforced; `kty`/`crv` validated independently; P-256 coordinate length check | `pam-prmana/src/oidc/dpop.rs:264, 386, 401` | Implemented |
+| T4.8 | Break-glass misconfiguration | Requires `break_glass.enabled == true` AND user in accounts list; audit event always logged | `pam-prmana/src/lib.rs:45-53, 99-107` | Implemented |
+| T5.1 | CoW filesystem key recovery | `detect_cow_filesystem()` warns at startup; three-pass DoD 5220.22-M overwrite (best-effort) | `prmana-agent/src/storage/secure_delete.rs` | Advisory |
+| T5.2 | Swap exposure | `mlock(2)` best-effort; `mlock_probe()` at startup | `prmana-agent/src/crypto/protected_key.rs:73-112` | Best-effort |
+| T5.4 | Core dump key leak | `prctl(PR_SET_DUMPABLE, 0)` (Linux) / `ptrace(PT_DENY_ATTACH)` (macOS) | `prmana-agent/src/security` | Best-effort |
+| T6.1 | JWKS cache poisoning | JWKS fetched only from configured issuer URL over TLS; never from token claims | `pam-prmana/src/oidc/jwks.rs` | Implemented |
 
 ---
 
@@ -203,7 +203,7 @@ Prioritized by risk reduction impact.
 
 1. **Enforce `dpop_required: strict` as the documented production default.** Ensure deployment guides, example configs, and quickstart documentation make Strict the explicit recommendation. Bearer-only mode should require deliberate opt-in with a written rationale. *(Mitigates R-6)* **Status: IMPLEMENTED** — `docs/security-guide.md` §Deployment Hardening, `examples/policy.yaml`, and `policy/config.rs` all document and default to `strict`.
 
-2. **Add compile-time assertion that `test-mode` feature is absent in release profile.** A `#[cfg(all(feature = "test-mode", not(debug_assertions)))]` with `compile_error!` would prevent accidental release builds with signature bypass. Add a CI step that builds with `--release` and asserts the `new_insecure_for_testing` symbol is absent from the binary. *(Mitigates T4.2)* **Status: IMPLEMENTED** — `pam-unix-oidc/src/lib.rs` has `compile_error!` guard at crate root.
+2. **Add compile-time assertion that `test-mode` feature is absent in release profile.** A `#[cfg(all(feature = "test-mode", not(debug_assertions)))]` with `compile_error!` would prevent accidental release builds with signature bypass. Add a CI step that builds with `--release` and asserts the `new_insecure_for_testing` symbol is absent from the binary. *(Mitigates T4.2)* **Status: IMPLEMENTED** — `pam-prmana/src/lib.rs` has `compile_error!` guard at crate root.
 
 ### P1 -- High (address in next release cycle)
 
@@ -219,7 +219,7 @@ Prioritized by risk reduction impact.
 
 7. **Implement storage backend integrity verification.** On key load from file fallback, verify a keyed MAC (e.g., HMAC-SHA256 with a machine-local secret) to detect tampering with stored key material. *(Mitigates T5.3)*
 
-8. **Add CIBA-specific threats to this model** when CIBA backchannel authentication (`pam-unix-oidc/src/ciba/`) moves to production. CIBA introduces additional trust boundaries (backchannel notification channel, polling token endpoint) and threats (polling interception, auth_req_id replay).
+8. **Add CIBA-specific threats to this model** when CIBA backchannel authentication (`pam-prmana/src/ciba/`) moves to production. CIBA introduces additional trust boundaries (backchannel notification channel, polling token endpoint) and threats (polling interception, auth_req_id replay).
 
 ### P3 -- Low (backlog / future hardening)
 
@@ -243,7 +243,7 @@ Three-tier adversarial review performed by Codex (source audit), validated by Cl
 
 | Attack Vector | Exploitability | Impact | Mitigation |
 |---------------|:---:|--------|------------|
-| PAM-env token injection (`UNIX_OIDC_ACCEPT_PAM_ENV`) | Requires precondition | Arbitrary JWT fed to PAM auth — still requires valid signature, issuer, audience, username match, and SSSD existence | Explicit opt-in gate, warning logs, exact username equality, SSSD group checks |
+| PAM-env token injection (`PRMANA_ACCEPT_PAM_ENV`) | Requires precondition | Arbitrary JWT fed to PAM auth — still requires valid signature, issuer, audience, username match, and SSSD existence | Explicit opt-in gate, warning logs, exact username equality, SSSD group checks |
 | Break-glass OIDC bypass | Requires precondition | Widens auth surface for listed accounts — not an escalation by itself | Requires `break_glass.enabled=true` + explicit account membership |
 | Session record path manipulation | Theoretical | Path traversal to overwrite arbitrary files during session lifecycle | Session ID validation (allowlist charset), 0700 dir, atomic 0600 temp file |
 

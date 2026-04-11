@@ -59,7 +59,7 @@ We use **local JWT validation** with cached JWKS (JSON Web Key Set).
 └──────────────┘
 ```
 
-- **Cache location**: In-memory `RwLock<Option<CachedJwks>>` (`pam-unix-oidc/src/oidc/jwks.rs`)
+- **Cache location**: In-memory `RwLock<Option<CachedJwks>>` (`pam-prmana/src/oidc/jwks.rs`)
 - **TTL**: Configurable via `jwks_cache_ttl_secs` (default 1 hour)
 - **Refresh**: On cache miss or TTL expiry; daemon startup can prefetch
 - **Fallback**: Use stale cache if IdP unreachable (cache survives transient failures)
@@ -146,4 +146,4 @@ The `jsonwebtoken` library validates `exp` and `nbf` but does not validate `iat`
 - [RFC 7519 - JSON Web Token (JWT)](https://tools.ietf.org/html/rfc7519)
 - [RFC 7517 - JSON Web Key (JWK)](https://tools.ietf.org/html/rfc7517)
 - [OpenID Connect Core 1.0 - ID Token Validation](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation)
-- [Implementation: pam-unix-oidc/src/oidc/validation.rs](../../pam-unix-oidc/src/oidc/validation.rs)
+- [Implementation: pam-prmana/src/oidc/validation.rs](../../pam-prmana/src/oidc/validation.rs)

@@ -1,12 +1,12 @@
 # Maintainers
 
-This document lists the maintainers of the unix-oidc project.
+This document lists the maintainers of the prmana project.
 
 ## Current Maintainers
 
 | Name | GitHub | Role | Areas |
 |------|--------|------|-------|
-| unix-oidc Contributors | [@prodnull](https://github.com/prodnull) | Maintainers | All |
+| prmana Contributors | [@prodnull](https://github.com/prodnull) | Maintainers | All |
 
 ## Maintainer Responsibilities
 
@@ -31,7 +31,7 @@ Security vulnerabilities should be reported per [SECURITY.md](SECURITY.md).
 
 | Name | GitHub | PGP Key |
 |------|--------|---------|
-| unix-oidc Contributors | [@prodnull](https://github.com/prodnull) | (on request) |
+| prmana Contributors | [@prodnull](https://github.com/prodnull) | (on request) |
 
 ## Contact
 

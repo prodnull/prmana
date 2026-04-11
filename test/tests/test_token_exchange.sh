@@ -25,7 +25,7 @@ REALM="${REALM:-token-exchange-test}"
 TOKEN_ENDPOINT="${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token"
 
 # User credentials (for initial password grant)
-USER_CLIENT_ID="${USER_CLIENT_ID:-unix-oidc-agent}"
+USER_CLIENT_ID="${USER_CLIENT_ID:-prmana-agent}"
 TEST_USERNAME="${TEST_USERNAME:-testuser}"
 TEST_PASSWORD="${TEST_PASSWORD:-testpass}"
 

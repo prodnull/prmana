@@ -25,7 +25,7 @@ These requirements conflict with PAM constraints.
 
 We split functionality between two components:
 
-### 1. PAM Module (`pam_unix_oidc.so`)
+### 1. PAM Module (`pam_prmana.so`)
 
 Library responsible for:
 - Reading tokens from PAM conversation
@@ -42,7 +42,7 @@ Library responsible for:
 - Manage persistent state (all caches are in-memory)
 - Store credentials to disk
 
-### 2. Agent Daemon (`unix-oidc-agent`)
+### 2. Agent Daemon (`prmana-agent`)
 
 Long-running user process responsible for:
 - OAuth device flow execution
@@ -115,7 +115,7 @@ The agent exposes a JSON-over-Unix-socket protocol with these request types:
 
 1. **JSON over Unix socket**: Human-readable, debuggable, language-agnostic
 2. **Synchronous IPC**: PAM is synchronous; agent handles async internally
-3. **Socket path**: `$XDG_RUNTIME_DIR/unix-oidc-agent.sock` (user-specific)
+3. **Socket path**: `$XDG_RUNTIME_DIR/prmana-agent.sock` (user-specific)
 4. **Socket permissions**: 0600 (owner only)
 
 ### Mitigations
@@ -148,6 +148,6 @@ The agent exposes a JSON-over-Unix-socket protocol with these request types:
 
 ## References
 
-- [PAM Module Source](../../pam-unix-oidc/)
-- [Agent Daemon Source](../../unix-oidc-agent/)
-- [IPC Protocol](../../unix-oidc-agent/src/daemon/protocol.rs)
+- [PAM Module Source](../../pam-prmana/)
+- [Agent Daemon Source](../../prmana-agent/)
+- [IPC Protocol](../../prmana-agent/src/daemon/protocol.rs)

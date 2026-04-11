@@ -1,7 +1,7 @@
-//! Demo webhook approval server for unix-oidc.
+//! Demo webhook approval server for prmana.
 //!
 //! This server demonstrates how to implement a custom approval workflow
-//! that integrates with unix-oidc's webhook approval provider.
+//! that integrates with prmana's webhook approval provider.
 //!
 //! ## Usage
 //!
@@ -9,8 +9,8 @@
 //! # Start the server
 //! cargo run -p webhook-server
 //!
-//! # Configure unix-oidc to use this webhook
-//! export UNIX_OIDC_WEBHOOK_URL=http://localhost:3000
+//! # Configure prmana to use this webhook
+//! export PRMANA_WEBHOOK_URL=http://localhost:3000
 //! ```
 //!
 //! ## API Endpoints
@@ -45,7 +45,7 @@ pub enum ApprovalStatus {
     Expired,
 }
 
-/// Incoming approval request from unix-oidc.
+/// Incoming approval request from prmana.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRequest {
     pub request_id: String,
@@ -58,7 +58,7 @@ pub struct ApprovalRequest {
     pub metadata: HashMap<String, String>,
 }
 
-/// Response to unix-oidc.
+/// Response to prmana.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalResponse {
     pub request_id: String,
@@ -108,7 +108,7 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     info!("Webhook demo server listening on http://0.0.0.0:3000");
-    info!("Configure unix-oidc with: UNIX_OIDC_WEBHOOK_URL=http://localhost:3000");
+    info!("Configure prmana with: PRMANA_WEBHOOK_URL=http://localhost:3000");
 
     axum::serve(listener, app).await.unwrap();
 }
@@ -290,7 +290,7 @@ async fn index_handler(State(state): State<SharedState>) -> Html<String> {
         r#"<!DOCTYPE html>
 <html>
 <head>
-    <title>unix-oidc Webhook Approval Demo</title>
+    <title>prmana Webhook Approval Demo</title>
     <meta http-equiv="refresh" content="5">
     <style>
         body { font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; }
@@ -320,7 +320,7 @@ async fn index_handler(State(state): State<SharedState>) -> Html<String> {
 </head>
 <body>
     <div class="header">
-        <h1>🔐 unix-oidc Webhook Approval Demo</h1>
+        <h1>🔐 prmana Webhook Approval Demo</h1>
         <span class="refresh">Auto-refreshes every 5s</span>
     </div>
 "#,

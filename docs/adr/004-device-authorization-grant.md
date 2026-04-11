@@ -175,5 +175,5 @@ The device flow is unfamiliar to some users. We provide:
 ## References
 
 - [RFC 8628 - OAuth 2.0 Device Authorization Grant](https://tools.ietf.org/html/rfc8628)
-- [Implementation: unix-oidc-agent device flow](../../unix-oidc-agent/src/main.rs)
+- [Implementation: prmana-agent device flow](../../prmana-agent/src/main.rs)
 - [User Guide: Device Flow section](../user-guide.md#device-flow-headless)

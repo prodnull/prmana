@@ -1,15 +1,15 @@
 # Release Verification Guide
 
-How to verify the integrity and provenance of unix-oidc release artifacts.
+How to verify the integrity and provenance of prmana release artifacts.
 
 ## Overview
 
-Every unix-oidc release includes three layers of supply chain verification:
+Every prmana release includes three layers of supply chain verification:
 
 | Layer | What it proves | Tool |
 |-------|---------------|------|
 | SHA-256 checksums | Artifact integrity (no corruption/tampering in transit) | `sha256sum` |
-| Sigstore keyless signatures | Artifact was produced by the unix-oidc GitHub Actions CI | `cosign` |
+| Sigstore keyless signatures | Artifact was produced by the prmana GitHub Actions CI | `cosign` |
 | SLSA build provenance | Artifact was built from a specific commit via a specific workflow | `gh attestation` |
 
 ## Prerequisites
@@ -32,7 +32,7 @@ Download `SHA256SUMS` alongside the release tarball:
 ```bash
 # Download the release and checksums
 VERSION="v3.0.0"  # replace with actual version
-gh release download "$VERSION" --repo prodnull/unix-oidc
+gh release download "$VERSION" --repo prodnull/prmana
 
 # Verify
 sha256sum -c SHA256SUMS
@@ -40,10 +40,10 @@ sha256sum -c SHA256SUMS
 
 Expected output:
 ```
-unix-oidc-v3.0.0-linux-x86_64.tar.gz: OK
-unix-oidc-v3.0.0-linux-aarch64.tar.gz: OK
-unix-oidc-v3.0.0-macos-x86_64.tar.gz: OK
-unix-oidc-v3.0.0-macos-aarch64.tar.gz: OK
+prmana-v3.0.0-linux-x86_64.tar.gz: OK
+prmana-v3.0.0-linux-aarch64.tar.gz: OK
+prmana-v3.0.0-macos-x86_64.tar.gz: OK
+prmana-v3.0.0-macos-aarch64.tar.gz: OK
 ```
 
 On macOS (BSD `shasum`):
@@ -54,13 +54,13 @@ shasum -a 256 -c SHA256SUMS
 ## 2. Verify Sigstore Signature
 
 The `SHA256SUMS` file is signed with Sigstore keyless signing. The signing identity is
-the GitHub Actions OIDC token for the `prodnull/unix-oidc` repository.
+the GitHub Actions OIDC token for the `prodnull/prmana` repository.
 
 ```bash
 cosign verify-blob \
   --certificate SHA256SUMS.pem \
   --signature SHA256SUMS.sig \
-  --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \
+  --certificate-identity-regexp 'https://github.com/prodnull/prmana' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 ```
@@ -69,16 +69,16 @@ Individual tarballs also have their own `.sig` and `.pem` files:
 
 ```bash
 cosign verify-blob \
-  --certificate unix-oidc-v3.0.0-linux-x86_64.tar.gz.pem \
-  --signature unix-oidc-v3.0.0-linux-x86_64.tar.gz.sig \
-  --certificate-identity-regexp 'https://github.com/prodnull/unix-oidc' \
+  --certificate prmana-v3.0.0-linux-x86_64.tar.gz.pem \
+  --signature prmana-v3.0.0-linux-x86_64.tar.gz.sig \
+  --certificate-identity-regexp 'https://github.com/prodnull/prmana' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  unix-oidc-v3.0.0-linux-x86_64.tar.gz
+  prmana-v3.0.0-linux-x86_64.tar.gz
 ```
 
 ### What this proves
 
-- The artifact was signed by a GitHub Actions workflow in the `prodnull/unix-oidc` repository.
+- The artifact was signed by a GitHub Actions workflow in the `prodnull/prmana` repository.
 - No private key exists — signing uses ephemeral keys backed by GitHub's OIDC identity.
 - Signatures are logged in the [Rekor](https://rekor.sigstore.dev) transparency log.
 
@@ -88,12 +88,12 @@ SLSA (Supply-chain Levels for Software Artifacts) provenance proves the artifact
 was built from a specific source commit by a specific CI workflow.
 
 ```bash
-gh attestation verify unix-oidc-v3.0.0-linux-x86_64.tar.gz \
-  --repo prodnull/unix-oidc
+gh attestation verify prmana-v3.0.0-linux-x86_64.tar.gz \
+  --repo prodnull/prmana
 ```
 
 This verifies:
-- The artifact was built by the `release.yml` workflow in `prodnull/unix-oidc`.
+- The artifact was built by the `release.yml` workflow in `prodnull/prmana`.
 - The build used a specific git commit (shown in the attestation output).
 - The build environment was GitHub-hosted runners (not a compromised local machine).
 
@@ -104,7 +104,7 @@ Sigstore signatures (when `cosign` is available):
 
 ```bash
 # Automatic verification during install
-curl -fsSL https://raw.githubusercontent.com/prodnull/unix-oidc/main/deploy/installer/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/prodnull/prmana/main/deploy/installer/install.sh | \
   sudo bash -s -- --issuer https://your-idp.example.com
 
 # The installer will:

@@ -39,7 +39,7 @@ resource "aws_key_pair" "fleet" {
 
 # ---------------------------------------------------------------------------
 # Security group — run-scoped, dedicated to this fleet.
-# Intentionally separate from the legacy "unix-oidc-ci-test-instances" SG
+# Intentionally separate from the legacy "prmana-ci-test-instances" SG
 # to avoid cross-contamination with other CI workflows.
 # ---------------------------------------------------------------------------
 resource "aws_security_group" "fleet" {

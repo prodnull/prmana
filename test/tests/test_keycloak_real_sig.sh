@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   - docker-compose.e2e.yaml stack running and healthy
-#   - Agent binary built (target/release/unix-oidc-agent in target/release-linux/)
+#   - Agent binary built (target/release/prmana-agent in target/release-linux/)
 #   - sshpass or SSH_ASKPASS available for automated SSH login
 #
 # CI usage:
@@ -21,8 +21,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 E2E_DIR="${PROJECT_ROOT}/test/e2e"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.e2e.yaml}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="unix-oidc"
-CLIENT_ID="unix-oidc"
+REALM="prmana"
+CLIENT_ID="prmana"
 CONTAINER="test-host-e2e"
 SSH_PORT="${SSH_PORT:-2222}"
 
@@ -56,14 +56,14 @@ echo ""
 echo "--- Prerequisites ---"
 
 # INFR-03: Sentinel — verify TEST_MODE is NOT set in the container.
-if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" env 2>/dev/null | grep -q "UNIX_OIDC_TEST_MODE"; then
+if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" env 2>/dev/null | grep -q "PRMANA_TEST_MODE"; then
     echo "FATAL: TEST_MODE is set in E2E container. Aborting."
     exit 1
 fi
 result "PASS" "TEST_MODE sentinel (not set in container)"
 
 # BFIX-02: Agent binary on PATH inside the container.
-if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" which unix-oidc-agent >/dev/null 2>&1; then
+if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" which prmana-agent >/dev/null 2>&1; then
     result "PASS" "Agent binary on PATH in container"
 else
     result "FAIL" "Agent binary on PATH in container"
@@ -79,12 +79,12 @@ else
 fi
 
 # PAM module installed in container.
-if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" test -f /lib/security/pam_unix_oidc.so 2>/dev/null; then
+if docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" test -f /lib/security/pam_prmana.so 2>/dev/null; then
     result "PASS" "PAM module installed in container"
 else
     result "FAIL" "PAM module not found in container"
     echo "    The PAM module is required for SSH→PAM chain tests."
-    echo "    Ensure target/release-linux/libpam_unix_oidc.so is built."
+    echo "    Ensure target/release-linux/libpam_prmana.so is built."
 fi
 
 echo ""
@@ -96,7 +96,7 @@ echo "--- E2E-01: Token Acquisition ---"
 
 # Keycloak client has dpop.bound.access.tokens=true, so all token requests
 # require a DPoP proof header. Generate a minimal proof for ROPC.
-E2E_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-key-XXXXXX)
+E2E_KEY_FILE=$(mktemp /tmp/prmana-e2e-key-XXXXXX)
 openssl ecparam -name prime256v1 -genkey -noout -out "$E2E_KEY_FILE" 2>/dev/null
 
 E2E_X_B64=$(openssl ec -in "$E2E_KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 64 | head -c 32 | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
@@ -183,10 +183,10 @@ echo "--- E2E-01: SSH→PAM Chain (keyboard-interactive + JWKS verification) ---
 
 # Clear the audit log in the container before the test.
 docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
-    bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" >/dev/null 2>&1
+    bash -c "truncate -s0 /var/log/prmana-audit.log 2>/dev/null; true" >/dev/null 2>&1
 
 # Write the token to a temporary file for SSH_ASKPASS.
-TOKEN_FILE=$(mktemp /tmp/unix-oidc-e2e-token-XXXXXX)
+TOKEN_FILE=$(mktemp /tmp/prmana-e2e-token-XXXXXX)
 echo -n "$ACCESS_TOKEN" > "$TOKEN_FILE"
 chmod 600 "$TOKEN_FILE"
 trap 'rm -f "$TOKEN_FILE"' EXIT
@@ -210,7 +210,7 @@ SSH_EXIT=0
 SSH_RESULT=$(DISPLAY=:0 \
     SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
     SSH_ASKPASS_REQUIRE=force \
-    UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
+    PRMANA_E2E_TOKEN_FILE="$TOKEN_FILE" \
     ssh -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o PreferredAuthentications=keyboard-interactive \
@@ -237,10 +237,10 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════════
 echo "--- E2E-02: Audit Log Verification ---"
 
-# The PAM module writes structured JSON audit events to /var/log/unix-oidc-audit.log.
+# The PAM module writes structured JSON audit events to /var/log/prmana-audit.log.
 # Check for SSH_LOGIN_SUCCESS event.
 AUDIT_LOG=$(docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
-    cat /var/log/unix-oidc-audit.log 2>/dev/null || echo "")
+    cat /var/log/prmana-audit.log 2>/dev/null || echo "")
 
 if [ -n "$AUDIT_LOG" ]; then
     if echo "$AUDIT_LOG" | grep -q '"event":"SSH_LOGIN_SUCCESS"'; then
@@ -281,7 +281,7 @@ echo ""
 echo "--- E2E-02b: DPoP Binding SSH→PAM→Audit Chain (KCDPOP-02) ---"
 
 # Generate ephemeral EC P-256 key for DPoP proof.
-DPOP_KEY_FILE=$(mktemp /tmp/unix-oidc-e2e-dpop-XXXXXX)
+DPOP_KEY_FILE=$(mktemp /tmp/prmana-e2e-dpop-XXXXXX)
 trap 'rm -f "$TOKEN_FILE" "$DPOP_KEY_FILE"' EXIT
 openssl ecparam -name prime256v1 -genkey -noout -out "$DPOP_KEY_FILE" 2>/dev/null
 
@@ -324,7 +324,7 @@ DPOP_PROOF="${DPOP_SIGNING_INPUT}.${DPOP_SIGNATURE}"
 DPOP_TOKEN_RESPONSE=$(curl -sf -X POST "$DPOP_TOKEN_ENDPOINT" \
     -H "DPoP: $DPOP_PROOF" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "grant_type=password&client_id=${CLIENT_ID}&client_secret=unix-oidc-test-secret&username=testuser&password=testpass&scope=openid" \
+    -d "grant_type=password&client_id=${CLIENT_ID}&client_secret=prmana-test-secret&username=testuser&password=testpass&scope=openid" \
     2>/dev/null || echo '{"error":"request_failed"}')
 
 DPOP_ACCESS_TOKEN=$(echo "$DPOP_TOKEN_RESPONSE" | jq -r '.access_token // empty')
@@ -347,9 +347,9 @@ else
 
     # Clear audit log, then send DPoP-bound token through SSH→PAM.
     docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
-        bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" >/dev/null 2>&1
+        bash -c "truncate -s0 /var/log/prmana-audit.log 2>/dev/null; true" >/dev/null 2>&1
 
-    DPOP_TOKEN_FILE=$(mktemp /tmp/unix-oidc-e2e-dpop-token-XXXXXX)
+    DPOP_TOKEN_FILE=$(mktemp /tmp/prmana-e2e-dpop-token-XXXXXX)
     echo -n "$DPOP_ACCESS_TOKEN" > "$DPOP_TOKEN_FILE"
     chmod 600 "$DPOP_TOKEN_FILE"
 
@@ -358,7 +358,7 @@ else
     DPOP_SSH_RESULT=$(DISPLAY=:0 \
         SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
         SSH_ASKPASS_REQUIRE=force \
-        UNIX_OIDC_E2E_TOKEN_FILE="$DPOP_TOKEN_FILE" \
+        PRMANA_E2E_TOKEN_FILE="$DPOP_TOKEN_FILE" \
         ssh -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=keyboard-interactive \
@@ -380,7 +380,7 @@ else
     # Verify dpop_thumbprint in audit event (KCDPOP-02 — structured jq assertion).
     sleep 1
     DPOP_AUDIT_LOG=$(docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
-        cat /var/log/unix-oidc-audit.log 2>/dev/null || echo "")
+        cat /var/log/prmana-audit.log 2>/dev/null || echo "")
 
     if [ -n "$DPOP_AUDIT_LOG" ]; then
         DPOP_LOGIN_EVENT=$(echo "$DPOP_AUDIT_LOG" | grep '"event":"SSH_LOGIN_SUCCESS"' | tail -1)
@@ -439,14 +439,14 @@ fi
 
 if [ -n "$TAMPERED_TOKEN" ]; then
     # Write tampered token and attempt SSH.
-    TAMPERED_FILE=$(mktemp /tmp/unix-oidc-e2e-tampered-XXXXXX)
+    TAMPERED_FILE=$(mktemp /tmp/prmana-e2e-tampered-XXXXXX)
     echo -n "$TAMPERED_TOKEN" > "$TAMPERED_FILE"
     chmod 600 "$TAMPERED_FILE"
 
     TAMPER_RESULT=$(DISPLAY=:0 \
         SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
         SSH_ASKPASS_REQUIRE=force \
-        UNIX_OIDC_E2E_TOKEN_FILE="$TAMPERED_FILE" \
+        PRMANA_E2E_TOKEN_FILE="$TAMPERED_FILE" \
         ssh -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=keyboard-interactive \
@@ -479,7 +479,7 @@ if [ -n "$ACCESS_TOKEN" ]; then
     WRONG_ISSUER_RESULT=$(DISPLAY=:0 \
         SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
         SSH_ASKPASS_REQUIRE=force \
-        UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
+        PRMANA_E2E_TOKEN_FILE="$TOKEN_FILE" \
         ssh -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=keyboard-interactive \
@@ -491,7 +491,7 @@ if [ -n "$ACCESS_TOKEN" ]; then
 
     # Restore original OIDC_ISSUER.
     docker compose -f "$COMPOSE_FILE" exec -T "$CONTAINER" \
-        bash -c "sed -i 's|OIDC_ISSUER=.*|OIDC_ISSUER=http://localhost:8080/realms/unix-oidc|' /etc/environment" 2>/dev/null
+        bash -c "sed -i 's|OIDC_ISSUER=http://localhost:8080/realms/prmana|' /etc/environment" 2>/dev/null
 
     if echo "$WRONG_ISSUER_RESULT" | grep -q "SHOULD_NOT_REACH"; then
         result "FAIL" "Wrong issuer token accepted (SECURITY VIOLATION)"
@@ -536,14 +536,14 @@ print(f'{header}.{payload}.{sig}')
 " 2>/dev/null || echo "")
 
     if [ -n "$EXPIRED_TOKEN" ]; then
-        EXPIRED_FILE=$(mktemp /tmp/unix-oidc-e2e-expired-XXXXXX)
+        EXPIRED_FILE=$(mktemp /tmp/prmana-e2e-expired-XXXXXX)
         echo -n "$EXPIRED_TOKEN" > "$EXPIRED_FILE"
         chmod 600 "$EXPIRED_FILE"
 
         EXPIRED_RESULT=$(DISPLAY=:0 \
             SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
             SSH_ASKPASS_REQUIRE=force \
-            UNIX_OIDC_E2E_TOKEN_FILE="$EXPIRED_FILE" \
+            PRMANA_E2E_TOKEN_FILE="$EXPIRED_FILE" \
             ssh -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/dev/null \
                 -o PreferredAuthentications=keyboard-interactive \

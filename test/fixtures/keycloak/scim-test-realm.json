@@ -13,7 +13,7 @@
   "ssoSessionMaxLifespan": 36000,
   "clients": [
     {
-      "clientId": "unix-oidc-scim",
+      "clientId": "prmana-scim",
       "name": "Unix OIDC SCIM Provisioning Service",
       "description": "Confidential client for SCIM 2.0 provisioning — used by IdP to provision/deprovision users",
       "enabled": true,
@@ -50,7 +50,7 @@
           "protocolMapper": "oidc-audience-mapper",
           "consentRequired": false,
           "config": {
-            "included.client.audience": "unix-oidc-scim",
+            "included.client.audience": "prmana-scim",
             "id.token.claim": "true",
             "access.token.claim": "true"
           }

@@ -8,14 +8,14 @@
 #   - Nonce replay rejection confirmed (unit-level; see rationale below)
 #   - Negative: wrong-key token (tampered signature) is rejected by JWKS validation
 #
-# PAM conversation flow (pam-unix-oidc/src/lib.rs §DPoP nonce challenge/response):
+# PAM conversation flow (pam-prmana/src/lib.rs §DPoP nonce challenge/response):
 #   Round 1 (PROMPT_ECHO_ON):  Server sends "DPOP_NONCE:<hex>"  → SSH_ASKPASS acknowledges
 #   Round 2 (PROMPT_ECHO_OFF): Server sends "DPOP_PROOF: "      → SSH_ASKPASS returns proof
 #   Round 3 (PROMPT_ECHO_OFF): Server sends "OIDC Token: "      → SSH_ASKPASS returns JWT
 #
 # Nonce replay architecture note:
 #   Nonce replay rejection is validated at unit level via
-#   `cargo test -p pam-unix-oidc -- nonce --nocapture`.
+#   `cargo test -p pam-prmana -- nonce --nocapture`.
 #   Cross-process nonce reuse is architecturally impossible because the JTI/nonce
 #   cache is per-process (each forked sshd child starts with an empty cache).
 #   The meaningful E2E assertion is that the nonce exchange completes successfully
@@ -23,8 +23,8 @@
 #
 # Prerequisites:
 #   - docker compose stack running (docker-compose.e2e.yaml by default)
-#   - unix-oidc-agent binary available in container or locally
-#   - Keycloak running and configured for realm unix-oidc
+#   - prmana-agent binary available in container or locally
+#   - Keycloak running and configured for realm prmana
 #   - test/e2e/ssh-askpass-e2e.sh present
 #
 # Usage:
@@ -40,8 +40,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # ---------------------------------------------------------------------------
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.e2e.yaml}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${REALM:-unix-oidc}"
-CLIENT_ID="${CLIENT_ID:-unix-oidc}"
+REALM="${REALM:-prmana}"
+CLIENT_ID="${CLIENT_ID:-prmana}"
 CONTAINER="${CONTAINER:-test-host-e2e}"
 SSH_PORT="${SSH_PORT:-2222}"
 TEST_USER="${TEST_USER:-testuser}"
@@ -88,8 +88,8 @@ fi
 
 # Sentinel: TEST_MODE must NOT be active in the E2E container.
 if docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" env 2>/dev/null \
-        | grep -q "UNIX_OIDC_TEST_MODE"; then
-    echo "FATAL: UNIX_OIDC_TEST_MODE is set in $CONTAINER — aborting E2E tests."
+        | grep -q "PRMANA_TEST_MODE"; then
+    echo "FATAL: PRMANA_TEST_MODE is set in $CONTAINER — aborting E2E tests."
     exit 1
 fi
 pass "TEST_MODE sentinel (not active in container)"
@@ -106,7 +106,7 @@ pass "SSH_ASKPASS script present"
 
 # Agent binary must be present inside container.
 if docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \
-        which unix-oidc-agent >/dev/null 2>&1; then
+        which prmana-agent >/dev/null 2>&1; then
     pass "Agent binary on PATH in container"
 else
     fail "Agent binary not found on PATH in container"
@@ -138,7 +138,7 @@ fi
 pass "Token acquisition via ROPC"
 
 # Write token to temp file for SSH_ASKPASS.
-TOKEN_FILE=$(mktemp /tmp/unix-oidc-nonce-e2e-XXXXXX)
+TOKEN_FILE=$(mktemp /tmp/prmana-nonce-e2e-XXXXXX)
 echo -n "$ACCESS_TOKEN" >"$TOKEN_FILE"
 chmod 600 "$TOKEN_FILE"
 trap 'rm -f "$TOKEN_FILE"' EXIT
@@ -156,7 +156,7 @@ echo "--- Test 1: Two-round nonce keyboard-interactive SSH (E2ET-01 positive) --
 
 # Clear the audit log before the test.
 docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \
-    bash -c "truncate -s0 /var/log/unix-oidc-audit.log 2>/dev/null; true" \
+    bash -c "truncate -s0 /var/log/prmana-audit.log 2>/dev/null; true" \
     >/dev/null 2>&1
 
 SSH_RESULT_1=""
@@ -165,7 +165,7 @@ SSH_EXIT_1=0
 SSH_RESULT_1=$(DISPLAY=:0 \
     SSH_ASKPASS="$ASKPASS_SCRIPT" \
     SSH_ASKPASS_REQUIRE=force \
-    UNIX_OIDC_E2E_TOKEN_FILE="$TOKEN_FILE" \
+    PRMANA_E2E_TOKEN_FILE="$TOKEN_FILE" \
     ssh -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o PreferredAuthentications=keyboard-interactive \
@@ -187,7 +187,7 @@ fi
 
 # Verify audit log contains auth_success or SSH_LOGIN_SUCCESS event.
 AUDIT_LOG=$(docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \
-    cat /var/log/unix-oidc-audit.log 2>/dev/null || echo "")
+    cat /var/log/prmana-audit.log 2>/dev/null || echo "")
 
 if [ -n "$AUDIT_LOG" ] && (echo "$AUDIT_LOG" | grep -qE '"event_type"\s*:\s*"auth_success"|"event"\s*:\s*"SSH_LOGIN_SUCCESS"'); then
     pass "Audit log contains auth_success event after nonce SSH"
@@ -207,7 +207,7 @@ echo ""
 # Per-process nonce cache architecture: each forked sshd child starts with an
 # empty cache, so cross-process replay is architecturally impossible. The replay
 # assertion is validated at unit level:
-#   cargo test -p pam-unix-oidc -- nonce --nocapture
+#   cargo test -p pam-prmana -- nonce --nocapture
 #
 # We confirm the unit tests covering nonce replay are present and pass.
 # ---------------------------------------------------------------------------
@@ -215,15 +215,15 @@ echo "--- Test 2: Nonce replay protection (unit-level verification) ---"
 
 # Check that nonce-related unit tests exist in the PAM crate.
 NONCE_UNIT_COUNT=$(docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" exec -T "$CONTAINER" \
-    bash -c 'grep -rn "nonce\|DPOP_NONCE\|replay" /usr/src/pam-unix-oidc/src/ 2>/dev/null | wc -l || echo "0"' \
+    bash -c 'grep -rn "nonce\|DPOP_NONCE\|replay" /usr/src/pam-prmana/src/ 2>/dev/null | wc -l || echo "0"' \
     2>/dev/null || echo "0")
 
 if [ "$NONCE_UNIT_COUNT" -gt 0 ] 2>/dev/null; then
     pass "Nonce-related source references found in PAM crate ($NONCE_UNIT_COUNT lines)"
 else
     # Source may not be mounted in container; confirm via cargo test on host.
-    if cargo test -p pam-unix-oidc --lib -- nonce 2>/dev/null | grep -qE "test result: ok|running [0-9]+ test"; then
-        pass "Nonce unit tests present and passing on host (cargo test -p pam-unix-oidc -- nonce)"
+    if cargo test -p pam-prmana --lib -- nonce 2>/dev/null | grep -qE "test result: ok|running [0-9]+ test"; then
+        pass "Nonce unit tests present and passing on host (cargo test -p pam-prmana -- nonce)"
     else
         skip "Nonce unit test verification skipped (source not in container, cargo unavailable, or no tests matched)"
         echo "    # Nonce replay is architecturally bounded: per-process JTI/nonce cache."
@@ -233,7 +233,7 @@ fi
 
 echo "  # Note: Per-process nonce cache architecture guarantees replay rejection within"
 echo "  #        a single sshd child. Unit tests cover the cache-hit rejection path."
-echo "  #        See pam-unix-oidc/src/lib.rs §issue_and_deliver_nonce."
+echo "  #        See pam-prmana/src/lib.rs §issue_and_deliver_nonce."
 
 echo ""
 
@@ -253,7 +253,7 @@ if [ -n "$ACCESS_TOKEN" ]; then
     TAMPERED_SIG="${SIGNATURE:0:$((${#SIGNATURE}-1))}${NEW_LAST}"
     TAMPERED_TOKEN="${HEADER_PAYLOAD}.${TAMPERED_SIG}"
 
-    TAMPERED_FILE=$(mktemp /tmp/unix-oidc-nonce-tampered-XXXXXX)
+    TAMPERED_FILE=$(mktemp /tmp/prmana-nonce-tampered-XXXXXX)
     echo -n "$TAMPERED_TOKEN" >"$TAMPERED_FILE"
     chmod 600 "$TAMPERED_FILE"
 
@@ -262,7 +262,7 @@ if [ -n "$ACCESS_TOKEN" ]; then
     TAMPER_RESULT=$(DISPLAY=:0 \
         SSH_ASKPASS="$ASKPASS_SCRIPT" \
         SSH_ASKPASS_REQUIRE=force \
-        UNIX_OIDC_E2E_TOKEN_FILE="$TAMPERED_FILE" \
+        PRMANA_E2E_TOKEN_FILE="$TAMPERED_FILE" \
         ssh -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=keyboard-interactive \

@@ -55,8 +55,8 @@ services:
     ports:
       - "2222:22"
     environment:
-      UNIX_OIDC_TEST_MODE: "true"
-      OIDC_ISSUER: "http://keycloak:8080/realms/unix-oidc-test"
+      PRMANA_TEST_MODE: "true"
+      OIDC_ISSUER: "http://keycloak:8080/realms/prmana-test"
       LDAP_URI: "ldap://openldap:389"
       LDAP_BASE: "dc=test,dc=local"
     healthcheck:
@@ -67,4 +67,4 @@ services:
 
 networks:
   default:
-    name: unix-oidc-test-multiarch
+    name: prmana-test-multiarch

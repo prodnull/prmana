@@ -906,7 +906,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pam-unix-oidc"
+name = "pam-prmana"
 version = "0.1.0"
 dependencies = [
  "base64 0.21.7",
@@ -1626,7 +1626,7 @@ dependencies = [
  "arbitrary",
  "base64 0.22.1",
  "libfuzzer-sys",
- "pam-unix-oidc",
+ "pam-prmana",
  "regex",
  "serde_json",
  "serde_yaml",

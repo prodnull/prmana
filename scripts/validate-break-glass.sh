@@ -8,7 +8,7 @@
 #   ./validate-break-glass.sh --host server.example.com  # validate remote
 #
 # What it checks:
-#   1. Break-glass user exists in /etc/unix-oidc/policy.yaml
+#   1. Break-glass user exists in /etc/prmana/policy.yaml
 #   2. Break-glass user exists in /etc/passwd (or can authenticate)
 #   3. PAM config allows password fallback
 #   4. sshd allows password authentication
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 HOST="localhost"
-POLICY_PATH="/etc/unix-oidc/policy.yaml"
+POLICY_PATH="/etc/prmana/policy.yaml"
 VERBOSE=false
 
 usage() {
@@ -34,7 +34,7 @@ Usage: validate-break-glass.sh [OPTIONS]
 
 Options:
   --host HOST       Target host (default: localhost)
-  --policy PATH     Policy file path (default: /etc/unix-oidc/policy.yaml)
+  --policy PATH     Policy file path (default: /etc/prmana/policy.yaml)
   --verbose         Show detailed output
   -h, --help        Show this help
 
@@ -90,7 +90,7 @@ if [[ "$HOST" == "localhost" ]]; then
         check "Policy file exists at $POLICY_PATH" "PASS"
     else
         check "Policy file exists at $POLICY_PATH" "FAIL"
-        echo "        Fix: Create /etc/unix-oidc/policy.yaml with break_glass section"
+        echo "        Fix: Create /etc/prmana/policy.yaml with break_glass section"
     fi
 else
     if ssh -o ConnectTimeout=5 -o BatchMode=yes "$HOST" "test -f $POLICY_PATH" 2>/dev/null; then
@@ -200,10 +200,10 @@ echo "--- PAM Module Checks ---"
 
 check_pam_module() {
     if [[ "$HOST" == "localhost" ]]; then
-        ls /lib/security/pam_unix_oidc.so 2>/dev/null || ls /lib64/security/pam_unix_oidc.so 2>/dev/null
+        ls /lib/security/pam_prmana.so 2>/dev/null || ls /lib64/security/pam_prmana.so 2>/dev/null
     else
         ssh -o ConnectTimeout=5 -o BatchMode=yes "$HOST" \
-            "ls /lib/security/pam_unix_oidc.so 2>/dev/null || ls /lib64/security/pam_unix_oidc.so 2>/dev/null"
+            "ls /lib/security/pam_prmana.so 2>/dev/null || ls /lib64/security/pam_prmana.so 2>/dev/null"
     fi
 }
 

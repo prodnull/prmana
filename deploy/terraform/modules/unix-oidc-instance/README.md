@@ -1,13 +1,13 @@
-# unix-oidc-instance Terraform Module
+# prmana-instance Terraform Module
 
-A reusable Terraform module for installing and configuring unix-oidc on any cloud instance.
+A reusable Terraform module for installing and configuring prmana on any cloud instance.
 
-This module uses `null_resource` with `remote-exec` provisioner to install unix-oidc on a target instance via SSH.
+This module uses `null_resource` with `remote-exec` provisioner to install prmana on a target instance via SSH.
 
 ## Features
 
-- Downloads and runs the unix-oidc installer script
-- Configures `/etc/unix-oidc/config.env` with your OIDC settings
+- Downloads and runs the prmana installer script
+- Configures `/etc/prmana/config.env` with your OIDC settings
 - Optionally enables DPoP token binding
 - Validates the installation
 - Works with any cloud provider (AWS, Azure, GCP, etc.)
@@ -17,11 +17,11 @@ This module uses `null_resource` with `remote-exec` provisioner to install unix-
 ### Basic Example
 
 ```hcl
-module "unix_oidc" {
-  source = "./modules/unix-oidc-instance"
+module "prmana" {
+  source = "./modules/prmana-instance"
 
   oidc_issuer    = "https://login.example.com/realms/myorg"
-  oidc_client_id = "unix-oidc"
+  oidc_client_id = "prmana"
 
   connection = {
     type        = "ssh"
@@ -35,11 +35,11 @@ module "unix_oidc" {
 ### With DPoP Enabled
 
 ```hcl
-module "unix_oidc" {
-  source = "./modules/unix-oidc-instance"
+module "prmana" {
+  source = "./modules/prmana-instance"
 
   oidc_issuer    = "https://login.example.com/realms/myorg"
-  oidc_client_id = "unix-oidc"
+  oidc_client_id = "prmana"
   enable_dpop    = true
 
   connection = {
@@ -54,12 +54,12 @@ module "unix_oidc" {
 ### With All Options
 
 ```hcl
-module "unix_oidc" {
-  source = "./modules/unix-oidc-instance"
+module "prmana" {
+  source = "./modules/prmana-instance"
 
   oidc_issuer       = "https://login.example.com/realms/myorg"
-  oidc_client_id    = "unix-oidc"
-  unix_oidc_version = "0.1.0"
+  oidc_client_id    = "prmana"
+  prmana_version = "0.1.0"
   install_agent     = true
   enable_dpop       = true
   required_acr      = "urn:example:acr:mfa"
@@ -85,8 +85,8 @@ resource "aws_instance" "server" {
   vpc_security_group_ids = [aws_security_group.allow_ssh.id]
 }
 
-module "unix_oidc" {
-  source = "github.com/prodnull/unix-oidc//deploy/terraform/modules/unix-oidc-instance"
+module "prmana" {
+  source = "github.com/prodnull/prmana//deploy/terraform/modules/prmana-instance"
 
   oidc_issuer    = var.oidc_issuer
   oidc_client_id = var.oidc_client_id
@@ -108,14 +108,14 @@ module "unix_oidc" {
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
 | `oidc_issuer` | OIDC Issuer URL | `string` | n/a | yes |
-| `oidc_client_id` | OIDC Client ID | `string` | `"unix-oidc"` | no |
-| `install_agent` | Whether to install the unix-oidc-agent | `bool` | `true` | no |
+| `oidc_client_id` | OIDC Client ID | `string` | `"prmana"` | no |
+| `install_agent` | Whether to install the prmana-agent | `bool` | `true` | no |
 | `enable_dpop` | Enable DPoP token binding | `bool` | `false` | no |
 | `connection` | SSH connection details for the target instance | `object` | n/a | yes |
-| `unix_oidc_version` | Version of unix-oidc to install | `string` | `"latest"` | no |
+| `prmana_version` | Version of prmana to install | `string` | `"latest"` | no |
 | `required_acr` | Required ACR level for authentication | `string` | `""` | no |
 | `max_auth_age` | Maximum authentication age in seconds | `number` | `0` | no |
-| `installer_url` | URL to the unix-oidc installer script | `string` | (GitHub URL) | no |
+| `installer_url` | URL to the prmana installer script | `string` | (GitHub URL) | no |
 
 ### Connection Object
 
@@ -132,10 +132,10 @@ The `connection` variable requires the following attributes:
 
 | Name | Description |
 |------|-------------|
-| `install_complete` | Indicates that unix-oidc installation is complete |
-| `config_path` | Path to the unix-oidc configuration file |
+| `install_complete` | Indicates that prmana installation is complete |
+| `config_path` | Path to the prmana configuration file |
 | `pam_module_paths` | Possible paths to the PAM module (depends on OS) |
-| `agent_path` | Path to the unix-oidc-agent binary (if installed) |
+| `agent_path` | Path to the prmana-agent binary (if installed) |
 | `oidc_issuer` | Configured OIDC issuer URL |
 | `oidc_client_id` | Configured OIDC client ID |
 | `dpop_enabled` | Whether DPoP token binding is enabled |
@@ -164,11 +164,11 @@ The `connection` variable requires the following attributes:
 
 After the module completes, you need to:
 
-1. Configure PAM to use unix-oidc (copy recommended configs from `/etc/unix-oidc/`)
+1. Configure PAM to use prmana (copy recommended configs from `/etc/prmana/`)
 2. Test authentication with `pamtester`
-3. Optionally configure the unix-oidc-agent for your users
+3. Optionally configure the prmana-agent for your users
 
-See the [unix-oidc documentation](https://github.com/prodnull/unix-oidc) for detailed configuration steps.
+See the [prmana documentation](https://github.com/prodnull/prmana) for detailed configuration steps.
 
 ## Security Considerations
 

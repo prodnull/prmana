@@ -1,11 +1,11 @@
-# Okta Configuration for unix-oidc
+# Okta Configuration for prmana
 
-This guide walks you through configuring Okta as your Identity Provider (IdP) for unix-oidc.
+This guide walks you through configuring Okta as your Identity Provider (IdP) for prmana.
 
 ## Prerequisites
 
 - Okta account with admin access
-- unix-oidc installed on your target server(s)
+- prmana installed on your target server(s)
 - Unix users created that match Okta usernames
 
 ## Quick Setup Overview
@@ -15,7 +15,7 @@ This guide walks you through configuring Okta as your Identity Provider (IdP) fo
 3. Configure required scopes (openid, profile, email)
 4. Map the `preferred_username` claim
 5. Assign users (usernames must match Unix usernames)
-6. Get configuration values for unix-oidc
+6. Get configuration values for prmana
 
 **Estimated time: 15-20 minutes**
 
@@ -38,7 +38,7 @@ This guide walks you through configuring Okta as your Identity Provider (IdP) fo
 ![Select Native Application](screenshots/select-native-application.png)
 
 7. Configure the application:
-   - **App integration name**: `unix-oidc` (or your preferred name)
+   - **App integration name**: `prmana` (or your preferred name)
    - **Grant type**:
      - Check **Device Authorization** (this is critical)
      - Check **Refresh Token** (recommended)
@@ -53,7 +53,7 @@ This guide walks you through configuring Okta as your Identity Provider (IdP) fo
 If you didn't enable Device Authorization during creation, or need to verify:
 
 1. Go to **Applications** > **Applications**
-2. Click on your `unix-oidc` application
+2. Click on your `prmana` application
 3. Go to the **General** tab
 4. Scroll to **General Settings** and click **Edit**
 5. Under **Grant type**, ensure **Device Authorization** is checked
@@ -83,7 +83,7 @@ For custom Authorization Servers:
 
 ### Step 4: Map preferred_username Claim
 
-unix-oidc uses the `preferred_username` claim to match OIDC identities to Unix usernames.
+prmana uses the `preferred_username` claim to match OIDC identities to Unix usernames.
 
 #### For Custom Authorization Servers (Recommended):
 
@@ -110,14 +110,14 @@ The Org Authorization Server includes `preferred_username` by default using the 
 Users must exist in both Okta and on your Unix systems with matching usernames.
 
 1. Navigate to **Directory** > **People**
-2. For each user that needs unix-oidc access:
+2. For each user that needs prmana access:
    - Verify their **Username** matches their Unix username
    - OR ensure the mapped claim value matches their Unix username
 
 ![Verify Username](screenshots/verify-username.png)
 
 3. Assign users to the application:
-   - Go to **Applications** > **unix-oidc**
+   - Go to **Applications** > **prmana**
    - Go to the **Assignments** tab
    - Click **Assign** > **Assign to People** (or **Assign to Groups**)
    - Select the users/groups that should have access
@@ -129,10 +129,10 @@ Users must exist in both Okta and on your Unix systems with matching usernames.
 
 ### Step 6: Get Configuration Values
 
-Gather these values for unix-oidc configuration:
+Gather these values for prmana configuration:
 
 1. **Client ID**:
-   - Go to **Applications** > **unix-oidc** > **General** tab
+   - Go to **Applications** > **prmana** > **General** tab
    - Copy the **Client ID** from the Client Credentials section
 
 2. **Issuer URL**:
@@ -145,14 +145,14 @@ Gather these values for unix-oidc configuration:
 
 ![Get Client ID](screenshots/get-client-id.png)
 
-Configure unix-oidc with these values:
+Configure prmana with these values:
 
 ```bash
 export OIDC_ISSUER="https://your-org.okta.com/oauth2/default"
 export OIDC_CLIENT_ID="0oaxxxxxxxxxxxxxxxxx"
 ```
 
-Or in `/etc/unix-oidc/config.yaml`:
+Or in `/etc/prmana/config.yaml`:
 
 ```yaml
 oidc:
@@ -349,4 +349,4 @@ If you need custom claims or scopes, you must use a custom Authorization Server 
 - [Okta Device Authorization Grant Documentation](https://developer.okta.com/docs/guides/device-authorization-grant/main/)
 - [Okta Custom Claims](https://developer.okta.com/docs/guides/customize-tokens-returned-from-okta/main/)
 - [Okta Authorization Servers](https://developer.okta.com/docs/concepts/auth-servers/)
-- [unix-oidc Documentation](../../../docs/)
+- [prmana Documentation](../../../docs/)

@@ -58,19 +58,19 @@ jobs:
       - name: Test uninstaller dry-run
         run: |
           chmod +x deploy/installer/uninstall.sh
-          sudo mkdir -p /etc/unix-oidc
-          echo "/tmp/fake-file" | sudo tee /etc/unix-oidc/.install-manifest
+          sudo mkdir -p /etc/prmana
+          echo "/tmp/fake-file" | sudo tee /etc/prmana/.install-manifest
           ./deploy/installer/uninstall.sh --dry-run
 
       - name: Test uninstaller dry-run with --purge
         run: |
-          sudo mkdir -p /etc/unix-oidc
-          echo "/tmp/fake-file" | sudo tee /etc/unix-oidc/.install-manifest
+          sudo mkdir -p /etc/prmana
+          echo "/tmp/fake-file" | sudo tee /etc/prmana/.install-manifest
           ./deploy/installer/uninstall.sh --dry-run --purge
 
       - name: Test uninstaller idempotency (no manifest)
         run: |
-          sudo rm -rf /etc/unix-oidc
+          sudo rm -rf /etc/prmana
           ./deploy/installer/uninstall.sh --dry-run
 
   docker-test:

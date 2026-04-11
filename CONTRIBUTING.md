@@ -1,6 +1,6 @@
-# Contributing to unix-oidc
+# Contributing to prmana
 
-Thank you for your interest in contributing to unix-oidc! This document provides guidelines
+Thank you for your interest in contributing to prmana! This document provides guidelines
 and information for contributors.
 
 ## Table of Contents
@@ -19,7 +19,7 @@ and information for contributors.
 
 This project follows the [Contributor Covenant Code of Conduct](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 By participating, you are expected to uphold this code. Please report unacceptable
-behavior to conduct@unix-oidc.dev.
+behavior to conduct@prmana.dev.
 
 ## Getting Started
 
@@ -35,7 +35,7 @@ behavior to conduct@unix-oidc.dev.
 ```bash
 # Clone the repository
 git clone https://github.com/prodnull/unix-oidc.git
-cd unix-oidc
+cd prmana
 
 # Build all components
 cargo build
@@ -71,7 +71,7 @@ and shared libraries natively, but the PAM module requires a Linux toolchain:
 
 ```bash
 # Build non-PAM crates on macOS
-cargo build -p unix-oidc-agent
+cargo build -p prmana-agent
 
 # For PAM module development, use a Linux VM or container
 # with libpam0g-dev / pam-devel installed
@@ -162,7 +162,7 @@ winget install sigstore.gitsign
 
 ```bash
 # Configure for this repository only
-cd unix-oidc
+cd prmana
 git config gpg.x509.program gitsign
 git config gpg.format x509
 git config commit.gpgsign true
@@ -403,5 +403,5 @@ See [LICENSE](LICENSE) for details.
 
 ---
 
-Thank you for contributing to unix-oidc! Your efforts help make Unix/Linux authentication
+Thank you for contributing to prmana! Your efforts help make Unix/Linux authentication
 more secure and modern.

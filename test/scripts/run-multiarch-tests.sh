@@ -108,12 +108,12 @@ run_tests_for_platform() {
     # Verify PAM module
     log_info "Verifying PAM module is installed..."
     docker compose -f docker-compose.test-multiarch.yaml exec -T test-host \
-        ls -la /usr/lib/security/libpam_unix_oidc.so
+        ls -la /usr/lib/security/libpam_prmana.so
 
     # Verify agent
     log_info "Verifying agent binary..."
     docker compose -f docker-compose.test-multiarch.yaml exec -T test-host \
-        /usr/local/bin/unix-oidc-agent --version
+        /usr/local/bin/prmana-agent --version
 
     # Run integration tests
     log_info "Running integration tests..."

@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This directory contains Architecture Decision Records (ADRs) for unix-oidc.
+This directory contains Architecture Decision Records (ADRs) for prmana.
 
 ADRs document significant architectural decisions made during the project's development, including the context, decision, and consequences.
 
