@@ -5,8 +5,10 @@ echo "--- SECTION A: Static Tests (No policy load required) ---"
 
 # Syntax check via checkmodule (requires: apt-get install checkpolicy)
 if command -v checkmodule >/dev/null 2>&1; then
-    checkmodule -M -m -o /dev/null packaging/selinux/prmana.te 2>/dev/null \
+    _tmpdir=$(mktemp -d)
+    checkmodule -M -m -o "$_tmpdir/prmana.mod" packaging/selinux/prmana.te 2>&1 \
         && echo "PASS: Policy parses correctly" || echo "FAIL: Policy syntax error"
+    rm -rf "$_tmpdir"
 else
     echo "SKIP: checkmodule not installed (apt-get install checkpolicy)"
 fi

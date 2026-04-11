@@ -8,7 +8,7 @@ echo "--- SECTION A: Static Tests ---"
 
 # Static parse (apparmor_parser is pre-installed on Ubuntu)
 if command -v apparmor_parser >/dev/null 2>&1; then
-    apparmor_parser --verify "$PROFILE_PATH" 2>/dev/null \
+    apparmor_parser -S "$PROFILE_PATH" >/dev/null \
         && echo "PASS: Profile parses correctly" || echo "FAIL: Profile syntax error"
 else
     echo "SKIP: apparmor_parser not installed"

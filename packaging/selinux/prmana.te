@@ -17,8 +17,8 @@ require {
 	type sudo_t;
 	class process { fork transition sigchld setcurrent };
 	class file { execute getattr open read write create unlink map };
-	class dir { search add_name remove_name write read open getattr };
-	class unix_stream_socket { connectto create bind listen accept connect getattr setattr };
+	class dir { search add_name remove_name write read open getattr create };
+	class unix_stream_socket { connectto create bind listen accept connect getattr setattr read write };
 	class tcp_socket { connect create getattr getopt setopt };
 	class capability { ipc_lock };
 	class sock_file { create unlink getattr setattr write read };
