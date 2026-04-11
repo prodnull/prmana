@@ -1,0 +1,15 @@
+# lintian overrides for the prmana package
+#
+# Format: <tag> [*|packagename] [extra-info]
+# These suppress lintian warnings where the warning is acknowledged and
+# accepted as a known limitation or intentional design choice.
+#
+# Reference: https://lintian.debian.org/tags/
+#
+# Current suppressions: none
+# All lintian warnings have been resolved. If new warnings appear during
+# a lintian run, add a suppression here with a comment explaining why.
+#
+# Known categories to watch for when new binaries are added:
+#   binary-without-manpage — add man pages or suppress here with explanation
+#   no-copyright-file — the nfpm config includes docs/prmana/copyright (TODO: add)
