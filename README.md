@@ -122,7 +122,12 @@ Recent attacks prove that static credentials and bearer tokens are no longer def
 
 - **Memory-safe implementation**: Written in Rust. No buffer overflows, no use-after-free, no memory corruption vulnerabilities that plague C-based [PAM modules](https://www.man7.org/linux/man-pages/man8/pam.8.html).
 
-- **Production-ready security**: Rate limiting, [JTI](https://datatracker.ietf.org/doc/html/rfc7519#section-4.1.7) replay protection, structured audit logging, and alignment with [NIST SP 800-63](https://pages.nist.gov/800-63-3/) digital identity guidelines.
+- **PAM-path defenses**: Authentication-attempt rate limiting,
+  [JTI](https://datatracker.ietf.org/doc/html/rfc7519#section-4.1.7) replay
+  protection, structured audit logging, and alignment with
+  [NIST SP 800-63](https://pages.nist.gov/800-63-3/) digital identity
+  guidelines. (Note: the SCIM provisioning service has its own hardening
+  posture — see the "SCIM Service Hardening Status" section below.)
 
 ### Developer & User Experience
 
@@ -401,6 +406,13 @@ This testing infrastructure is **not** a requirement for production—use whatev
 
 prmana is designed with defense in depth for key material. This section summarizes the memory and storage protection model for operators and contributors.
 
+> **⚠️ Scope note:** Everything in this section — memory protection, secure
+> deletion, rate limiting, JTI replay protection — describes the **PAM module
+> + agent daemon** security posture. The `prmana-scim` provisioning service
+> ships alongside but has its own hardening status. See
+> [SCIM Service Hardening Status](#scim-service-hardening-status) below
+> before deploying SCIM.
+
 ### Memory protection
 
 | Mechanism | What it protects | Limitation |
@@ -432,6 +444,61 @@ See `CLAUDE.md` — **Memory Protection Invariants** section — for the complet
 | `prmana-agent/src/crypto/protected_key.rs` | DPoP key lifecycle (zeroize, mlock, Box-only) |
 | `prmana-agent/src/storage/secure_delete.rs` | Three-pass overwrite, CoW/SSD detection |
 | `prmana-agent/src/security.rs` | Core dump disabling (`prctl`/`ptrace`) |
+
+### SCIM Service Hardening Status
+
+The `prmana-scim` provisioning service is packaged separately as
+`prmana-scim` (.deb/.rpm). Its security posture is tracked under
+[ADR-021](docs/adr/021-scim-service-hardening-and-privilege-separation.md)
+and is **not** the same as the PAM/agent posture described above.
+
+**What works today:**
+
+- Bearer token validation against configured OIDC issuer with asymmetric-only
+  algorithm allowlist (ES256, RS256/384/512, PS256/384/512, EdDSA) — never
+  HMAC, never `alg: none`
+- Per-issuer JWKS cache with TTL and kid-miss refresh
+- Dedicated SCIM entitlement claim (`scope` / `scp` / `roles` /
+  `realm_access.roles` / `resource_access[aud].roles`)
+- POSIX username validation + 60+ reserved-name denylist shared with the PAM
+  module mapper
+- Persistent SCIM-id mapping with atomic temp-file + rename, 0600 mode
+- `useradd`/`usermod`/`userdel` invoked as subprocesses with argument arrays
+  (never shell-interpolated)
+- The `--insecure-no-auth` CLI flag is hidden and refuses to coexist with
+  missing OIDC config in production deployments
+
+**What's specified but not yet implemented (ADR-021 Decision A, tracked as
+phase DT-SCIM):**
+
+- Startup-enforced transport policy (non-loopback binds refusing to start
+  without native TLS)
+- Request-shaping middleware: per-IP + per-principal + per-endpoint-class
+  rate limits, body/header size caps, per-request timeout, TCP read-idle
+  timeout, keep-alive idle timeout, concurrency bound
+- Structured audit events joined to the ADR-010 HMAC audit chain
+- Trusted proxy model (`X-Forwarded-*` handling only from
+  `trusted_proxy_cidrs`)
+- `dry_run` removal from runtime config
+- Systemd unit that actually runs (the currently shipped
+  `prmana-scim.service` is broken: `ExecStart=...serve` references a
+  nonexistent subcommand, and `User=prmana` + empty `CapabilityBoundingSet=`
+  cannot run `useradd`)
+
+**What is deferred to after v1.0 (ADR-021 Decision B):**
+
+- Helper-based privilege separation (front-end runs as `prmana-scim`,
+  helper runs as root, `AF_UNIX` + `SO_PEERCRED` peer auth, versioned RPC)
+- Socket-activated systemd units for front-end + helper pair
+
+**Until Decision B ships, do not describe SCIM as "privilege separated."**
+The correct language is "perimeter hardening and request-shaping controls
+in progress." ADR-021 forbids the privilege-separation claim in marketing
+and security docs until the helper split exists in code.
+
+**Platform scope:** `prmana-scim` is **Linux-only**. macOS and FreeBSD are
+out of scope for the SCIM service (no launchd / rc.d units). Developer
+workstations run `prmana-agent` only.
 
 ## Security
 

@@ -77,8 +77,52 @@ prmana follows these security principles aligned with NIST guidelines:
 1. **Token Validation**: Multiple validation layers (signature, claims, binding)
 2. **Replay Protection**: Time-based and nonce-based replay prevention
 3. **Constant-Time Operations**: Timing attack resistant comparisons
-4. **Minimal Privileges**: PAM module runs with least required privileges
+4. **Minimal Privileges (PAM module + agent daemon)**: The PAM module and
+   the agent daemon run with the minimum privileges required for their
+   respective roles. The `prmana-scim` provisioning service runs as root
+   because it invokes `useradd`/`usermod`/`userdel` as subprocesses; its
+   privilege story is **not** minimization via capability dropping but
+   perimeter hardening under [ADR-021](docs/adr/021-scim-service-hardening-and-privilege-separation.md)
+   Decision A, with helper-based privilege separation targeted for
+   post-v1.0 (Decision B). Until Decision B ships, SCIM is not described
+   as "privilege separated."
 5. **Secure Defaults**: Conservative defaults requiring explicit opt-in for features
+
+### SCIM Service Hardening Status
+
+The `prmana-scim` provisioning service is covered by
+[ADR-021](docs/adr/021-scim-service-hardening-and-privilege-separation.md)
+and ships in `v1.0` under the Decision A (single-process hardening) model.
+Decision A specifies startup-enforced transport policy, request-shaping
+middleware (rate limits, body/header/timeout/concurrency bounds), structured
+audit events joined to the ADR-010 HMAC chain, trusted proxy model, and
+`dry_run` removal.
+
+**Current state (as of v1.0.0-rc1):** Decision A is specified but not yet
+implemented in code. The `prmana-scim` crate provides Bearer token validation,
+JWKS caching, SCIM entitlement enforcement, username sanitization, reserved-
+name denial, and persistent state, but does not yet provide the perimeter
+controls listed above. The shipped `contrib/systemd/prmana-scim.service` unit
+is known-broken (points `ExecStart` at a nonexistent `serve` subcommand and
+cannot run `useradd` with its declared privileges).
+
+**Implication for deployment:** Do **not** expose `prmana-scim` directly to
+the internet. Until Decision A lands:
+
+- Bind to `127.0.0.1` or `::1` only
+- Terminate TLS in a reverse proxy (nginx, Envoy, cloud load balancer) with
+  request rate limits, body-size caps, and request timeouts applied at the
+  proxy layer
+- Use firewall rules (`iptables`, `nftables`, cloud security groups) to
+  restrict which IdPs can reach the SCIM listener
+- Monitor for the CI completion of phase DT-SCIM before removing any of
+  the above compensating controls
+
+Decision B (helper-based privilege separation) is out of scope for v1.0 and
+will not be claimed in marketing or documentation until implemented.
+
+**Platform scope:** `prmana-scim` is Linux-only. macOS and FreeBSD are out
+of scope for the SCIM service.
 
 ### Threat Model
 
@@ -90,9 +134,10 @@ See [docs/threat-model.md](docs/threat-model.md) for comprehensive threat analys
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| Version | Supported          | Notes |
+| ------- | ------------------ | ----- |
+| 1.0.x   | :white_check_mark: | Current release; SCIM service under ADR-021 Decision A (see "SCIM Service Hardening Status" above) |
+| < 1.0   | :x:                | Pre-rename `unix-oidc` builds — not supported |
 
 Security updates will be backported to supported versions when feasible.
 
@@ -134,7 +179,14 @@ Complete this checklist before deploying prmana to production:
 - [ ] Client configured as confidential (not public) if supported
 - [ ] Enabled PKCE for authorization code flow
 - [ ] Restricted redirect URIs to localhost only
-- [ ] If using SCIM, configured `oidc_issuer` and did **not** enable `--insecure-no-auth`
+- [ ] If using SCIM:
+  - [ ] Configured `oidc_issuer` and did **not** enable `--insecure-no-auth`
+  - [ ] Bound `prmana-scim` to loopback (`127.0.0.1`/`::1`) — NOT a public or RFC 1918 address
+  - [ ] TLS terminated at a reverse proxy (nginx, Envoy, cloud LB), **not** directly by `prmana-scim` (native TLS is specified in ADR-021 §A1 but not yet implemented)
+  - [ ] Reverse proxy applies rate limits, body-size caps, and request timeouts on the SCIM endpoint
+  - [ ] Network policy restricts which IdPs can reach the SCIM listener
+  - [ ] Read [ADR-021](docs/adr/021-scim-service-hardening-and-privilege-separation.md) "SCIM Service Hardening Status" in SECURITY.md and understand the compensating controls required until phase DT-SCIM ships
+  - [ ] Do not describe your deployment's SCIM path as "privilege separated" — that claim is reserved for post-v1.0 under ADR-021 Decision B
 - [ ] Set appropriate token lifetimes:
   - Access token: 5-15 minutes recommended
   - Refresh token: 8-24 hours max for interactive sessions
