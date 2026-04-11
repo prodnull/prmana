@@ -46,12 +46,58 @@ Before running this module you need:
    `secrets.AWS_ROLE_ARN` in the repository is already set up for this. Do not
    create a new federation role — reuse the existing one.
 
-2. **IAM instance profile** named `unix-oidc-ci-instance-profile` (or override
+2. **IAM role supplemental policy** — the `unix-oidc-ci-github-actions` role
+   needs the following additions beyond its base permissions (the Terraform AWS
+   provider makes many read-back calls after resource creation that the existing
+   CLI-based workflows do not trigger):
+
+   ```json
+   {
+     "Statement": [
+       {
+         "Sid": "PrmanaFleetEC2Reads",
+         "Effect": "Allow",
+         "Action": "ec2:Describe*",
+         "Resource": "*"
+       },
+       {
+         "Sid": "PrmanaFleetEC2Writes",
+         "Effect": "Allow",
+         "Action": [
+           "ec2:ImportKeyPair", "ec2:DeleteKeyPair",
+           "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup",
+           "ec2:AuthorizeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress",
+           "ec2:RevokeSecurityGroupIngress", "ec2:RevokeSecurityGroupEgress",
+           "ec2:RunInstances", "ec2:TerminateInstances",
+           "ec2:CreateTags", "ec2:ModifyInstanceAttribute"
+         ],
+         "Resource": "*"
+       },
+       {
+         "Sid": "PrmanaFleetBudgets",
+         "Effect": "Allow",
+         "Action": [
+           "budgets:CreateBudget", "budgets:ModifyBudget", "budgets:DeleteBudget",
+           "budgets:DescribeBudgets", "budgets:ViewBudget",
+           "budgets:TagResource", "budgets:ListTagsForResource"
+         ],
+         "Resource": "arn:aws:budgets::<ACCOUNT_ID>:budget/prmana-ci-*"
+       },
+       {
+         "Sid": "PrmanaFleetPassRole",
+         "Effect": "Allow",
+         "Action": "iam:PassRole",
+         "Resource": "arn:aws:iam::<ACCOUNT_ID>:instance-profile/unix-oidc-ci-instance-profile"
+       }
+     ]
+   }
+   ```
+
+   Apply with: `aws iam put-role-policy --role-name unix-oidc-ci-github-actions --policy-name prmana-fleet-supplemental --policy-document file://policy.json`
+
+3. **IAM instance profile** named `unix-oidc-ci-instance-profile` (or override
    `iam_instance_profile` in `main.tf`). This profile is already created in the
-   account for the legacy arm64 CI workflows. It must have at minimum:
-   - `ec2:DescribeInstances` (for status checks)
-   - `ssm:GetParameter` (for SSM-based AMI resolution at plan time if using SSM
-     data sources from within the instance — not required for module-level resolution)
+   account for the legacy arm64 CI workflows.
 
 3. **Default VPC** must exist in `var.aws_region` (us-west-2 by default). This
    module does not create a VPC. If the default VPC was deleted, restore it with:
