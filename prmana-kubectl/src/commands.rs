@@ -35,7 +35,10 @@ pub async fn setup(
         None => None,
         Some(path_or_b64) => {
             // If it looks like a file path (starts with / or ./ or ../), read it
-            if path_or_b64.starts_with('/') || path_or_b64.starts_with("./") || path_or_b64.starts_with("../") {
+            if path_or_b64.starts_with('/')
+                || path_or_b64.starts_with("./")
+                || path_or_b64.starts_with("../")
+            {
                 let bytes = tokio::fs::read(path_or_b64)
                     .await
                     .map_err(|e| anyhow::anyhow!("reading CA cert file {path_or_b64}: {e}"))?;

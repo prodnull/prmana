@@ -572,8 +572,7 @@ impl PamServiceModule for PamUnixOidc {
                 //
                 // Security: Session correlation is best-effort; failure to set env vars is
                 // logged at WARN but NEVER causes authentication to fail.
-                if let Err(e) = pamh.putenv(&format!("PRMANA_SESSION_ID={}", result.session_id))
-                {
+                if let Err(e) = pamh.putenv(&format!("PRMANA_SESSION_ID={}", result.session_id)) {
                     tracing::warn!(error = ?e, "Failed to set PRMANA_SESSION_ID in PAM env");
                 }
                 if let Err(e) = pamh.putenv(&format!(

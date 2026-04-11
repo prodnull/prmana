@@ -72,20 +72,18 @@ async fn test_c1_get_token_prints_exec_credential() {
 
     let output = match tokio::time::timeout(std::time::Duration::from_secs(30), exec).await {
         Ok(res) => res,
-        Err(_) => panic!(
-            "prmana-kubectl get-token hung for more than 30s — check agent socket handshake"
-        ),
+        Err(_) => {
+            panic!("prmana-kubectl get-token hung for more than 30s — check agent socket handshake")
+        }
     };
 
     match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect(
-                &format!("stdout must be valid JSON: {stdout}")
-            );
+            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+                .expect(&format!("stdout must be valid JSON: {stdout}"));
             assert_eq!(
-                parsed["apiVersion"],
-                "client.authentication.k8s.io/v1",
+                parsed["apiVersion"], "client.authentication.k8s.io/v1",
                 "must have correct apiVersion"
             );
             assert_eq!(parsed["kind"], "ExecCredential", "must be ExecCredential");
@@ -104,7 +102,10 @@ async fn test_c1_get_token_prints_exec_credential() {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Binary not built yet — skip in non-build environments
-            eprintln!("SKIP: prmana-kubectl binary not found at {:?}", binary_path());
+            eprintln!(
+                "SKIP: prmana-kubectl binary not found at {:?}",
+                binary_path()
+            );
         }
         Err(e) => panic!("failed to run binary: {e}"),
     }
@@ -172,18 +173,18 @@ async fn test_c2_setup_writes_kubeconfig() {
     match std::process::Command::new(binary_path())
         .args([
             "setup",
-            "--cluster-id", "test",
-            "--server", "https://test.example.com:6443",
-            "--context", "test-ctx",
+            "--cluster-id",
+            "test",
+            "--server",
+            "https://test.example.com:6443",
+            "--context",
+            "test-ctx",
         ])
         .env("KUBECONFIG", kubeconfig_path.to_str().unwrap())
         .output()
     {
         Ok(out) if out.status.success() => {
-            assert!(
-                kubeconfig_path.exists(),
-                "kubeconfig file must be created"
-            );
+            assert!(kubeconfig_path.exists(), "kubeconfig file must be created");
             let content = std::fs::read_to_string(&kubeconfig_path).unwrap();
             assert!(
                 content.contains("prmana-kubectl"),

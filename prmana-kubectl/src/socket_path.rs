@@ -55,8 +55,7 @@ mod tests {
     /// PRMANA_SOCKET takes priority over everything.
     #[test]
     fn test_env_override_takes_priority() {
-        let path =
-            resolve_with_env(Some("/custom/agent.sock"), Some("/run/user/1000")).unwrap();
+        let path = resolve_with_env(Some("/custom/agent.sock"), Some("/run/user/1000")).unwrap();
         assert_eq!(path, PathBuf::from("/custom/agent.sock"));
     }
 

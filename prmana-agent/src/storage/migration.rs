@@ -25,9 +25,7 @@ pub(crate) const LEGACY_KEY_TOKEN_METADATA: &str = "unix-oidc-token-metadata";
 #[cfg(feature = "pqc")]
 pub(crate) const LEGACY_KEY_PQ_SEED: &str = "unix-oidc-pq-seed";
 
-use super::{
-    KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN, KEY_TOKEN_METADATA,
-};
+use super::{KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN, KEY_TOKEN_METADATA};
 
 /// The set of (legacy, current) key pairs to migrate.
 /// Order is deterministic for reproducible logging.
@@ -66,7 +64,9 @@ pub struct MigrationReport {
 /// # Errors
 /// Returns `Err` only if a `store` (write) call fails. In that case the legacy key is
 /// preserved unmodified — no partial credential loss.
-pub fn migrate_legacy_key_names(store: &dyn SecureStorage) -> Result<MigrationReport, StorageError> {
+pub fn migrate_legacy_key_names(
+    store: &dyn SecureStorage,
+) -> Result<MigrationReport, StorageError> {
     let mut report = MigrationReport::default();
 
     for (legacy, current) in migration_pairs() {
@@ -78,10 +78,7 @@ pub fn migrate_legacy_key_names(store: &dyn SecureStorage) -> Result<MigrationRe
 
         // Legacy key exists. Read it.
         let legacy_value = store.retrieve(legacy).map_err(|e| {
-            StorageError::Migration(format!(
-                "failed to read legacy key '{}': {e}",
-                legacy
-            ))
+            StorageError::Migration(format!("failed to read legacy key '{}': {e}", legacy))
         })?;
 
         // If new-name key already exists, prefer it; delete legacy only.
@@ -105,10 +102,7 @@ pub fn migrate_legacy_key_names(store: &dyn SecureStorage) -> Result<MigrationRe
         // Write new-name key BEFORE deleting legacy — atomic: no partial loss on write failure.
         // Security: legacy_value is a raw byte slice; tracing never serialises it.
         store.store(current, &legacy_value).map_err(|e| {
-            StorageError::Migration(format!(
-                "failed to write current key '{}': {e}",
-                current
-            ))
+            StorageError::Migration(format!("failed to write current key '{}': {e}", current))
         })?;
 
         // Only after successful write, delete legacy.
@@ -168,7 +162,10 @@ mod tests {
 
     impl SecureStorage for MockStore {
         fn store(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
-            self.0.lock().unwrap().insert(key.to_string(), value.to_vec());
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.to_vec());
             Ok(())
         }
 
@@ -200,7 +197,9 @@ mod tests {
 
     impl FailingWriteStore {
         fn with(keys: &[(&str, &[u8])]) -> Self {
-            Self { inner: MockStore::with(keys) }
+            Self {
+                inner: MockStore::with(keys),
+            }
         }
         fn get(&self, key: &str) -> Option<Vec<u8>> {
             self.inner.get(key)
@@ -241,8 +240,14 @@ mod tests {
 
         // New-name keys must now exist with the same bytes.
         assert_eq!(store.get(KEY_DPOP_PRIVATE).unwrap(), b"dpop-bytes".to_vec());
-        assert_eq!(store.get(KEY_ACCESS_TOKEN).unwrap(), b"access-token".to_vec());
-        assert_eq!(store.get(KEY_REFRESH_TOKEN).unwrap(), b"refresh-token".to_vec());
+        assert_eq!(
+            store.get(KEY_ACCESS_TOKEN).unwrap(),
+            b"access-token".to_vec()
+        );
+        assert_eq!(
+            store.get(KEY_REFRESH_TOKEN).unwrap(),
+            b"refresh-token".to_vec()
+        );
         assert_eq!(store.get(KEY_TOKEN_METADATA).unwrap(), b"metadata".to_vec());
 
         // Legacy keys must be gone.
@@ -259,7 +264,13 @@ mod tests {
     fn no_op_when_no_legacy_keys() {
         let store = MockStore::new();
         let report = migrate_legacy_key_names(&store).unwrap();
-        assert_eq!(report, MigrationReport { migrated: 0, skipped: 0 });
+        assert_eq!(
+            report,
+            MigrationReport {
+                migrated: 0,
+                skipped: 0
+            }
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -289,9 +300,7 @@ mod tests {
     // -------------------------------------------------------------------------
     #[test]
     fn write_failure_preserves_legacy_key() {
-        let store = FailingWriteStore::with(&[
-            (LEGACY_KEY_ACCESS_TOKEN, b"precious-token"),
-        ]);
+        let store = FailingWriteStore::with(&[(LEGACY_KEY_ACCESS_TOKEN, b"precious-token")]);
 
         let result = migrate_legacy_key_names(&store);
         assert!(result.is_err(), "must return Err when write fails");
@@ -313,9 +322,21 @@ mod tests {
         let r1 = migrate_legacy_key_names(&store).unwrap();
         let r2 = migrate_legacy_key_names(&store).unwrap();
 
-        assert_eq!(r1, MigrationReport { migrated: 1, skipped: 0 });
+        assert_eq!(
+            r1,
+            MigrationReport {
+                migrated: 1,
+                skipped: 0
+            }
+        );
         // Second run: no legacy keys exist, no new-name conflicts → pure no-op.
-        assert_eq!(r2, MigrationReport { migrated: 0, skipped: 0 });
+        assert_eq!(
+            r2,
+            MigrationReport {
+                migrated: 0,
+                skipped: 0
+            }
+        );
 
         // State: only new-name key, with original value.
         assert_eq!(store.get(KEY_ACCESS_TOKEN).unwrap(), b"v".to_vec());

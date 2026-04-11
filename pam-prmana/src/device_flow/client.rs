@@ -266,12 +266,9 @@ mod tests {
 
     #[test]
     fn test_client_with_trailing_slash() {
-        let client = DeviceFlowClient::new(
-            "https://keycloak.example.com/realms/test/",
-            "prmana",
-            None,
-        )
-        .unwrap();
+        let client =
+            DeviceFlowClient::new("https://keycloak.example.com/realms/test/", "prmana", None)
+                .unwrap();
 
         assert_eq!(
             client.device_authorization_endpoint,

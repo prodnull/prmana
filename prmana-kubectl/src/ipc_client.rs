@@ -27,10 +27,7 @@ use crate::protocol::{AgentRequest, AgentResponse, AgentResponseData};
 /// # Errors
 /// Returns a user-friendly error message with remediation hint if the agent
 /// is not reachable or returns an error response.
-pub async fn get_kubectl_credential(
-    socket_path: &Path,
-    cluster_id: &str,
-) -> Result<(String, i64)> {
+pub async fn get_kubectl_credential(socket_path: &Path, cluster_id: &str) -> Result<(String, i64)> {
     debug!(
         socket = %socket_path.display(),
         cluster_id = %cluster_id,
@@ -79,10 +76,7 @@ pub async fn get_kubectl_credential(
         ));
     }
 
-    debug!(
-        response_len = resp_buf.len(),
-        "received IPC response"
-    );
+    debug!(response_len = resp_buf.len(), "received IPC response");
 
     let resp: AgentResponse =
         serde_json::from_slice(&resp_buf).context("parsing IPC response JSON")?;
@@ -146,10 +140,7 @@ mod tests {
                     "token": token_str,
                     "expires_at_unix": exp
                 });
-                stream
-                    .write_all(resp.to_string().as_bytes())
-                    .await
-                    .unwrap();
+                stream.write_all(resp.to_string().as_bytes()).await.unwrap();
             })
         };
 
@@ -200,10 +191,7 @@ mod tests {
                 "code": "NOT_LOGGED_IN",
                 "message": "Not logged in — run `prmana-agent login` first"
             });
-            stream
-                .write_all(resp.to_string().as_bytes())
-                .await
-                .unwrap();
+            stream.write_all(resp.to_string().as_bytes()).await.unwrap();
         });
 
         let err = get_kubectl_credential(&socket_path, "prod")

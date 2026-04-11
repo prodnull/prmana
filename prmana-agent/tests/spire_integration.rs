@@ -5,8 +5,8 @@
 
 #![cfg(feature = "spire")]
 
-use std::sync::Arc;
 use prmana_agent::crypto::{DPoPSigner, SpireConfig, SpireSigner};
+use std::sync::Arc;
 
 /// SpireSigner implements DPoPSigner and can be used behind Arc<dyn DPoPSigner>.
 #[test]
@@ -167,9 +167,8 @@ spire:
 #[tokio::test]
 #[ignore = "Requires running SPIRE agent"]
 async fn test_spire_live_fetch_svid() {
-    let socket = std::env::var("PRMANA_SPIRE_SOCKET").unwrap_or_else(|_| {
-        prmana_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
-    });
+    let socket = std::env::var("PRMANA_SPIRE_SOCKET")
+        .unwrap_or_else(|_| prmana_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string());
 
     let config = SpireConfig {
         socket_path: socket,
@@ -196,9 +195,8 @@ async fn test_spire_live_fetch_svid() {
 #[tokio::test]
 #[ignore = "Requires running SPIRE agent"]
 async fn test_spire_live_svid_caching() {
-    let socket = std::env::var("PRMANA_SPIRE_SOCKET").unwrap_or_else(|_| {
-        prmana_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
-    });
+    let socket = std::env::var("PRMANA_SPIRE_SOCKET")
+        .unwrap_or_else(|_| prmana_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string());
 
     let config = SpireConfig {
         socket_path: socket,

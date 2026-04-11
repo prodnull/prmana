@@ -329,8 +329,7 @@ impl TokenValidator {
             crate::oidc::token::StringOrVec::Vec(v) => v.iter().map(|s| s.as_str()).collect(),
         };
         for token_aud in &aud_strings {
-            if token_aud.ends_with(".kube.prmana") && *token_aud != self.config.client_id.as_str()
-            {
+            if token_aud.ends_with(".kube.prmana") && *token_aud != self.config.client_id.as_str() {
                 tracing::warn!(
                     token_aud = %token_aud,
                     configured_audience = %self.config.client_id,
@@ -1254,8 +1253,7 @@ mod tests {
     /// Test V1 (HARD-FAIL): kubectl cluster token rejected by PAM SSH validator.
     #[test]
     fn test_v1_kubectl_cluster_token_rejected_by_pam() {
-        let result =
-            check_kubectl_audience_isolation(&["prod.kube.prmana"], "prmana");
+        let result = check_kubectl_audience_isolation(&["prod.kube.prmana"], "prmana");
         assert!(
             matches!(
                 result,
@@ -1268,8 +1266,7 @@ mod tests {
     /// Test V2: Different cluster also rejected.
     #[test]
     fn test_v2_staging_cluster_token_rejected_by_pam() {
-        let result =
-            check_kubectl_audience_isolation(&["staging.kube.prmana"], "prmana");
+        let result = check_kubectl_audience_isolation(&["staging.kube.prmana"], "prmana");
         assert!(
             matches!(
                 result,
@@ -1287,16 +1284,14 @@ mod tests {
     fn test_v3_lookalike_audience_not_bypassed() {
         // `randomkube.prmana` — no leading dot before `kube`, should NOT trigger
         // the isolation check but should fail the normal audience check.
-        let result =
-            check_kubectl_audience_isolation(&["randomkube.prmana"], "prmana");
+        let result = check_kubectl_audience_isolation(&["randomkube.prmana"], "prmana");
         assert!(
             matches!(result, Err(ValidationError::InvalidAudience)),
             "Test V3a: randomkube.prmana should fail with InvalidAudience (not isolation), got: {result:?}"
         );
 
         // `cluster.kube.prmana.evil.com` — ends with `.com`, not `.kube.prmana`
-        let result =
-            check_kubectl_audience_isolation(&["cluster.kube.prmana.evil.com"], "prmana");
+        let result = check_kubectl_audience_isolation(&["cluster.kube.prmana.evil.com"], "prmana");
         assert!(
             matches!(result, Err(ValidationError::InvalidAudience)),
             "Test V3b: cluster.kube.prmana.evil.com should fail with InvalidAudience, got: {result:?}"
@@ -1319,10 +1314,7 @@ mod tests {
     fn test_v5_operator_explicitly_configured_cluster_audience_allowed() {
         // An operator running a PAM module specifically for a cluster audience.
         // This is exotic but must work if the operator has configured it explicitly.
-        let result = check_kubectl_audience_isolation(
-            &["prod.kube.prmana"],
-            "prod.kube.prmana",
-        );
+        let result = check_kubectl_audience_isolation(&["prod.kube.prmana"], "prod.kube.prmana");
         assert!(
             result.is_ok(),
             "Test V5 FAILED: explicitly configured cluster audience must be allowed, got: {result:?}"

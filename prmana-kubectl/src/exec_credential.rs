@@ -55,10 +55,11 @@ pub fn build(token: String, exp_unix: i64) -> ExecCredential {
     // "forces kubectl to re-invoke the plugin before the token expires,
     //  preventing mid-request 401s."
     let adjusted = exp_unix.saturating_sub(30);
-    let ts: DateTime<Utc> = Utc
-        .timestamp_opt(adjusted, 0)
-        .single()
-        .unwrap_or_else(|| Utc.timestamp_opt(exp_unix, 0).single().unwrap_or_else(Utc::now));
+    let ts: DateTime<Utc> = Utc.timestamp_opt(adjusted, 0).single().unwrap_or_else(|| {
+        Utc.timestamp_opt(exp_unix, 0)
+            .single()
+            .unwrap_or_else(Utc::now)
+    });
 
     ExecCredential {
         api_version: "client.authentication.k8s.io/v1".to_string(),
@@ -115,8 +116,7 @@ mod tests {
         let cred = build("tok".to_string(), 1_712_000_000);
         // 1712000000 - 30 = 1711999970 → 2024-04-01T19:32:50Z (UTC)
         assert_eq!(
-            cred.status.expiration_timestamp,
-            "2024-04-01T19:32:50Z",
+            cred.status.expiration_timestamp, "2024-04-01T19:32:50Z",
             "expirationTimestamp must be exp_unix - 30s (UTC)"
         );
     }

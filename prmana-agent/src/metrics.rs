@@ -167,12 +167,8 @@ impl MetricsCollector {
             ipc_requests_total: self.ipc_requests_total.load(Ordering::Relaxed),
             ipc_errors_total: self.ipc_errors_total.load(Ordering::Relaxed),
 
-            kubectl_tokens_issued_total: self
-                .kubectl_tokens_issued_total
-                .load(Ordering::Relaxed),
-            kubectl_token_failures_total: self
-                .kubectl_token_failures_total
-                .load(Ordering::Relaxed),
+            kubectl_tokens_issued_total: self.kubectl_tokens_issued_total.load(Ordering::Relaxed),
+            kubectl_token_failures_total: self.kubectl_token_failures_total.load(Ordering::Relaxed),
 
             last_proof_time: self.last_proof_time.load(Ordering::Relaxed),
             last_refresh_time: self.last_refresh_time.load(Ordering::Relaxed),
@@ -286,8 +282,7 @@ impl MetricsSnapshot {
         ));
 
         // IPC
-        lines
-            .push("# HELP prmana_agent_ipc_connections_total Total IPC connections".to_string());
+        lines.push("# HELP prmana_agent_ipc_connections_total Total IPC connections".to_string());
         lines.push("# TYPE prmana_agent_ipc_connections_total counter".to_string());
         lines.push(format!(
             "prmana_agent_ipc_connections_total {}",

@@ -294,8 +294,7 @@ mod tests {
 
     #[test]
     fn test_write_with_restricted_perms_creates_file() {
-        let path =
-            std::env::temp_dir().join(format!(".prmana-test-perms-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(".prmana-test-perms-{}", std::process::id()));
         let result = write_with_restricted_perms(&path, "test-content");
         assert!(
             result.is_ok(),
@@ -443,10 +442,8 @@ mod tests {
     fn test_write_restricted_perms_atomic_0600() {
         use std::os::unix::fs::MetadataExt;
 
-        let path = std::env::temp_dir().join(format!(
-            ".prmana-test-atomic-perms-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!(".prmana-test-atomic-perms-{}", std::process::id()));
         let _ = fs::remove_file(&path);
 
         write_with_restricted_perms(&path, "atomic-test-content").unwrap();

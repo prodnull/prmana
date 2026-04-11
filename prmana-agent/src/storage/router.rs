@@ -29,13 +29,13 @@
 
 use tracing::{info, warn};
 
+use super::migration::migrate_legacy_key_names;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::KeyringStorage;
 use super::{
     FileStorage, SecureStorage, StorageError, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE,
     KEY_REFRESH_TOKEN, KEY_TOKEN_METADATA,
 };
-use super::migration::migrate_legacy_key_names;
 
 /// D-Bus Secret Service session encryption enforcement mode.
 ///

@@ -286,10 +286,7 @@ mod tests {
             params.get("response_type").map(String::as_str),
             Some("code")
         );
-        assert_eq!(
-            params.get("client_id").map(String::as_str),
-            Some("prmana")
-        );
+        assert_eq!(params.get("client_id").map(String::as_str), Some("prmana"));
         assert_eq!(
             params.get("redirect_uri").map(String::as_str),
             Some("http://127.0.0.1:8080/callback")

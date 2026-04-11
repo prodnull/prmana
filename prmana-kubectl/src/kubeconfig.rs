@@ -20,8 +20,8 @@ pub fn resolve_path() -> Result<PathBuf> {
             return Ok(PathBuf::from(first));
         }
     }
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
     Ok(home.join(".kube").join("config"))
 }
 
@@ -150,10 +150,7 @@ pub async fn write_exec_stanza(
     if let serde_yaml::Value::Mapping(ref mut m) = config {
         let cc_key = serde_yaml::Value::String("current-context".to_string());
         if !m.contains_key(&cc_key) {
-            m.insert(
-                cc_key,
-                serde_yaml::Value::String(context_name.to_string()),
-            );
+            m.insert(cc_key, serde_yaml::Value::String(context_name.to_string()));
         }
     }
 
@@ -213,10 +210,8 @@ fn upsert_named_entry(
 
 /// Minimal valid kubeconfig skeleton.
 fn default_kubeconfig() -> serde_yaml::Value {
-    serde_yaml::from_str(
-        "apiVersion: v1\nkind: Config\nclusters: []\nusers: []\ncontexts: []\n",
-    )
-    .unwrap()
+    serde_yaml::from_str("apiVersion: v1\nkind: Config\nclusters: []\nusers: []\ncontexts: []\n")
+        .unwrap()
 }
 
 #[cfg(test)]
@@ -311,9 +306,15 @@ current-context: existing-context
 "#;
         tokio::fs::write(&path, existing).await.unwrap();
 
-        write_exec_stanza(&path, "new-cluster", "https://new.example.com", "new-ctx", None)
-            .await
-            .unwrap();
+        write_exec_stanza(
+            &path,
+            "new-cluster",
+            "https://new.example.com",
+            "new-ctx",
+            None,
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let config: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
@@ -334,12 +335,24 @@ current-context: existing-context
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config");
 
-        write_exec_stanza(&path, "prod", "https://api.prod.example.com", "prod-ctx", None)
-            .await
-            .unwrap();
-        write_exec_stanza(&path, "prod", "https://api.prod.example.com", "prod-ctx", None)
-            .await
-            .unwrap();
+        write_exec_stanza(
+            &path,
+            "prod",
+            "https://api.prod.example.com",
+            "prod-ctx",
+            None,
+        )
+        .await
+        .unwrap();
+        write_exec_stanza(
+            &path,
+            "prod",
+            "https://api.prod.example.com",
+            "prod-ctx",
+            None,
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let config: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
@@ -351,8 +364,7 @@ current-context: existing-context
     #[tokio::test]
     async fn test_k4_exec_stanza_fields() {
         let dir = tempfile::tempdir().unwrap();
-        let config =
-            write_and_read(&dir, "prod", "https://api.prod.example.com", "prod").await;
+        let config = write_and_read(&dir, "prod", "https://api.prod.example.com", "prod").await;
 
         let exec = &config["users"][0]["user"]["exec"];
         assert_eq!(
@@ -376,8 +388,7 @@ current-context: existing-context
     #[tokio::test]
     async fn test_k5_command_is_bare_binary_name() {
         let dir = tempfile::tempdir().unwrap();
-        let config =
-            write_and_read(&dir, "prod", "https://api.prod.example.com", "prod").await;
+        let config = write_and_read(&dir, "prod", "https://api.prod.example.com", "prod").await;
 
         let exec = &config["users"][0]["user"]["exec"];
         assert_eq!(
