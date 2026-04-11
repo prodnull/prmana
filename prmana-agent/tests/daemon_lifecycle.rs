@@ -149,8 +149,27 @@ fn test_daemon_lifecycle() {
         // Drop stream immediately -- no response expected
     }
 
-    // Wait for the process to exit (up to 5 seconds)
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Wait for the process to exit.
+    //
+    // Deadline is intentionally generous (30s). The shutdown handler calls
+    // std::process::exit(0) directly so the exit itself is immediate, but
+    // the total time from "send shutdown command over the socket" to "the
+    // parent process's try_wait observes the exit" is dominated by runtime
+    // and kernel scheduling costs that vary across machines:
+    //
+    //   - GHA macos-aarch64 runners are ~5-10× slower than a laptop on
+    //     process-level syscalls
+    //   - the daemon may still be finishing a late `tracing` flush when
+    //     the connection is dropped
+    //   - try_wait polling at 50ms can race briefly with the child's exit
+    //     propagation through macOS kqueue
+    //
+    // A 5-second deadline was too tight and produced spurious failures on
+    // macos-aarch64 GHA runners even though the daemon did exit correctly.
+    // 30 seconds is still strict enough to catch a genuine hang (the
+    // expected exit latency is sub-second on any realistic machine) while
+    // absorbing runner-speed variance.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match guard.child.try_wait() {
             Ok(Some(_status)) => {
@@ -159,7 +178,7 @@ fn test_daemon_lifecycle() {
             }
             Ok(None) => {
                 if Instant::now() > deadline {
-                    panic!("Daemon did not exit within 5 seconds after Shutdown");
+                    panic!("Daemon did not exit within 30 seconds after Shutdown");
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
