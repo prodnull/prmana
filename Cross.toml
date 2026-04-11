@@ -5,5 +5,5 @@
 # Install arm64 development libraries for cross-compilation
 pre-build = [
     "dpkg --add-architecture arm64",
-    "apt-get update && apt-get install -y libpam0g-dev:arm64 libssl-dev:arm64"
+    "apt-get update && apt-get install -y libpam0g-dev:arm64 libssl-dev:arm64 libdbus-1-dev:arm64"
 ]
