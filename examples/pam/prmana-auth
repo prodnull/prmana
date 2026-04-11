@@ -1,0 +1,28 @@
+# prmana PAM authentication snippet
+#
+# Include this file from /etc/pam.d/sshd or your target service's PAM config:
+#
+#   @include prmana-auth
+#
+# Or copy the relevant lines directly into your PAM service config.
+#
+# Security notes:
+#   - Place pam_prmana.so BEFORE pam_unix.so so that OIDC tokens are evaluated first.
+#   - use_first_pass: prevents a second password prompt if pam_unix.so is also listed.
+#   - Always configure a break-glass local account before enabling prmana.
+#     See: https://github.com/prodnull/unix-oidc/blob/main/docs/installation.md#break-glass
+#
+# References:
+#   pam(8), pam.d(5)
+#   docs/pam-integration.md
+
+# OIDC authentication via prmana agent
+auth    sufficient  pam_prmana.so       config=/etc/prmana/policy.yaml
+# Fallback to local password authentication
+auth    required    pam_unix.so         use_first_pass
+
+account required    pam_prmana.so       config=/etc/prmana/policy.yaml
+account required    pam_unix.so
+
+session required    pam_prmana.so       config=/etc/prmana/policy.yaml
+session required    pam_unix.so

@@ -2,56 +2,92 @@
 Description=prmana Authentication Agent
 Documentation=https://github.com/prodnull/unix-oidc
 # Require the socket unit so systemd sets up LISTEN_FDS before starting the daemon.
+# The daemon uses listenfd to inherit the pre-bound fd; it does not bind the socket.
 Requires=prmana-agent.socket
 After=prmana-agent.socket network-online.target
+Wants=network-online.target
 
 [Service]
 # Type=notify: systemd waits for READY=1 sd-notify before marking the service active.
-# The daemon sends READY=1 after socket acquisition, config validation, and an
+# The daemon sends READY=1 after socket activation, config validation, and an
 # initial best-effort JWKS prefetch.
 Type=notify
 ExecStart=/usr/bin/prmana-agent serve
 Restart=on-failure
 RestartSec=5s
 
-# --- Hardening directives ---
-# Prevents the process from gaining new privileges via setuid/setgid or file capabilities.
-NoNewPrivileges=yes
+# --- User/Group isolation ---
+# Run as dedicated system user (created by preinst maintainer script).
+User=prmana
+Group=prmana
+# DynamicUser=no: we create the user explicitly in preinst so /var/lib/prmana
+# persists across restarts. DynamicUser would use a transient UID each run.
+DynamicUser=no
 
-# Mount the entire file system read-only except /dev, /proc, /sys and
-# any paths listed in ReadWritePaths below.
+# --- Filesystem ---
+# ProtectSystem=strict mounts / read-only except explicit ReadWritePaths.
 ProtectSystem=strict
+# ProtectHome=yes: hides /home and /root from the daemon.
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# ReadWritePaths must explicitly list every directory the daemon writes to.
+# - /run/prmana: runtime socket and pid file (created by tmpfiles.d at boot)
+# - /var/log/prmana: structured audit log output
+# - /var/lib/prmana: credential storage fallback (file backend)
+ReadWritePaths=/run/prmana /var/log/prmana /var/lib/prmana
+# StateDirectory creates /var/lib/prmana owned by User=prmana on service start.
+StateDirectory=prmana
+# LogsDirectory creates /var/log/prmana owned by User=prmana on service start.
+LogsDirectory=prmana
+# RuntimeDirectory creates /run/prmana owned by User=prmana on service start;
+# complements tmpfiles.d for early-boot availability.
+RuntimeDirectory=prmana
+# ConfigurationDirectory creates /etc/prmana with 0755 / root:root ownership;
+# the daemon reads from here but does not write (config is operator-managed).
+ConfigurationDirectory=prmana
 
-# Allow reading from $HOME but block writes (private keys are in keyring or
-# ReadWritePaths below; DPoP signing never writes to $HOME directly).
-ProtectHome=read-only
-
-# Required read-write paths under ProtectSystem=strict:
-# - file storage fallback writes credentials here when no keyring is available
-# - config file is read only, but directories must be traversable
-ReadWritePaths=%h/.local/share/prmana %h/.config/prmana
-
-# Prevent the daemon from executing writable memory (blocks JIT and most shellcode).
-# If using a YubiKey/PKCS#11 signer that loads a vendor .so, uncomment:
-# MemoryDenyWriteExecute=no
+# --- Privilege escalation ---
+# Deny any attempt to gain new privileges via setuid, setgid, or capabilities.
+NoNewPrivileges=yes
+# Lock the execution personality to prevent personality(2) calls.
+LockPersonality=yes
+# Block creation of writable+executable memory pages (prevents JIT exploitation).
+# NOTE: PKCS#11 / vendor .so YubiKey or TPM drivers may require this to be 'no';
+# set MemoryDenyWriteExecute=no when deploying with --features yubikey or tpm.
 MemoryDenyWriteExecute=yes
 
-# Block creation of new kernel namespaces (unshare, clone with namespace flags).
+# --- Network ---
+# Only AF_UNIX (IPC socket), AF_INET / AF_INET6 (JWKS + OIDC token endpoint).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# --- Namespaces / kernel ---
 RestrictNamespaces=yes
-
-# Prevent the daemon from setting SCHED_FIFO or SCHED_RR (real-time scheduling).
 RestrictRealtime=yes
-
-# Prevent setuid/setgid file execution inside this unit's filesystem view.
 RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 
-# Provide a private /tmp and /var/tmp invisible to other processes.
-PrivateTmp=yes
+# --- System calls ---
+# @system-service: standard set for a network-connected service (I/O, memory,
+# signals, timers, networking). @network-io adds accept/bind/connect/send/recv.
+# ~@privileged ~@resources: deny mount, chroot, iopl, ioperm, etc.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallArchitectures=native
 
-# Allow only syscalls required by a network service: standard I/O, memory management,
-# signal handling, timers, and networking. This blocks exotic syscalls used by exploits.
-# @system-service covers the base set; @network-io adds accept/bind/connect/send/recv.
-SystemCallFilter=@system-service @network-io
+# --- Capabilities ---
+# Drop the entire capability bounding set — the daemon needs no Linux capabilities.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# --- Environment ---
+# Emit structured JSON logs for forwarding to a SIEM/log aggregator.
+Environment=PRMANA_LOG_FORMAT=json
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

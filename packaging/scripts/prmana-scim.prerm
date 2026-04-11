@@ -1,0 +1,17 @@
+#!/bin/sh
+# prmana-scim.prerm — pre-removal maintainer script for prmana-scim
+#
+# Stops and disables prmana-scim.service before files are removed.
+#
+# Idempotency: all systemctl calls use || true.
+#
+# References:
+#   Debian Policy Manual §6.4 — prerm idempotency
+set -eu
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl stop prmana-scim.service >/dev/null 2>&1 || true
+    systemctl disable prmana-scim.service >/dev/null 2>&1 || true
+fi
+
+exit 0

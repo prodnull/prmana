@@ -1,0 +1,53 @@
+#!/bin/sh
+# prmana.preinst — pre-installation maintainer script
+#
+# Creates the prmana system user and group BEFORE nfpm unpacks files so that
+# directory ownership entries in the nfpm config resolve correctly.
+#
+# Security (T-DTA02-01):
+#   - Shell is /usr/sbin/nologin (Debian) or /sbin/nologin (RHEL) — the prmana
+#     user cannot be used for interactive login.
+#   - The user is a system account (UID < 1000) with no home directory creation.
+#   - useradd/adduser are invoked with --system so the account is not a login user.
+#
+# Idempotency: safe to re-run; both addgroup/groupadd and adduser/useradd return 0
+# if the entity already exists (checked via getent first to be explicit).
+#
+# References:
+#   Debian Policy Manual §6.1 — maintainer script idempotency requirement
+#   RHEL packaging guidelines — system user creation in %pre
+set -eu
+
+# --- Create system group ---
+if ! getent group prmana >/dev/null 2>&1; then
+    if command -v addgroup >/dev/null 2>&1; then
+        # Debian/Ubuntu: addgroup is the preferred tool
+        addgroup --system prmana
+    else
+        # RHEL/Rocky/AL2023: use groupadd
+        groupadd --system prmana
+    fi
+fi
+
+# --- Create system user ---
+if ! getent passwd prmana >/dev/null 2>&1; then
+    if command -v adduser >/dev/null 2>&1 && adduser --version 2>&1 | grep -q "Debian\|Ubuntu\|adduser"; then
+        # Debian/Ubuntu: adduser with Debian-style flags
+        adduser --system \
+                --ingroup prmana \
+                --home /var/lib/prmana \
+                --no-create-home \
+                --shell /usr/sbin/nologin \
+                prmana
+    else
+        # RHEL/Rocky/AL2023: use useradd
+        useradd --system \
+                --gid prmana \
+                --home-dir /var/lib/prmana \
+                --no-create-home \
+                --shell /sbin/nologin \
+                prmana
+    fi
+fi
+
+exit 0

@@ -1,0 +1,35 @@
+#!/bin/sh
+# prmana-scim.postinst — post-installation maintainer script for prmana-scim
+#
+# 1. Reload systemd daemon so it picks up the new prmana-scim.service unit.
+# 2. Enable prmana-scim.service (does NOT start it — operator configures first).
+# 3. Self-check: verify the binary responds to --version.
+#
+# The prmana-scim package depends on prmana (which creates the prmana user and
+# /run/prmana, /var/lib/prmana, /var/log/prmana). No user creation here.
+#
+# Idempotency: all systemctl calls use || true.
+#
+# References:
+#   Debian Policy Manual §6.5 — postinst idempotency
+set -eu
+
+# --- Reload systemd daemon ---
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    # Enable but do NOT start — SCIM requires operator configuration first.
+    systemctl enable prmana-scim.service >/dev/null 2>&1 || true
+fi
+
+# --- Self-check: SCIM binary ---
+if ! /usr/bin/prmana-scim --version >/dev/null 2>&1; then
+    echo "ERROR: /usr/bin/prmana-scim --version failed" >&2
+    exit 1
+fi
+
+echo ""
+echo "prmana-scim installed."
+echo "  Configure: cp /etc/prmana/scim.yaml.example /etc/prmana/scim.yaml"
+echo "  Start:     sudo systemctl start prmana-scim.service"
+
+exit 0

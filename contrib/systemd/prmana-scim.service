@@ -1,0 +1,62 @@
+[Unit]
+Description=prmana SCIM Provisioning Server
+Documentation=https://github.com/prodnull/unix-oidc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/prmana-scim serve
+Restart=on-failure
+RestartSec=5s
+
+# --- User/Group isolation ---
+User=prmana
+Group=prmana
+DynamicUser=no
+
+# --- Filesystem ---
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/run/prmana /var/log/prmana /var/lib/prmana
+StateDirectory=prmana
+LogsDirectory=prmana
+RuntimeDirectory=prmana
+ConfigurationDirectory=prmana
+
+# --- Privilege escalation ---
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# --- Network ---
+# SCIM server needs AF_INET6 for inbound HTTP and AF_UNIX for prmana-agent IPC.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# --- Namespaces / kernel ---
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# --- System calls ---
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallArchitectures=native
+
+# --- Capabilities ---
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# --- Environment ---
+Environment=PRMANA_LOG_FORMAT=json
+
+[Install]
+WantedBy=multi-user.target
