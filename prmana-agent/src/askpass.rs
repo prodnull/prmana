@@ -79,10 +79,10 @@ fn write_with_restricted_perms(path: &PathBuf, contents: &str) -> io::Result<()>
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        let _ = fs::remove_file(path);
         let mut file = fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(path)?;
         file.write_all(contents.as_bytes())?;
