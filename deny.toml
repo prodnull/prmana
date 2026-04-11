@@ -14,7 +14,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     "RUSTSEC-2024-0388",  # derivative - unmaintained (via zbus/keyring)
     "RUSTSEC-2024-0384",  # instant - unmaintained (via async-io/zbus)
-    "RUSTSEC-2025-0134",  # rustls-pemfile - unmaintained (via reqwest)
+    "RUSTSEC-2025-0134",  # rustls-pemfile - unmaintained (via reqwest 0.11; fix: upgrade reqwest to 0.12)
+    "RUSTSEC-2024-0436",  # paste - unmaintained (transitive via proc-macro deps; no runtime risk)
+    "RUSTSEC-2026-0097",  # rand 0.8.5 - unsound with custom logger; prmana uses OsRng only, zero exposure
 ]
 
 [licenses]

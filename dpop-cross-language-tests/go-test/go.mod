@@ -1,6 +1,6 @@
 module github.com/prodnull/unix-oidc/dpop-cross-language-tests/go-test
 
-go 1.21
+go 1.23
 
 require github.com/prodnull/unix-oidc/go-oauth-dpop v0.0.0
 
