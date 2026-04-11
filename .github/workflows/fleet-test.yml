@@ -308,8 +308,8 @@ jobs:
           # For fault-503: probe the local proxy to assert the fault was applied.
           # This validates the fault injection mechanism works end-to-end.
           if [ "$SCENARIO" = "fault-503" ]; then
-            STATUS=$(curl -sf -o /dev/null -w '%{http_code}' \
-              http://127.0.0.1:9443/probe || echo "failed")
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+              http://127.0.0.1:9443/probe 2>/dev/null || echo "connect-failed")
             if [ "$STATUS" != "503" ]; then
               echo "fault-503 assertion failed: got HTTP ${STATUS}, expected 503"
               exit 1
