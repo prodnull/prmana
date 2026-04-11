@@ -873,20 +873,24 @@ fn connect_agent_socket(socket_path: &str) -> Result<std::os::unix::net::UnixStr
 }
 
 /// Write a JSON message to an agent socket stream, followed by newline.
+///
+/// Sends JSON + "\n" in a single `write_all` call so that the reader sees
+/// a complete newline-delimited frame atomically. Splitting into two writes
+/// (json then \n) creates a race window where the server reads the JSON
+/// without the terminating newline, closes the connection, and the second
+/// write fails with EPIPE.
 fn send_ipc_message(
     stream: &mut std::os::unix::net::UnixStream,
     msg: &serde_json::Value,
 ) -> Result<(), SudoError> {
     use std::io::Write;
 
-    let json = serde_json::to_string(msg)
+    let mut frame = serde_json::to_string(msg)
         .map_err(|e| SudoError::StepUp(format!("Failed to serialize IPC message: {e}")))?;
+    frame.push('\n');
     stream
-        .write_all(json.as_bytes())
+        .write_all(frame.as_bytes())
         .map_err(|e| SudoError::StepUp(format!("Failed to write IPC message: {e}")))?;
-    stream
-        .write_all(b"\n")
-        .map_err(|e| SudoError::StepUp(format!("Failed to write IPC newline: {e}")))?;
     Ok(())
 }
 
