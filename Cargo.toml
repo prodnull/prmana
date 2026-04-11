@@ -4,6 +4,7 @@ members = [
     "pam-prmana",
     "prmana-agent",
     "prmana-scim",
+    "prmana-kubectl",
     "examples/webhook-server",
 ]
 exclude = ["fuzz", "test/fixtures/attestation/gen"]
