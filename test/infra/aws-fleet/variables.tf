@@ -89,6 +89,12 @@ variable "allowed_ssh_cidr" {
   description = "CIDR block allowed inbound SSH (port 22) access. Defaults to 0.0.0.0/0 for CI convenience. IMPORTANT: this module is CI-only. For production use (which is explicitly a non-goal), restrict to your GitHub Actions runner IP ranges."
 }
 
+variable "vpc_id" {
+  type        = string
+  default     = ""
+  description = "Explicit VPC ID to place fleet resources in. When set, the data.aws_vpc.default lookup is skipped (avoids ec2:DescribeVpcAttribute). The fleet-test workflow resolves this via 'aws ec2 describe-vpcs' (only ec2:DescribeVpcs needed). Leave empty only when running with a role that has ec2:DescribeVpcAttribute."
+}
+
 # ---------------------------------------------------------------------------
 # Cross-variable precondition: fedora-40 + arm64 is not in the supported matrix.
 # Terraform requires preconditions to be on a resource or output, so this is

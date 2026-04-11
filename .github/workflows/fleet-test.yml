@@ -128,6 +128,21 @@ jobs:
           echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> "$GITHUB_ENV"
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
 
+      # Resolve default VPC ID via CLI. Only ec2:DescribeVpcs is needed here;
+      # the Terraform data.aws_vpc.default data source additionally calls
+      # ec2:DescribeVpcAttribute which is not in the CI role policy. By
+      # resolving the VPC ID in this step and passing it as TF_VAR_vpc_id,
+      # the data source is skipped entirely (count = 0 when var.vpc_id != "").
+      # No untrusted input is used — VPC ID is from the AWS API only.
+      - name: Resolve default VPC ID (AWS)
+        if: inputs.cloud == 'aws'
+        run: |
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=isDefault,Values=true" \
+            --query "Vpcs[0].VpcId" \
+            --output text)
+          printf 'TF_VAR_vpc_id=%s\n' "${VPC_ID}" >> "$GITHUB_ENV"
+
       # -----------------------------------------------------------------------
       # Terraform init — local state, ephemeral per run (-backend=false).
       # Remote state is unnecessary for a self-contained CI workflow that

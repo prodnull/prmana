@@ -10,10 +10,17 @@
 #   the fleet-test workflow. This avoids storing long-lived keypair secrets.
 # ---------------------------------------------------------------------------
 
-# Default VPC data source — the module does not create networking, only
-# resources inside the existing default VPC.
+# Default VPC data source — only resolved when vpc_id variable is empty.
+# When vpc_id is set explicitly (by the fleet-test workflow), this data
+# source is skipped, avoiding the ec2:DescribeVpcAttribute API call that
+# the CI role does not have permission for.
 data "aws_vpc" "default" {
+  count   = var.vpc_id == "" ? 1 : 0
   default = true
+}
+
+locals {
+  resolved_vpc_id = var.vpc_id != "" ? var.vpc_id : data.aws_vpc.default[0].id
 }
 
 # ---------------------------------------------------------------------------
@@ -38,7 +45,7 @@ resource "aws_key_pair" "fleet" {
 resource "aws_security_group" "fleet" {
   name        = "prmana-ci-fleet-${var.github_run_id}"
   description = "Ephemeral SG for prmana-ci fleet run ${var.github_run_id}. Auto-deleted on terraform destroy."
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = local.resolved_vpc_id
 
   # Inbound SSH — restricted to allowed_ssh_cidr (default: 0.0.0.0/0 for CI).
   # README documents this as CI-only and references the variable for tightening.

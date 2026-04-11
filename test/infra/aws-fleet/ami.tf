@@ -249,7 +249,7 @@ data "aws_ami" "rocky_9_amd64" {
 
   filter {
     name   = "name"
-    values = ["Rocky-9-EC2-Base-*.x86_64-*"]
+    values = ["Rocky-9-EC2-Base-*.x86_64"]
   }
 
   filter {
@@ -274,7 +274,7 @@ data "aws_ami" "rocky_9_arm64" {
 
   filter {
     name   = "name"
-    values = ["Rocky-9-EC2-Base-*.aarch64-*"]
+    values = ["Rocky-9-EC2-Base-*.aarch64"]
   }
 
   filter {
@@ -304,7 +304,7 @@ data "aws_ami" "fedora_40_amd64" {
 
   filter {
     name   = "name"
-    values = ["Fedora-Cloud-Base-40-*.x86_64-*"]
+    values = ["Fedora-Cloud-Base-40-*.x86_64"]
   }
 
   filter {
