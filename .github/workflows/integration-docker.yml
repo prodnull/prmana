@@ -86,6 +86,12 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-integ-
       - name: Install deps
         run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
+      - name: Log in to GHCR (for swtpm image)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Start swtpm
         run: docker compose -f docker-compose.tpm-test.yaml up -d
       - name: Wait for swtpm
@@ -122,6 +128,14 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-integ-
       - name: Install deps
         run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
+      - name: Create SPIRE socket directory (required by bind-mount volume)
+        run: mkdir -p /tmp/spire-agent/public
+      - name: Log in to GHCR (for SPIRE images)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Start SPIRE
         run: docker compose -f docker-compose.spire-test.yaml up -d
       - name: Wait for SPIRE agent
