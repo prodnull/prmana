@@ -1371,6 +1371,30 @@ async fn handle_get_kubectl_credential(
     .await
     {
         Ok(resp) => {
+            // HARD-FAIL: reject if IdP DPoP-bound the returned token (RFC 9449 §5.2).
+            // kubectl cannot inject per-request DPoP proofs; a cnf-bearing token would
+            // cause every k8s API call to fail with 401. Catch it here with a clear error
+            // rather than silently handing a broken token to kubectl.
+            if let Err(e) = verify_no_cnf_claim(&resp.access_token) {
+                metrics
+                    .kubectl_token_failures_total
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::error!(
+                    cluster_id = %cluster_id,
+                    audience = %target_audience,
+                    error = %e,
+                    "KUBECTL_CNF_REJECTED"
+                );
+                return (
+                    AgentResponse::error(
+                        "IdP returned a DPoP-bound kubectl token (cnf present) — cannot use \
+                         as bearer token. Configure IdP to omit cnf binding for this audience.",
+                        "KUBECTL_TOKEN_CNF_BOUND",
+                    ),
+                    true,
+                );
+            }
+
             // Calculate expiry: prefer expires_in from response, cap at 600s (10 min).
             let ttl = resp.expires_in.min(600);
             let now_unix = SystemTime::now()
@@ -3042,6 +3066,48 @@ fn extract_string_claim_from_jwt_payload(token: &str, claim_name: &str) -> Optio
         .get(claim_name)
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
+}
+
+/// Verify that a JWT does not contain a `cnf` claim.
+///
+/// kubectl tokens must be plain bearer tokens. If an IdP adds `cnf.jkt` during
+/// token exchange (RFC 9449 §5.2 — server SHOULD bind when DPoP proof is present),
+/// the token cannot be used by kubectl because kubectl has no mechanism to generate
+/// per-request DPoP proofs for the k8s API server.
+///
+/// This check makes the CLAUDE.md invariant ("NO cnf claim") machine-enforced rather
+/// than aspirational. The payload is decoded without signature verification; transport
+/// security (TLS to the IdP token endpoint) provides integrity for this read.
+fn verify_no_cnf_claim(token: &str) -> Result<(), String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    let payload_b64 = token
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| "malformed JWT: no payload segment".to_string())?;
+
+    // Try no-pad first (RFC 7515 standard), then with padding as fallback.
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .or_else(|_| {
+            use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+            URL_SAFE.decode(payload_b64)
+        })
+        .map_err(|e| format!("failed to base64-decode JWT payload: {e}"))?;
+
+    let claims: serde_json::Value = serde_json::from_slice(&payload)
+        .map_err(|e| format!("failed to parse JWT payload as JSON: {e}"))?;
+
+    if claims.get("cnf").is_some() {
+        return Err(
+            "IdP returned a DPoP-bound token (cnf claim present) — not usable as kubectl \
+             bearer token. Configure the IdP token exchange endpoint to omit cnf binding \
+             for this audience."
+                .to_string(),
+        );
+    }
+
+    Ok(())
 }
 
 /// Extract the `acr` claim from an ID token JWT payload.

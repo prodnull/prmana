@@ -108,52 +108,109 @@ mutually exclusive. Choose one approach.
 
 ## Security model
 
-### Why no DPoP
+> **Read this section before deploying.** The security properties of prmana-kubectl
+> differ from prmana's SSH/PAM authentication in one important way. Understanding the
+> difference lets you make an informed deployment decision.
 
-Tokens issued by `prmana-kubectl` are **bearer tokens with NO `cnf` claim** (no DPoP
-binding). This is intentional and not a security weakness in this context.
+### Where DPoP protection applies — and where it doesn't
 
-The Kubernetes exec credential API (`client.authentication.k8s.io/v1`) returns a token
-to kubectl and kubectl immediately uses it as `Authorization: Bearer <token>`. kubectl
-has no mechanism to inject per-request `DPoP` proof headers between "received
-credential" and "sent HTTP request." Adding a `cnf.jkt` thumbprint to the token and
-claiming RFC 9449 protection would be **security theater**: no party in the request path
-verifies proof-of-possession.
+prmana's SSH flow uses DPoP (RFC 9449) end-to-end: the access token on your workstation
+has a `cnf.jkt` thumbprint binding it to your agent's private key. The PAM module on the
+server verifies a fresh DPoP proof with every authentication. A stolen SSH access token
+is useless — the attacker needs the private key to generate a valid proof.
 
-The honest security properties of these tokens are:
-- **Short-lived**: 10-minute TTL bounds the exposure window of any stolen token
-- **Audience-isolated**: see below
-- **Issuer-validated**: kube-apiserver validates the signature against the IdP's JWKS
+**kubectl tokens work differently.** Here is the full request chain:
 
-**Future (Phase DT-E):** The exec plugin will switch to returning ephemeral mTLS client
-certificates (`clientCertificateData`/`clientKeyData` in ExecCredential), providing real
-cryptographic key binding via native Kubernetes x509 authentication (`--client-ca-file`
-on kube-apiserver). This is the "DPoP-equivalent for kubectl" without the theater. Until
-DT-E ships, the honest marketing language is: "short-lived, IdP-issued, audience-scoped
-tokens — no long-lived kubeconfig credentials."
+```
+prmana-agent  ──DPoP-protected exchange──►  IdP
+     │                                       │
+     │                              issues new token
+     │                              (audience: prod.kube.prmana)
+     │                                       │
+prmana-kubectl ◄─── bearer token ────────────┘
+     │
+     │  ExecCredential JSON
+     ▼
+kubectl  ──── Authorization: Bearer <token> ────►  kube-apiserver
+```
+
+DPoP is used when the agent exchanges your access token with the IdP — that proves to
+the IdP that the exchange is coming from the legitimate key holder, not an attacker who
+stole your access token. But the **token the IdP issues back** is a plain bearer token.
+kubectl has no mechanism to generate per-request DPoP proofs; it just sends
+`Authorization: Bearer <token>`. No party on the kubectl → kube-apiserver leg checks
+proof-of-possession.
+
+### The replay risk
+
+**A stolen kubectl bearer token can be replayed.** If an attacker obtains the token
+after it has been issued to kubectl — from memory, from a compromised machine, from an
+audit log that captured it, or from any point between kubectl and the API server — they
+can send it directly to the kube-apiserver and it will be accepted until it expires.
+
+The mitigations in place:
+
+| Mitigation | What it does | Limit |
+|-----------|--------------|-------|
+| 10-minute TTL | Bounds the replay window | An attacker with 10 min is still dangerous |
+| Audience isolation | Stolen kubectl token cannot be used for SSH login | Doesn't prevent k8s API replay |
+| IdP-issued, signature-verified | Forgery requires compromising the IdP signing key | Doesn't prevent replay of a legitimately-issued token |
+| On-demand issuance | Token is not stored in kubeconfig; it exists only in memory during kubectl execution | A compromised machine still has access during the window |
+
+**This is not a bug or an oversight.** The Kubernetes exec credential API
+(`client.authentication.k8s.io/v1`) was designed for bearer tokens. DPoP binding would
+require kubectl itself to generate proofs on each request — a capability that doesn't
+exist today in any kubectl release. Adding `cnf.jkt` to the token without a verifying
+party on the other end would be security theater, not security.
+
+### How this compares to the alternatives
+
+| Credential type | Replay window | Scope | Key binding |
+|----------------|---------------|-------|-------------|
+| Static kubeconfig service account token | Forever (no expiry) | Cluster-wide | None |
+| Long-lived kubeconfig user credential | Until manually rotated | Per-user | None |
+| **prmana-kubectl bearer token** | **10 minutes** | **Single cluster audience** | **None on k8s leg** |
+| prmana-kubectl with DT-E mTLS (future) | N/A — proof required | Single cluster audience | x509 client cert |
+
+10-minute tokens with IdP-issued audience scoping are a substantial improvement over
+static kubeconfig credentials, but they are not equivalent to the DPoP protection
+prmana provides for SSH.
 
 ### Audience isolation
 
 Tokens issued for kubectl have audience `<cluster_id>.kube.prmana`. This audience is
 **hard-rejected** by the prmana PAM/SSH validator (`pam-prmana`). A stolen kubectl
-token cannot be used to SSH into a Linux server. This is enforced as a
-**HARD-FAIL** that cannot be configured away — see `CLAUDE.md` "kubectl Authentication
-Invariant (Phase DT-A onwards)."
+token cannot be used to SSH into a Linux server — that check is a `HARD-FAIL` that
+cannot be configured away (see `CLAUDE.md` "kubectl Authentication Invariant").
 
-Conversely, SSH/PAM tokens (audience: hostname) are rejected by kube-apiserver because
-the apiserver's `audiences` config only accepts `<cluster_id>.kube.prmana`.
+The reverse also holds: SSH/PAM tokens are rejected by kube-apiserver because the
+apiserver's `audiences` config only accepts `<cluster_id>.kube.prmana`.
+
+Audience isolation limits the blast radius of a stolen token but does not prevent replay
+within the intended scope.
+
+### Roadmap: DT-E removes the replay risk
+
+Phase DT-E upgrades `prmana-kubectl` to return ephemeral mTLS client certificates
+(`clientCertificateData`/`clientKeyData` in ExecCredential). kubectl will present the
+certificate on every request; kube-apiserver validates it via `--client-ca-file`. The
+private key never leaves the agent. This provides real cryptographic key binding on the
+kubectl → kube-apiserver leg — the same guarantee DPoP provides for SSH.
+
+Until DT-E ships, the accurate description of the security model is:
+> *Short-lived, IdP-issued, audience-scoped bearer tokens. Replayable within the 10-minute
+> TTL. Substantially better than static kubeconfig credentials. Not equivalent to
+> DPoP-protected SSH authentication.*
 
 ### Audit trail
 
 Every kubectl token issuance is logged as an OCSF-structured `KUBECTL_TOKEN_ISSUED`
-event by prmana-agent, including:
-- `cluster_id` and full audience
-- Requesting user (`sub`, `preferred_username`)
-- Token expiry (`exp`)
-- JWT ID (`jti`) for replay detection
-
-Events flow through the same HMAC-chained audit pipeline as SSH authentication events,
-giving operators a unified audit trail for Linux login AND cluster access.
+event by prmana-agent, including `cluster_id`, full audience, requesting user (`sub`,
+`preferred_username`), token expiry (`exp`), and JWT ID (`jti`). Events flow through the
+same HMAC-chained audit pipeline as SSH events, giving operators a unified trail for
+Linux login and cluster access — but note that audit records show issuance, not usage.
+If a token is replayed after issuance, that replay is visible only in kube-apiserver
+audit logs, not in prmana's audit trail.
 
 ## IdP Support Matrix
 
