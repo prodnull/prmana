@@ -48,6 +48,14 @@ async fn spawn_mock_agent(
 }
 
 /// Test C1: `prmana-kubectl get-token --cluster-id prod` prints valid ExecCredential JSON.
+///
+/// Uses `tokio::process::Command` (async) rather than `std::process::Command`
+/// (blocking). The mock agent runs on the tokio runtime via `tokio::spawn`;
+/// calling `std::process::Command::output()` from an `#[tokio::test]` pins
+/// the runtime thread and prevents the spawned mock-agent task from ever
+/// being scheduled, so the child process hangs forever waiting for the
+/// socket to accept its connection. Using the async command lets the runtime
+/// keep scheduling the mock agent.
 #[tokio::test]
 async fn test_c1_get_token_prints_exec_credential() {
     let dir = tempfile::tempdir().unwrap();
@@ -55,10 +63,19 @@ async fn test_c1_get_token_prints_exec_credential() {
 
     let _server = spawn_mock_agent(&socket_path, "eyJ.mock.token", 1_712_000_000).await;
 
-    let output = std::process::Command::new(binary_path())
+    // Overall-budget guard: if anything still hangs, fail fast rather than
+    // letting the CI job time out after 15 minutes.
+    let exec = tokio::process::Command::new(binary_path())
         .args(["get-token", "--cluster-id", "prod"])
         .env("PRMANA_SOCKET", socket_path.to_str().unwrap())
         .output();
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(30), exec).await {
+        Ok(res) => res,
+        Err(_) => panic!(
+            "prmana-kubectl get-token hung for more than 30s — check agent socket handshake"
+        ),
+    };
 
     match output {
         Ok(out) if out.status.success() => {
