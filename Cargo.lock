@@ -2232,6 +2232,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "prmana-kubectl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "chrono",
+ "clap",
+ "dirs",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "prmana-scim"
 version = "0.1.0"
 dependencies = [

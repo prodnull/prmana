@@ -107,6 +107,25 @@ pub enum AgentRequest {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         token_endpoint: Option<String>,
     },
+
+    /// Get a kubectl exec-credential token for the specified cluster.
+    ///
+    /// Returns a bearer token (NO DPoP) scoped to audience `<cluster_id>.kube.prmana`.
+    /// Token TTL: 10 minutes. No `cnf` claim — bearer-only per Kubernetes exec credential
+    /// contract (kubectl cannot inject per-request DPoP proofs).
+    ///
+    /// Security: cluster tokens are audience-isolated from SSH/PAM tokens. A token with
+    /// audience `<cluster_id>.kube.prmana` is rejected by pam_prmana — the `aud` check
+    /// in validation.rs enforces this hard boundary.
+    ///
+    /// References:
+    /// - CLAUDE.md "kubectl Authentication Invariant (Phase DT-A onwards)"
+    /// - Opus adversarial review 2026-04-11; RFC 9449 §4.1, §4.3, §7
+    #[serde(rename = "get_kubectl_credential")]
+    GetKubectlCredential {
+        /// Cluster identifier used to form the audience: `<cluster_id>.kube.prmana`
+        cluster_id: String,
+    },
 }
 
 impl AgentRequest {
@@ -126,6 +145,7 @@ impl AgentRequest {
             AgentRequest::StepUp { .. } => "StepUp",
             AgentRequest::StepUpResult { .. } => "StepUpResult",
             AgentRequest::ExchangeToken { .. } => "ExchangeToken",
+            AgentRequest::GetKubectlCredential { .. } => "GetKubectlCredential",
         }
     }
 }
@@ -290,6 +310,26 @@ pub enum AgentResponseData {
     SessionAcknowledged {
         acknowledged: bool,
     },
+    /// Kubectl exec credential response. No DPoP proof — bearer-only.
+    ///
+    /// `expires_at_unix` is the required discriminant field for untagged serde (unique to
+    /// this variant; none of the other variants contain `expires_at_unix`). Must appear
+    /// BEFORE `Ok {}` which matches any object.
+    ///
+    /// CRITICAL SECURITY INVARIANT:
+    /// - NO `cnf` field — kubectl tokens are bearer-only (no DPoP binding).
+    ///   See CLAUDE.md "kubectl Authentication Invariant".
+    /// - Audience is `<cluster_id>.kube.prmana` — isolated from SSH/PAM audience.
+    KubectlCredential {
+        /// Bearer token with audience `<cluster_id>.kube.prmana`.
+        /// Wrapped in secrecy at the IPC boundary; sent as plain String here
+        /// because the recipient (prmana-kubectl) needs the raw value immediately.
+        token: String,
+        /// Unix timestamp (seconds) when the token expires (JWT `exp` claim).
+        /// prmana-kubectl subtracts 30s to produce `expirationTimestamp`.
+        expires_at_unix: i64,
+    },
+
     /// Generic success with no data fields.
     Ok {},
 }
@@ -409,6 +449,14 @@ impl AgentResponse {
         Self::Success(AgentResponseData::StepUpTimedOut {
             reason: reason.into(),
             user_message: user_message.into(),
+        })
+    }
+
+    /// Kubectl credential response — bearer token, no DPoP.
+    pub fn kubectl_credential(token: String, expires_at_unix: i64) -> Self {
+        Self::Success(AgentResponseData::KubectlCredential {
+            token,
+            expires_at_unix,
         })
     }
 
@@ -1264,6 +1312,109 @@ mod tests {
                 })
             ),
             "SessionAcknowledged must still parse correctly, got: {parsed:?}"
+        );
+    }
+
+    // --- TDD: GetKubectlCredential IPC protocol (DT-A-04) ---
+
+    /// Test A1: GetKubectlCredential request serializes correctly.
+    #[test]
+    fn test_get_kubectl_credential_request_serialization() {
+        let req = AgentRequest::GetKubectlCredential {
+            cluster_id: "prod".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains(r#""action":"get_kubectl_credential""#),
+            "expected action=get_kubectl_credential in: {json}"
+        );
+        assert!(
+            json.contains(r#""cluster_id":"prod""#),
+            "expected cluster_id in: {json}"
+        );
+    }
+
+    /// Test A1 (round-trip): GetKubectlCredential deserializes from wire JSON.
+    #[test]
+    fn test_get_kubectl_credential_request_deserialization() {
+        let json = r#"{"action":"get_kubectl_credential","cluster_id":"prod"}"#;
+        let req: AgentRequest = serde_json::from_str(json).unwrap();
+        match req {
+            AgentRequest::GetKubectlCredential { cluster_id } => {
+                assert_eq!(cluster_id, "prod");
+            }
+            _ => panic!("Expected GetKubectlCredential, got {req:?}"),
+        }
+    }
+
+    /// Test A2: KubectlCredential response round-trips through serde.
+    #[test]
+    fn test_kubectl_credential_response_round_trip() {
+        let resp = AgentResponse::kubectl_credential("eyJ.test.token".to_string(), 1_712_000_000);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            json.contains(r#""status":"success""#),
+            "expected success status in: {json}"
+        );
+        assert!(
+            json.contains(r#""token":"eyJ.test.token""#),
+            "expected token in: {json}"
+        );
+        assert!(
+            json.contains(r#""expires_at_unix":1712000000"#),
+            "expected expires_at_unix in: {json}"
+        );
+        // Round-trip parse
+        let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            AgentResponse::Success(AgentResponseData::KubectlCredential {
+                token,
+                expires_at_unix,
+            }) => {
+                assert_eq!(token, "eyJ.test.token");
+                assert_eq!(expires_at_unix, 1_712_000_000);
+            }
+            other => panic!("Expected KubectlCredential, got: {other:?}"),
+        }
+    }
+
+    /// Test A3: command_name() returns "GetKubectlCredential" for the new variant.
+    #[test]
+    fn test_get_kubectl_credential_command_name() {
+        let req = AgentRequest::GetKubectlCredential {
+            cluster_id: "staging".to_string(),
+        };
+        assert_eq!(req.command_name(), "GetKubectlCredential");
+    }
+
+    /// Security invariant: KubectlCredential response must NOT contain a `cnf` field.
+    /// (DPoP binding on kubectl tokens is security theater — CLAUDE.md invariant.)
+    #[test]
+    fn test_kubectl_credential_no_cnf_claim_in_response() {
+        let resp = AgentResponse::kubectl_credential("bearer.token".to_string(), 1_712_000_000);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !json.contains("cnf"),
+            "KubectlCredential response MUST NOT contain 'cnf' field: {json}"
+        );
+        assert!(
+            !json.contains("dpop"),
+            "KubectlCredential response MUST NOT contain 'dpop' field: {json}"
+        );
+    }
+
+    /// KubectlCredential discriminates correctly from Ok{} (untagged enum ordering).
+    #[test]
+    fn test_kubectl_credential_discriminates_from_ok() {
+        let resp = AgentResponse::kubectl_credential("tok".to_string(), 9999);
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: AgentResponse = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(
+                parsed,
+                AgentResponse::Success(AgentResponseData::KubectlCredential { .. })
+            ),
+            "KubectlCredential must not be mistaken for Ok, got: {parsed:?}"
         );
     }
 }

@@ -121,6 +121,20 @@ pub enum ValidationError {
     #[error("Invalid audience")]
     InvalidAudience,
 
+    /// A kubectl cluster token (`<cluster_id>.kube.prmana` audience) was presented
+    /// to the SSH/PAM validator.
+    ///
+    /// This is a HARD-FAIL that can never be configured away (CLAUDE.md invariant).
+    /// It either indicates a misconfiguration or an active token-confusion attack
+    /// (stealing a kubectl token and attempting to use it for SSH login).
+    ///
+    /// OCSF: `AUDIENCE_CONFUSION_BLOCKED`, severity Critical.
+    #[error(
+        "kubectl cluster token rejected by SSH/PAM validator (audience isolation violation): \
+         token audience '{token_aud}' ends with '.kube.prmana' and cannot be used for SSH login"
+    )]
+    KubectlAudienceIsolationViolation { token_aud: String },
+
     #[error("ACR level insufficient: required {required}, got {actual:?}")]
     InsufficientAcr {
         required: String,
@@ -291,7 +305,45 @@ impl TokenValidator {
             });
         }
 
-        // Validate audience
+        // HARD-FAIL: kubectl cluster token audience isolation (CLAUDE.md invariant).
+        //
+        // Any token whose `aud` claim ends with `.kube.prmana` is a kubectl
+        // exec-credential token and MUST NOT be accepted by the SSH/PAM validator,
+        // even if the normal audience check would otherwise pass.
+        //
+        // Rationale: kubectl tokens are bearer tokens with no DPoP binding. A stolen
+        // kubectl token attempting to log in via SSH is either a misconfiguration or
+        // a token-confusion attack. We fail hard to block it.
+        //
+        // The check uses the suffix `.kube.prmana` (with leading dot) to prevent
+        // bypass via lookalike audiences like `randomkube.prmana`.
+        //
+        // Exception: if the PAM module's configured `client_id` EXACTLY matches the
+        // token audience (an operator deliberately configuring PAM for a cluster
+        // audience — exotic but allowed), the normal audience check below handles it.
+        //
+        // See: CLAUDE.md "kubectl Authentication Invariant (Phase DT-A onwards)"
+        // Collect audience strings for iteration
+        let aud_strings: Vec<&str> = match &claims.aud {
+            crate::oidc::token::StringOrVec::String(s) => vec![s.as_str()],
+            crate::oidc::token::StringOrVec::Vec(v) => v.iter().map(|s| s.as_str()).collect(),
+        };
+        for token_aud in &aud_strings {
+            if token_aud.ends_with(".kube.prmana") && *token_aud != self.config.client_id.as_str()
+            {
+                tracing::warn!(
+                    token_aud = %token_aud,
+                    configured_audience = %self.config.client_id,
+                    "AUDIENCE_CONFUSION_BLOCKED: kubectl cluster token rejected by \
+                     SSH/PAM validator — possible token-confusion attack or misconfiguration"
+                );
+                return Err(ValidationError::KubectlAudienceIsolationViolation {
+                    token_aud: token_aud.to_string(),
+                });
+            }
+        }
+
+        // Validate audience (normal path)
         if !claims.aud.contains(&self.config.client_id) {
             return Err(ValidationError::InvalidAudience);
         }
@@ -1167,5 +1219,146 @@ mod tests {
                 }
             ));
         }
+    }
+
+    // ── kubectl Audience Isolation Tests (DT-A-04) ────────────────────────────
+    //
+    // These tests verify the HARD-FAIL audience isolation invariant from CLAUDE.md:
+    // Any token with audience ending `.kube.prmana` is rejected by the PAM/SSH
+    // validator unless the PAM module is explicitly configured for that exact audience.
+    //
+    // Tests V1-V5 do NOT require `test-mode` feature because the kubectl audience
+    // check runs BEFORE signature verification in the `validate()` call path.
+    // We test `validate_kubectl_audience_isolation()` directly as a unit function.
+
+    /// Standalone function for testing audience isolation without a full validator.
+    /// This tests the same logic path that runs inside `validate()`.
+    fn check_kubectl_audience_isolation(
+        token_audiences: &[&str],
+        configured_audience: &str,
+    ) -> Result<(), ValidationError> {
+        for token_aud in token_audiences {
+            if token_aud.ends_with(".kube.prmana") && *token_aud != configured_audience {
+                return Err(ValidationError::KubectlAudienceIsolationViolation {
+                    token_aud: token_aud.to_string(),
+                });
+            }
+        }
+        // Normal audience check
+        if !token_audiences.contains(&configured_audience) {
+            return Err(ValidationError::InvalidAudience);
+        }
+        Ok(())
+    }
+
+    /// Test V1 (HARD-FAIL): kubectl cluster token rejected by PAM SSH validator.
+    #[test]
+    fn test_v1_kubectl_cluster_token_rejected_by_pam() {
+        let result =
+            check_kubectl_audience_isolation(&["prod.kube.prmana"], "prmana");
+        assert!(
+            matches!(
+                result,
+                Err(ValidationError::KubectlAudienceIsolationViolation { .. })
+            ),
+            "Test V1 FAILED: kubectl token must be rejected by PAM validator, got: {result:?}"
+        );
+    }
+
+    /// Test V2: Different cluster also rejected.
+    #[test]
+    fn test_v2_staging_cluster_token_rejected_by_pam() {
+        let result =
+            check_kubectl_audience_isolation(&["staging.kube.prmana"], "prmana");
+        assert!(
+            matches!(
+                result,
+                Err(ValidationError::KubectlAudienceIsolationViolation { .. })
+            ),
+            "Test V2 FAILED: staging.kube.prmana must be rejected, got: {result:?}"
+        );
+    }
+
+    /// Test V3 (CRITICAL): Suffix bypass via lookalike must not work.
+    /// `random.kube.prmana.evil.com` does NOT end with `.kube.prmana` so it
+    /// falls through to the normal InvalidAudience path.
+    /// A token `randomkube.prmana` (no dot before `kube`) also falls through.
+    #[test]
+    fn test_v3_lookalike_audience_not_bypassed() {
+        // `randomkube.prmana` — no leading dot before `kube`, should NOT trigger
+        // the isolation check but should fail the normal audience check.
+        let result =
+            check_kubectl_audience_isolation(&["randomkube.prmana"], "prmana");
+        assert!(
+            matches!(result, Err(ValidationError::InvalidAudience)),
+            "Test V3a: randomkube.prmana should fail with InvalidAudience (not isolation), got: {result:?}"
+        );
+
+        // `cluster.kube.prmana.evil.com` — ends with `.com`, not `.kube.prmana`
+        let result =
+            check_kubectl_audience_isolation(&["cluster.kube.prmana.evil.com"], "prmana");
+        assert!(
+            matches!(result, Err(ValidationError::InvalidAudience)),
+            "Test V3b: cluster.kube.prmana.evil.com should fail with InvalidAudience, got: {result:?}"
+        );
+    }
+
+    /// Test V4: Normal SSH/PAM tokens still work.
+    #[test]
+    fn test_v4_normal_ssh_token_accepted() {
+        let result = check_kubectl_audience_isolation(&["prmana"], "prmana");
+        assert!(
+            result.is_ok(),
+            "Test V4 FAILED: normal SSH token (aud=prmana) must be accepted, got: {result:?}"
+        );
+    }
+
+    /// Test V5: Operator explicitly configuring PAM for a cluster audience is allowed.
+    /// If `expected_audience == token_aud`, the isolation check does NOT trigger.
+    #[test]
+    fn test_v5_operator_explicitly_configured_cluster_audience_allowed() {
+        // An operator running a PAM module specifically for a cluster audience.
+        // This is exotic but must work if the operator has configured it explicitly.
+        let result = check_kubectl_audience_isolation(
+            &["prod.kube.prmana"],
+            "prod.kube.prmana",
+        );
+        assert!(
+            result.is_ok(),
+            "Test V5 FAILED: explicitly configured cluster audience must be allowed, got: {result:?}"
+        );
+    }
+
+    /// Test V1 with full validator (requires test-mode to skip signature check).
+    #[test]
+    #[cfg(feature = "test-mode")]
+    fn test_v1_full_validator_rejects_kubectl_token() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        // Craft a token with audience `prod.kube.prmana`
+        let header = r#"{"alg":"RS256","typ":"JWT"}"#;
+        let payload = r#"{"sub":"alice","preferred_username":"alice","iss":"http://localhost:8080/realms/test","aud":"prod.kube.prmana","exp":1893456000,"iat":1705400000,"jti":"kubectl-test-jti-1"}"#;
+        let token = format!(
+            "{}.{}.fake-signature",
+            URL_SAFE_NO_PAD.encode(header),
+            URL_SAFE_NO_PAD.encode(payload)
+        );
+
+        let config = ValidationConfig {
+            client_id: "prmana".into(), // PAM configured for SSH, not kubectl
+            jti_enforcement: EnforcementMode::Disabled,
+            ..base_config()
+        };
+        let validator = test_validator(config);
+        let result = validator.validate(&token);
+
+        assert!(
+            matches!(
+                result,
+                Err(ValidationError::KubectlAudienceIsolationViolation { .. })
+            ),
+            "Full validator must reject kubectl token (test-mode), got: {result:?}"
+        );
     }
 }

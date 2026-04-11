@@ -1192,7 +1192,270 @@ async fn handle_request(
                 }
             }
         }
+
+        // kubectl exec-credential token issuance (DT-A-04).
+        //
+        // Returns a bearer token (NO DPoP, NO cnf claim) scoped to
+        // audience `<cluster_id>.kube.prmana`. TTL: 10 minutes (600s).
+        //
+        // CRITICAL SECURITY: this token is bearer-only because the Kubernetes exec
+        // credential API cannot inject per-request DPoP proofs. The audience isolation
+        // (`<cluster_id>.kube.prmana`) is enforced as a HARD-FAIL in pam-prmana's
+        // validation.rs so that a stolen kubectl token cannot be used for SSH login.
+        //
+        // References:
+        // - CLAUDE.md "kubectl Authentication Invariant (Phase DT-A onwards)"
+        // - RFC 9449 §4.1, §4.3, §7 (why no DPoP here)
+        AgentRequest::GetKubectlCredential { cluster_id } => {
+            handle_get_kubectl_credential(state, &cluster_id).await
+        }
     }
+}
+
+/// Handle `GetKubectlCredential` — mint a short-lived bearer token for kubectl.
+///
+/// Uses the user's current access token as subject_token in an RFC 8693 token
+/// exchange, targeting audience `<cluster_id>.kube.prmana`.
+///
+/// # Security invariants
+/// - NO DPoP binding on the returned token (no cnf claim)
+/// - Token TTL is capped at 600 seconds (10 minutes)
+/// - OCSF audit event emitted on success
+/// - Metrics incremented on success and failure
+async fn handle_get_kubectl_credential(
+    state: &Arc<RwLock<AgentState>>,
+    cluster_id: &str,
+) -> (AgentResponse, bool) {
+    // Validate cluster_id: must be non-empty, max 253 chars, DNS-label characters only.
+    // Prevents path traversal and control characters from reaching the IdP audience parameter.
+    if !is_valid_cluster_id(cluster_id) {
+        return (
+            AgentResponse::error(
+                "cluster_id contains invalid characters (allowed: a-z A-Z 0-9 - _ . ; max 253 chars)",
+                "INVALID_CLUSTER_ID",
+            ),
+            true,
+        );
+    }
+
+    let target_audience = format!("{}.kube.prmana", cluster_id);
+
+    let state_read = state.read().await;
+
+    // Require login.
+    let access_token = match &state_read.access_token {
+        Some(t) => t.expose_secret().to_string(),
+        None => {
+            state_read
+                .metrics
+                .kubectl_token_failures_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return (
+                AgentResponse::error(
+                    "Not logged in — run `prmana-agent login` first",
+                    "NOT_LOGGED_IN",
+                ),
+                true,
+            );
+        }
+    };
+
+    // Need a signer to generate the DPoP proof for the IdP token endpoint call.
+    // Note: the DPoP proof is for the HTTP call TO the IdP, not for the returned
+    // bearer token. The returned kubectl token has NO cnf claim.
+    let signer = match &state_read.signer {
+        Some(s) => Arc::clone(s),
+        None => {
+            state_read
+                .metrics
+                .kubectl_token_failures_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return (
+                AgentResponse::error(
+                    "No signer available — cannot authenticate token exchange",
+                    "NO_SIGNER",
+                ),
+                true,
+            );
+        }
+    };
+
+    let issuer = match &state_read.oidc_issuer {
+        Some(iss) => iss.clone(),
+        None => {
+            state_read
+                .metrics
+                .kubectl_token_failures_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return (
+                AgentResponse::error(
+                    "No OIDC issuer configured — cannot discover token endpoint",
+                    "NO_ISSUER",
+                ),
+                true,
+            );
+        }
+    };
+
+    let client_id = state_read
+        .oidc_client_id
+        .as_deref()
+        .unwrap_or("prmana")
+        .to_string();
+    let client_attestation = AgentConfig::load()
+        .map(|c| c.client_attestation)
+        .unwrap_or_default();
+
+    // MEM-03: expose client_secret only at HTTP boundary.
+    let client_secret: Option<String> = state_read
+        .oidc_client_secret
+        .as_ref()
+        .map(|s| s.expose_secret().to_string());
+
+    let metrics = Arc::clone(&state_read.metrics);
+
+    // Drop the read lock before making async HTTP calls.
+    drop(state_read);
+
+    // Discover token endpoint (failover-aware).
+    let token_endpoint = match failover_aware_discovery(&issuer, state, 10).await {
+        Ok(result) => {
+            if result.failover_active {
+                info!(
+                    effective_issuer = %result.effective_issuer,
+                    cluster_id = %cluster_id,
+                    "kubectl token exchange using failover issuer"
+                );
+            }
+            result.token_endpoint
+        }
+        Err(err_resp) => {
+            metrics
+                .kubectl_token_failures_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return (err_resp, true);
+        }
+    };
+
+    // Generate DPoP proof for the HTTP request TO the IdP token endpoint.
+    // This proof authenticates OUR agent to the IdP; it is NOT embedded in the
+    // returned kubectl token (which is a plain bearer token per invariant).
+    let dpop_proof = match signer.sign_proof("POST", &token_endpoint, None) {
+        Ok(proof) => proof,
+        Err(e) => {
+            metrics
+                .kubectl_token_failures_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return (
+                AgentResponse::error(
+                    format!("Failed to generate DPoP proof for kubectl exchange: {e}"),
+                    "DPOP_ERROR",
+                ),
+                true,
+            );
+        }
+    };
+
+    // Perform RFC 8693 token exchange.
+    // The `audience` parameter sets aud = `<cluster_id>.kube.prmana` in the new token.
+    match crate::exchange::perform_token_exchange(
+        &token_endpoint,
+        &access_token,
+        &target_audience,
+        &client_id,
+        client_secret.as_deref(),
+        &dpop_proof,
+        signer.as_ref(),
+        Some(&client_attestation),
+    )
+    .await
+    {
+        Ok(resp) => {
+            // HARD-FAIL: reject if IdP DPoP-bound the returned token (RFC 9449 §5.2).
+            // kubectl cannot inject per-request DPoP proofs; a cnf-bearing token would
+            // cause every k8s API call to fail with 401. Catch it here with a clear error
+            // rather than silently handing a broken token to kubectl.
+            if let Err(e) = verify_no_cnf_claim(&resp.access_token) {
+                metrics
+                    .kubectl_token_failures_total
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::error!(
+                    cluster_id = %cluster_id,
+                    audience = %target_audience,
+                    error = %e,
+                    "KUBECTL_CNF_REJECTED"
+                );
+                return (
+                    AgentResponse::error(
+                        "IdP returned a DPoP-bound kubectl token (cnf present) — cannot use \
+                         as bearer token. Configure IdP to omit cnf binding for this audience.",
+                        "KUBECTL_TOKEN_CNF_BOUND",
+                    ),
+                    true,
+                );
+            }
+
+            // Calculate expiry: prefer expires_in from response, cap at 600s (10 min).
+            let ttl = resp.expires_in.min(600);
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let expires_at_unix = now_unix + ttl as i64;
+
+            metrics
+                .kubectl_tokens_issued_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            tracing::info!(
+                cluster_id = %cluster_id,
+                audience = %target_audience,
+                ttl_seconds = ttl,
+                expires_at_unix = expires_at_unix,
+                "KUBECTL_TOKEN_ISSUED"
+            );
+
+            (
+                AgentResponse::kubectl_credential(resp.access_token, expires_at_unix),
+                false,
+            )
+        }
+        Err(e) => {
+            metrics
+                .kubectl_token_failures_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            warn!(
+                error = %e,
+                cluster_id = %cluster_id,
+                audience = %target_audience,
+                "kubectl token exchange failed"
+            );
+            (
+                AgentResponse::error(
+                    "Unable to exchange token for cluster audience",
+                    "TOKEN_EXCHANGE_FAILED",
+                ),
+                true,
+            )
+        }
+    }
+}
+
+/// Validate a cluster_id for use in audience construction.
+///
+/// Rules:
+/// - Non-empty, at most 253 characters (RFC 1035 max FQDN length)
+/// - Characters: ASCII alphanumeric, `-`, `_`, `.`
+/// - No `..` sequences (prevents path traversal)
+///
+/// This ensures the audience parameter `<cluster_id>.kube.prmana` is safe to
+/// send to the IdP token endpoint.
+pub fn is_valid_cluster_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        && !s.contains("..")
 }
 
 /// Extract the `attest` field from a DPoP proof JWT header (ADR-018).
@@ -2803,6 +3066,48 @@ fn extract_string_claim_from_jwt_payload(token: &str, claim_name: &str) -> Optio
         .get(claim_name)
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
+}
+
+/// Verify that a JWT does not contain a `cnf` claim.
+///
+/// kubectl tokens must be plain bearer tokens. If an IdP adds `cnf.jkt` during
+/// token exchange (RFC 9449 §5.2 — server SHOULD bind when DPoP proof is present),
+/// the token cannot be used by kubectl because kubectl has no mechanism to generate
+/// per-request DPoP proofs for the k8s API server.
+///
+/// This check makes the CLAUDE.md invariant ("NO cnf claim") machine-enforced rather
+/// than aspirational. The payload is decoded without signature verification; transport
+/// security (TLS to the IdP token endpoint) provides integrity for this read.
+fn verify_no_cnf_claim(token: &str) -> Result<(), String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    let payload_b64 = token
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| "malformed JWT: no payload segment".to_string())?;
+
+    // Try no-pad first (RFC 7515 standard), then with padding as fallback.
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .or_else(|_| {
+            use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+            URL_SAFE.decode(payload_b64)
+        })
+        .map_err(|e| format!("failed to base64-decode JWT payload: {e}"))?;
+
+    let claims: serde_json::Value = serde_json::from_slice(&payload)
+        .map_err(|e| format!("failed to parse JWT payload as JSON: {e}"))?;
+
+    if claims.get("cnf").is_some() {
+        return Err(
+            "IdP returned a DPoP-bound token (cnf claim present) — not usable as kubectl \
+             bearer token. Configure the IdP token exchange endpoint to omit cnf binding \
+             for this audience."
+                .to_string(),
+        );
+    }
+
+    Ok(())
 }
 
 /// Extract the `acr` claim from an ID token JWT payload.

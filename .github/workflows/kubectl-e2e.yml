@@ -1,0 +1,156 @@
+name: kubectl-e2e
+
+on:
+  pull_request:
+    paths:
+      - 'prmana-kubectl/**'
+      - 'prmana-agent/src/daemon/**'
+      - 'pam-prmana/src/oidc/validation.rs'
+      - 'examples/kubectl/**'
+      - 'test/kubectl/**'
+      - '.github/workflows/kubectl-e2e.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'prmana-kubectl/**'
+      - 'prmana-agent/src/daemon/**'
+      - 'pam-prmana/src/oidc/validation.rs'
+      - 'examples/kubectl/**'
+      - 'test/kubectl/**'
+
+jobs:
+  unit-tests:
+    name: Unit tests (prmana-kubectl + audience isolation)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Run prmana-kubectl unit tests
+        run: cargo test -p prmana-kubectl
+
+      - name: Run PAM audience isolation tests (V1-V5)
+        run: cargo test -p pam-prmana -- oidc::validation
+
+      - name: Run agent protocol tests (A1-A3)
+        run: cargo test -p prmana-agent -- daemon::protocol
+
+      - name: Clippy (prmana-kubectl)
+        run: cargo clippy -p prmana-kubectl -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+  kubectl-e2e:
+    name: kind cluster e2e (kubectl get pods + audience isolation)
+    runs-on: ubuntu-22.04
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Install kubectl 1.30
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Start Keycloak (test IdP)
+        run: |
+          cd test/fixtures/keycloak
+          docker compose up -d
+          echo "Waiting for Keycloak..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8080/realms/prmana-test/.well-known/openid-configuration \
+              >/dev/null 2>&1 && { echo "Keycloak ready."; break; }
+            [ "$i" -eq 30 ] && { echo "Keycloak timed out."; exit 1; }
+            sleep 2
+          done
+
+      - name: Build workspace (release)
+        run: cargo build --workspace --release
+
+      - name: Verify prmana-kubectl binary
+        run: |
+          test -x target/release/prmana-kubectl
+          test -x target/release/prmana-agent
+          target/release/prmana-kubectl --version
+
+      - name: Run kubectl e2e test
+        run: bash test/kubectl/e2e_kind_test.sh
+
+      - name: Validate reference AuthenticationConfiguration structure
+        run: |
+          python3 - <<'PYEOF'
+          import yaml
+          with open('examples/kubectl/kube-apiserver-auth-config.yaml') as f:
+              doc = yaml.safe_load(f)
+          assert doc['apiVersion'] == 'apiserver.config.k8s.io/v1beta1', 'wrong apiVersion'
+          assert doc['kind'] == 'AuthenticationConfiguration', 'wrong kind'
+          audiences = doc['jwt'][0]['issuer']['audiences']
+          assert any('.kube.prmana' in a for a in audiences), 'audience must end .kube.prmana'
+          rules = doc['jwt'][0]['userValidationRules']
+          assert any('system:' in r['expression'] for r in rules), 'must block system: prefix'
+          print('AuthenticationConfiguration structure: OK')
+          PYEOF
+
+      - name: Validate reference kubeconfig structure
+        run: |
+          python3 - <<'PYEOF'
+          import yaml
+          with open('examples/kubectl/kubeconfig-prmana.yaml') as f:
+              doc = yaml.safe_load(f)
+          users = doc.get('users', [])
+          assert users, 'must have users'
+          exec_stanza = users[0]['user']['exec']
+          assert exec_stanza['apiVersion'] == 'client.authentication.k8s.io/v1'
+          assert exec_stanza['command'] == 'prmana-kubectl'
+          assert exec_stanza['interactiveMode'] == 'IfAvailable'
+          assert exec_stanza['provideClusterInfo'] is False
+          print('kubeconfig structure: OK')
+          PYEOF
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubectl-e2e-logs
+          path: |
+            /tmp/kubectl-output.log
+            /tmp/prmana-agent.log
+          retention-days: 7
