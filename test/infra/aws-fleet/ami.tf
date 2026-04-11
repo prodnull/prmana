@@ -1,63 +1,187 @@
 # ---------------------------------------------------------------------------
 # AMI resolution for the locked distro × arch matrix.
 #
-# Strategy:
-#   Ubuntu + Amazon Linux 2023: AWS SSM public parameters (owned by AWS, no
-#     fragile name-glob, automatically updated on each new release).
-#   Debian 12: data "aws_ami" from Debian official owner 136693071363.
-#   Rocky 9:   data "aws_ami" from Rocky official owner 792107900819.
-#   Fedora 40: data "aws_ami" from Fedora Cloud owner 125523088429 (amd64 only).
+# Strategy: all distros use data "aws_ami" with verified public owner IDs.
+# No SSM parameter lookups — avoids requiring ssm:GetParameter IAM permission
+# on the CI role; ec2:DescribeImages is sufficient and already granted.
 #
-# Security invariant (T-DT0-01-08): AMIs are resolved only from the above
-# well-known, verified public owners. No community or unverified owners.
+# Verified owner IDs (T-DT0-01-08 security invariant):
+#   Ubuntu:          099720109477  (Canonical Ltd. official)
+#   Amazon Linux:    amazon         (AWS first-party, resolves to AWS account)
+#   Debian 12:       136693071363  (Debian official on AWS Marketplace)
+#   Rocky Linux 9:   792107900819  (Rocky Linux official)
+#   Fedora 40:       125523088429  (Fedora Cloud official)
 #
 # Cross-variable constraint: fedora-40 + arm64 is not in the matrix.
-# This is enforced below via a local that will produce a clear error if
-# an unsupported combination is requested (see locals.ami_id).
+# Enforced via variable validation block in variables.tf.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Fedora 40 + arm64 guard — explicit early fail with a readable message.
-# Terraform evaluates locals eagerly; if the combination is invalid, the
-# locals.ami_id map construction will reference null and plan will fail cleanly.
+# Fedora 40 + arm64 guard — explicit local for readable plan-time errors.
 # ---------------------------------------------------------------------------
 locals {
   fedora_arm64_unsupported = (var.distro == "fedora-40" && var.arch == "arm64")
 }
 
 # ---------------------------------------------------------------------------
-# Ubuntu 22.04 — SSM public parameters (canonical public parameters)
-# Ref: https://documentation.ubuntu.com/aws/en/latest/aws-how-to/instances/find-ubuntu-images/
+# Ubuntu 22.04 — Canonical official (owner: 099720109477)
+# Name pattern matches Canonical's stable HVM/EBS naming scheme.
 # ---------------------------------------------------------------------------
-data "aws_ssm_parameter" "ubuntu_2204_amd64" {
-  name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+data "aws_ami" "ubuntu_2204_amd64" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
-data "aws_ssm_parameter" "ubuntu_2204_arm64" {
-  name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id"
+data "aws_ami" "ubuntu_2204_arm64" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
 # ---------------------------------------------------------------------------
-# Ubuntu 24.04 — SSM public parameters
+# Ubuntu 24.04 — Canonical official (owner: 099720109477)
+# 24.04 uses hvm-ssd-gp3 in the path (GP3 root volumes are the new default).
 # ---------------------------------------------------------------------------
-data "aws_ssm_parameter" "ubuntu_2404_amd64" {
-  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+data "aws_ami" "ubuntu_2404_amd64" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
-data "aws_ssm_parameter" "ubuntu_2404_arm64" {
-  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp2/ami-id"
+data "aws_ami" "ubuntu_2404_arm64" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
 # ---------------------------------------------------------------------------
-# Amazon Linux 2023 — AWS SSM public parameters
-# Ref: https://docs.aws.amazon.com/linux/al2023/ug/ec2.html#launch-from-ssm
+# Amazon Linux 2023 — AWS first-party (owner: amazon)
 # ---------------------------------------------------------------------------
-data "aws_ssm_parameter" "al2023_amd64" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+data "aws_ami" "al2023_amd64" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
-data "aws_ssm_parameter" "al2023_arm64" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+data "aws_ami" "al2023_arm64" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-arm64"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -210,12 +334,12 @@ data "aws_ami" "fedora_40_amd64" {
 # ---------------------------------------------------------------------------
 locals {
   ami_id_map = {
-    "ubuntu-22.04-amd64"     = data.aws_ssm_parameter.ubuntu_2204_amd64.value
-    "ubuntu-22.04-arm64"     = data.aws_ssm_parameter.ubuntu_2204_arm64.value
-    "ubuntu-24.04-amd64"     = data.aws_ssm_parameter.ubuntu_2404_amd64.value
-    "ubuntu-24.04-arm64"     = data.aws_ssm_parameter.ubuntu_2404_arm64.value
-    "amazonlinux-2023-amd64" = data.aws_ssm_parameter.al2023_amd64.value
-    "amazonlinux-2023-arm64" = data.aws_ssm_parameter.al2023_arm64.value
+    "ubuntu-22.04-amd64"     = data.aws_ami.ubuntu_2204_amd64.id
+    "ubuntu-22.04-arm64"     = data.aws_ami.ubuntu_2204_arm64.id
+    "ubuntu-24.04-amd64"     = data.aws_ami.ubuntu_2404_amd64.id
+    "ubuntu-24.04-arm64"     = data.aws_ami.ubuntu_2404_arm64.id
+    "amazonlinux-2023-amd64" = data.aws_ami.al2023_amd64.id
+    "amazonlinux-2023-arm64" = data.aws_ami.al2023_arm64.id
     "debian-12-amd64"        = data.aws_ami.debian_12_amd64.id
     "debian-12-arm64"        = data.aws_ami.debian_12_arm64.id
     "rocky-9-amd64"          = data.aws_ami.rocky_9_amd64.id
