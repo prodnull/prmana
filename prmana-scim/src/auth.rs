@@ -4,6 +4,7 @@
 //! The service refuses to start without either a configured `oidc_issuer`
 //! (real validation) or the explicit `--insecure-no-auth` flag.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,6 +178,8 @@ pub enum AuthMode {
         issuer: String,
         /// Expected audience (`aud` claim).
         audience: String,
+        /// Required scope/role value for privileged SCIM operations.
+        required_entitlement: String,
         /// Shared TTL-based JWKS cache for this issuer.
         jwks_cache: Arc<JwksCache>,
     },
@@ -186,9 +189,58 @@ pub enum AuthMode {
 }
 
 /// Minimal JWT claims for Bearer token validation.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct BearerClaims {
-    // Standard claims validated by jsonwebtoken: iss, aud, exp
+    #[serde(default)]
+    scope: Option<StringOrList>,
+    #[serde(default)]
+    scp: Option<StringOrList>,
+    #[serde(default)]
+    roles: Vec<String>,
+    #[serde(default)]
+    realm_access: Option<RoleList>,
+    #[serde(default)]
+    resource_access: HashMap<String, RoleList>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StringOrList {
+    String(String),
+    List(Vec<String>),
+}
+
+impl StringOrList {
+    fn contains(&self, required: &str) -> bool {
+        match self {
+            Self::String(values) => values.split_whitespace().any(|value| value == required),
+            Self::List(values) => values.iter().any(|value| value == required),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RoleList {
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+impl BearerClaims {
+    fn has_required_entitlement(&self, required: &str, audience: &str) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|scope| scope.contains(required))
+            || self.scp.as_ref().is_some_and(|scp| scp.contains(required))
+            || self.roles.iter().any(|role| role == required)
+            || self
+                .realm_access
+                .as_ref()
+                .is_some_and(|realm| realm.roles.iter().any(|role| role == required))
+            || self
+                .resource_access
+                .get(audience)
+                .is_some_and(|resource| resource.roles.iter().any(|role| role == required))
+    }
 }
 
 fn unauthorized(detail: &str) -> Response {
@@ -243,6 +295,7 @@ pub async fn auth_middleware(
                 AuthMode::Validated {
                     issuer,
                     audience,
+                    required_entitlement,
                     jwks_cache,
                 } => {
                     // Parse JWT header to determine algorithm and key ID.
@@ -298,16 +351,33 @@ pub async fn auth_middleware(
                     validation.set_issuer(&[issuer]);
                     validation.set_audience(&[audience]);
 
-                    if let Err(e) = decode::<BearerClaims>(token, &decoding_key, &validation) {
+                    let claims = match decode::<BearerClaims>(token, &decoding_key, &validation) {
+                        Ok(token_data) => token_data.claims,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                issuer = %issuer,
+                                "Bearer token validation failed"
+                            );
+                            return unauthorized("Invalid token");
+                        }
+                    };
+
+                    if !claims.has_required_entitlement(required_entitlement, audience) {
                         tracing::warn!(
-                            error = %e,
                             issuer = %issuer,
-                            "Bearer token validation failed"
+                            audience = %audience,
+                            required_entitlement = %required_entitlement,
+                            "Bearer token missing required SCIM entitlement"
                         );
-                        return unauthorized("Invalid token");
+                        return unauthorized("Insufficient privileges");
                     }
 
-                    tracing::debug!(issuer = %issuer, "Bearer token validated (signature + claims)");
+                    tracing::debug!(
+                        issuer = %issuer,
+                        required_entitlement = %required_entitlement,
+                        "Bearer token validated and authorized"
+                    );
                 }
             }
 
@@ -363,9 +433,54 @@ mod tests {
     use axum::middleware;
     use axum::routing::get;
     use axum::Router;
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde::Serialize;
     use tower::ServiceExt;
 
     use super::*;
+
+    const TEST_RSA_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQD3FdWl1UmI4wmI
+7QYbbGKf9ancLwOsG4L1OMJrDZxxJA+PojeUhRg8A/F+uwdvmDxFR035hHCwLQAO
+aM0w7m+83w9wOCs9At9Y0g7C0rqWI7izeDFE0ztixgYY4m2U1V7s2p5S4jQhfkzF
+tYykxV2MHhHJ7FqyWJct34JDTPfXtOuwWZv7t9TrOPwozRVDbi+yQN5f9Ea4OFWt
+oTd8/MtNielaYgvEXEI8Qmo2jEK6DDQyk1JuYpKOwd996QqtbWQNxaL8YvEP/5wQ
+/BuEY9FUf24u8RWky61xoowCx1b0LDf4guVeXUvbMj/5rB1M3iuP2qZhIom3TQ30
+R1RG2XOLAgMBAAECggEBAL0IRGLR8ac7Y0ERbVmvqyiLzv84LMwQZDltyjgSurxI
+hWszBOiohqjrr2dweTjkNEAgVERwEbKHSwK7JTipQm0yDmKhZlsQBoWydz6P79YL
+0DPl4XOxUz63F1UUbheuwifc/cGVc6KoON4NjmNE59PZ8WwVWjIV2ttqowMQMJEi
+RU+rY7DWWzjwJWtDplxgTBO8A8qn8bT5wTWB4qFXrW8PUiOrtn/oaUqxR0o2rHqL
+ltEWZSAiqquqwwWgkUQnZNK9rRmEgnp1Ot1RsfaVPYPmnt+AlJH4rQNs7j0yH+9U
+A04zv7kBdG+YxHoNAC0AZ5Y2YLiWGs5USHSF7cJfA7ECgYEA/mdwwWkw0AnapIX8
+FREuLx1bZOGzgyrxxoQltLDyjvmyBc0cAWVVN9i8ZGfu9C5+OPnAMzDyQLj9VH+c
+Vo2gnoq4R+VTIod5hkLXy+5mGBhR4Z0nOs2KoLTLPIq1d62NziG9Ispv0jDQXI3H
+B3X5glopKCwtaRukGTLuNx+h9kkCgYEA+KKj+tB7JIT/XL/6/NthrtZnRY2xvPna
+c/uE/y76jUAyipvXWdMX17+0uHD/7VG7I+1W4aFxLvx3sSMIa0qT/CDHNov95pY/
+6hjD8+JbjB/izm277QPCmXVQaWFeF0oSEm/Jwh/q73do+t5Fzvx0It9yPM06lwEd
+85zQaNr+SzMCgYA3wD9rgzvZO2+Ywmv9yegPFyXiM7v9MLoPQQJqWKSvRHUI5GwQ
+uj40oOCYOFabWFz86259SWqtWFzb2aNPLHZYiBneV5kiZgHxtFBKNpJVEW9QO/pO
+3qBUm4o2WEdwVK5Qz//80dQzgdMHlWJadjYZpNyEGzpQYGhTxV+C4QHDUQKBgQDq
+7aJLh1oTs6cmGDArY471CJkj2zKqANss4+dSxyzu8k3PMllVAmRw8y7rZ7oqnyNY
+WxXQtB6h6uOdeCCoYBtcDAyvua76hdV2eFgOxT8DM822h3EeDoN9RJ/qMpoZH1/c
+E8xrpIT0J7wF7qe/YELMAJ2MXc6Sh/epC+7QZLwKiQKBgQCf/F7DCBBcqG6Tt/Fu
+fJUOii35XzSg1zwVbLS99x90cxoPgUUKSkTVFAnkKJnBAg46ERs41Q5344Pjk63l
+4UGfctqJK/CA3YtTW3oBVFan91IxvhN6g5bOGyOvHYLTVxxrqUs+qOyhjXFL5FnN
+3IkQ3oAtqqrQ/P5oguZFR643Ig==
+-----END PRIVATE KEY-----"#;
+
+    fn validated_test_jwks() -> jsonwebtoken::jwk::JwkSet {
+        serde_json::from_value(serde_json::json!({
+            "keys": [{
+                "kty": "RSA",
+                "kid": "poc-key",
+                "alg": "RS256",
+                "use": "sig",
+                "n": "9xXVpdVJiOMJiO0GG2xin_Wp3C8DrBuC9TjCaw2ccSQPj6I3lIUYPAPxfrsHb5g8RUdN-YRwsC0ADmjNMO5vvN8PcDgrPQLfWNIOwtK6liO4s3gxRNM7YsYGGOJtlNVe7NqeUuI0IX5MxbWMpMVdjB4RyexasliXLd-CQ0z317TrsFmb-7fU6zj8KM0VQ24vskDeX_RGuDhVraE3fPzLTYnpWmILxFxCPEJqNoxCugw0MpNSbmKSjsHffekKrW1kDcWi_GLxD_-cEPwbhGPRVH9uLvEVpMutcaKMAsdW9Cw3-ILlXl1L2zI_-awdTN4rj9qmYSKJt00N9EdURtlziw",
+                "e": "AQAB"
+            }]
+        }))
+        .unwrap()
+    }
 
     fn test_jwks_with_kid(kid: &str) -> jsonwebtoken::jwk::JwkSet {
         serde_json::from_value(serde_json::json!({
@@ -403,6 +518,18 @@ mod tests {
         "ok"
     }
 
+    #[derive(Debug, Serialize)]
+    struct TestBearerClaims<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        exp: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<&'a str>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        roles: Vec<&'a str>,
+    }
+
     /// Build a test app with insecure auth (accepts any non-empty Bearer).
     fn test_app_insecure() -> Router {
         let auth_mode = Arc::new(AuthMode::Insecure);
@@ -413,6 +540,50 @@ mod tests {
                 auth_middleware,
             ))
             .with_state(auth_mode)
+    }
+
+    fn test_app_validated(required_entitlement: &str) -> Router {
+        let cache = Arc::new(JwksCache::new(Duration::from_secs(300)));
+        let mut guard = cache.inner.try_write().unwrap();
+        *guard = Some(CachedJwks {
+            jwks: validated_test_jwks(),
+            fetched_at: tokio::time::Instant::now(),
+        });
+        drop(guard);
+
+        let auth_mode = Arc::new(AuthMode::Validated {
+            issuer: "https://idp.example.com".into(),
+            audience: "prmana-scim".into(),
+            required_entitlement: required_entitlement.into(),
+            jwks_cache: cache,
+        });
+
+        Router::new()
+            .route("/test", get(ok_handler))
+            .layer(middleware::from_fn_with_state(
+                auth_mode.clone(),
+                auth_middleware,
+            ))
+            .with_state(auth_mode)
+    }
+
+    fn signed_test_token(scope: Option<&str>, roles: &[&str]) -> String {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("poc-key".to_string());
+
+        encode(
+            &header,
+            &TestBearerClaims {
+                iss: "https://idp.example.com",
+                aud: "prmana-scim",
+                sub: "alice",
+                exp: 4_102_444_800,
+                scope,
+                roles: roles.to_vec(),
+            },
+            &EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY_PEM.as_bytes()).unwrap(),
+        )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -464,6 +635,7 @@ mod tests {
         let auth_mode = Arc::new(AuthMode::Validated {
             issuer: "https://idp.example.com".into(),
             audience: "prmana-scim".into(),
+            required_entitlement: "scim:provision".into(),
             jwks_cache: Arc::new(JwksCache::new(Duration::from_secs(300))),
         });
         let app = Router::new()
@@ -481,6 +653,51 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_validated_mode_rejects_token_missing_required_entitlement() {
+        let app = test_app_validated("scim:provision");
+        let token = signed_test_token(None, &[]);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_validated_mode_accepts_required_scope() {
+        let app = test_app_validated("scim:provision");
+        let token = signed_test_token(Some("openid profile scim:provision"), &[]);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_validated_mode_accepts_required_role() {
+        let app = test_app_validated("scim:provision");
+        let token = signed_test_token(None, &["scim:provision"]);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

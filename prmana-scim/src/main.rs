@@ -93,11 +93,22 @@ async fn main() -> Result<()> {
              Either configure oidc_issuer in {} or pass --insecure-no-auth for development.",
             args.config,
         );
+    } else if config.required_entitlement.trim().is_empty() {
+        bail!(
+            "required_entitlement must not be empty.\n\
+             Configure a dedicated SCIM scope/role value in {} or use the default `scim:provision`.",
+            args.config,
+        );
     } else {
-        tracing::info!(issuer = %config.oidc_issuer, "OIDC token validation enabled");
+        tracing::info!(
+            issuer = %config.oidc_issuer,
+            required_entitlement = %config.required_entitlement,
+            "OIDC token validation enabled"
+        );
         AuthMode::Validated {
             issuer: config.oidc_issuer.clone(),
             audience: config.oidc_audience.clone(),
+            required_entitlement: config.required_entitlement.clone(),
             jwks_cache: Arc::new(JwksCache::new(std::time::Duration::from_secs(
                 config.jwks_cache_ttl_secs,
             ))),
@@ -105,7 +116,7 @@ async fn main() -> Result<()> {
     };
 
     let listen_addr = config.listen_addr.clone();
-    let provisioner = Arc::new(Provisioner::new(config));
+    let provisioner = Arc::new(Provisioner::new(config)?);
     let app = build_router(provisioner, auth_mode);
 
     tracing::info!(addr = %listen_addr, "prmana-scim starting");

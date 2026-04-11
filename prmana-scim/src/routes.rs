@@ -227,10 +227,16 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_provisioner() -> AppState {
-        Arc::new(Provisioner::new(crate::config::ScimConfig {
-            dry_run: true,
-            ..crate::config::ScimConfig::default()
-        }))
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_file = temp_dir.path().join("routes-state.json");
+        Arc::new(
+            Provisioner::new(crate::config::ScimConfig {
+                dry_run: true,
+                state_file: state_file.display().to_string(),
+                ..crate::config::ScimConfig::default()
+            })
+            .unwrap(),
+        )
     }
 
     fn test_router() -> axum::Router {
