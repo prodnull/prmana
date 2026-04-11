@@ -1,0 +1,142 @@
+name: Integration Tests (Docker services)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'prmana-agent/src/**'
+      - 'prmana-agent/tests/**'
+      - 'pam-prmana/src/**'
+      - 'pam-prmana/tests/**'
+      - '.github/workflows/integration-docker.yml'
+  pull_request:
+    paths:
+      - 'prmana-agent/src/**'
+      - 'prmana-agent/tests/**'
+      - 'pam-prmana/src/**'
+      - 'pam-prmana/tests/**'
+      - '.github/workflows/integration-docker.yml'
+
+jobs:
+
+  step-up-ipc:
+    name: Step-up IPC tests (sequential)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-integ-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integ-
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
+      - name: Build workspace
+        run: cargo build --workspace
+      - name: Run step_up_ipc tests (--test-threads=1)
+        run: cargo test -p prmana-agent --test step_up_ipc -- --test-threads=1 --ignored
+        env:
+          RUST_LOG: prmana_agent=debug
+
+  keyutils-storage:
+    name: Keyutils storage tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-integ-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integ-
+      - name: Install keyutils
+        run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev libkeyutils-dev keyutils pkg-config
+      - name: Verify kernel keyring available
+        run: keyctl show @u
+      - name: Run headless_storage tests (no D-Bus, keyutils fallback)
+        run: cargo test -p prmana-agent --test headless_storage -- --ignored
+        env:
+          DBUS_SESSION_BUS_ADDRESS: ""
+      - name: Run storage router FileStorage migration test
+        run: cargo test -p prmana-agent storage::router::tests::maybe_migrate_no_op -- --ignored
+
+  tpm-swtpm:
+    name: TPM 2.0 tests (swtpm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-integ-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integ-
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
+      - name: Start swtpm
+        run: docker compose -f docker-compose.tpm-test.yaml up -d
+      - name: Wait for swtpm
+        run: |
+          for i in $(seq 1 20); do
+            if docker compose -f docker-compose.tpm-test.yaml ps | grep -q "running\|healthy"; then
+              echo "swtpm ready"; break
+            fi
+            echo "Waiting... ($i/20)"; sleep 2
+          done
+      - name: Run TPM tests
+        run: cargo test -p prmana-agent --features tpm,test-mode -- --ignored tpm
+        env:
+          PRMANA_TPM_TCTI: swtpm
+          RUST_LOG: prmana_agent=debug
+      - name: Stop swtpm
+        if: always()
+        run: docker compose -f docker-compose.tpm-test.yaml down -v
+
+  spire-integration:
+    name: SPIRE workload API tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-integ-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integ-
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
+      - name: Start SPIRE
+        run: docker compose -f docker-compose.spire-test.yaml up -d
+      - name: Wait for SPIRE agent
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.spire-test.yaml ps | grep "spire-agent" | grep -q "healthy"; then
+              echo "SPIRE agent ready"; break
+            fi
+            echo "Waiting... ($i/30)"; sleep 3
+          done
+      - name: Run SPIRE integration tests
+        run: cargo test -p prmana-agent --features spire --test spire_integration -- --ignored
+        env:
+          PRMANA_SPIRE_SOCKET: /tmp/spire-agent/public/api.sock
+          RUST_LOG: prmana_agent=debug
+      - name: Stop SPIRE
+        if: always()
+        run: docker compose -f docker-compose.spire-test.yaml down -v
