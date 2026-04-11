@@ -1,0 +1,88 @@
+# Reference AuthenticationConfiguration for kube-apiserver (Kubernetes 1.30+)
+#
+# Place at: /etc/kubernetes/pki/prmana-auth-config.yaml
+# Apply with: --authentication-config=/etc/kubernetes/pki/prmana-auth-config.yaml
+#
+# CAUTION: When --authentication-config is set, the legacy --oidc-* flags are
+# mutually exclusive. Choose one approach and stick with it.
+#
+# See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/
+# See: docs/kubectl-setup.md for full setup guide
+#
+# References:
+# - https://kubernetes.io/docs/reference/config-api/apiserver-authentication.v1beta1/
+# - prmana CLAUDE.md "kubectl Authentication Invariant (Phase DT-A onwards)"
+
+apiVersion: apiserver.config.k8s.io/v1beta1
+kind: AuthenticationConfiguration
+jwt:
+  - issuer:
+      # Replace with your IdP's issuer URL (must match what prmana-agent is configured to use)
+      url: "https://your-idp.example.com/realms/corp"
+
+      # Must include the prmana audience for this cluster.
+      # Format: <cluster_id>.kube.prmana (where cluster_id is what you pass to prmana-kubectl)
+      audiences:
+        - "prod.kube.prmana"
+
+      # Accept tokens that match any audience in the list above
+      audienceMatchPolicy: MatchAny
+
+      # Optional: pin the IdP's CA certificate to prevent MITM
+      # certificateAuthority: |
+      #   -----BEGIN CERTIFICATE-----
+      #   <base64-encoded CA certificate>
+      #   -----END CERTIFICATE-----
+
+    # Map JWT claims to Kubernetes user attributes
+    claimMappings:
+      username:
+        # preferred_username is set by most IdPs and matches the Linux username
+        # that prmana uses for SSH/PAM. Using the same claim ensures the
+        # "one identity plane" story: same user, same IdP, same audit trail.
+        claim: "preferred_username"
+        prefix: ""
+
+      # Optional: map groups claim to Kubernetes RBAC groups
+      # groups:
+      #   claim: "groups"
+      #   prefix: ""
+
+      # Optional: map UID claim for audit correlation
+      # uid:
+      #   claim: "sub"
+
+    # CEL expressions to validate the mapped user before admission.
+    # These rules MUST block reserved system accounts and Kubernetes internals.
+    #
+    # References:
+    # - prmana Phase 35: RESERVED_USERNAMES (60+ entries in pam-prmana/src/identity/mapper.rs)
+    # - Kubernetes: system: prefix is used for system accounts
+    #
+    # NOTE: This list is a subset. Full alignment with prmana's reserved_usernames
+    # is deferred to Phase DT-E. The entries below block the most critical names.
+    userValidationRules:
+      - expression: >
+          !user.username.startsWith('system:') &&
+          !user.username.startsWith('kube-') &&
+          user.username != 'root' &&
+          user.username != 'nobody' &&
+          user.username != 'daemon' &&
+          user.username != 'bin' &&
+          user.username != 'sys' &&
+          user.username != 'sync' &&
+          user.username != 'games' &&
+          user.username != 'man' &&
+          user.username != 'lp' &&
+          user.username != 'mail' &&
+          user.username != 'news' &&
+          user.username != 'uucp' &&
+          user.username != 'proxy' &&
+          user.username != 'www-data' &&
+          user.username != 'backup' &&
+          user.username != 'list' &&
+          user.username != 'irc' &&
+          user.username != 'sshd' &&
+          user.username != 'admin' &&
+          user.username != 'administrator'
+        message: "username is a reserved system account or uses a protected prefix"
