@@ -1,13 +1,14 @@
 # ---------------------------------------------------------------------------
 # AMI resolution for the locked distro × arch matrix.
 #
-# Strategy: all distros use data "aws_ami" with verified public owner IDs.
-# No SSM parameter lookups — avoids requiring ssm:GetParameter IAM permission
-# on the CI role; ec2:DescribeImages is sufficient and already granted.
+# Strategy: each data source uses count = 1 only when it matches the selected
+# distro × arch combination. This means only one data source is ever evaluated
+# per apply, avoiding failures from AMIs not available in the target region or
+# from distros not yet selected for a run.
 #
 # Verified owner IDs (T-DT0-01-08 security invariant):
 #   Ubuntu:          099720109477  (Canonical Ltd. official)
-#   Amazon Linux:    amazon         (AWS first-party, resolves to AWS account)
+#   Amazon Linux:    amazon         (AWS first-party)
 #   Debian 12:       136693071363  (Debian official on AWS Marketplace)
 #   Rocky Linux 9:   792107900819  (Rocky Linux official)
 #   Fedora 40:       125523088429  (Fedora Cloud official)
@@ -17,17 +18,10 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Fedora 40 + arm64 guard — explicit local for readable plan-time errors.
-# ---------------------------------------------------------------------------
-locals {
-  fedora_arm64_unsupported = (var.distro == "fedora-40" && var.arch == "arm64")
-}
-
-# ---------------------------------------------------------------------------
 # Ubuntu 22.04 — Canonical official (owner: 099720109477)
-# Name pattern matches Canonical's stable HVM/EBS naming scheme.
 # ---------------------------------------------------------------------------
 data "aws_ami" "ubuntu_2204_amd64" {
+  count       = var.distro == "ubuntu-22.04" && var.arch == "amd64" ? 1 : 0
   most_recent = true
   owners      = ["099720109477"]
 
@@ -53,6 +47,7 @@ data "aws_ami" "ubuntu_2204_amd64" {
 }
 
 data "aws_ami" "ubuntu_2204_arm64" {
+  count       = var.distro == "ubuntu-22.04" && var.arch == "arm64" ? 1 : 0
   most_recent = true
   owners      = ["099720109477"]
 
@@ -79,9 +74,9 @@ data "aws_ami" "ubuntu_2204_arm64" {
 
 # ---------------------------------------------------------------------------
 # Ubuntu 24.04 — Canonical official (owner: 099720109477)
-# 24.04 uses hvm-ssd-gp3 in the path (GP3 root volumes are the new default).
 # ---------------------------------------------------------------------------
 data "aws_ami" "ubuntu_2404_amd64" {
+  count       = var.distro == "ubuntu-24.04" && var.arch == "amd64" ? 1 : 0
   most_recent = true
   owners      = ["099720109477"]
 
@@ -107,6 +102,7 @@ data "aws_ami" "ubuntu_2404_amd64" {
 }
 
 data "aws_ami" "ubuntu_2404_arm64" {
+  count       = var.distro == "ubuntu-24.04" && var.arch == "arm64" ? 1 : 0
   most_recent = true
   owners      = ["099720109477"]
 
@@ -135,6 +131,7 @@ data "aws_ami" "ubuntu_2404_arm64" {
 # Amazon Linux 2023 — AWS first-party (owner: amazon)
 # ---------------------------------------------------------------------------
 data "aws_ami" "al2023_amd64" {
+  count       = var.distro == "amazonlinux-2023" && var.arch == "amd64" ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
 
@@ -160,6 +157,7 @@ data "aws_ami" "al2023_amd64" {
 }
 
 data "aws_ami" "al2023_arm64" {
+  count       = var.distro == "amazonlinux-2023" && var.arch == "arm64" ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
 
@@ -189,6 +187,7 @@ data "aws_ami" "al2023_arm64" {
 # Ref: https://wiki.debian.org/Cloud/AmazonEC2Image
 # ---------------------------------------------------------------------------
 data "aws_ami" "debian_12_amd64" {
+  count       = var.distro == "debian-12" && var.arch == "amd64" ? 1 : 0
   most_recent = true
   owners      = ["136693071363"]
 
@@ -214,6 +213,7 @@ data "aws_ami" "debian_12_amd64" {
 }
 
 data "aws_ami" "debian_12_arm64" {
+  count       = var.distro == "debian-12" && var.arch == "arm64" ? 1 : 0
   most_recent = true
   owners      = ["136693071363"]
 
@@ -241,9 +241,10 @@ data "aws_ami" "debian_12_arm64" {
 # ---------------------------------------------------------------------------
 # Rocky Linux 9 — owner: 792107900819 (Rocky Linux official)
 # Ref: https://rockylinux.org/cloud-images
-# Note: Rocky uses "aarch64" in AMI names for arm64.
+# Note: Rocky uses "aarch64" in AMI names, "arm64" as the architecture filter.
 # ---------------------------------------------------------------------------
 data "aws_ami" "rocky_9_amd64" {
+  count       = var.distro == "rocky-9" && var.arch == "amd64" ? 1 : 0
   most_recent = true
   owners      = ["792107900819"]
 
@@ -269,6 +270,7 @@ data "aws_ami" "rocky_9_amd64" {
 }
 
 data "aws_ami" "rocky_9_arm64" {
+  count       = var.distro == "rocky-9" && var.arch == "arm64" ? 1 : 0
   most_recent = true
   owners      = ["792107900819"]
 
@@ -299,6 +301,7 @@ data "aws_ami" "rocky_9_arm64" {
 # arm64 variant intentionally absent — not in the locked matrix.
 # ---------------------------------------------------------------------------
 data "aws_ami" "fedora_40_amd64" {
+  count       = var.distro == "fedora-40" && var.arch == "amd64" ? 1 : 0
   most_recent = true
   owners      = ["125523088429"]
 
@@ -324,31 +327,24 @@ data "aws_ami" "fedora_40_amd64" {
 }
 
 # ---------------------------------------------------------------------------
-# AMI resolution map: "${distro}-${arch}" → ami_id string
-#
-# Fedora 40 + arm64: the map key is intentionally absent. If a caller passes
-# distro=fedora-40 + arch=arm64, the lookup returns null, Terraform will error
-# at plan time with a clear message referencing the unsupported combination.
-# The variable validation blocks catch the individual values; this catches the
-# illegal combination.
+# AMI ID resolution — selects the single data source that was instantiated.
+# Only one of the data sources above has count=1; all others are count=0.
 # ---------------------------------------------------------------------------
 locals {
-  ami_id_map = {
-    "ubuntu-22.04-amd64"     = data.aws_ami.ubuntu_2204_amd64.id
-    "ubuntu-22.04-arm64"     = data.aws_ami.ubuntu_2204_arm64.id
-    "ubuntu-24.04-amd64"     = data.aws_ami.ubuntu_2404_amd64.id
-    "ubuntu-24.04-arm64"     = data.aws_ami.ubuntu_2404_arm64.id
-    "amazonlinux-2023-amd64" = data.aws_ami.al2023_amd64.id
-    "amazonlinux-2023-arm64" = data.aws_ami.al2023_arm64.id
-    "debian-12-amd64"        = data.aws_ami.debian_12_amd64.id
-    "debian-12-arm64"        = data.aws_ami.debian_12_arm64.id
-    "rocky-9-amd64"          = data.aws_ami.rocky_9_amd64.id
-    "rocky-9-arm64"          = data.aws_ami.rocky_9_arm64.id
-    "fedora-40-amd64"        = data.aws_ami.fedora_40_amd64.id
-    # fedora-40-arm64: intentionally absent — not in the locked distro×arch matrix
-  }
-
-  ami_id = local.ami_id_map["${var.distro}-${var.arch}"]
+  ami_id = (
+    var.distro == "ubuntu-22.04" && var.arch == "amd64" ? data.aws_ami.ubuntu_2204_amd64[0].id :
+    var.distro == "ubuntu-22.04" && var.arch == "arm64" ? data.aws_ami.ubuntu_2204_arm64[0].id :
+    var.distro == "ubuntu-24.04" && var.arch == "amd64" ? data.aws_ami.ubuntu_2404_amd64[0].id :
+    var.distro == "ubuntu-24.04" && var.arch == "arm64" ? data.aws_ami.ubuntu_2404_arm64[0].id :
+    var.distro == "amazonlinux-2023" && var.arch == "amd64" ? data.aws_ami.al2023_amd64[0].id :
+    var.distro == "amazonlinux-2023" && var.arch == "arm64" ? data.aws_ami.al2023_arm64[0].id :
+    var.distro == "debian-12" && var.arch == "amd64" ? data.aws_ami.debian_12_amd64[0].id :
+    var.distro == "debian-12" && var.arch == "arm64" ? data.aws_ami.debian_12_arm64[0].id :
+    var.distro == "rocky-9" && var.arch == "amd64" ? data.aws_ami.rocky_9_amd64[0].id :
+    var.distro == "rocky-9" && var.arch == "arm64" ? data.aws_ami.rocky_9_arm64[0].id :
+    var.distro == "fedora-40" && var.arch == "amd64" ? data.aws_ami.fedora_40_amd64[0].id :
+    null # fedora-40 + arm64: caught by variable validation in variables.tf
+  )
 
   # SSH user by distro — consumed by outputs.tf
   ssh_user_map = {
