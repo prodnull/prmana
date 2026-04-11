@@ -1,0 +1,56 @@
+name: MAC Policy Validation
+
+on:
+  push:
+    paths:
+      - 'packaging/selinux/**'
+      - 'packaging/apparmor/**'
+      - 'test/mac/**'
+  pull_request:
+    paths:
+      - 'packaging/selinux/**'
+      - 'packaging/apparmor/**'
+      - 'test/mac/**'
+
+jobs:
+  static-validate:
+    name: Static policy checks (no kernel required)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SELinux build tools
+        run: sudo apt-get install -y checkpolicy
+
+      - name: SELinux .te syntax check
+        run: checkmodule -M -m -o /dev/null packaging/selinux/prmana.te
+
+      - name: SELinux .te compile to .pp
+        run: make -C packaging/selinux build
+
+      - name: AppArmor profile parse
+        run: apparmor_parser --verify packaging/apparmor/usr.bin.prmana-agent
+
+      - name: SELinux static source audits
+        run: bash test/mac/test_selinux.sh
+
+      - name: AppArmor static audits
+        run: bash test/mac/test_apparmor.sh
+
+  apparmor-runtime:
+    name: AppArmor runtime (Ubuntu, AppArmor active)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install AppArmor utils
+        run: sudo apt-get install -y apparmor-utils
+
+      - name: Load profile
+        run: sudo apparmor_parser -r packaging/apparmor/usr.bin.prmana-agent
+
+      - name: Runtime confinement tests
+        run: bash test/mac/test_apparmor.sh
+
+# Note: SELinux runtime tests (Section B of test_selinux.sh) run on DT-0 fleet
+# Rocky 9 EC2 instances where SELinux enforcing is active — see fleet-test.yml.

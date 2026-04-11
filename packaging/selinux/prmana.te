@@ -1,0 +1,93 @@
+module prmana 1.0.0;
+
+require {
+	type init_t;
+	type etc_t;
+	type var_run_t;
+	type user_home_dir_t;
+	type user_home_t;
+	type http_port_t;
+	type https_port_t;
+	type node_t;
+	type net_conf_t;
+	type syslogd_t;
+	type sysfs_t;
+	type proc_t;
+	type sshd_t;
+	type sudo_t;
+	class process { fork transition sigchld setcurrent };
+	class file { execute getattr open read write create unlink map };
+	class dir { search add_name remove_name write read open getattr };
+	class unix_stream_socket { connectto create bind listen accept connect getattr setattr };
+	class tcp_socket { connect create getattr getopt setopt };
+	class capability { ipc_lock };
+	class sock_file { create unlink getattr setattr write read };
+	class fd { use };
+}
+
+#
+# Declarations
+#
+
+type prmana_agent_t;
+type prmana_agent_exec_t;
+
+# Domain transition
+type_transition init_t prmana_agent_exec_t:process prmana_agent_t;
+
+#
+# Permissions
+#
+
+# Execute the binary
+allow prmana_agent_t prmana_agent_exec_t:file { read getattr open execute };
+
+# Configuration files in /etc/prmana
+type prmana_conf_t;
+allow prmana_agent_t etc_t:dir search;
+allow prmana_agent_t prmana_conf_t:dir { read search open getattr };
+allow prmana_agent_t prmana_conf_t:file { read getattr open };
+
+# Runtime files/sockets in /run
+type prmana_runtime_t;
+allow prmana_agent_t var_run_t:dir { search write add_name };
+allow prmana_agent_t prmana_runtime_t:dir { create read search open getattr write add_name remove_name };
+allow prmana_agent_t prmana_runtime_t:sock_file { create unlink getattr setattr write };
+
+# User-specific data (~/.local/share/prmana and ~/.config/prmana)
+type prmana_user_data_t;
+allow prmana_agent_t user_home_dir_t:dir search;
+allow prmana_agent_t user_home_t:dir search;
+allow prmana_agent_t prmana_user_data_t:dir { create read search open getattr write add_name remove_name };
+allow prmana_agent_t prmana_user_data_t:file { create read write open getattr unlink map };
+
+# Networking: Outbound HTTPS to IdP
+allow prmana_agent_t self:tcp_socket { connect create getattr getopt setopt };
+allow prmana_agent_t http_port_t:tcp_socket connect;
+allow prmana_agent_t https_port_t:tcp_socket connect;
+allow prmana_agent_t net_conf_t:file { read getattr open };
+allow prmana_agent_t self:unix_stream_socket { create bind listen accept connect getattr setattr };
+
+# Capabilities
+allow prmana_agent_t self:capability ipc_lock;
+
+# Logging: Systemd Journal / Syslog
+allow prmana_agent_t self:unix_stream_socket { connectto };
+
+# Systemd socket activation: use inherited fd and socket from init_t
+allow prmana_agent_t init_t:fd use;
+allow prmana_agent_t init_t:unix_stream_socket { accept read write getattr };
+
+# sysfs: rotational-device detection (detect_rotational_device in storage layer)
+allow prmana_agent_t sysfs_t:dir { search open read getattr };
+allow prmana_agent_t sysfs_t:file { read open getattr };
+
+# proc: prctl(PR_SET_DUMPABLE, 0) for core-dump protection
+allow prmana_agent_t self:process { setcurrent };
+allow prmana_agent_t proc_t:file { read write open getattr };
+
+# PAM clients: sshd and sudo must connect to the agent socket for authentication
+allow sshd_t prmana_runtime_t:sock_file { read write getattr };
+allow sshd_t prmana_agent_t:unix_stream_socket connectto;
+allow sudo_t prmana_runtime_t:sock_file { read write getattr };
+allow sudo_t prmana_agent_t:unix_stream_socket connectto;

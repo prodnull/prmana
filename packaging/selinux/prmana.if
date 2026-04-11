@@ -1,0 +1,50 @@
+## <summary>Prmana Agent security policy</summary>
+
+########################################
+## <summary>
+##	Role interface for prmana-agent user integration.
+## </summary>
+## <param name="role">
+##	<summary>
+##	Role allowed to manage the agent.
+##	</summary>
+## </param>
+## <param name="domain">
+##	<summary>
+##	User domain for this role.
+##	</summary>
+## </param>
+#
+interface(`prmana_role',`
+	gen_require(`
+		type prmana_agent_t, prmana_agent_exec_t, prmana_runtime_t;
+	')
+
+	role $1 types prmana_agent_t;
+
+	# Allow user domain to transition to prmana_agent_t
+	domtrans_pattern($2, prmana_agent_exec_t, prmana_agent_t)
+
+	# Allow communication with the agent socket
+	allow $2 prmana_runtime_t:sock_file { read write getattr };
+	allow $2 prmana_agent_t:unix_stream_socket connectto;
+')
+
+########################################
+## <summary>
+##	Allow a domain to connect to the prmana agent socket (for PAM modules).
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to connect (e.g. sshd_t, sudo_t).
+##	</summary>
+## </param>
+#
+interface(`prmana_pam_connect',`
+	gen_require(`
+		type prmana_agent_t, prmana_runtime_t;
+	')
+
+	allow $1 prmana_runtime_t:sock_file { read write getattr };
+	allow $1 prmana_agent_t:unix_stream_socket connectto;
+')
