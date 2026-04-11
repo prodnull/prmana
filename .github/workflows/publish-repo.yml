@@ -1,0 +1,197 @@
+name: publish-repo
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write  # required to push to gh-pages branch
+  actions: read
+
+concurrency:
+  group: publish-repo
+  cancel-in-progress: false  # never cancel an in-progress publish; queue instead
+
+jobs:
+  publish:
+    name: Publish APT + YUM repo to gh-pages
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ github.event.inputs.release_tag }}"
+          fi
+          # Validate tag format before using it anywhere (no shell injection)
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "ERROR: tag '$TAG' does not match expected format v{major}.{minor}.{patch}"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Install repo tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y apt-utils createrepo-c gnupg2 rpm
+
+      - name: Download package artifacts from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p stage/apt stage/rpm/stable/x86_64 stage/rpm/stable/aarch64 stage/gpg
+          mkdir -p /tmp/pkgs
+          gh release download "$TAG" \
+            --repo prodnull/unix-oidc \
+            --pattern '*.deb' \
+            --pattern '*.rpm' \
+            --dir /tmp/pkgs
+          ls -lh /tmp/pkgs
+
+          # Distribute .deb files into the flat apt/ directory
+          for deb in /tmp/pkgs/*.deb; do
+            [ -f "$deb" ] || continue
+            cp "$deb" stage/apt/
+          done
+
+          # Distribute .rpm files by architecture
+          for rpm in /tmp/pkgs/*.x86_64.rpm /tmp/pkgs/*.noarch.rpm; do
+            [ -f "$rpm" ] || continue
+            cp "$rpm" stage/rpm/stable/x86_64/
+          done
+          for rpm in /tmp/pkgs/*.aarch64.rpm; do
+            [ -f "$rpm" ] || continue
+            cp "$rpm" stage/rpm/stable/aarch64/
+          done
+
+          echo "APT stage:"
+          ls -lh stage/apt/ || echo "(empty)"
+          echo "RPM x86_64 stage:"
+          ls -lh stage/rpm/stable/x86_64/ || echo "(empty)"
+          echo "RPM aarch64 stage:"
+          ls -lh stage/rpm/stable/aarch64/ || echo "(empty)"
+
+      - name: Import GPG signing key
+        id: import_gpg
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.PRMANA_GPG_PRIVATE_KEY }}
+
+      - name: Generate APT repo metadata
+        working-directory: stage/apt
+        run: |
+          apt-ftparchive packages . > Packages
+          gzip -kf Packages
+          apt-ftparchive \
+            -c "${GITHUB_WORKSPACE}/packaging/repo/apt-ftparchive.conf" \
+            release . > Release
+          echo "APT Release:"
+          cat Release
+
+      - name: Sign APT Release
+        env:
+          FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+        working-directory: stage/apt
+        run: |
+          # InRelease: clearsigned (contains Release + signature in one file)
+          gpg --batch --yes --clearsign \
+              --local-user "$FINGERPRINT" \
+              --output InRelease \
+              Release
+          # Release.gpg: detached armored signature (for older APT clients)
+          gpg --batch --yes --armor --detach-sign \
+              --local-user "$FINGERPRINT" \
+              --output Release.gpg \
+              Release
+          ls -lh Release InRelease Release.gpg
+
+      - name: Generate YUM repo metadata (x86_64)
+        env:
+          FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+        working-directory: stage/rpm/stable/x86_64
+        run: |
+          if ls ./*.rpm >/dev/null 2>&1; then
+            # Sign each RPM package header in place
+            for rpm in ./*.rpm; do
+              rpm --define "%_signature gpg" \
+                  --define "%_gpg_name ${FINGERPRINT}" \
+                  --addsign "$rpm"
+            done
+            createrepo_c .
+            # Detached signature of repomd.xml for repo_gpgcheck=1
+            gpg --batch --yes --armor --detach-sign \
+                --local-user "$FINGERPRINT" \
+                --output repodata/repomd.xml.asc \
+                repodata/repomd.xml
+            echo "x86_64 repodata:"
+            ls -lh repodata/
+          else
+            echo "No x86_64 RPMs present for this release — skipping"
+          fi
+
+      - name: Generate YUM repo metadata (aarch64)
+        env:
+          FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+        working-directory: stage/rpm/stable/aarch64
+        run: |
+          if ls ./*.rpm >/dev/null 2>&1; then
+            for rpm in ./*.rpm; do
+              rpm --define "%_signature gpg" \
+                  --define "%_gpg_name ${FINGERPRINT}" \
+                  --addsign "$rpm"
+            done
+            createrepo_c .
+            gpg --batch --yes --armor --detach-sign \
+                --local-user "$FINGERPRINT" \
+                --output repodata/repomd.xml.asc \
+                repodata/repomd.xml
+            echo "aarch64 repodata:"
+            ls -lh repodata/
+          else
+            echo "No aarch64 RPMs present for this release — skipping"
+          fi
+
+      - name: Stage GPG public key for distribution
+        run: |
+          # Binary form is canonical for modern APT (/etc/apt/keyrings/)
+          cp packaging/repo/prmana-public.gpg stage/gpg/prmana.gpg
+          # Armored form for cross-verification and keys.openpgp.org reference
+          cp packaging/repo/prmana-public.asc stage/gpg/prmana.asc
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: stage
+          destination_dir: packages
+          keep_files: true   # preserve packages from prior releases
+          user_name: "prmana-packages-bot"
+          user_email: "prodnull@proton.me"
+          commit_message: "publish-repo: ${{ steps.tag.outputs.tag }}"
+
+      - name: Publish summary
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          {
+            echo "## Published: ${TAG}"
+            echo ""
+            echo "| Repo | URL |"
+            echo "|------|-----|"
+            echo "| APT | https://prodnull.github.io/unix-oidc/packages/apt/ |"
+            echo "| YUM x86_64 | https://prodnull.github.io/unix-oidc/packages/rpm/stable/x86_64/ |"
+            echo "| YUM aarch64 | https://prodnull.github.io/unix-oidc/packages/rpm/stable/aarch64/ |"
+            echo "| GPG key | https://prodnull.github.io/unix-oidc/packages/gpg/prmana.gpg |"
+          } >> "$GITHUB_STEP_SUMMARY"
