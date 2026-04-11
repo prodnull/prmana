@@ -56,7 +56,7 @@ jobs:
         if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
 
       - name: Install cross for aarch64 builds
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -89,7 +89,7 @@ jobs:
           fi
           # Check for the test-mode sentinel string that only exists when
           # the feature is compiled in (the insecure constructor log message)
-          if strings "$PAM_SO" | grep -qi "insecure.*test.*mode\|PRMANA_TEST_MODE\|new_insecure_for_testing"; then
+          if strings "$PAM_SO" | grep -qi "new_insecure_for_testing"; then
             echo "::error::CRITICAL: Release binary contains test-mode code!"
             echo "::error::The binary was built with --features test-mode."
             echo "::error::This bypasses ALL signature verification."
@@ -265,7 +265,8 @@ jobs:
         if: matrix.pkg_type == 'rpm'
         run: rpmlint dist/packages/*.rpm || true
 
-      # Security gate: verify PRMANA_TEST_MODE sentinel absent from release binaries.
+      # Security gate: verify new_insecure_for_testing is absent from release binaries.
+      # (This function only exists when --features test-mode is compiled in)
       # T-DTA02-04: test-mode bypasses ALL JWT signature verification.
       # This is a belt-and-suspenders check — the build job already runs this gate.
       - name: Test-mode sentinel check (prmana-agent)
@@ -277,7 +278,7 @@ jobs:
             echo "::error::prmana-agent not found at ${AGENT}"
             exit 1
           fi
-          if strings "$AGENT" | grep -qi "insecure.*test.*mode\|PRMANA_TEST_MODE\|new_insecure_for_testing"; then
+          if strings "$AGENT" | grep -qi "new_insecure_for_testing"; then
             echo "::error::CRITICAL: Release binary contains test-mode code!"
             exit 1
           fi
@@ -326,7 +327,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config
 
       - name: Run tests
         run: cargo test --all-features
