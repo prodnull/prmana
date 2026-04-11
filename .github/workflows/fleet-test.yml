@@ -417,3 +417,18 @@ jobs:
           if az group show --name "$RG" &>/dev/null; then
             az group delete --name "$RG" --yes --no-wait || true
           fi
+
+      - name: Destroy safety net — budget sweep (AWS)
+        if: always()
+        env:
+          INPUT_CLOUD: ${{ inputs.cloud }}
+        run: |
+          if [ "$INPUT_CLOUD" != "aws" ]; then exit 0; fi
+          # Delete the per-run budget if terraform destroy failed or state was
+          # lost before budgets:DeleteBudget could run. Silent on not-found.
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUDGET_NAME="prmana-ci-${GITHUB_RUN_ID}"
+          aws budgets delete-budget \
+            --account-id "$ACCOUNT_ID" \
+            --budget-name "$BUDGET_NAME" 2>/dev/null || true
+          echo "Budget sweep complete (${BUDGET_NAME})"
