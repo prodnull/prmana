@@ -259,8 +259,7 @@ jobs:
       - name: Run session lifecycle E2E (E2ET-03)
         run: |
           chmod +x test/tests/test_session_lifecycle_e2e.sh
-          bash test/tests/test_session_lifecycle_e2e.sh || true
-          # TODO: remove || true once compose environment confirmed stable in CI
+          bash test/tests/test_session_lifecycle_e2e.sh
         env:
           COMPOSE_FILE: docker-compose.test.yaml
           TEST_HOST_SERVICE: test-host
@@ -517,8 +516,7 @@ jobs:
         run: |
           chmod +x test/tests/test_systemd_launchd_e2e.sh
           COMPOSE_FILE="" SYSTEMD_SERVICE="" \
-            bash test/tests/test_systemd_launchd_e2e.sh || true
-          # TODO: remove || true once systemd container environment confirmed stable
+            bash test/tests/test_systemd_launchd_e2e.sh
         env:
           COMPOSE_FILE: docker-compose.systemd-e2e.yaml
           SYSTEMD_SERVICE: test-host-systemd
@@ -755,9 +753,7 @@ jobs:
       - name: Build docs
         run: cargo doc --no-deps --all-features
         env:
-          # TODO: Restore -D warnings after fixing pre-existing rustdoc issues
-          # (unresolved links, unclosed HTML tags in doc comments).
-          RUSTDOCFLAGS: -W warnings
+          RUSTDOCFLAGS: -D warnings
 
   # ============================================================================
   # Code Coverage

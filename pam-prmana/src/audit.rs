@@ -59,7 +59,7 @@ pub struct OcsfMetadata {
 /// All values follow OCSF 1.3.0 Authentication class (class_uid 3002) under
 /// the Identity & Access Management category (category_uid 3).
 ///
-/// Reference: https://schema.ocsf.io/1.3.0/classes/authentication
+/// Reference: <https://schema.ocsf.io/1.3.0/classes/authentication>
 #[derive(Debug, Clone, Serialize)]
 pub struct OcsfFields {
     /// OCSF category: 3 = Identity & Access Management.

@@ -89,7 +89,7 @@ pub struct ScimUser {
     /// External identifier from the IdP.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    /// Unix login name (POSIX rules: [a-z_][a-z0-9_.-]*, max 32 chars).
+    /// Unix login name (POSIX rules: `[a-z_][a-z0-9_.-]*`, max 32 chars).
     pub user_name: String,
     /// User's name components.
     #[serde(skip_serializing_if = "Option::is_none")]

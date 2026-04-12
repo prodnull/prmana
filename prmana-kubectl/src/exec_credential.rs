@@ -4,7 +4,7 @@
 //! consumed by kubectl to supply a bearer token for cluster authentication.
 //!
 //! References:
-//! - https://kubernetes.io/docs/reference/config-api/client-authentication.v1/
+//! - <https://kubernetes.io/docs/reference/config-api/client-authentication.v1/>
 //! - CONTEXT.md decision G: `expirationTimestamp` = JWT exp - 30s
 
 use anyhow::Result;

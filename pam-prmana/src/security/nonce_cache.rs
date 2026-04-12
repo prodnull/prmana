@@ -24,7 +24,7 @@
 //! ## References
 //!
 //! - RFC 9449 §8: DPoP Nonce
-//! - moka docs: https://docs.rs/moka/latest/moka/sync/struct.Cache.html
+//! - moka docs: <https://docs.rs/moka/latest/moka/sync/struct.Cache.html>
 //! - POSIX open(2): O_CREAT|O_EXCL atomicity guarantee
 
 use crate::security::fs_store::{AtomicRecordResult, FsAtomicStore};

@@ -1,6 +1,6 @@
 //! Configuration management for the agent.
 //!
-//! Uses figment (https://docs.rs/figment) for layered configuration loading:
+//! Uses figment (<https://docs.rs/figment>) for layered configuration loading:
 //!   1. Compiled-in defaults (AgentConfig::default())
 //!   2. YAML config file (if present)
 //!   3. Environment variables prefixed with PRMANA_ (double-underscore separates nested keys)

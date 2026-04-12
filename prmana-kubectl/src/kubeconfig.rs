@@ -3,7 +3,7 @@
 //! Merges a new cluster + user + context entry into an existing `~/.kube/config`
 //! (or `$KUBECONFIG`) without overwriting other entries.
 //!
-//! Format reference: https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/
+//! Format reference: <https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/>
 
 use std::path::{Path, PathBuf};
 

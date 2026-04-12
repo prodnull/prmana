@@ -31,7 +31,7 @@ pub struct ActClaim {
     #[serde(default)]
     pub client_id: Option<String>,
     /// Nested actor — the party that delegated to this actor.
-    /// `Box` breaks the recursive type; serde handles Option<Box<T>> natively.
+    /// `Box` breaks the recursive type; serde handles `Option<Box<T>>` natively.
     #[serde(default)]
     pub act: Option<Box<ActClaim>>,
 }
@@ -86,7 +86,7 @@ pub struct TokenClaims {
 
     /// All remaining claims not matched by the fields above.
     ///
-    /// Used by [`UsernameMapper`] to access custom claims (e.g. `email`,
+    /// Used by the username mapper to access custom claims (e.g. `email`,
     /// `groups`, or IdP-specific attributes) without enumerating every possible
     /// field in the struct.  Serde flatten is transparent — the extra map only
     /// captures keys that are NOT already matched by the named fields.

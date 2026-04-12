@@ -39,7 +39,7 @@ pub enum GroupPolicyError {
     /// The user's groups were resolved but none intersect with the allow-list.
     ///
     /// Both `user_groups` and `allowed_groups` are included for audit enrichment.
-    /// The [`Display`] impl joins them with ", " for log readability.
+    /// The `Display` impl joins them with ", " for log readability.
     #[error("User '{username}' is not a member of any allowed group. User groups: [{user_groups_display}]. Allowed groups: [{allowed_groups_display}]")]
     GroupDenied {
         username: String,

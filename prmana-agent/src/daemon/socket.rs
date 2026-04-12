@@ -219,8 +219,8 @@ pub enum StepUpOutcome {
     },
 }
 
-/// Manual Debug impl: signer is not Debug (trait object), access_token shows [REDACTED].
-/// oidc_client_secret is intentionally OMITTED — even [REDACTED] leaks metadata.
+/// Manual Debug impl: signer is not Debug (trait object), access_token shows `[REDACTED]`.
+/// oidc_client_secret is intentionally OMITTED — even `[REDACTED]` leaks metadata.
 impl std::fmt::Debug for AgentState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentState")

@@ -68,7 +68,7 @@ enum Command {
         #[arg(long)]
         cluster_id: String,
 
-        /// kube-apiserver URL, e.g. https://api.prod.example.com:6443
+        /// kube-apiserver URL, e.g. `https://api.prod.example.com:6443`
         #[arg(long)]
         server: String,
 
