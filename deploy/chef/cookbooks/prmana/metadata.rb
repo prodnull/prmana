@@ -1,7 +1,7 @@
-name 'unix_oidc'
-maintainer 'unix-oidc contributors'
+name 'prmana'
+maintainer 'prmana contributors'
 license 'Apache-2.0'
-description 'Installs and configures unix-oidc PAM module'
+description 'Installs and configures prmana PAM module'
 version '0.1.0'
 
 supports 'ubuntu', '>= 20.04'

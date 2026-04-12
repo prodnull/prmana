@@ -14,7 +14,7 @@
 # Prerequisites:
 #   AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_TEST_USER,
 #   AUTH0_PASSWORD — set in environment or .auth0 file.
-#   AUTH0_AUDIENCE — API identifier (default: https://prmana.dev/api)/api)
+#   AUTH0_AUDIENCE — API identifier (default: https://prmana.com/api)/api)
 #
 # Usage:
 #   ./test/tests/test_auth0_e2e.sh           # uses .auth0 file
@@ -42,8 +42,8 @@ AUTH0_CLIENT_ID="${AUTH0_CLIENT_ID:?AUTH0_CLIENT_ID not set}"
 AUTH0_CLIENT_SECRET="${AUTH0_CLIENT_SECRET:?AUTH0_CLIENT_SECRET not set}"
 AUTH0_TEST_USER="${AUTH0_TEST_USER:?AUTH0_TEST_USER not set}"
 AUTH0_PASSWORD="${AUTH0_PASSWORD:?AUTH0_PASSWORD not set}"
-AUTH0_AUDIENCE="${AUTH0_AUDIENCE:-https://prmana.dev/api}"
-AUTH0_CLAIM_NAMESPACE="${AUTH0_CLAIM_NAMESPACE:-https://prmana.dev/}"
+AUTH0_AUDIENCE="${AUTH0_AUDIENCE:-https://prmana.com/api}"
+AUTH0_CLAIM_NAMESPACE="${AUTH0_CLAIM_NAMESPACE:-https://prmana.com/}"
 
 PASS=0
 FAIL=0
@@ -171,11 +171,21 @@ echo "--- 4. Custom Claims ---"
 if [[ -n "$ACCESS_TOKEN" ]] && [[ "$ACCESS_TOKEN" == *.*.* ]]; then
     AT_CLAIMS=$(decode_jwt_payload "$ACCESS_TOKEN")
 
-    PREFERRED_USERNAME=$(echo "$AT_CLAIMS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('${AUTH0_CLAIM_NAMESPACE}preferred_username',''))" 2>/dev/null || echo "")
+    # Auth0 may place preferred_username under the configured namespace
+    # (e.g. https://prmana.com/preferred_username), directly as an OIDC
+    # standard claim (preferred_username), or under the legacy namespace
+    # (https://unix-oidc.dev/preferred_username).  Accept any of these —
+    # the PAM module's username_claim config handles the mapping.
+    PREFERRED_USERNAME=$(echo "$AT_CLAIMS" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+ns = '${AUTH0_CLAIM_NAMESPACE}'
+print(d.get(ns + 'preferred_username', '') or d.get('preferred_username', '') or d.get('https://unix-oidc.dev/preferred_username', ''))
+" 2>/dev/null || echo "")
     if [[ -n "$PREFERRED_USERNAME" ]]; then
-        check "Namespaced preferred_username claim: $PREFERRED_USERNAME" "PASS"
+        check "preferred_username claim present: $PREFERRED_USERNAME" "PASS"
     else
-        check "Namespaced preferred_username claim (missing — check Auth0 Action)" "FAIL"
+        check "preferred_username claim (missing under all known keys — check Auth0 Action)" "FAIL"
     fi
 
     AT_ISS=$(echo "$AT_CLAIMS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iss',''))" 2>/dev/null || echo "")

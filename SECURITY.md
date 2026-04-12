@@ -10,7 +10,7 @@ your findings.
 
 ### How to Report
 
-Send vulnerability reports to: **security@prmana.dev** (or create a private security
+Send vulnerability reports to: **prodnull@users.noreply.github.com** (or create a private security
 advisory on GitHub)
 
 Include as much of the following information as possible:
@@ -315,7 +315,7 @@ legal action against security researchers who:
 
 ## Security Contacts
 
-- **Primary**: security@prmana.dev
+- **Primary**: prodnull@users.noreply.github.com
 - **GitHub**: [Create private security advisory](https://github.com/prodnull/unix-oidc/security/advisories/new)
 
 ## Acknowledgments

@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::config::ClientAttestationConfig;
 use crate::crypto::{attach_client_attestation, DPoPError, DPoPSigner};
+use crate::url_policy::validate_endpoint_url;
 
 /// Token exchange grant type (RFC 8693 §2.1).
 pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -33,6 +34,9 @@ const EXCHANGE_TIMEOUT_SECS: u64 = 10;
 pub enum ExchangeError {
     #[error("Token exchange HTTP error: {0}")]
     Http(#[from] reqwest::Error),
+
+    #[error("Token exchange endpoint policy error: {0}")]
+    InsecureEndpoint(String),
 
     #[error("Token exchange failed: {error} — {description}")]
     OAuthError { error: String, description: String },
@@ -88,6 +92,9 @@ pub async fn perform_token_exchange(
     signer: &dyn DPoPSigner,
     client_attestation: Option<&ClientAttestationConfig>,
 ) -> Result<ExchangeResponse, ExchangeError> {
+    validate_endpoint_url(token_endpoint, "token_endpoint")
+        .map_err(ExchangeError::InsecureEndpoint)?;
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(EXCHANGE_TIMEOUT_SECS))
         .build()?;
@@ -231,6 +238,24 @@ mod tests {
         .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_exchange_rejects_non_loopback_http_endpoint() {
+        let signer = SoftwareSigner::generate();
+        let result = perform_token_exchange(
+            "http://idp.example.com/token",
+            "sub-token",
+            "target",
+            "client",
+            None,
+            "proof",
+            &signer,
+            None,
+        )
+        .await;
+
+        assert!(matches!(result, Err(ExchangeError::InsecureEndpoint(_))));
     }
 
     #[tokio::test]

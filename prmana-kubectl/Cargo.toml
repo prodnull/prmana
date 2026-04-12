@@ -37,6 +37,7 @@ anyhow.workspace = true
 # Logging to stderr (stdout is reserved for ExecCredential JSON output)
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

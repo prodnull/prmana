@@ -219,10 +219,24 @@ check_prerequisites() {
         exit 1
     fi
 
-    # Check for cosign (optional but recommended)
+    # Check for cosign (required for the one-line installer to fail closed)
     if ! command -v cosign &> /dev/null; then
-        log_warn "cosign not found - signature verification will be skipped"
-        log_info "Install cosign: https://docs.sigstore.dev/cosign/installation/"
+        if [ "$DRY_RUN" = true ]; then
+            log_warn "cosign not found - installation would fail without signature verification"
+        else
+            log_error "cosign is required to verify release signatures"
+            log_info "Install cosign: https://docs.sigstore.dev/cosign/installation/"
+            exit 1
+        fi
+    fi
+
+    if [ "$VERIFY_SLSA" = true ] && ! command -v gh &> /dev/null; then
+        if [ "$DRY_RUN" = true ]; then
+            log_warn "gh CLI not found - installation would fail with --verify-slsa"
+        else
+            log_error "gh CLI is required for --verify-slsa"
+            exit 1
+        fi
     fi
 }
 
@@ -250,9 +264,9 @@ download_binary() {
             log_dry "Download ${release_base}/${artifact_name}"
         fi
         log_dry "Verify SHA-256 checksum"
-        log_dry "Verify Sigstore signature (if cosign available)"
+        log_dry "Verify Sigstore signature (required)"
         if [ "$VERIFY_SLSA" = true ]; then
-            log_dry "Verify SLSA provenance (gh attestation verify)"
+            log_dry "Verify SLSA provenance (required with --verify-slsa)"
         fi
         return 0
     fi
@@ -307,41 +321,36 @@ download_binary() {
     log_success "Checksum verified"
 
     # Verify Sigstore signature on SHA256SUMS (covers all artifacts transitively)
-    if command -v cosign &> /dev/null; then
-        log_info "Verifying Sigstore signature..."
-        curl -fsSL "${release_base}/SHA256SUMS.sig" -o "$tmp_dir/SHA256SUMS.sig" 2>/dev/null || true
-        curl -fsSL "${release_base}/SHA256SUMS.pem" -o "$tmp_dir/SHA256SUMS.pem" 2>/dev/null || true
+    log_info "Verifying Sigstore signature..."
+    curl -fsSL "${release_base}/SHA256SUMS.sig" -o "$tmp_dir/SHA256SUMS.sig" || {
+        log_error "Failed to download SHA256SUMS.sig"
+        exit 1
+    }
+    curl -fsSL "${release_base}/SHA256SUMS.pem" -o "$tmp_dir/SHA256SUMS.pem" || {
+        log_error "Failed to download SHA256SUMS.pem"
+        exit 1
+    }
 
-        if [ -f "$tmp_dir/SHA256SUMS.sig" ] && [ -f "$tmp_dir/SHA256SUMS.pem" ]; then
-            if cosign verify-blob \
-                --certificate "$tmp_dir/SHA256SUMS.pem" \
-                --signature "$tmp_dir/SHA256SUMS.sig" \
-                --certificate-identity-regexp "https://github.com/${GITHUB_REPO}" \
-                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-                "$tmp_dir/SHA256SUMS" 2>/dev/null; then
-                log_success "Sigstore signature verified"
-            else
-                log_warn "Sigstore signature verification failed — continuing"
-            fi
-        else
-            log_warn "Signature files not available, skipping Sigstore verification"
-        fi
+    if cosign verify-blob \
+        --certificate "$tmp_dir/SHA256SUMS.pem" \
+        --signature "$tmp_dir/SHA256SUMS.sig" \
+        --certificate-identity-regexp "https://github.com/${GITHUB_REPO}" \
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+        "$tmp_dir/SHA256SUMS" 2>/dev/null; then
+        log_success "Sigstore signature verified"
     else
-        log_warn "cosign not found — skipping Sigstore verification"
-        log_info "Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/"
+        log_error "Sigstore signature verification failed"
+        exit 1
     fi
 
     # Verify SLSA provenance if requested
     if [ "$VERIFY_SLSA" = true ]; then
-        if command -v gh &> /dev/null; then
-            log_info "Verifying SLSA build provenance..."
-            if gh attestation verify "$tmp_dir/$artifact_name" --repo "${GITHUB_REPO}" 2>/dev/null; then
-                log_success "SLSA provenance verified"
-            else
-                log_warn "SLSA provenance verification failed — continuing"
-            fi
+        log_info "Verifying SLSA build provenance..."
+        if gh attestation verify "$tmp_dir/$artifact_name" --repo "${GITHUB_REPO}" 2>/dev/null; then
+            log_success "SLSA provenance verified"
         else
-            log_warn "gh CLI not found — skipping SLSA verification"
+            log_error "SLSA provenance verification failed"
+            exit 1
         fi
     fi
 
@@ -1135,4 +1144,6 @@ main() {
     log_info "Quickstart: https://github.com/${GITHUB_REPO}/blob/main/deploy/quickstart/"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

@@ -22,10 +22,13 @@ use crate::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN,
     KEY_TOKEN_METADATA,
 };
+use crate::url_policy::{validate_discovery_document, validate_endpoint_url};
 
 /// Default IPC idle timeout: 60 seconds.
 /// Matches `TimeoutsConfig::default().ipc_idle_timeout_secs`.
 const DEFAULT_IPC_IDLE_TIMEOUT_SECS: u64 = 60;
+
+const SOCKET_BASENAME: &str = "prmana-agent.sock";
 
 /// Maximum IPC message size: 64 KiB.
 ///
@@ -383,13 +386,37 @@ impl AgentServer {
         self
     }
 
+    fn xdg_runtime_socket_path(runtime_dir: &str) -> PathBuf {
+        PathBuf::from(runtime_dir).join(SOCKET_BASENAME)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_runtime_socket_path(uid: u32) -> PathBuf {
+        PathBuf::from(format!("/run/user/{uid}/{SOCKET_BASENAME}"))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn macos_runtime_socket_path(tmpdir: &str) -> PathBuf {
+        PathBuf::from(tmpdir).join(SOCKET_BASENAME)
+    }
+
     /// Get the default socket path
     pub fn default_socket_path() -> PathBuf {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"));
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            return Self::xdg_runtime_socket_path(&runtime_dir);
+        }
 
-        runtime_dir.join("prmana-agent.sock")
+        #[cfg(target_os = "linux")]
+        {
+            let uid = unsafe { libc::getuid() };
+            Self::linux_runtime_socket_path(uid)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+            Self::macos_runtime_socket_path(&tmpdir)
+        }
     }
 
     /// Start the server and listen for connections.
@@ -1660,6 +1687,13 @@ async fn fetch_oidc_discovery_doc(
     issuer: &str,
     timeout_secs: u64,
 ) -> Result<serde_json::Value, AgentResponse> {
+    if let Err(e) = validate_endpoint_url(issuer, "issuer") {
+        return Err(AgentResponse::error(
+            format!("Refusing insecure issuer URL: {e}"),
+            "DISCOVERY_ERROR",
+        ));
+    }
+
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
         issuer.trim_end_matches('/')
@@ -1678,7 +1712,16 @@ async fn fetch_oidc_discovery_doc(
     };
     match http.get(&discovery_url).send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(doc) => Ok(doc),
+            Ok(doc) => {
+                if let Err(e) = validate_discovery_document(&doc) {
+                    Err(AgentResponse::error(
+                        format!("OIDC discovery endpoint validation failed: {e}"),
+                        "DISCOVERY_ERROR",
+                    ))
+                } else {
+                    Ok(doc)
+                }
+            }
             Err(e) => Err(AgentResponse::error(
                 format!("Failed to parse OIDC discovery: {e}"),
                 "DISCOVERY_ERROR",
@@ -3229,6 +3272,24 @@ mod tests {
     use super::*;
     use crate::crypto::SoftwareSigner;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_linux_runtime_socket_path_builder() {
+        assert_eq!(
+            AgentServer::linux_runtime_socket_path(1000),
+            PathBuf::from("/run/user/1000/prmana-agent.sock")
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_macos_runtime_socket_path_builder() {
+        assert_eq!(
+            AgentServer::macos_runtime_socket_path("/private/tmp/prmana"),
+            PathBuf::from("/private/tmp/prmana/prmana-agent.sock")
+        );
+    }
 
     fn test_signer() -> Arc<dyn DPoPSigner> {
         Arc::new(SoftwareSigner::generate())

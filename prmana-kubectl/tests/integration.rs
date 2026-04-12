@@ -81,7 +81,7 @@ async fn test_c1_get_token_prints_exec_credential() {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-                .expect(&format!("stdout must be valid JSON: {stdout}"));
+                .unwrap_or_else(|_| panic!("stdout must be valid JSON: {stdout}"));
             assert_eq!(
                 parsed["apiVersion"], "client.authentication.k8s.io/v1",
                 "must have correct apiVersion"

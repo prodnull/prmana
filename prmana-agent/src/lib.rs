@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod sanitize;
 pub mod security;
 pub mod storage;
+pub mod url_policy;
 
 #[cfg(feature = "spire")]
 pub mod spire;

@@ -24,7 +24,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Check if Snyk token is configured
         id: check-token
@@ -38,7 +38,7 @@ jobs:
 
       - name: Install Rust toolchain
         if: steps.check-token.outputs.skip != 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install system dependencies
         if: steps.check-token.outputs.skip != 'true'
@@ -48,7 +48,7 @@ jobs:
 
       - name: Setup Snyk
         if: steps.check-token.outputs.skip != 'true'
-        uses: snyk/actions/setup@master
+        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # master
 
       - name: Run Snyk to check for vulnerabilities
         if: steps.check-token.outputs.skip != 'true'
@@ -59,7 +59,7 @@ jobs:
 
       - name: Upload Snyk results to GitHub Security tab
         if: steps.check-token.outputs.skip != 'true'
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         with:
           sarif_file: snyk.sarif
 
@@ -72,7 +72,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -88,7 +88,7 @@ jobs:
           fi
 
       - name: Upload audit results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: cargo-audit-results
@@ -103,7 +103,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
@@ -123,13 +123,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0  # Full history for secret scanning
 
       - name: TruffleHog Secret Scan (PR)
         if: github.event_name == 'pull_request'
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@580628bb9d5455140899afe2cb981ff5640bf399 # main
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha }}
@@ -138,7 +138,7 @@ jobs:
 
       - name: TruffleHog Secret Scan (Push)
         if: github.event_name == 'push'
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@580628bb9d5455140899afe2cb981ff5640bf399 # main
         with:
           path: ./
           base: ${{ github.event.before }}
@@ -147,7 +147,7 @@ jobs:
 
       - name: TruffleHog Secret Scan (Scheduled)
         if: github.event_name == 'schedule'
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@580628bb9d5455140899afe2cb981ff5640bf399 # main
         with:
           path: ./
           extra_args: --only-verified --since-commit HEAD~100
@@ -165,19 +165,19 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
       - name: Run Scorecard analysis
-        uses: ossf/scorecard-action@v2.4.3
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
           publish_results: true
 
       - name: Upload Scorecard results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         if: always()
         with:
           sarif_file: scorecard-results.sarif

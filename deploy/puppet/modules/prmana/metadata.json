@@ -4,9 +4,9 @@
   "author": "prmana contributors",
   "license": "Apache-2.0",
   "summary": "Install and configure prmana PAM module",
-  "source": "https://github.com/prmana/prmana",
-  "project_page": "https://github.com/prmana/prmana",
-  "issues_url": "https://github.com/prmana/prmana/issues",
+  "source": "https://github.com/prodnull/unix-oidc",
+  "project_page": "https://github.com/prodnull/unix-oidc",
+  "issues_url": "https://github.com/prodnull/unix-oidc/issues",
   "operatingsystem_support": [
     {
       "operatingsystem": "Ubuntu",

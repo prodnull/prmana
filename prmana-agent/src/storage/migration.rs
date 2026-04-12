@@ -29,19 +29,28 @@ use super::{KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_REFRESH_TOKEN, KEY_TOKEN_MET
 
 /// The set of (legacy, current) key pairs to migrate.
 /// Order is deterministic for reproducible logging.
+#[cfg(not(feature = "pqc"))]
 fn migration_pairs() -> Vec<(&'static str, &'static str)> {
-    let mut pairs = vec![
+    vec![
         (LEGACY_KEY_DPOP_PRIVATE, KEY_DPOP_PRIVATE),
         (LEGACY_KEY_ACCESS_TOKEN, KEY_ACCESS_TOKEN),
         (LEGACY_KEY_REFRESH_TOKEN, KEY_REFRESH_TOKEN),
         (LEGACY_KEY_TOKEN_METADATA, KEY_TOKEN_METADATA),
-    ];
-    #[cfg(feature = "pqc")]
-    {
-        use super::KEY_PQ_SEED;
-        pairs.push((LEGACY_KEY_PQ_SEED, KEY_PQ_SEED));
-    }
-    pairs
+    ]
+}
+
+/// The set of (legacy, current) key pairs to migrate, including the PQC seed
+/// when the `pqc` feature is enabled.
+#[cfg(feature = "pqc")]
+fn migration_pairs() -> Vec<(&'static str, &'static str)> {
+    use super::KEY_PQ_SEED;
+    vec![
+        (LEGACY_KEY_DPOP_PRIVATE, KEY_DPOP_PRIVATE),
+        (LEGACY_KEY_ACCESS_TOKEN, KEY_ACCESS_TOKEN),
+        (LEGACY_KEY_REFRESH_TOKEN, KEY_REFRESH_TOKEN),
+        (LEGACY_KEY_TOKEN_METADATA, KEY_TOKEN_METADATA),
+        (LEGACY_KEY_PQ_SEED, KEY_PQ_SEED),
+    ]
 }
 
 /// Report from a migration run.

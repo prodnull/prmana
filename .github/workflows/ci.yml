@@ -22,10 +22,10 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy, rustfmt
 
@@ -35,7 +35,7 @@ jobs:
           sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/bin/
@@ -56,7 +56,32 @@ jobs:
         run: cargo build --all-features
 
       - name: Run unit tests
-        run: cargo test --all-features
+        # `--test-threads=1` is mandatory for this workspace.
+        #
+        # 10+ source files in pam-prmana/src/ (webhook, jti_cache, fs_store,
+        # rate_limit, audit, auth, validation, policy, sudo, lib) call
+        # std::env::set_var or std::env::remove_var in their test modules.
+        # Rust's std::env functions are explicitly NOT thread-safe: they
+        # mutate libc's global `environ` array without synchronization.
+        # A concurrent reader on another thread can observe a torn update
+        # and get None from std::env::var() for a key that was definitely
+        # set — which is exactly what caused
+        # approval::webhook::tests::test_webhook_config_default_tls_enabled
+        # to fail in the 24cbe62 main-CI run at
+        # `WebhookConfig::from_env().unwrap()`, cascading a SKIP into every
+        # integration job downstream (SPIFFE, CIBA, TPM, Integration Tests,
+        # DPoP Cross-Language, systemd E2E, Token Exchange).
+        #
+        # Per-module ENV_MUTEX guards cannot prevent this: the race is
+        # across independent crate modules whose tests run concurrently
+        # by default under the cargo test harness.
+        #
+        # Proper long-term fixes include migrating to cargo-nextest
+        # (process-per-test isolation) or a workspace-wide env-test
+        # serialization crate.  In the meantime, serialization is the
+        # correct trade-off — the whole suite still finishes in well under
+        # a minute.
+        run: cargo test --all-features -- --test-threads=1
 
   # ============================================================================
   # Security
@@ -65,7 +90,7 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -78,8 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/dependency-review-action@4901385134134e04cec5fbe5ddfe3b2c5bd5d976 # v4
         with:
           fail-on-severity: high
 
@@ -105,13 +130,13 @@ jobs:
             name: macos-aarch64
             build_pam: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -143,7 +168,7 @@ jobs:
 
       - name: Upload build artifact (Linux)
         if: matrix.build_pam == true
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: prmana-${{ matrix.name }}
           path: |
@@ -153,7 +178,7 @@ jobs:
 
       - name: Upload build artifact (macOS)
         if: matrix.build_pam == false
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: prmana-${{ matrix.name }}
           path: |
@@ -168,13 +193,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -226,7 +251,7 @@ jobs:
 
       - name: Upload logs
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: integration-logs
           path: integration-logs.txt
@@ -252,7 +277,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y curl jq xxd
@@ -297,7 +322,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y curl jq
@@ -345,10 +370,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [build-matrix]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Download release artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: prmana-ubuntu-24.04
           path: target/release-linux
@@ -452,16 +477,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -515,18 +540,30 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - name: Install system dependencies
+      - name: Install system dependencies (incl. swtpm)
+        # swtpm and swtpm-tools ship in the ubuntu-latest runner's apt repo,
+        # so the previous docker-compose approach was trading registry
+        # availability for no benefit. ea3c38d mis-diagnosed the
+        # "manifest unknown" error as a ghcr auth issue — in fact the image
+        # reference ghcr.io/tpm2-software/swtpm:v0.9.0 does not exist
+        # (tpm2-software hosts tpm2-tss/tools, not swtpm, which is Stefan
+        # Berger's separate project). Install natively instead: no
+        # registry dependency, no container, fewer moving parts. The test
+        # already probes swtpm via `nc -w1 localhost 2321` so there's no
+        # container network we'd lose.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
+          sudo apt-get install -y \
+            libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev \
+            libtss2-tcti-swtpm0t64 swtpm swtpm-tools
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -535,8 +572,20 @@ jobs:
           key: ${{ runner.os }}-cargo-tpm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Start swtpm
+        # Same flags as docker-compose.tpm-test.yaml, run directly on the
+        # runner as a daemonized process. State goes into a fresh tmpdir
+        # so reruns don't inherit NV state from the previous job.
         run: |
-          docker compose -f docker-compose.tpm-test.yaml up -d
+          swtpm --version
+          mkdir -p /tmp/swtpm-state
+          swtpm socket \
+            --tpmstate dir=/tmp/swtpm-state \
+            --tpm2 \
+            --ctrl type=tcp,port=2322 \
+            --server type=tcp,port=2321 \
+            --flags not-need-init,startup-clear \
+            --log file=/tmp/swtpm.log,level=20 \
+            --daemon
           for i in $(seq 1 12); do
             if echo | nc -w1 localhost 2321 2>/dev/null; then
               echo "swtpm ready after ~$((i * 2))s"
@@ -545,20 +594,32 @@ jobs:
             echo "Waiting for swtpm... ($i/12)"
             sleep 2
           done
+          # Fail loud if the loop fell through without a ready signal.
+          echo | nc -w1 localhost 2321 2>/dev/null || {
+            echo "ERROR: swtpm did not become ready on :2321 within 24s"
+            cat /tmp/swtpm.log 2>/dev/null || true
+            exit 1
+          }
 
       - name: Run TPM integration tests
         run: |
-          cargo test -p prmana-agent --features tpm,test-mode -- --ignored tpm
+          cargo test -p prmana-agent --features tpm,test-mode -- --ignored tpm --test-threads=1
         env:
           PRMANA_TPM_TCTI: swtpm
 
-      - name: Collect logs on failure
+      - name: Collect swtpm log on failure
         if: failure()
-        run: docker compose -f docker-compose.tpm-test.yaml logs
+        run: |
+          echo "=== swtpm.log ==="
+          cat /tmp/swtpm.log 2>/dev/null || echo "(no swtpm.log found)"
+          echo "=== swtpm process state ==="
+          pgrep -af 'swtpm socket' || echo "(no swtpm process running)"
 
       - name: Stop swtpm
         if: always()
-        run: docker compose -f docker-compose.tpm-test.yaml down -v
+        run: |
+          pkill -f 'swtpm socket' 2>/dev/null || true
+          rm -rf /tmp/swtpm-state /tmp/swtpm.log
 
   # ============================================================================
   # SPIFFE/SPIRE Integration Tests (Phase 35)
@@ -568,10 +629,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install system dependencies
         run: |
@@ -579,13 +640,20 @@ jobs:
           sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-spire-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Log in to GHCR (for spire-server / spire-agent images)
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare SPIRE socket directory
         run: sudo mkdir -p /tmp/spire-agent/public && sudo chmod 777 /tmp/spire-agent/public
@@ -604,14 +672,36 @@ jobs:
             sleep 2
           done
 
-      - name: Wait for workload registration
+      - name: Register SPIRE workload
+        # The spire-register sidecar was removed because the spire-server
+        # image (ghcr.io/spiffe/spire-server:1.14.5) is distroless — no
+        # /bin/sh, so `entrypoint: /bin/sh` fails with ENOENT.  Instead,
+        # exec the spire-server binary directly inside the running server
+        # container.  Output is captured on the host side (which has a
+        # shell) for parsing.
         run: |
-          echo "Waiting for spire-register to complete..."
-          docker compose -f docker-compose.spire-test.yaml wait spire-register
-          echo "Workload registration complete."
+          echo "Generating agent join token..."
+          TOKEN=$(docker compose -f docker-compose.spire-test.yaml exec -T spire-server \
+            /opt/spire/bin/spire-server token generate \
+              -socketPath /opt/spire/data/server.sock \
+              -spiffeID spiffe://prmana-test/agent \
+              -output json 2>/dev/null | grep -o '"value":"[^"]*"' | cut -d'"' -f4)
+          echo "Join token: ${TOKEN:0:20}..."
+
+          echo "Registering test workload..."
+          docker compose -f docker-compose.spire-test.yaml exec -T spire-server \
+            /opt/spire/bin/spire-server entry create \
+              -socketPath /opt/spire/data/server.sock \
+              -parentID spiffe://prmana-test/agent \
+              -spiffeID spiffe://prmana-test/ns/ci/sa/test-workload \
+              -selector unix:uid:0 \
+              -dns localhost \
+              -jwtSVIDTTL 300
+
+          echo "SPIRE registration complete."
 
       - name: Run SPIRE integration tests
-        run: cargo test -p prmana-agent --features spire -- --ignored spire
+        run: cargo test -p prmana-agent --features spire -- spire
         env:
           PRMANA_SPIRE_SOCKET: /tmp/spire-agent/public/api.sock
 
@@ -630,10 +720,10 @@ jobs:
     name: MSRV (Rust 1.88)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust 1.88 (MSRV)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: "1.88"
 
@@ -652,10 +742,10 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install system dependencies
         run: |
@@ -676,10 +766,10 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: llvm-tools-preview
 
@@ -689,10 +779,10 @@ jobs:
           sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@e401a4d879f25c0a52eebd872384bf6b2f533695 # cargo-llvm-cov
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -713,7 +803,7 @@ jobs:
           }
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -729,10 +819,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-matrix]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install system dependencies
         run: |
@@ -749,7 +839,7 @@ jobs:
         run: cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: sbom
           path: |
@@ -767,19 +857,19 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         with:
           languages: python
           # Note: Rust is not directly supported by CodeQL, but we can scan Python code
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v4
+        uses: github/codeql-action/autobuild@c10b8064de6f491fea524254123dbe5e09572f13 # v4
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         with:
           category: "/language:python"
 
@@ -791,13 +881,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache Rust
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -806,19 +896,19 @@ jobs:
           key: ${{ runner.os }}-dpop-rust-${{ hashFiles('dpop-cross-language-tests/rust-test/Cargo.lock') }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.21'
           cache-dependency-path: dpop-cross-language-tests/go-test/go.sum
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           java-version: '21'
           distribution: 'temurin'
 
       - name: Cache Gradle
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: ~/.gradle/caches
           key: ${{ runner.os }}-gradle-${{ hashFiles('java-oauth-dpop/build.gradle.kts') }}

@@ -57,6 +57,11 @@ use policy::config::{EnforcementMode, PolicyConfig};
 use secrecy::{ExposeSecret, SecretString};
 use security::nonce_cache::{generate_dpop_nonce, global_nonce_cache};
 use security::rate_limit::global_rate_limiter;
+use std::fs::File;
+use std::io::Read;
+use std::os::fd::FromRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 /// Module-level JWKS registry that persists across PAM authentication calls.
 ///
@@ -68,6 +73,26 @@ use security::rate_limit::global_rate_limiter;
 ///
 /// Initialized lazily on first use via `Lazy<IssuerJwksRegistry>`.
 static JWKS_REGISTRY: Lazy<IssuerJwksRegistry> = Lazy::new(IssuerJwksRegistry::new);
+
+const PROCESS_ENV_BRIDGE_VARS: &[&str] = &[
+    "OIDC_ISSUER",
+    "OIDC_CLIENT_ID",
+    "OIDC_REQUIRED_ACR",
+    "OIDC_MAX_AUTH_AGE",
+    "PRMANA_POLICY_PATH",
+];
+const TOKEN_ENVFILE_PATH: &str = "/run/prmana/token.env";
+const MAX_TOKEN_ENVFILE_BYTES: u64 = 32 * 1024;
+
+#[cfg(test)]
+static ETC_ENVIRONMENT_PATH_OVERRIDE: Lazy<parking_lot::Mutex<Option<std::path::PathBuf>>> =
+    Lazy::new(|| parking_lot::Mutex::new(None));
+#[cfg(test)]
+static TOKEN_ENVFILE_PATH_OVERRIDE: Lazy<parking_lot::Mutex<Option<std::path::PathBuf>>> =
+    Lazy::new(|| parking_lot::Mutex::new(None));
+#[cfg(test)]
+static TOKEN_ENVFILE_TRUSTED_UID_OVERRIDE: Lazy<parking_lot::Mutex<Option<u32>>> =
+    Lazy::new(|| parking_lot::Mutex::new(None));
 
 /// Return `true` if `pam_user` matches any configured break-glass account.
 ///
@@ -87,9 +112,125 @@ pamsm::pam_module!(PamUnixOidc);
 
 /// Check if test mode is explicitly enabled.
 /// Security: Only accepts explicit "true" or "1" values, not just presence of the variable.
+fn is_explicit_opt_in(value: &str) -> bool {
+    matches!(value.trim(), "true" | "1")
+}
+
+fn etc_environment_path() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(path) = ETC_ENVIRONMENT_PATH_OVERRIDE.lock().clone() {
+        return path;
+    }
+
+    std::path::PathBuf::from("/etc/environment")
+}
+
+fn parse_environment_entries(contents: &str) -> Vec<(String, String)> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (k, v) = line.split_once('=')?;
+            let v = v.trim_matches('"').trim_matches('\'');
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+fn read_etc_environment_var(var_name: &str) -> Option<String> {
+    std::fs::read_to_string(etc_environment_path())
+        .ok()
+        .map(|contents| parse_environment_entries(&contents))?
+        .into_iter()
+        .find_map(|(k, v)| (k == var_name).then(|| v.to_string()))
+}
+
+fn pam_token_envfile_path() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TOKEN_ENVFILE_PATH_OVERRIDE.lock().clone() {
+        return path;
+    }
+
+    std::path::PathBuf::from(TOKEN_ENVFILE_PATH)
+}
+
+fn trusted_token_envfile_owner_uid() -> u32 {
+    #[cfg(test)]
+    if let Some(uid) = *TOKEN_ENVFILE_TRUSTED_UID_OVERRIDE.lock() {
+        return uid;
+    }
+
+    0
+}
+
+fn read_secure_token_envfile() -> Option<String> {
+    let path = pam_token_envfile_path();
+    let trusted_uid = trusted_token_envfile_owner_uid();
+
+    let parent = path.parent()?;
+    let parent_meta = std::fs::symlink_metadata(parent).ok()?;
+    if !parent_meta.is_dir() || parent_meta.uid() != trusted_uid {
+        return None;
+    }
+    let parent_mode = parent_meta.permissions().mode() & 0o777;
+    if parent_mode & 0o022 != 0 {
+        return None;
+    }
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    #[allow(unsafe_code)]
+    let fd = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return None;
+    }
+
+    #[allow(unsafe_code)]
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.uid() != trusted_uid {
+        return None;
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 || mode & 0o400 == 0 {
+        return None;
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_TOKEN_ENVFILE_BYTES {
+        return None;
+    }
+
+    let mut contents = String::new();
+    file.by_ref()
+        .take(MAX_TOKEN_ENVFILE_BYTES)
+        .read_to_string(&mut contents)
+        .ok()?;
+
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (key, value) = line.split_once('=')?;
+            (key == "OIDC_TOKEN").then(|| {
+                value
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim()
+                    .to_string()
+            })
+        })
+        .find(|token| is_jwt(token))
+}
+
 fn is_test_mode_enabled() -> bool {
     std::env::var("PRMANA_TEST_MODE")
-        .map(|v| v == "true" || v == "1")
+        .map(|v| is_explicit_opt_in(&v))
         .unwrap_or(false)
 }
 
@@ -103,7 +244,7 @@ impl PamServiceModule for PamUnixOidc {
         //
         // Source priority:
         //   1. Process env (already set) — highest, never overridden
-        //   2. PAM env (set by pam_env.so readenv=1 from /etc/environment)
+        //   2. PAM env (if another PAM module explicitly populated it)
         //   3. /etc/environment direct parse — fallback if PAM env unavailable
         //
         // Security:
@@ -112,18 +253,11 @@ impl PamServiceModule for PamUnixOidc {
         //   - Each sshd child is a separate fork; single-threaded during PAM auth.
         //   - Only OIDC-specific var names are bridged (allowlist, not passthrough).
         {
-            let bridge_vars = [
-                "OIDC_ISSUER",
-                "OIDC_CLIENT_ID",
-                "OIDC_REQUIRED_ACR",
-                "OIDC_MAX_AUTH_AGE",
-                "PRMANA_POLICY_PATH",
-            ];
-
-            // Try PAM env first (set by pam_env.so), then /etc/environment fallback.
+            // Try PAM env first if another module populated it, then fall back to
+            // parsing /etc/environment directly.
             let mut etc_env_cache: Option<Vec<(String, String)>> = None;
 
-            for var_name in &bridge_vars {
+            for var_name in PROCESS_ENV_BRIDGE_VARS {
                 if std::env::var(var_name).is_ok() {
                     continue; // Already in process env — don't override.
                 }
@@ -147,22 +281,9 @@ impl PamServiceModule for PamUnixOidc {
 
                 // Source 3: Parse /etc/environment (lazy, read once)
                 if etc_env_cache.is_none() {
-                    etc_env_cache = Some(
-                        std::fs::read_to_string("/etc/environment")
-                            .unwrap_or_default()
-                            .lines()
-                            .filter_map(|line| {
-                                let line = line.trim();
-                                if line.is_empty() || line.starts_with('#') {
-                                    return None;
-                                }
-                                let (k, v) = line.split_once('=')?;
-                                // Strip optional quotes from value
-                                let v = v.trim_matches('"').trim_matches('\'');
-                                Some((k.to_string(), v.to_string()))
-                            })
-                            .collect(),
-                    );
+                    let contents =
+                        std::fs::read_to_string(etc_environment_path()).unwrap_or_default();
+                    etc_env_cache = Some(parse_environment_entries(&contents));
                 }
 
                 if let Some(ref entries) = etc_env_cache {
@@ -1018,10 +1139,16 @@ fn issue_and_deliver_nonce(pamh: &Pam) -> Result<String, String> {
 }
 
 /// Check if PAM environment token reading is explicitly enabled.
-/// Security: Requires explicit opt-in to accept tokens from PAM environment.
+/// Security: Requires explicit opt-in from root-controlled process config or
+/// `/etc/environment`; generic PAM env alone must not enable this mode.
 fn is_pam_env_token_enabled() -> bool {
-    std::env::var("PRMANA_ACCEPT_PAM_ENV")
-        .map(|v| v == "true" || v == "1")
+    let process_env = std::env::var("PRMANA_ACCEPT_PAM_ENV").ok();
+    let etc_env = read_etc_environment_var("PRMANA_ACCEPT_PAM_ENV");
+
+    process_env
+        .as_deref()
+        .map(is_explicit_opt_in)
+        .or_else(|| etc_env.as_deref().map(is_explicit_opt_in))
         .unwrap_or(false)
 }
 
@@ -1029,7 +1156,8 @@ fn is_pam_env_token_enabled() -> bool {
 ///
 /// Token sources (in priority order):
 /// 1. OIDC_TOKEN environment variable (requires PRMANA_TEST_MODE=true)
-/// 2. PAM environment variable OIDC_TOKEN (requires PRMANA_ACCEPT_PAM_ENV=true)
+/// 2. PAM environment variable OIDC_TOKEN or secure token envfile fallback
+///    (requires PRMANA_ACCEPT_PAM_ENV=true)
 /// 3. Cached PAM authtok (password field)
 /// 4. Interactive PAM conversation prompt
 ///
@@ -1057,7 +1185,7 @@ fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<SecretString> {
         }
     }
 
-    // Check PAM environment for OIDC_TOKEN (set by external mechanisms like pam_env)
+    // Check PAM environment for OIDC_TOKEN (set by external mechanisms that call pam_putenv).
     // Security: Requires explicit PRMANA_ACCEPT_PAM_ENV=true
     if is_pam_env_token_enabled() {
         // SECURITY WARNING: Log that this potentially dangerous mode is active
@@ -1077,6 +1205,14 @@ fn get_auth_token(pamh: &Pam, test_mode: bool) -> Option<SecretString> {
                 );
                 return Some(SecretString::from(token_str));
             }
+        }
+
+        if let Some(token) = read_secure_token_envfile() {
+            eprintln!(
+                "prmana: SECURITY NOTICE: Accepting token from secure envfile fallback. \
+                 Ensure /run/prmana/token.env remains root-owned and 0600."
+            );
+            return Some(SecretString::from(token));
         }
     }
 
@@ -1130,11 +1266,61 @@ fn is_base64url(s: &str) -> bool {
 mod tests {
     use super::*;
     use parking_lot::Mutex;
+    use std::fs;
+    use std::io::Write;
 
     // Mutex to ensure environment variable tests don't interfere with each other.
     // parking_lot::Mutex does not poison on panic, so .lock() returns the guard
     // directly without needing .unwrap().
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EtcEnvironmentOverride(tempfile::NamedTempFile);
+
+    impl EtcEnvironmentOverride {
+        fn new(contents: &str) -> Self {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            write!(file, "{contents}").unwrap();
+            *ETC_ENVIRONMENT_PATH_OVERRIDE.lock() = Some(file.path().to_path_buf());
+            Self(file)
+        }
+    }
+
+    impl Drop for EtcEnvironmentOverride {
+        fn drop(&mut self) {
+            let _ = self.0.path();
+            *ETC_ENVIRONMENT_PATH_OVERRIDE.lock() = None;
+        }
+    }
+
+    struct TokenEnvfileOverride {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl TokenEnvfileOverride {
+        fn new(contents: &str, file_mode: u32, dir_mode: u32) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(dir_mode)).unwrap();
+
+            let path = dir.path().join("token.env");
+            fs::write(&path, contents).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(file_mode)).unwrap();
+
+            let trusted_uid = fs::metadata(&path).unwrap().uid();
+            *TOKEN_ENVFILE_PATH_OVERRIDE.lock() = Some(path.clone());
+            *TOKEN_ENVFILE_TRUSTED_UID_OVERRIDE.lock() = Some(trusted_uid);
+
+            Self { _dir: dir, path }
+        }
+    }
+
+    impl Drop for TokenEnvfileOverride {
+        fn drop(&mut self) {
+            let _ = &self.path;
+            *TOKEN_ENVFILE_PATH_OVERRIDE.lock() = None;
+            *TOKEN_ENVFILE_TRUSTED_UID_OVERRIDE.lock() = None;
+        }
+    }
 
     #[test]
     fn test_is_jwt_valid() {
@@ -1245,6 +1431,95 @@ mod tests {
             );
         }
         std::env::remove_var("PRMANA_ACCEPT_PAM_ENV");
+    }
+
+    #[test]
+    fn test_pam_env_token_enabled_from_etc_environment_when_process_env_missing() {
+        let _guard = ENV_MUTEX.lock();
+        std::env::remove_var("PRMANA_ACCEPT_PAM_ENV");
+        let _etc_env = EtcEnvironmentOverride::new("PRMANA_ACCEPT_PAM_ENV=true\n");
+        assert!(
+            is_pam_env_token_enabled(),
+            "SECURITY: /etc/environment fallback should enable PAM env token mode only on explicit opt-in"
+        );
+    }
+
+    #[test]
+    fn test_pam_env_token_process_env_takes_precedence_over_etc_environment() {
+        let _guard = ENV_MUTEX.lock();
+        std::env::set_var("PRMANA_ACCEPT_PAM_ENV", "no");
+        let _etc_env = EtcEnvironmentOverride::new("PRMANA_ACCEPT_PAM_ENV=true\n");
+        assert!(
+            !is_pam_env_token_enabled(),
+            "SECURITY: process env must take precedence over /etc/environment fallback"
+        );
+        std::env::remove_var("PRMANA_ACCEPT_PAM_ENV");
+    }
+
+    #[test]
+    fn test_pam_env_token_etc_environment_requires_explicit_opt_in() {
+        let _guard = ENV_MUTEX.lock();
+        std::env::remove_var("PRMANA_ACCEPT_PAM_ENV");
+        let _etc_env = EtcEnvironmentOverride::new(
+            "# comment\nPRMANA_ACCEPT_PAM_ENV=\"TRUE\"\nOIDC_ISSUER=http://example.test/\n",
+        );
+        assert!(
+            !is_pam_env_token_enabled(),
+            "SECURITY: /etc/environment fallback must reject non-explicit opt-in values"
+        );
+    }
+
+    #[test]
+    fn test_secure_token_envfile_accepts_valid_root_controlled_file() {
+        let _guard = ENV_MUTEX.lock();
+        let _token_file = TokenEnvfileOverride::new(
+            "OIDC_TOKEN=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature\n",
+            0o600,
+            0o700,
+        );
+        let token = read_secure_token_envfile();
+        assert_eq!(
+            token.as_deref(),
+            Some("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature")
+        );
+    }
+
+    #[test]
+    fn test_secure_token_envfile_rejects_group_or_world_readable_file() {
+        let _guard = ENV_MUTEX.lock();
+        let _token_file = TokenEnvfileOverride::new(
+            "OIDC_TOKEN=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature\n",
+            0o644,
+            0o700,
+        );
+        assert!(
+            read_secure_token_envfile().is_none(),
+            "SECURITY: token envfile must reject group/world-accessible permissions"
+        );
+    }
+
+    #[test]
+    fn test_secure_token_envfile_rejects_writable_parent_directory() {
+        let _guard = ENV_MUTEX.lock();
+        let _token_file = TokenEnvfileOverride::new(
+            "OIDC_TOKEN=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature\n",
+            0o600,
+            0o777,
+        );
+        assert!(
+            read_secure_token_envfile().is_none(),
+            "SECURITY: token envfile must reject writable parent directories"
+        );
+    }
+
+    #[test]
+    fn test_secure_token_envfile_rejects_non_jwt_payload() {
+        let _guard = ENV_MUTEX.lock();
+        let _token_file = TokenEnvfileOverride::new("OIDC_TOKEN=not-a-jwt\n", 0o600, 0o700);
+        assert!(
+            read_secure_token_envfile().is_none(),
+            "SECURITY: token envfile fallback must only accept JWT-shaped values"
+        );
     }
 
     // =========================================================================

@@ -89,7 +89,7 @@ echo "  Python generating..."
 "$PYTHON_CMD" "$PYTHON_SCRIPT" generate "$PROOFS_DIR/python_proof.json"
 
 echo "  Java generating..."
-java -cp "$JAVA_CP" com.github.unixoidcproject.oauthdpop.crosstest.CrossTest generate "$PROOFS_DIR/java_proof.json"
+java -cp "$JAVA_CP" com.github.prodnull.oauthdpop.crosstest.CrossTest generate "$PROOFS_DIR/java_proof.json"
 
 echo ""
 echo "=========================================="
@@ -114,7 +114,7 @@ run_validation() {
             ;;
         java)
             java -cp "$JAVA_CP" \
-                com.github.unixoidcproject.oauthdpop.crosstest.CrossTest validate "$proof_file" 2>/dev/null
+                com.github.prodnull.oauthdpop.crosstest.CrossTest validate "$proof_file" 2>/dev/null
             ;;
     esac
 }

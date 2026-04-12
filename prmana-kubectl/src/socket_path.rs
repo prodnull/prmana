@@ -3,13 +3,29 @@
 //! Resolution order:
 //! 1. `PRMANA_SOCKET` environment variable (highest priority — test override)
 //! 2. `$XDG_RUNTIME_DIR/prmana-agent.sock` (user session socket via systemd)
-//! 3. `/run/prmana/agent.sock` (system-level daemon socket)
-//! 4. `/tmp/prmana-agent.sock` (last-resort fallback)
+//! 3. `/run/user/<uid>/prmana-agent.sock` (canonical per-user Linux fallback)
+//! 4. `$TMPDIR/prmana-agent.sock` (macOS user-session fallback)
+//! 5. Error on unsupported platforms without an explicit override
 //!
-//! This matches the socket path priority defined in the prmana-agent socket
-//! acquisition code (`daemon/socket.rs: acquire_listener`).
+//! This matches the default socket selection in `prmana-agent`.
 
 use std::path::PathBuf;
+
+const SOCKET_BASENAME: &str = "prmana-agent.sock";
+
+fn xdg_runtime_socket_path(xdg_runtime_dir: &str) -> PathBuf {
+    PathBuf::from(xdg_runtime_dir).join(SOCKET_BASENAME)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_runtime_socket_path(uid: u32) -> PathBuf {
+    PathBuf::from(format!("/run/user/{uid}/{SOCKET_BASENAME}"))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_runtime_socket_path(tmpdir: &str) -> PathBuf {
+    PathBuf::from(tmpdir).join(SOCKET_BASENAME)
+}
 
 /// Resolve the prmana-agent socket path using the priority chain.
 ///
@@ -34,18 +50,30 @@ pub(crate) fn resolve_with_env(
 
     // 2. XDG runtime directory (typical user session under systemd)
     if let Some(xdg) = xdg_runtime_dir {
-        let candidate = PathBuf::from(xdg).join("prmana-agent.sock");
-        return Ok(candidate);
+        return Ok(xdg_runtime_socket_path(xdg));
     }
 
-    // 3. System-level socket (when agent runs as a system service)
-    let system_path = PathBuf::from("/run/prmana/agent.sock");
-    if system_path.exists() {
-        return Ok(system_path);
+    // 3. Canonical per-user platform fallback when XDG_RUNTIME_DIR is absent.
+    // Exactly one of the three cfg blocks below is the function's trailing
+    // expression on any given target, so no `return` keyword is needed.
+    #[cfg(target_os = "linux")]
+    {
+        let uid = unsafe { libc::getuid() };
+        Ok(linux_runtime_socket_path(uid))
     }
 
-    // 4. Last-resort fallback
-    Ok(PathBuf::from("/tmp/prmana-agent.sock"))
+    #[cfg(target_os = "macos")]
+    {
+        let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        Ok(macos_runtime_socket_path(&tmpdir))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Err(anyhow::anyhow!(
+            "cannot resolve prmana-agent socket path without PRMANA_SOCKET or XDG_RUNTIME_DIR"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -66,14 +94,47 @@ mod tests {
         assert_eq!(path, PathBuf::from("/run/user/1000/prmana-agent.sock"));
     }
 
-    /// Falls through to /tmp fallback when no env vars and no system socket.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_linux_runtime_socket_path_builder() {
+        assert_eq!(
+            linux_runtime_socket_path(1000),
+            PathBuf::from("/run/user/1000/prmana-agent.sock")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_runtime_socket_path_builder() {
+        assert_eq!(
+            macos_runtime_socket_path("/private/tmp/prmana"),
+            PathBuf::from("/private/tmp/prmana/prmana-agent.sock")
+        );
+    }
+
+    /// Falls through to the canonical per-user runtime path when no env vars are set.
     #[test]
     fn test_fallback_returned_when_no_env() {
         let path = resolve_with_env(None, None).unwrap();
-        // Will be either /run/prmana/agent.sock (if exists) or /tmp/prmana-agent.sock
         assert!(
-            path.to_str().unwrap().contains("prmana"),
-            "fallback path must contain prmana: {path:?}"
+            path.to_str().unwrap().contains("prmana-agent.sock"),
+            "fallback path must end in prmana-agent.sock: {path:?}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_host_fallback_uses_linux_runtime_dir() {
+        let path = resolve_with_env(None, None).unwrap();
+        let uid = unsafe { libc::getuid() };
+        assert_eq!(path, linux_runtime_socket_path(uid));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_host_fallback_uses_tmpdir() {
+        let path = resolve_with_env(None, None).unwrap();
+        let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        assert_eq!(path, macos_runtime_socket_path(&tmpdir));
     }
 }

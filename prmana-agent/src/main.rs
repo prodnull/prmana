@@ -30,6 +30,7 @@ use prmana_agent::storage::KEY_PQ_SEED;
 use prmana_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
+use prmana_agent::url_policy::{validate_endpoint_url, validate_oidc_discovery};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -1149,6 +1150,11 @@ async fn run_device_flow(
     client_attestation: ClientAttestationConfig,
     device_flow_timeout_secs: u64,
 ) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
+    validate_endpoint_url(device_endpoint, "device_authorization_endpoint")
+        .map_err(|e| anyhow::anyhow!("Refusing insecure device endpoint: {e}"))?;
+    validate_endpoint_url(token_endpoint, "token_endpoint")
+        .map_err(|e| anyhow::anyhow!("Refusing insecure token endpoint: {e}"))?;
+
     let device_endpoint = device_endpoint.to_string();
     let token_endpoint = token_endpoint.to_string();
     let client_id = client_id.to_string();
@@ -1368,6 +1374,11 @@ async fn run_auth_code_flow(
     client_attestation: &ClientAttestationConfig,
     http_timeout_secs: u64,
 ) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
+    validate_endpoint_url(authorization_endpoint, "authorization_endpoint")
+        .map_err(|e| anyhow::anyhow!("Refusing insecure authorization endpoint: {e}"))?;
+    validate_endpoint_url(token_endpoint, "token_endpoint")
+        .map_err(|e| anyhow::anyhow!("Refusing insecure token endpoint: {e}"))?;
+
     let (code_verifier, code_challenge) = generate_pkce();
     let state = Uuid::new_v4().to_string();
     let listener: CallbackListener = start_callback_listener(&state).await?;
@@ -1424,6 +1435,9 @@ async fn run_auth_code_flow(
 }
 
 async fn fetch_oidc_discovery(issuer: &str, timeout_secs: u64) -> anyhow::Result<OidcDiscovery> {
+    validate_endpoint_url(issuer, "issuer")
+        .map_err(|e| anyhow::anyhow!("Refusing insecure issuer URL: {e}"))?;
+
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
         issuer.trim_end_matches('/')
@@ -1446,10 +1460,15 @@ async fn fetch_oidc_discovery(issuer: &str, timeout_secs: u64) -> anyhow::Result
         );
     }
 
-    response
+    let discovery = response
         .json::<OidcDiscovery>()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to parse OIDC discovery: {e}"))
+        .map_err(|e| anyhow::anyhow!("Failed to parse OIDC discovery: {e}"))?;
+
+    validate_oidc_discovery(&discovery)
+        .map_err(|e| anyhow::anyhow!("OIDC discovery endpoint validation failed: {e}"))?;
+
+    Ok(discovery)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2495,5 +2514,66 @@ mod tests {
         assert!(!token_req
             .headers
             .contains_key("OAuth-Client-Attestation-PoP"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_oidc_discovery_rejects_non_loopback_http_issuer() {
+        let err = fetch_oidc_discovery("http://idp.example.com", 5)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Refusing insecure issuer URL"));
+    }
+
+    #[tokio::test]
+    async fn test_run_device_flow_rejects_non_loopback_http_endpoints() {
+        let signer: Arc<dyn DPoPSigner> = Arc::new(SoftwareSigner::generate());
+        let disabled = ClientAttestationConfig {
+            enabled: false,
+            lifetime_secs: 3600,
+        };
+
+        let err = run_device_flow(
+            "http://idp.example.com/device",
+            "http://idp.example.com/token",
+            None,
+            "prmana",
+            None,
+            signer,
+            disabled,
+            5,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Refusing insecure device endpoint"));
+    }
+
+    #[tokio::test]
+    async fn test_run_auth_code_flow_rejects_non_loopback_http_endpoints() {
+        let signer = SoftwareSigner::generate();
+        let client_attestation = ClientAttestationConfig {
+            enabled: false,
+            lifetime_secs: 3600,
+        };
+
+        let err = run_auth_code_flow(
+            "http://idp.example.com/authorize",
+            "http://idp.example.com/token",
+            None,
+            "prmana",
+            None,
+            &signer,
+            &client_attestation,
+            5,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Refusing insecure authorization endpoint"));
     }
 }

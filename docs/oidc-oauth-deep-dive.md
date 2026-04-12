@@ -1278,7 +1278,7 @@ OIDC is a standard, but every IdP implements it with its own edges. This section
 
 | Claim | Keycloak | Auth0 | Entra ID |
 |-------|----------|-------|----------|
-| `preferred_username` | Always present with `profile` scope | **Requires custom claim rule** — Auth0 namespaces custom claims (e.g., `https://prmana.dev/preferred_username`) | Present with `profile` scope + optional claims config |
+| `preferred_username` | Always present with `profile` scope | **Requires custom claim rule** — Auth0 namespaces custom claims (e.g., `https://prmana.com/preferred_username`) | Present with `profile` scope + optional claims config |
 | `email` | Present with `email` scope | Present with `email` scope | **Requires both** `email` scope AND the user must have a `mail` attribute in the directory. Test users on `@onmicrosoft.com` domains often lack this. Enterprise users synced from AD/Exchange have it. |
 | `sub` | Always present | Always present | Always present |
 | `acr` / `amr` | Present (configurable) | `amr` present | `acr` present, `amr` present |
@@ -1323,7 +1323,7 @@ issuers:
     dpop_enforcement: disabled  # No DPoP on Device Auth Grant
     jti_enforcement: strict     # Standard jti
     claim_mapping:
-      username_claim: "https://prmana.dev/preferred_username"  # namespaced
+      username_claim: "https://prmana.com/preferred_username"  # namespaced
 ```
 
 **Entra ID (bearer-only, UPN mapping):**

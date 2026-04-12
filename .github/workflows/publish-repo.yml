@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Determine release tag
         id: tag
@@ -85,7 +85,7 @@ jobs:
 
       - name: Import GPG signing key
         id: import_gpg
-        uses: crazy-max/ghaction-import-gpg@v6
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
         with:
           gpg_private_key: ${{ secrets.PRMANA_GPG_PRIVATE_KEY }}
 
@@ -171,7 +171,7 @@ jobs:
           cp packaging/repo/prmana-public.asc stage/gpg/prmana.asc
 
       - name: Deploy to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: stage

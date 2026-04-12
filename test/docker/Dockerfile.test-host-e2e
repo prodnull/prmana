@@ -45,9 +45,15 @@ RUN mkdir -p /etc/prmana
 COPY test/fixtures/policy/policy-e2e.yaml /etc/prmana/policy.yaml
 
 # OIDC configuration in /etc/environment
-# Issuer matches KC_HOSTNAME=localhost. socat proxies localhost:8080 → keycloak:8080.
+#
+# pam_prmana reads its auth-time configuration from root-controlled process
+# config or `/etc/environment` because sshd sanitizes the PAM auth worker's
+# process env and `pam_env.so` is ignored during pam_authenticate() on Ubuntu
+# 24.04. Keep the E2E-only PRMANA_ACCEPT_PAM_ENV gate here so the direct
+# `/run/prmana/token.env` fallback is enabled during SSH auth tests.
 RUN echo 'OIDC_ISSUER=http://localhost:8080/realms/prmana' >> /etc/environment && \
-    echo 'OIDC_CLIENT_ID=prmana' >> /etc/environment
+    echo 'OIDC_CLIENT_ID=prmana' >> /etc/environment && \
+    echo 'PRMANA_ACCEPT_PAM_ENV=true' >> /etc/environment
 
 # Startup script
 COPY test/docker/entrypoint-e2e.sh /entrypoint.sh

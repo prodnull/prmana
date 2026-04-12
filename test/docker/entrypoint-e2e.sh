@@ -59,11 +59,28 @@ fi
 mkdir -p /run/prmana/sessions
 chmod 700 /run/prmana
 
+# E2E token-envfile path: pre-create the per-session token envfile that
+# pam_prmana reads directly during ssh auth when the E2E gate is enabled.
+# The test harness overwrites this file from the outside immediately before
+# each ssh invocation. Empty-on-startup is intentional — auth then proceeds
+# to pam_prmana's conversation fallback and still fails closed.
+: > /run/prmana/token.env
+chmod 600 /run/prmana/token.env
+
 # Export OIDC configuration for PAM module (no TEST_MODE)
 export OIDC_ISSUER="${OIDC_ISSUER:-http://localhost:8080/realms/prmana}"
 export OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-prmana}"
 echo "OIDC_ISSUER=$OIDC_ISSUER"
 echo "TEST_MODE: NOT SET (real signature verification)"
+
+# E2E token-envfile path: the auth-time gate is configured in
+# /etc/environment at image build time, not only via process exports.
+#
+# sshd sanitizes the PAM auth worker's process environment, so an entrypoint
+# export alone is insufficient. pam_prmana accepts this gate only from
+# root-controlled process configuration or `/etc/environment`, then reads the
+# E2E-only `/run/prmana/token.env` fallback directly during pam_authenticate().
+echo "PRMANA_ACCEPT_PAM_ENV=true via /etc/environment (E2E container only)"
 
 # Proxy localhost:8080 → keycloak:8080 so the PAM module can fetch JWKS
 # from the issuer URL (http://localhost:8080/...) inside this container.

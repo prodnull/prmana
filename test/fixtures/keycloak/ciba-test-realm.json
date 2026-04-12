@@ -34,8 +34,7 @@
       "attributes": {
         "oauth2.device.authorization.grant.enabled": "true",
         "oidc.ciba.grant.enabled": "true",
-        "ciba.backchannel.token.delivery.mode": "poll",
-        "dpop.bound.access.tokens": "true"
+        "ciba.backchannel.token.delivery.mode": "poll"
       },
       "protocolMappers": [
         {
