@@ -1,0 +1,16 @@
+---
+# Prmana Fleet Deployment Playbook
+#
+# Usage:
+#   ansible-playbook -i inventory site.yml \
+#       -e prmana_issuer_url=https://idp.example.com/realms/corp \
+#       -e prmana_pam_module_src=./libpam_prmana.so \
+#       -e prmana_break_glass_password_hash='$6$...'
+#
+# See deploy/ansible/roles/prmana/defaults/main.yml for all variables.
+
+- name: Deploy Prmana OIDC PAM authentication
+  hosts: all
+  become: true
+  roles:
+    - prmana

@@ -1,0 +1,89 @@
+#!/bin/sh
+# prmana.postinst — post-installation maintainer script
+#
+# 1. Run systemd-tmpfiles to create /run/prmana (needed before socket activation).
+# 2. Reload systemd daemon so it picks up the new unit files.
+# 3. Enable prmana-agent.socket (socket activation; not the .service directly).
+# 4. Start the socket so it is ready for the first connection.
+# 5. Self-check: verify both the agent binary and the PAM .so are present and
+#    the agent binary responds to --version (proves it is not corrupted).
+#
+# Security (T-DTA02-02, T-DTA02-07):
+#   - No network calls.
+#   - set -eu: any unexpected failure aborts the script and rolls back the install.
+#   - Self-check does not expose secrets — prmana-agent --version is safe to log.
+#
+# Idempotency: all systemctl calls use || true so they are safe to re-run.
+#
+# References:
+#   Debian Policy Manual §6.5 — postinst idempotency
+#   systemd socket activation documentation
+set -eu
+
+# --- 1. Create runtime directories via tmpfiles.d ---
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/prmana.conf || true
+fi
+
+# --- 2. Reload systemd daemon ---
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+
+    # --- 3 & 4. Enable and start socket activation ---
+    # We enable and start the .socket unit, not the .service.
+    # systemd will start the .service on first connection.
+    systemctl enable prmana-agent.socket >/dev/null 2>&1 || true
+    systemctl start prmana-agent.socket >/dev/null 2>&1 || true
+fi
+
+# --- 5. Self-check: agent binary ---
+if ! /usr/bin/prmana-agent --version >/dev/null 2>&1; then
+    echo "ERROR: /usr/bin/prmana-agent --version failed" >&2
+    exit 1
+fi
+
+# --- 5. Self-check: PAM .so is present in a known path ---
+# PAM path varies by distro and architecture:
+#   Debian/Ubuntu (deb):  /usr/lib/security/pam_prmana.so
+#                         /lib/x86_64-linux-gnu/security/pam_prmana.so  (amd64)
+#                         /lib/aarch64-linux-gnu/security/pam_prmana.so (arm64)
+#   RHEL/Rocky/AL2023 (rpm): /usr/lib64/security/pam_prmana.so
+pam_found=0
+for p in /usr/lib/security/pam_prmana.so \
+          /usr/lib64/security/pam_prmana.so \
+          /lib/x86_64-linux-gnu/security/pam_prmana.so \
+          /lib/aarch64-linux-gnu/security/pam_prmana.so; do
+    if [ -f "$p" ]; then
+        echo "pam_prmana.so found at $p"
+        pam_found=1
+        break
+    fi
+done
+if [ "$pam_found" -eq 0 ]; then
+    echo "ERROR: pam_prmana.so not found in any expected PAM library path." >&2
+    echo "Expected one of:" >&2
+    echo "  /usr/lib/security/pam_prmana.so" >&2
+    echo "  /usr/lib64/security/pam_prmana.so" >&2
+    echo "  /lib/<arch>-linux-gnu/security/pam_prmana.so" >&2
+    exit 1
+fi
+
+# --- ldconfig: register the .so with the dynamic linker ---
+if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig || true
+fi
+
+echo ""
+echo "prmana installed successfully."
+echo "  Agent:      /usr/bin/prmana-agent"
+echo "  PAM module: /usr/lib/security/pam_prmana.so (or arch-specific path)"
+echo ""
+echo "Next steps:"
+echo "  1. Copy the config template:"
+echo "     cp /etc/prmana/policy.yaml.example /etc/prmana/policy.yaml"
+echo "     \$EDITOR /etc/prmana/policy.yaml"
+echo "  2. Start the agent socket:"
+echo "     sudo systemctl start prmana-agent.socket"
+echo "  3. See docs: https://github.com/prodnull/unix-oidc/blob/main/docs/installation.md"
+
+exit 0

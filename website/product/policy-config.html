@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prmana Documentation | Policy Configuration</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-200: #222222;
+            --gray-300: #444444;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.6; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; display: flex; gap: 4rem; padding: 0 2rem; }
+
+        aside { width: 250px; padding: 4rem 0; position: sticky; top: 0; height: 100vh; }
+        aside h4 { font-family: var(--font-mono); font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; margin-bottom: 1.5rem; letter-spacing: 1px; }
+        aside ul { list-style: none; padding: 0; }
+        aside li { margin-bottom: 1rem; font-size: 0.95rem; color: #888; cursor: pointer; }
+        aside li.active { color: var(--green); font-weight: bold; }
+        aside li:hover { color: var(--white); }
+        aside a { text-decoration: none; color: inherit; }
+
+        main { flex-grow: 1; padding: 4rem 0; }
+        h1 { font-size: 3rem; letter-spacing: -2px; margin-bottom: 1.5rem; }
+        p { font-size: 1.1rem; color: #CBD5E1; margin-bottom: 2rem; }
+
+        .step { margin-bottom: 4rem; }
+        .step h3 { font-size: 1.5rem; margin-bottom: 1rem; color: var(--white); }
+
+        .code-block { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 8px; padding: 1.5rem; font-family: var(--font-mono); font-size: 0.9rem; color: var(--white); position: relative; margin-bottom: 1.5rem; overflow-x: auto; white-space: pre; line-height: 1.7; }
+        .code-block .prompt::before { content: '$ '; color: var(--green); }
+        .code-block .comment { color: #666; }
+        .code-block .key { color: var(--green); }
+        .code-block .str { color: #f8c555; }
+
+        .copy-btn { position: absolute; right: 1rem; top: 1rem; font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; cursor: pointer; }
+
+        .note { background: rgba(0, 255, 65, 0.05); border-left: 4px solid var(--green); padding: 1.5rem; border-radius: 4px; color: #ccc; font-size: 0.95rem; margin-bottom: 2rem; }
+
+        table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; font-size: 0.95rem; }
+        th { text-align: left; color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; padding: 0.75rem 1rem; border-bottom: 1px solid var(--gray-200); }
+        td { padding: 0.75rem 1rem; color: #CBD5E1; border-bottom: 1px solid var(--gray-100); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <aside>
+        <a href="../index.html" style="font-family: var(--font-mono); font-weight: 900; color: var(--white); text-decoration: none; font-size: 1.2rem; display: block; margin-bottom: 3rem;">PRMANA</a>
+
+        <ul class="nav-links" style="margin-bottom: 4rem; list-style: none; padding: 0; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;">
+            <li style="margin-bottom: 0.75rem;"><a href="engine.html" style="color: var(--white); text-decoration: none; opacity: 0.6;">Engine</a></li>
+            <li style="margin-bottom: 0.75rem;"><a href="../index.html#blog" style="color: var(--white); text-decoration: none; opacity: 0.6;">Blog</a></li>
+        </ul>
+
+        <h4>Introduction</h4>
+        <ul>
+            <li><a href="docs.html">Getting Started</a></li>
+            <li><a href="core-concepts.html">Core Concepts</a></li>
+            <li><a href="dpop-architecture.html">DPoP Architecture</a></li>
+        </ul>
+
+        <h4 style="margin-top: 2rem;">Deployment</h4>
+        <ul>
+            <li><a href="pam-installation.html">PAM Installation</a></li>
+            <li><a href="agent-setup.html">Agent Setup</a></li>
+            <li class="active"><a href="policy-config.html">Policy Configuration</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>Policy Configuration</h1>
+        <p>Configure the server-side policy file that controls which IdPs are accepted, how usernames are mapped, and what security checks are enforced.</p>
+
+        <section class="step">
+            <h3>Policy File</h3>
+            <p>The PAM module reads its configuration from <code style="color: var(--green);">/etc/prmana/policy.yaml</code>. This file controls all server-side authentication behavior. Create the directory and copy the example:</p>
+            <div class="code-block"><span class="prompt">sudo mkdir -p /etc/prmana</span>
+<span class="prompt">sudo cp /usr/share/prmana/examples/policy.yaml /etc/prmana/policy.yaml</span>
+<span class="prompt">sudo chmod 600 /etc/prmana/policy.yaml</span>
+<span class="prompt">sudo chown root:root /etc/prmana/policy.yaml</span>
+<div class="copy-btn">Copy</div></div>
+            <p>The policy file is automatically reloaded when modified -- no daemon restart required. The PAM module detects changes via <code>stat(2)</code> on each authentication attempt.</p>
+            <div class="note">
+                <strong>File permissions matter.</strong> The policy file should be owned by root with mode 0600. It may contain client secrets for confidential OIDC clients. The PAM module runs as root within sshd and can read it.
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>Issuer Configuration</h3>
+            <p>Each OIDC Identity Provider is configured as an entry in the <code style="color: var(--green);">issuers</code> array. The token's <code>iss</code> claim is matched against these entries. At least one issuer is required.</p>
+            <div class="code-block"><span class="key">issuers</span>:
+  - <span class="key">issuer_url</span>: <span class="str">"https://keycloak.example.com/realms/corp"</span>
+    <span class="key">client_id</span>: <span class="str">"prmana"</span>
+    <span class="key">dpop_enforcement</span>: strict
+
+  <span class="comment"># Uncomment for confidential clients:</span>
+  <span class="comment"># client_secret: "your-secret-here"</span>
+
+  <span class="comment"># Optional claim transforms:</span>
+  <span class="comment"># claim_mapping:</span>
+  <span class="comment">#   username_claim: preferred_username</span>
+  <span class="comment">#   transforms:</span>
+  <span class="comment">#     - type: strip_domain</span>
+  <span class="comment">#       domain: "example.com"</span>
+<div class="copy-btn">Copy</div></div>
+            <table>
+                <tr>
+                    <th>Field</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td><code>issuer_url</code></td>
+                    <td>Yes</td>
+                    <td>Must exactly match the <code>iss</code> claim in tokens (including trailing slash if present)</td>
+                </tr>
+                <tr>
+                    <td><code>client_id</code></td>
+                    <td>Yes</td>
+                    <td>OAuth client ID; matched against the token's <code>aud</code> claim</td>
+                </tr>
+                <tr>
+                    <td><code>client_secret</code></td>
+                    <td>No</td>
+                    <td>For confidential clients only</td>
+                </tr>
+                <tr>
+                    <td><code>dpop_enforcement</code></td>
+                    <td>No</td>
+                    <td><code>strict</code> (default) | <code>warn</code> | <code>disabled</code></td>
+                </tr>
+            </table>
+            <p>The issuer URL is used to fetch the OIDC discovery document and JWKS keys. The PAM module fetches JWKS only from the configured URL, never from claims in the token itself.</p>
+        </section>
+
+        <section class="step">
+            <h3>Username Mapping</h3>
+            <p>By default, Prmana uses the token's <code style="color: var(--green);">preferred_username</code> claim to identify the local Unix account. The claim value must match a local account resolvable via <code>getent passwd</code> (SSSD/NSS).</p>
+            <p>For IdPs that return non-Unix-friendly usernames, configure a claim transform:</p>
+            <div class="code-block"><span class="key">issuers</span>:
+  - <span class="key">issuer_url</span>: <span class="str">"https://login.microsoftonline.com/tenant-id/v2.0"</span>
+    <span class="key">client_id</span>: <span class="str">"prmana"</span>
+    <span class="key">claim_mapping</span>:
+      <span class="key">username_claim</span>: preferred_username
+      <span class="key">transforms</span>:
+        - <span class="key">type</span>: strip_domain
+          <span class="key">domain</span>: <span class="str">"example.com"</span>
+<span class="comment">
+# Token claim: jdoe@example.com
+# Mapped to:   jdoe</span>
+<div class="copy-btn">Copy</div></div>
+            <p>Groups are always resolved from SSSD/NSS, not from token claims. Your directory (Active Directory, FreeIPA, LDAP) remains the authoritative source for group membership.</p>
+            <div class="code-block"><span class="key">ssh_login</span>:
+  <span class="comment"># Restrict SSH access to members of these groups (resolved via NSS)</span>
+  <span class="key">login_groups</span>:
+    - developers
+    - sre-team
+<div class="copy-btn">Copy</div></div>
+        </section>
+
+        <section class="step">
+            <h3>Break-Glass Access</h3>
+            <p>Configure a local fallback account for emergency access when the IdP is unavailable. This is mandatory for production deployments.</p>
+            <div class="code-block"><span class="key">break_glass</span>:
+  <span class="key">enabled</span>: true
+  <span class="key">accounts</span>:
+    - breakglass
+  <span class="key">alert_on_use</span>: true
+<div class="copy-btn">Copy</div></div>
+            <p>The break-glass account must exist as a local Unix account with a password set:</p>
+            <div class="code-block"><span class="prompt">sudo useradd -m -s /bin/bash breakglass</span>
+<span class="prompt">sudo passwd breakglass</span>
+<div class="copy-btn">Copy</div></div>
+            <p>When <code style="color: var(--green);">alert_on_use: true</code>, every break-glass authentication emits a <code style="color: var(--green);">BREAK_GLASS_AUTH</code> audit event at CRITICAL severity. Configure your SIEM to alert on this event immediately.</p>
+            <div class="note">
+                <strong>Before going live:</strong> Test that break-glass access works by SSHing as the break-glass account while Prmana is active. The PAM module is configured <code>sufficient</code> -- when it cannot authenticate (IdP down), PAM falls through to <code>pam_unix.so</code> for the break-glass account's local password.
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>Audit Logging</h3>
+            <p>Prmana logs structured JSON audit events for every authentication attempt -- success, failure, break-glass, and rate-limit events are all recorded.</p>
+            <div class="code-block"><span class="key">audit</span>:
+  <span class="key">log_file</span>: <span class="str">"/var/log/prmana-audit.log"</span>
+  <span class="key">syslog_enabled</span>: true
+<div class="copy-btn">Copy</div></div>
+            <p>Create the audit log directory with appropriate permissions:</p>
+            <div class="code-block"><span class="prompt">sudo mkdir -p /var/log/prmana</span>
+<span class="prompt">sudo chmod 750 /var/log/prmana</span>
+<span class="prompt">sudo chown root:adm /var/log/prmana</span>
+<div class="copy-btn">Copy</div></div>
+            <p>View recent authentication events:</p>
+            <div class="code-block"><span class="prompt">tail -f /var/log/prmana-audit.log | jq .</span>
+{
+  "<span class="key">event_type</span>": "<span class="str">AUTHENTICATION_SUCCESS</span>",
+  "<span class="key">username</span>": "<span class="str">jdoe</span>",
+  "<span class="key">issuer</span>": "<span class="str">https://keycloak.example.com/realms/corp</span>",
+  "<span class="key">dpop_bound</span>": true,
+  "<span class="key">client_ip</span>": "<span class="str">10.0.1.42</span>",
+  "<span class="key">timestamp</span>": "<span class="str">2026-04-12T10:30:00Z</span>"
+}
+<div class="copy-btn">Copy</div></div>
+            <p>Events also appear in the system journal and syslog when <code style="color: var(--green);">syslog_enabled: true</code>:</p>
+            <div class="code-block"><span class="prompt">journalctl -u sshd --since "5 minutes ago" | grep prmana</span>
+<div class="copy-btn">Copy</div></div>
+        </section>
+
+        <section class="step" style="border-top: 1px solid var(--gray-200); padding-top: 4rem;">
+            <h3>Hardening</h3>
+            <p>Production deployments should review these settings for their environment.</p>
+            <p><strong>DPoP enforcement:</strong> Set to <code style="color: var(--green);">strict</code> in production. The <code>warn</code> mode accepts bearer tokens without DPoP proof -- use it only during migration from a legacy setup.</p>
+            <div class="code-block"><span class="key">security_modes</span>:
+  <span class="key">dpop_required</span>: strict
+  <span class="key">jti_enforcement</span>: strict
+  <span class="key">groups_enforcement</span>: warn
+<div class="copy-btn">Copy</div></div>
+            <table>
+                <tr>
+                    <th>Setting</th>
+                    <th>Recommended</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td><code>dpop_required</code></td>
+                    <td><code>strict</code></td>
+                    <td>Reject tokens without valid DPoP proof</td>
+                </tr>
+                <tr>
+                    <td><code>jti_enforcement</code></td>
+                    <td><code>strict</code></td>
+                    <td>Reject tokens missing a unique JTI claim</td>
+                </tr>
+                <tr>
+                    <td><code>groups_enforcement</code></td>
+                    <td><code>warn</code></td>
+                    <td>Log when user is not in required groups</td>
+                </tr>
+            </table>
+            <p><strong>Clock skew:</strong> The default tolerance is 60 seconds for token staleness and 5 seconds for future-dated proofs. Ensure all servers use NTP. Tighten these values for high-security environments.</p>
+            <p><strong>JWKS cache TTL:</strong> The JWKS cache defaults to 300 seconds (5 minutes). This means the PAM module can continue validating tokens for up to 5 minutes during a transient IdP outage. Increase for environments with unreliable IdP connectivity; decrease for faster key rotation propagation.</p>
+            <p><strong>File permissions:</strong></p>
+            <div class="code-block"><span class="prompt">sudo chmod 755 /lib/security/pam_prmana.so</span>
+<span class="prompt">sudo chown root:root /lib/security/pam_prmana.so</span>
+
+<span class="prompt">sudo chmod 600 /etc/prmana/policy.yaml</span>
+<span class="prompt">sudo chown root:root /etc/prmana/policy.yaml</span>
+
+<span class="prompt">sudo chmod 640 /var/log/prmana/audit.log</span>
+<span class="prompt">sudo chown root:adm /var/log/prmana/audit.log</span>
+<div class="copy-btn">Copy</div></div>
+            <p><strong>Rate limiting:</strong> The PAM module enforces per-user and per-IP rate limits before OIDC processing begins. This protects against authentication flooding without placing load on the IdP.</p>
+            <div class="note">
+                <strong>Host classification:</strong> Set <code style="color: var(--green);">host.classification</code> to <code>standard</code>, <code>elevated</code>, or <code>critical</code> to control the default security posture. Critical hosts enforce the strictest defaults and enable additional audit detail.
+            </div>
+        </section>
+    </main>
+</div>
+
+</body>
+</html>

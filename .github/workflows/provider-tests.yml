@@ -1,0 +1,291 @@
+name: Provider Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'Provider to test (all, keycloak, auth0, google, entra)'
+        required: false
+        default: 'all'
+
+# Restrict permissions for security (OSSF Scorecard requirement)
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ============================================================================
+  # Keycloak Integration (Self-hosted, always runs)
+  # ============================================================================
+  keycloak:
+    name: Keycloak Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev jq
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Start Keycloak
+        run: |
+          docker compose -f docker-compose.test.yaml up -d keycloak
+          chmod +x ./test/scripts/wait-for-healthy.sh
+          ./test/scripts/wait-for-healthy.sh keycloak
+
+      - name: Test OIDC Discovery
+        run: |
+          echo "=== OIDC Discovery ==="
+          curl -sf "http://localhost:8080/realms/prmana-test/.well-known/openid-configuration" | jq .
+
+          echo ""
+          echo "=== JWKS Endpoint ==="
+          JWKS_URI=$(curl -sf "http://localhost:8080/realms/prmana-test/.well-known/openid-configuration" | jq -r .jwks_uri)
+          curl -sf "$JWKS_URI" | jq .
+
+          echo ""
+          echo "=== Device Authorization Endpoint ==="
+          DEVICE_ENDPOINT=$(curl -sf "http://localhost:8080/realms/prmana-test/.well-known/openid-configuration" | jq -r .device_authorization_endpoint)
+          echo "Device endpoint: $DEVICE_ENDPOINT"
+
+      - name: Test Token Acquisition
+        run: |
+          echo "=== Getting test token ==="
+          chmod +x ./test/scripts/get-test-token.sh
+          TOKEN=$(./test/scripts/get-test-token.sh testuser testpass)
+
+          echo "Token acquired successfully"
+          echo "Token length: ${#TOKEN}"
+
+          # Decode and display token claims (without signature)
+          echo ""
+          echo "=== Token Claims ==="
+          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq . || echo "Could not decode claims"
+
+      - name: Test Token Validation
+        run: |
+          OIDC_ISSUER="http://localhost:8080/realms/prmana-test" \
+          OIDC_CLIENT_ID="prmana" \
+          cargo test --release -- --test-threads=1 jwks validation
+
+      - name: Stop Keycloak
+        if: always()
+        run: docker compose -f docker-compose.test.yaml down -v
+
+  # ============================================================================
+  # Auth0 Integration (Cloud, requires secrets)
+  # ============================================================================
+  auth0:
+    name: Auth0 Integration
+    runs-on: ubuntu-latest
+    # Only run if we have Auth0 secrets configured
+    if: |
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event.inputs.provider == 'all' || github.event.inputs.provider == 'auth0' || github.event.inputs.provider == '')
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Check Auth0 Configuration
+        id: check-auth0
+        run: |
+          if [ -z "${{ secrets.AUTH0_DOMAIN }}" ]; then
+            echo "AUTH0_DOMAIN secret not configured - skipping Auth0 tests"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        if: steps.check-auth0.outputs.skip != 'true'
+        run: sudo apt-get update && sudo apt-get install -y curl jq python3
+
+      - name: Run Auth0 E2E Tests
+        if: steps.check-auth0.outputs.skip != 'true'
+        env:
+          AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
+          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
+          AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
+          AUTH0_TEST_USER: ${{ secrets.AUTH0_TEST_USER }}
+          AUTH0_PASSWORD: ${{ secrets.AUTH0_PASSWORD }}
+          AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}
+        run: ./test/tests/test_auth0_e2e.sh
+
+  # ============================================================================
+  # Google Cloud Identity (Public endpoints)
+  # ============================================================================
+  google:
+    name: Google Cloud Identity
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.provider == 'all' || github.event.inputs.provider == 'google' || github.event.inputs.provider == ''
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Test Google Discovery
+        run: |
+          echo "=== Google OIDC Discovery ==="
+          curl -sf "https://accounts.google.com/.well-known/openid-configuration" | jq .
+
+          echo ""
+          echo "=== Google JWKS ==="
+          curl -sf "https://www.googleapis.com/oauth2/v3/certs" | jq '.keys | length' | xargs -I {} echo "Found {} keys"
+
+          echo ""
+          echo "=== Verify Key Algorithms ==="
+          curl -sf "https://www.googleapis.com/oauth2/v3/certs" | jq '.keys[].alg'
+
+  # ============================================================================
+  # Entra ID Integration (Cloud, requires secrets)
+  # ============================================================================
+  entra:
+    name: Entra ID Integration
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event.inputs.provider == 'all' || github.event.inputs.provider == 'entra' || github.event.inputs.provider == '')
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Check Entra Configuration
+        id: check-entra
+        run: |
+          if [ -z "${{ secrets.ENTRA_TENANT_ID }}" ]; then
+            echo "ENTRA_TENANT_ID secret not configured - skipping Entra tests"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.check-entra.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo registry
+        if: steps.check-entra.outputs.skip != 'true'
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system dependencies
+        if: steps.check-entra.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev jq
+
+      - name: Build
+        if: steps.check-entra.outputs.skip != 'true'
+        run: cargo build --release -p pam-prmana
+
+      - name: Verify Entra OIDC Discovery
+        if: steps.check-entra.outputs.skip != 'true'
+        env:
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+        run: |
+          echo "=== Entra OIDC Discovery ==="
+          DISCOVERY_URL="https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0/.well-known/openid-configuration"
+          curl -sf "${DISCOVERY_URL}" | jq .
+
+          echo ""
+          echo "=== Entra JWKS ==="
+          JWKS_URI=$(curl -sf "${DISCOVERY_URL}" | jq -r '.jwks_uri')
+          curl -sf "${JWKS_URI}" | jq '.keys | length' | xargs -I {} echo "Found {} keys"
+
+          echo ""
+          echo "=== Key Algorithms ==="
+          curl -sf "${JWKS_URI}" | jq '.keys[].alg'
+
+      - name: Acquire Entra Token (ROPC)
+        if: steps.check-entra.outputs.skip != 'true'
+        env:
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
+          ENTRA_TEST_USER: ${{ secrets.ENTRA_TEST_USER }}
+          ENTRA_TEST_PASSWORD: ${{ secrets.ENTRA_TEST_PASSWORD }}
+        run: |
+          chmod +x ./test/scripts/get-entra-token.sh
+          TOKEN=$(./test/scripts/get-entra-token.sh)
+          echo "::add-mask::${TOKEN}"
+          echo "ENTRA_TOKEN=${TOKEN}" >> $GITHUB_ENV
+
+          # Decode and display claims (without signature) for debugging
+          echo ""
+          echo "=== Token Claims (header) ==="
+          echo "${TOKEN}" | cut -d. -f1 | base64 -d 2>/dev/null | jq . || true
+          echo ""
+          echo "=== Token Claims (payload) ==="
+          echo "${TOKEN}" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{iss, aud, sub, preferred_username, email, ver, iat, exp}' || true
+
+      - name: Run Entra Integration Tests
+        if: steps.check-entra.outputs.skip != 'true'
+        env:
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
+          ENTRA_TOKEN: ${{ env.ENTRA_TOKEN }}
+        run: |
+          cargo test --release -p pam-prmana --test entra_integration \
+            -- --ignored --test-threads=1 2>&1
+
+      - name: Entra Test Summary
+        if: steps.check-entra.outputs.skip != 'true' && always()
+        run: |
+          echo "=== Entra Integration Test Results ==="
+          echo "All Entra integration tests completed."
+
+  # ============================================================================
+  # Summary
+  # ============================================================================
+  provider-summary:
+    name: Provider Test Summary
+    runs-on: ubuntu-latest
+    needs: [keycloak, auth0, google, entra]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "=== Provider Test Results ==="
+          echo ""
+          echo "Keycloak: ${{ needs.keycloak.result }}"
+          echo "Auth0: ${{ needs.auth0.result }}"
+          echo "Google: ${{ needs.google.result }}"
+          echo "Entra: ${{ needs.entra.result }}"
+          echo ""
+
+          # Keycloak is required, others are optional
+          if [ "${{ needs.keycloak.result }}" != "success" ]; then
+            echo "ERROR: Keycloak tests failed (required)"
+            exit 1
+          fi
+
+          echo "All required provider tests passed!"

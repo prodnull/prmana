@@ -1,0 +1,95 @@
+{
+  "realm": "ciba-test",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "attributes": {
+    "acr.loa.map": "{\"phr\":\"3\",\"phrh\":\"4\",\"mfa\":\"2\",\"default\":\"1\"}",
+    "cibaBackchannelTokenDeliveryMode": "poll",
+    "cibaAuthRequestedUserHint": "login_hint",
+    "cibaInterval": "5",
+    "cibaExpiresIn": "120"
+  },
+  "clients": [
+    {
+      "clientId": "prmana-ciba",
+      "name": "Unix OIDC CIBA Test Client",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "ciba-test-secret",
+      "redirectUris": ["http://localhost:*"],
+      "webOrigins": ["*"],
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "oidc.ciba.grant.enabled": "true",
+        "ciba.backchannel.token.delivery.mode": "poll"
+      },
+      "protocolMappers": [
+        {
+          "name": "preferred_username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "username",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "acr-loa-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "prmana-ciba",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "cibauser",
+      "enabled": true,
+      "email": "cibauser@test.local",
+      "firstName": "CIBA",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "cibapass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["default-roles-ciba-test"]
+    }
+  ]
+}

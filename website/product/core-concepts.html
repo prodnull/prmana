@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prmana Documentation | Core Concepts</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-200: #222222;
+            --gray-300: #444444;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.6; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; display: flex; gap: 4rem; padding: 0 2rem; }
+
+        aside { width: 250px; padding: 4rem 0; position: sticky; top: 0; height: 100vh; }
+        aside h4 { font-family: var(--font-mono); font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; margin-bottom: 1.5rem; letter-spacing: 1px; }
+        aside ul { list-style: none; padding: 0; }
+        aside li { margin-bottom: 1rem; font-size: 0.95rem; color: #888; cursor: pointer; }
+        aside li.active { color: var(--green); font-weight: bold; }
+        aside li:hover { color: var(--white); }
+        aside a { text-decoration: none; color: inherit; }
+
+        main { flex-grow: 1; padding: 4rem 0; }
+        h1 { font-size: 3rem; letter-spacing: -2px; margin-bottom: 1.5rem; }
+        p { font-size: 1.1rem; color: #CBD5E1; margin-bottom: 2rem; }
+
+        .step { margin-bottom: 4rem; }
+        .step h3 { font-size: 1.5rem; margin-bottom: 1rem; color: var(--white); }
+
+        .code-block { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 8px; padding: 1.5rem; font-family: var(--font-mono); font-size: 0.9rem; color: var(--white); position: relative; margin-bottom: 1.5rem; overflow-x: auto; white-space: pre; line-height: 1.7; }
+        .code-block .prompt::before { content: '$ '; color: var(--green); }
+        .code-block .comment { color: #666; }
+
+        .note { background: rgba(0, 255, 65, 0.05); border-left: 4px solid var(--green); padding: 1.5rem; border-radius: 4px; color: #ccc; font-size: 0.95rem; margin-bottom: 2rem; }
+
+        .diagram { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 8px; padding: 2rem; font-family: var(--font-mono); font-size: 0.85rem; color: #888; margin-bottom: 2rem; overflow-x: auto; white-space: pre; line-height: 1.5; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <aside>
+        <a href="../index.html" style="font-family: var(--font-mono); font-weight: 900; color: var(--white); text-decoration: none; font-size: 1.2rem; display: block; margin-bottom: 3rem;">PRMANA</a>
+
+        <ul class="nav-links" style="margin-bottom: 4rem; list-style: none; padding: 0; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;">
+            <li style="margin-bottom: 0.75rem;"><a href="engine.html" style="color: var(--white); text-decoration: none; opacity: 0.6;">Engine</a></li>
+            <li style="margin-bottom: 0.75rem;"><a href="../index.html#blog" style="color: var(--white); text-decoration: none; opacity: 0.6;">Blog</a></li>
+        </ul>
+
+        <h4>Introduction</h4>
+        <ul>
+            <li><a href="docs.html">Getting Started</a></li>
+            <li class="active"><a href="core-concepts.html">Core Concepts</a></li>
+            <li><a href="dpop-architecture.html">DPoP Architecture</a></li>
+        </ul>
+
+        <h4 style="margin-top: 2rem;">Deployment</h4>
+        <ul>
+            <li><a href="pam-installation.html">PAM Installation</a></li>
+            <li><a href="agent-setup.html">Agent Setup</a></li>
+            <li><a href="policy-config.html">Policy Configuration</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>Core Concepts</h1>
+        <p>How Prmana replaces static SSH keys with OIDC tokens, validated at the host via PAM with cryptographic proof-of-possession.</p>
+
+        <section class="step">
+            <h3>How Prmana Works</h3>
+            <p>Traditional SSH authentication relies on static key pairs scattered across servers. When someone leaves, finding all their access is archaeology. Enterprise MFA stops at the browser while root access to production requires nothing more than a copied key file.</p>
+            <p>Prmana bridges this gap by bringing OIDC -- the same protocol behind "Sign in with Google/Microsoft/Okta" -- to Linux PAM. Instead of managing authorized_keys files, your Identity Provider becomes the single source of authentication truth. DPoP token binding (RFC 9449) ensures that even if a token is intercepted, it cannot be used without the client's private key.</p>
+            <div class="diagram">   User's Machine                                          Identity Provider
+  +-----------------+     +------------------+            +------------------+
+  |   SSH Client    |----&gt;| prmana-agent     |---HTTPS---&gt;| Okta / Entra /   |
+  |                 |     | (token + DPoP)   |            | Keycloak / Auth0 |
+  +-----------------+     +------------------+            +------------------+
+                                  |
+                                  | SSH with token + DPoP proof
+                                  v
+  +-----------------+     +------------------+            +------------------+
+  |     sshd        |----&gt;| PAM Module       |---HTTPS---&gt;| IdP JWKS         |
+  |                 |     | (pam_prmana.so)  |            | (key validation) |
+  +-----------------+     +------------------+            +------------------+</div>
+            <p>The user authenticates once to their IdP. From that point, SSH access is automatic -- no key files, no key rotation, no scattered authorized_keys. When someone leaves, disable their IdP account and access stops everywhere, immediately.</p>
+        </section>
+
+        <section class="step">
+            <h3>Token Lifecycle</h3>
+            <p>Every SSH connection follows the same five-step flow. The user sees only the SSH command; everything else happens automatically.</p>
+            <p><strong>1. IdP issues token.</strong> The agent authenticates to the configured OIDC provider via device flow or authorization code + PKCE. The IdP returns an access token. If the IdP supports DPoP, the token includes a <code style="color: var(--green);">cnf.jkt</code> claim binding it to the agent's key pair.</p>
+            <p><strong>2. Agent acquires and caches.</strong> The agent stores the token securely -- in the OS keyring (Secret Service, macOS Keychain, or Linux keyutils) when available, with an encrypted file fallback. Tokens are reused until they expire.</p>
+            <p><strong>3. DPoP proof generated.</strong> For each SSH connection, the agent generates a fresh DPoP proof: a short-lived JWT signed with the ephemeral private key, bound to the target server. Each proof has a unique <code style="color: var(--green);">jti</code> and a recent <code style="color: var(--green);">iat</code> timestamp.</p>
+            <p><strong>4. PAM validates.</strong> On the server, the PAM module validates the token signature against the IdP's published JWKS, checks issuer, audience, and expiration, then verifies the DPoP proof's signature matches the token's <code style="color: var(--green);">cnf.jkt</code> claim. The JTI is recorded to prevent replay.</p>
+            <p><strong>5. Access granted.</strong> The validated OIDC identity is mapped to a local Unix account via SSSD/NSS. If the user exists locally and passes group checks, the session begins. A structured audit event is logged.</p>
+        </section>
+
+        <section class="step">
+            <h3>Trust Model</h3>
+            <p>Prmana's security rests on clear boundaries between what is trusted, what is verified, and what is rejected.</p>
+            <p><strong>Trusted:</strong></p>
+            <ul style="color: #CBD5E1; margin-bottom: 2rem; padding-left: 1.5rem;">
+                <li>The Identity Provider (Okta, Entra ID, Keycloak, Auth0) -- as a trusted third party for issuing tokens</li>
+                <li>The IdP's JWKS endpoint -- fetched over TLS from the configured issuer URL only, never from token claims</li>
+                <li>The TLS certificate chain -- standard PKI trust for all IdP communication</li>
+                <li>The local OS kernel -- PAM runs as root within sshd; NIST SP 800-63B assumes trusted kernel</li>
+            </ul>
+            <p><strong>Verified on every request:</strong></p>
+            <ul style="color: #CBD5E1; margin-bottom: 2rem; padding-left: 1.5rem;">
+                <li>Token signature -- against the IdP's published JWKS keys</li>
+                <li>Token expiration -- rejected if expired, with configurable clock skew tolerance</li>
+                <li>Issuer and audience -- must exactly match the configured values</li>
+                <li>DPoP binding -- proof JWK thumbprint must match the token's <code style="color: var(--green);">cnf.jkt</code></li>
+                <li>Proof freshness -- <code style="color: var(--green);">iat</code> must be recent, <code style="color: var(--green);">jti</code> must be unique</li>
+                <li>Algorithm -- ES256 only for DPoP proofs; algorithm allowlist for ID tokens</li>
+            </ul>
+            <div class="note">
+                <strong>Hard-fail checks</strong> -- signature, issuer, audience, expiration, and algorithm enforcement -- can never be disabled. They are not configurable. A failure in any of these always rejects the token.
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>Username Mapping</h3>
+            <p>Prmana maps OIDC identities to local Unix accounts through your existing directory infrastructure, not through token claims alone.</p>
+            <p>The token's <code style="color: var(--green);">preferred_username</code> claim identifies the user. This claim is compared against local Unix accounts resolved via SSSD/NSS. The user must exist as a local account -- Prmana authenticates identity but does not create accounts.</p>
+            <div class="code-block"><span class="comment"># Verify the user exists locally via SSSD</span>
+<span class="prompt">getent passwd jdoe</span>
+jdoe:*:10042:10042:Jane Doe:/home/jdoe:/bin/bash</div>
+            <p>Groups are resolved from SSSD/NSS, not from OIDC token claims. Your directory (FreeIPA, Active Directory, LDAP) remains the authoritative source for group membership and local authorization. This prevents split-brain authorization where IdP group claims disagree with local directory state.</p>
+            <div class="note">
+                <strong>Claim transforms</strong> are available for IdPs where <code style="color: var(--green);">preferred_username</code> includes a domain suffix. For example, Azure AD may return <code>jdoe@example.com</code> -- configure a <code>strip_domain</code> transform to map it to the local account <code>jdoe</code>.
+            </div>
+        </section>
+
+        <section class="step" style="border-top: 1px solid var(--gray-200); padding-top: 4rem;">
+            <h3>Break-Glass Access</h3>
+            <p>Never deploy OIDC authentication as the only authentication path. If your IdP goes down, you must still be able to access your servers.</p>
+            <p>Prmana is configured as <code style="color: var(--green);">sufficient</code> in the PAM stack, with <code style="color: var(--green);">pam_unix.so</code> as a fallback. When OIDC authentication fails -- IdP outage, network failure, misconfiguration -- PAM falls through to local password authentication for designated break-glass accounts.</p>
+            <div class="code-block"><span class="comment"># Create break-glass account before enabling Prmana</span>
+<span class="prompt">sudo useradd -m -s /bin/bash breakglass</span>
+<span class="prompt">sudo passwd breakglass</span>
+<span class="comment"># Store the password in your organization's secure vault</span></div>
+            <p>Break-glass usage always emits a <code style="color: var(--green);">BREAK_GLASS_AUTH</code> audit event at CRITICAL severity. Configure your SIEM to alert on this event immediately -- break-glass use should be rare and investigated.</p>
+            <div class="note">
+                <strong>Pre-deployment requirement:</strong> Configure and test break-glass access before going live. Include break-glass testing in quarterly DR exercises. Getting locked out of servers because your IdP is down is a catastrophic, career-affecting failure mode.
+            </div>
+        </section>
+    </main>
+</div>
+
+</body>
+</html>

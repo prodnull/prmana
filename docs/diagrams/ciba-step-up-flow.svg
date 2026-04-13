@@ -1,0 +1,240 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1050" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <style>
+      .bg { fill: #0f1724; }
+      .title { fill: #e8edf3; font-size: 22px; font-weight: 700; }
+      .subtitle { fill: #7eb8da; font-size: 13px; }
+      .actor-box { fill: #1a2332; stroke: #3b6a9b; stroke-width: 2; rx: 8; }
+      .actor-box-critical { fill: #2a1a1a; stroke: #c0392b; stroke-width: 2; rx: 8; }
+      .actor-label { fill: #e8edf3; font-size: 13px; font-weight: 600; text-anchor: middle; }
+      .lifeline { stroke: #2d4a6f; stroke-width: 1.5; stroke-dasharray: 6 4; }
+      .msg-line { stroke: #4a90c4; stroke-width: 1.5; marker-end: url(#arrowhead); }
+      .msg-line-return { stroke: #4a90c4; stroke-width: 1.5; stroke-dasharray: 5 3; marker-end: url(#arrowhead); }
+      .msg-line-secure { stroke: #27ae60; stroke-width: 2; marker-end: url(#arrowhead-green); }
+      .msg-line-ipc { stroke: #e67e22; stroke-width: 2; marker-end: url(#arrowhead-orange); }
+      .msg-line-push { stroke: #9b59b6; stroke-width: 2; marker-end: url(#arrowhead-purple); stroke-dasharray: 8 4; }
+      .msg-label { fill: #b0c4de; font-size: 11px; }
+      .msg-label-secure { fill: #2ecc71; font-size: 11px; font-weight: 600; }
+      .msg-label-ipc { fill: #f39c12; font-size: 11px; font-weight: 600; }
+      .msg-label-push { fill: #bb8fce; font-size: 11px; font-weight: 600; }
+      .msg-label-detail { fill: #8a9bb5; font-size: 10px; font-style: italic; }
+      .activation { fill: #1e3148; stroke: #3b6a9b; stroke-width: 1; }
+      .activation-critical { fill: #2a1a1a; stroke: #c0392b; stroke-width: 1.5; }
+      .activation-async { fill: #1a2a1a; stroke: #2d6f2d; stroke-width: 1.5; }
+      .note-box { fill: #1a2a1a; stroke: #2d6f2d; stroke-width: 1; rx: 6; }
+      .note-box-warn { fill: #2a2a1a; stroke: #f39c12; stroke-width: 1; rx: 6; }
+      .note-text { fill: #7eda7e; font-size: 11px; }
+      .note-text-warn { fill: #f1c40f; font-size: 11px; }
+      .step-num { fill: #4a90c4; font-size: 13px; font-weight: 700; }
+      .divider { stroke: #2d4a6f; stroke-width: 1; stroke-dasharray: 2 4; }
+      .divider-label { fill: #5a7a9b; font-size: 12px; font-weight: 600; text-anchor: middle; }
+      .loop-box { fill: none; stroke: #5a7a9b; stroke-width: 1; rx: 4; stroke-dasharray: 4 2; }
+      .loop-label { fill: #5a7a9b; font-size: 11px; font-weight: 600; }
+      .legend-box { fill: #141e2e; stroke: #2d4a6f; stroke-width: 1; rx: 6; }
+      .legend-text { fill: #8a9bb5; font-size: 11px; }
+      .legend-title { fill: #b0c4de; font-size: 12px; font-weight: 600; }
+    </style>
+    <marker id="arrowhead" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#4a90c4"/>
+    </marker>
+    <marker id="arrowhead-green" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#27ae60"/>
+    </marker>
+    <marker id="arrowhead-orange" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#e67e22"/>
+    </marker>
+    <marker id="arrowhead-purple" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#9b59b6"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="1050"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="35">CIBA Step-Up Authentication Flow</text>
+  <text class="subtitle" x="40" y="55">Backchannel push notification for sudo elevation (OpenID Connect CIBA Core 1.0)</text>
+
+  <!-- Actors -->
+  <rect class="actor-box" x="30" y="70" width="100" height="35"/>
+  <text class="actor-label" x="80" y="93">User (sudo)</text>
+
+  <rect class="actor-box-critical" x="185" y="70" width="120" height="35"/>
+  <text class="actor-label" x="245" y="93" style="fill: #f5c6c6;">PAM Module</text>
+
+  <rect class="actor-box" x="380" y="70" width="120" height="35"/>
+  <text class="actor-label" x="440" y="93">Agent Daemon</text>
+
+  <rect class="actor-box" x="580" y="70" width="120" height="35"/>
+  <text class="actor-label" x="640" y="93">Identity Provider</text>
+
+  <rect class="actor-box" x="790" y="70" width="120" height="35"/>
+  <text class="actor-label" x="850" y="93">Authenticator</text>
+
+  <rect class="actor-box" x="990" y="70" width="120" height="35"/>
+  <text class="actor-label" x="1050" y="93">SSSD / NSS</text>
+
+  <!-- Lifelines -->
+  <line class="lifeline" x1="80" y1="105" x2="80" y2="1010"/>
+  <line class="lifeline" x1="245" y1="105" x2="245" y2="1010"/>
+  <line class="lifeline" x1="440" y1="105" x2="440" y2="1010"/>
+  <line class="lifeline" x1="640" y1="105" x2="640" y2="1010"/>
+  <line class="lifeline" x1="850" y1="105" x2="850" y2="1010"/>
+  <line class="lifeline" x1="1050" y1="105" x2="1050" y2="1010"/>
+
+  <!-- Phase 1: Sudo Trigger -->
+  <line class="divider" x1="20" y1="120" x2="1150" y2="120"/>
+  <rect fill="#0f1724" x="460" y="113" width="280" height="18"/>
+  <text class="divider-label" x="600" y="127">Phase 1: Policy Check + Group Validation</text>
+
+  <!-- Step 1 -->
+  <text class="step-num" x="12" y="155">1</text>
+  <line class="msg-line" x1="80" y1="150" x2="235" y2="150"/>
+  <text class="msg-label" x="100" y="145">sudo systemctl restart nginx</text>
+
+  <rect class="activation-critical" x="239" y="155" width="12" height="120"/>
+
+  <!-- Step 2: Policy check -->
+  <text class="step-num" x="12" y="185">2</text>
+  <rect class="note-box" x="260" y="165" width="170" height="30"/>
+  <text class="note-text" x="270" y="185">PolicyRules::check_sudo(cmd)</text>
+
+  <!-- Step 3: Group check via SSSD -->
+  <text class="step-num" x="12" y="215">3</text>
+  <line class="msg-line" x1="251" y1="210" x2="1040" y2="210"/>
+  <text class="msg-label" x="500" y="205">check_group_policy(user, gid, sudo_groups)</text>
+  <line class="msg-line-return" x1="1040" y1="230" x2="251" y2="230"/>
+  <text class="msg-label" x="500" y="225">user groups from NSS (FreeIPA = source of truth)</text>
+
+  <rect class="note-box-warn" x="260" y="240" width="170" height="25"/>
+  <text class="note-text-warn" x="270" y="258">Groups from SSSD, NOT token</text>
+
+  <!-- Phase 2: IPC to Agent -->
+  <line class="divider" x1="20" y1="285" x2="1150" y2="285"/>
+  <rect fill="#0f1724" x="460" y="278" width="280" height="18"/>
+  <text class="divider-label" x="600" y="292">Phase 2: CIBA Initiation via Agent IPC</text>
+
+  <!-- Step 4: StepUp IPC -->
+  <text class="step-num" x="12" y="320">4</text>
+  <line class="msg-line-ipc" x1="251" y1="315" x2="430" y2="315"/>
+  <text class="msg-label-ipc" x="280" y="310">StepUp {user, cmd, host, method}</text>
+  <text class="msg-label-detail" x="280" y="330">Unix socket IPC, 2s timeout</text>
+
+  <rect class="activation" x="434" y="320" width="12" height="280"/>
+
+  <!-- Step 5: OIDC Discovery -->
+  <text class="step-num" x="12" y="358">5</text>
+  <line class="msg-line-secure" x1="446" y1="353" x2="630" y2="353"/>
+  <text class="msg-label-secure" x="470" y="348">GET /.well-known/openid-configuration</text>
+  <line class="msg-line-return" x1="630" y1="370" x2="446" y2="370"/>
+  <text class="msg-label" x="470" y="365">bc_auth_endpoint, token_endpoint</text>
+
+  <!-- Step 6: Backchannel Auth Request -->
+  <text class="step-num" x="12" y="400">6</text>
+  <line class="msg-line-secure" x1="446" y1="395" x2="630" y2="395"/>
+  <text class="msg-label-secure" x="470" y="390">POST /bc-authorize</text>
+  <text class="msg-label-detail" x="470" y="410">login_hint, binding_message, acr_values=phr</text>
+
+  <!-- Step 7: IdP sends push -->
+  <text class="step-num" x="12" y="448">7</text>
+  <line class="msg-line-push" x1="640" y1="443" x2="840" y2="443"/>
+  <text class="msg-label-push" x="680" y="436">Push notification to authenticator app</text>
+  <text class="msg-label-detail" x="680" y="461">"sudo systemctl on prod-01" (binding_message, max 64 chars)</text>
+
+  <!-- Step 8: Return auth_req_id -->
+  <text class="step-num" x="12" y="485">8</text>
+  <line class="msg-line-return" x1="630" y1="480" x2="446" y2="480"/>
+  <text class="msg-label" x="470" y="475">{auth_req_id, expires_in: 120, interval: 5}</text>
+
+  <!-- Step 9: Return StepUpPending -->
+  <text class="step-num" x="12" y="515">9</text>
+  <line class="msg-line-ipc" x1="434" y1="510" x2="251" y2="510"/>
+  <text class="msg-label-ipc" x="280" y="505">StepUpPending {id, expires_in, interval}</text>
+
+  <!-- Step 10: Spawn async poll -->
+  <rect class="note-box" x="460" y="520" width="170" height="25"/>
+  <text class="note-text" x="470" y="538">tokio::spawn(poll_ciba(...))</text>
+
+  <!-- Phase 3: CIBA Poll Loop -->
+  <line class="divider" x1="20" y1="560" x2="1150" y2="560"/>
+  <rect fill="#0f1724" x="420" y="553" width="360" height="18"/>
+  <text class="divider-label" x="600" y="567">Phase 3: Async CIBA Poll + User Approval</text>
+
+  <!-- PAM poll loop -->
+  <rect class="loop-box" x="190" y="580" width="130" height="150"/>
+  <text class="loop-label" x="200" y="595">PAM poll loop</text>
+  <text class="msg-label-detail" x="200" y="608">(5s interval)</text>
+
+  <!-- Step 11: PAM polls agent -->
+  <text class="step-num" x="12" y="635">11</text>
+  <line class="msg-line-ipc" x1="251" y1="630" x2="430" y2="630"/>
+  <text class="msg-label-ipc" x="270" y="625">StepUpResult {correlation_id}</text>
+  <line class="msg-line-ipc" x1="430" y1="645" x2="251" y2="645"/>
+  <text class="msg-label-ipc" x="270" y="660">StepUpPending (remaining: 115s)</text>
+
+  <!-- Agent poll loop (async) -->
+  <rect class="loop-box" x="410" y="580" width="260" height="150"/>
+  <text class="loop-label" x="420" y="595">Async CIBA poll (agent Tokio runtime)</text>
+
+  <rect class="activation-async" x="434" y="605" width="12" height="120"/>
+
+  <!-- Step 12: Agent polls IdP -->
+  <text class="step-num" x="12" y="690">12</text>
+  <line class="msg-line-secure" x1="446" y1="685" x2="630" y2="685"/>
+  <text class="msg-label-secure" x="470" y="680">POST /token (CIBA grant)</text>
+  <line class="msg-line-return" x1="630" y1="700" x2="446" y2="700"/>
+  <text class="msg-label" x="470" y="695">{"error":"authorization_pending"}</text>
+
+  <!-- Step 13: User approves -->
+  <text class="step-num" x="12" y="755">13</text>
+  <rect class="note-box" x="780" y="740" width="130" height="25"/>
+  <text class="note-text" x="790" y="758">User taps "Approve"</text>
+  <line class="msg-line-push" x1="850" y1="785" x2="650" y2="785"/>
+  <text class="msg-label-push" x="700" y="800">Approval + biometric/FIDO2</text>
+
+  <!-- Step 14: Token returned -->
+  <text class="step-num" x="12" y="810">14</text>
+  <line class="msg-line-secure" x1="446" y1="805" x2="630" y2="805"/>
+  <text class="msg-label-secure" x="470" y="800">POST /token (poll)</text>
+  <line class="msg-line-return" x1="630" y1="825" x2="446" y2="825"/>
+  <text class="msg-label" x="470" y="820">{access_token, id_token (acr="phr"), token_type}</text>
+
+  <!-- Phase 4: ACR Validation -->
+  <line class="divider" x1="20" y1="850" x2="1150" y2="850"/>
+  <rect fill="#0f1724" x="420" y="843" width="360" height="18"/>
+  <text class="divider-label" x="600" y="857">Phase 4: ACR Validation + Session Elevation</text>
+
+  <!-- Step 15: ACR validation -->
+  <text class="step-num" x="12" y="885">15</text>
+  <rect class="activation-critical" x="434" y="870" width="12" height="50"/>
+  <rect class="note-box" x="460" y="870" width="200" height="45"/>
+  <text class="note-text" x="470" y="887">validate_acr(required, actual)</text>
+  <text class="note-text" x="470" y="902">HARD-FAIL: phrh satisfies phr</text>
+  <text class="note-text" x="470" y="917" style="fill: #f1c40f;">phr does NOT satisfy phrh</text>
+
+  <!-- Step 16: PAM polls, gets Complete -->
+  <text class="step-num" x="12" y="945">16</text>
+  <line class="msg-line-ipc" x1="251" y1="940" x2="430" y2="940"/>
+  <text class="msg-label-ipc" x="270" y="935">StepUpResult {correlation_id}</text>
+  <line class="msg-line-ipc" x1="430" y1="955" x2="251" y2="955"/>
+  <text class="msg-label-ipc" x="270" y="970">StepUpComplete {acr: "phr", session_id}</text>
+
+  <!-- Step 17: Return to user -->
+  <text class="step-num" x="12" y="995">17</text>
+  <line class="msg-line-return" x1="235" y1="990" x2="90" y2="990"/>
+  <text class="msg-label" x="100" y="985">sudo command executes with elevated session</text>
+
+  <!-- Legend -->
+  <rect class="legend-box" x="30" y="1015" width="1140" height="40"/>
+  <line x1="50" y1="1033" x2="85" y2="1033" class="msg-line-ipc" style="marker-end: none;"/>
+  <text class="legend-text" x="90" y="1037">Unix socket IPC</text>
+  <line x1="210" y1="1033" x2="245" y2="1033" class="msg-line-secure" style="marker-end: none;"/>
+  <text class="legend-text" x="250" y="1037">TLS to IdP</text>
+  <line x1="340" y1="1033" x2="375" y2="1033" class="msg-line-push" style="marker-end: none;"/>
+  <text class="legend-text" x="380" y="1037">Push notification</text>
+  <rect x="490" y="1025" width="35" height="15" class="activation-critical"/>
+  <text class="legend-text" x="530" y="1037">Security-critical</text>
+  <rect x="640" y="1025" width="35" height="15" class="activation-async"/>
+  <text class="legend-text" x="680" y="1037">Async Tokio task</text>
+  <text class="legend-text" x="810" y="1033">ACR: phr = phishing-resistant | phrh = phr + hardware</text>
+  <text class="legend-text" x="810" y="1047">CIBA Core 1.0 + EAP ACR Values 1.0</text>
+</svg>

@@ -1,0 +1,31 @@
+# test/fixtures/pam/sshd
+# PAM configuration for sshd with prmana
+
+# E2E ONLY: `pam_env.so` does not populate PAM variables during
+# `pam_authenticate()` on Ubuntu 24.04 (it returns PAM_IGNORE in this phase),
+# so pam_prmana reads its static config directly from `/etc/environment` and
+# the dynamic JWT directly from `/run/prmana/token.env` under the
+# PRMANA_ACCEPT_PAM_ENV gate.
+#
+# The envfile is still a root-owned tmpfs file that the test harness
+# overwrites immediately before each ssh attempt. This avoids the
+# ~512-byte PAM conversation buffer without trusting generic PAM env.
+# Production sshd configurations MUST NOT rely on this E2E-only path.
+
+# prmana authentication (primary)
+auth    sufficient      pam_prmana.so
+
+# Fallback to standard Unix auth (for break-glass)
+auth    required        pam_unix.so try_first_pass
+
+# Account management
+account required        pam_unix.so
+account sufficient      pam_localuser.so
+account sufficient      pam_succeed_if.so uid < 1000 quiet
+account [default=bad success=ok user_unknown=ignore] pam_sss.so
+account required        pam_permit.so
+
+# Session
+session required        pam_limits.so
+session required        pam_unix.so
+session optional        pam_sss.so

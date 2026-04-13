@@ -1,0 +1,18 @@
+# prmana Code Owners
+# These owners will be requested for review on PRs affecting their areas
+
+# Default owners for everything
+* @prmana-project
+
+# Security-critical code requires security review
+/pam-prmana/src/dpop/ @prmana-project
+/pam-prmana/src/validation/ @prmana-project
+/pam-prmana/src/crypto/ @prmana-project
+SECURITY.md @prmana-project
+
+# Documentation
+/docs/ @prmana-project
+*.md @prmana-project
+
+# CI/CD configuration
+/.github/ @prmana-project

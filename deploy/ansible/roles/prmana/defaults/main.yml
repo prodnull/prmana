@@ -1,0 +1,49 @@
+---
+# Prmana Ansible Role - Default Variables
+#
+# Override these in your playbook, group_vars, or host_vars.
+
+# ── OIDC Configuration (required) ───────────────────────────────────────────
+prmana_issuer_url: ""
+prmana_client_id: "prmana"
+prmana_client_secret: ""  # Optional: only for confidential clients
+
+# ── DPoP Enforcement ────────────────────────────────────────────────────────
+prmana_dpop_enforcement: "strict"  # strict | warn | disabled
+
+# ── Break-Glass (strongly recommended) ──────────────────────────────────────
+prmana_break_glass_enabled: true
+prmana_break_glass_username: "breakglass"
+# Generate: python3 -c "import crypt; print(crypt.crypt('PASSWORD', crypt.mksalt(crypt.METHOD_SHA512)))"
+prmana_break_glass_password_hash: ""
+prmana_break_glass_alert_on_use: true
+
+# ── PAM Configuration ───────────────────────────────────────────────────────
+# Mode: "parallel" (keep existing auth, add OIDC as sufficient)
+#       "primary" (OIDC first, fall through to password)
+#       "exclusive" (OIDC only, no password fallback — NOT recommended during migration)
+prmana_pam_mode: "parallel"
+
+# ── Failover (optional) ─────────────────────────────────────────────────────
+prmana_failover_enabled: false
+prmana_failover_secondary_url: ""
+prmana_failover_timeout_secs: 10
+prmana_failover_cooldown_secs: 60
+
+# ── Security Modes ──────────────────────────────────────────────────────────
+prmana_jti_enforcement: "warn"
+prmana_acr_enforcement: "warn"
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+prmana_config_dir: "/etc/prmana"
+prmana_policy_file: "/etc/prmana/policy.yaml"
+# PAM module location (auto-detected by architecture)
+prmana_pam_module_src: ""  # Path to libpam_prmana.so (must be provided)
+prmana_pam_module_dest: >-
+  {{ '/lib64/security/pam_prmana.so'
+     if ansible_architecture == 'x86_64' and ansible_os_family == 'RedHat'
+     else '/lib/security/pam_prmana.so' }}
+
+# ── Audit ────────────────────────────────────────────────────────────────────
+prmana_audit_log: "/var/log/prmana-audit.log"
+prmana_audit_syslog: true

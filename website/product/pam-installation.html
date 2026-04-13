@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prmana Documentation | PAM Installation</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-200: #222222;
+            --gray-300: #444444;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.6; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; display: flex; gap: 4rem; padding: 0 2rem; }
+
+        aside { width: 250px; padding: 4rem 0; position: sticky; top: 0; height: 100vh; }
+        aside h4 { font-family: var(--font-mono); font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; margin-bottom: 1.5rem; letter-spacing: 1px; }
+        aside ul { list-style: none; padding: 0; }
+        aside li { margin-bottom: 1rem; font-size: 0.95rem; color: #888; cursor: pointer; }
+        aside li.active { color: var(--green); font-weight: bold; }
+        aside li:hover { color: var(--white); }
+        aside a { text-decoration: none; color: inherit; }
+
+        main { flex-grow: 1; padding: 4rem 0; }
+        h1 { font-size: 3rem; letter-spacing: -2px; margin-bottom: 1.5rem; }
+        p { font-size: 1.1rem; color: #CBD5E1; margin-bottom: 2rem; }
+
+        .step { margin-bottom: 4rem; }
+        .step h3 { font-size: 1.5rem; margin-bottom: 1rem; color: var(--white); }
+
+        .code-block { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 8px; padding: 1.5rem; font-family: var(--font-mono); font-size: 0.9rem; color: var(--white); position: relative; margin-bottom: 1.5rem; overflow-x: auto; white-space: pre; line-height: 1.7; }
+        .code-block .prompt::before { content: '$ '; color: var(--green); }
+        .code-block .comment { color: #666; }
+        .code-block .key { color: var(--green); }
+
+        .copy-btn { position: absolute; right: 1rem; top: 1rem; font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; cursor: pointer; }
+
+        .note { background: rgba(0, 255, 65, 0.05); border-left: 4px solid var(--green); padding: 1.5rem; border-radius: 4px; color: #ccc; font-size: 0.95rem; margin-bottom: 2rem; }
+
+        table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; font-size: 0.95rem; }
+        th { text-align: left; color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; padding: 0.75rem 1rem; border-bottom: 1px solid var(--gray-200); }
+        td { padding: 0.75rem 1rem; color: #CBD5E1; border-bottom: 1px solid var(--gray-100); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <aside>
+        <a href="../index.html" style="font-family: var(--font-mono); font-weight: 900; color: var(--white); text-decoration: none; font-size: 1.2rem; display: block; margin-bottom: 3rem;">PRMANA</a>
+
+        <ul class="nav-links" style="margin-bottom: 4rem; list-style: none; padding: 0; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;">
+            <li style="margin-bottom: 0.75rem;"><a href="engine.html" style="color: var(--white); text-decoration: none; opacity: 0.6;">Engine</a></li>
+            <li style="margin-bottom: 0.75rem;"><a href="../index.html#blog" style="color: var(--white); text-decoration: none; opacity: 0.6;">Blog</a></li>
+        </ul>
+
+        <h4>Introduction</h4>
+        <ul>
+            <li><a href="docs.html">Getting Started</a></li>
+            <li><a href="core-concepts.html">Core Concepts</a></li>
+            <li><a href="dpop-architecture.html">DPoP Architecture</a></li>
+        </ul>
+
+        <h4 style="margin-top: 2rem;">Deployment</h4>
+        <ul>
+            <li class="active"><a href="pam-installation.html">PAM Installation</a></li>
+            <li><a href="agent-setup.html">Agent Setup</a></li>
+            <li><a href="policy-config.html">Policy Configuration</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>PAM Installation</h1>
+        <p>Install the Prmana PAM module on your Linux server. This is the server-side component that validates OIDC tokens during SSH authentication.</p>
+
+        <section class="step">
+            <h3>Prerequisites</h3>
+            <p>Before installing Prmana, ensure your server meets these requirements:</p>
+            <ul style="color: #CBD5E1; margin-bottom: 2rem; padding-left: 1.5rem;">
+                <li>Linux with PAM support (Ubuntu 22.04+, Debian 12+, RHEL 9+, Rocky 9+, Amazon Linux 2023)</li>
+                <li>OpenSSH server with PAM enabled</li>
+                <li>SSSD configured and connected to your user directory (LDAP, Active Directory, FreeIPA)</li>
+                <li>Network access to your OIDC Identity Provider's discovery and JWKS endpoints (HTTPS)</li>
+                <li>NTP configured -- clock skew greater than 60 seconds will cause token validation failures</li>
+            </ul>
+            <p>You also need an OIDC Identity Provider (Keycloak, Azure AD, Okta, Auth0) with a client configured for the Device Authorization Grant (RFC 8628).</p>
+        </section>
+
+        <section class="step">
+            <h3>Package Install</h3>
+            <p><strong>Debian / Ubuntu (apt):</strong></p>
+            <div class="code-block"><span class="prompt">curl -fsSL https://get.prmana.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/prmana.gpg</span>
+<span class="prompt">echo "deb [signed-by=/usr/share/keyrings/prmana.gpg] https://apt.prmana.com stable main" | sudo tee /etc/apt/sources.list.d/prmana.list</span>
+<span class="prompt">sudo apt update &amp;&amp; sudo apt install prmana</span>
+<div class="copy-btn">Copy</div></div>
+            <p><strong>RHEL / Rocky / Fedora (yum/dnf):</strong></p>
+            <div class="code-block"><span class="prompt">sudo rpm --import https://get.prmana.com/gpg</span>
+<span class="prompt">sudo dnf config-manager --add-repo https://rpm.prmana.com/prmana.repo</span>
+<span class="prompt">sudo dnf install prmana</span>
+<div class="copy-btn">Copy</div></div>
+            <p>The package installs both <code style="color: var(--green);">pam_prmana.so</code> and <code style="color: var(--green);">prmana-agent</code>, sets correct file permissions, and runs <code>ldconfig</code>.</p>
+            <div class="note">
+                <strong>One-liner install:</strong> For quick evaluation, <code style="color: var(--green);">curl -sSf https://get.prmana.com | sh</code> handles binary deployment, OS-level dependencies, and initial PAM configuration.
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>Build from Source</h3>
+            <p>Install the Rust toolchain if you do not have it:</p>
+            <div class="code-block"><span class="prompt">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</span>
+<span class="prompt">source ~/.cargo/env</span>
+<div class="copy-btn">Copy</div></div>
+            <p>Clone and build:</p>
+            <div class="code-block"><span class="prompt">git clone https://github.com/prmana/prmana.git</span>
+<span class="prompt">cd prmana</span>
+<span class="prompt">cargo build --release</span>
+<div class="copy-btn">Copy</div></div>
+            <p>Install the PAM module to the system PAM directory:</p>
+            <div class="code-block"><span class="prompt">sudo cp target/release/libpam_prmana.so /lib/security/pam_prmana.so</span>
+<span class="prompt">sudo chmod 644 /lib/security/pam_prmana.so</span>
+<span class="prompt">sudo chown root:root /lib/security/pam_prmana.so</span>
+<div class="copy-btn">Copy</div></div>
+            <table>
+                <tr>
+                    <th>Distribution</th>
+                    <th>PAM Module Path</th>
+                </tr>
+                <tr>
+                    <td>Debian 12 / Ubuntu 22.04+ (amd64)</td>
+                    <td><code>/lib/x86_64-linux-gnu/security/</code></td>
+                </tr>
+                <tr>
+                    <td>Debian 12 / Ubuntu 22.04+ (arm64)</td>
+                    <td><code>/lib/aarch64-linux-gnu/security/</code></td>
+                </tr>
+                <tr>
+                    <td>RHEL 9 / Rocky 9 / AL2023</td>
+                    <td><code>/usr/lib64/security/</code></td>
+                </tr>
+            </table>
+        </section>
+
+        <section class="step">
+            <h3>PAM Configuration</h3>
+            <p>Edit <code style="color: var(--green);">/etc/pam.d/sshd</code> to add the Prmana module. The key pattern is: Prmana as <code>sufficient</code> (succeeds on valid OIDC token), with <code>pam_unix.so</code> as the fallback for break-glass access.</p>
+            <div class="code-block"><span class="comment"># /etc/pam.d/sshd</span>
+
+<span class="comment"># Prmana OIDC authentication (primary)</span>
+<span class="key">auth    sufficient    pam_prmana.so    config=/etc/prmana/policy.yaml</span>
+
+<span class="comment"># Fallback to standard Unix auth (for break-glass)</span>
+auth    required      pam_unix.so      try_first_pass
+
+<span class="comment"># Standard account/session handling</span>
+account required      pam_prmana.so    config=/etc/prmana/policy.yaml
+account required      pam_unix.so
+
+session required      pam_prmana.so    config=/etc/prmana/policy.yaml
+session required      pam_unix.so
+<div class="copy-btn">Copy</div></div>
+            <p>Configure the SSH daemon in <code style="color: var(--green);">/etc/ssh/sshd_config</code>:</p>
+            <div class="code-block"><span class="comment"># Enable PAM authentication</span>
+UsePAM yes
+
+<span class="comment"># Enable keyboard-interactive (OpenSSH 9.0+)</span>
+KbdInteractiveAuthentication yes
+
+<span class="comment"># For OpenSSH &lt; 9.0, use:</span>
+<span class="comment"># ChallengeResponseAuthentication yes</span>
+<div class="copy-btn">Copy</div></div>
+            <p>Restart the SSH daemon:</p>
+            <div class="code-block"><span class="prompt">sudo systemctl restart sshd</span>
+<div class="copy-btn">Copy</div></div>
+            <div class="note">
+                <strong>Keep an existing session open</strong> while testing configuration changes. If PAM is misconfigured, you could lock yourself out. Always test from a second terminal before closing your admin session.
+            </div>
+        </section>
+
+        <section class="step" style="border-top: 1px solid var(--gray-200); padding-top: 4rem;">
+            <h3>Verify Installation</h3>
+            <p>Confirm the PAM module loads correctly:</p>
+            <div class="code-block"><span class="comment"># Check the module file exists and has correct permissions</span>
+<span class="prompt">ls -la /lib/security/pam_prmana.so</span>
+-rw-r--r-- 1 root root 2847632 Apr 12 10:00 /lib/security/pam_prmana.so</div>
+            <p>Test IdP connectivity from the server:</p>
+            <div class="code-block"><span class="comment"># Verify the OIDC discovery endpoint is reachable</span>
+<span class="prompt">curl -s https://your-idp.example.com/.well-known/openid-configuration | jq '.issuer'</span>
+"https://your-idp.example.com/realms/corp"</div>
+            <p>Test PAM authentication (requires <code>pamtester</code>):</p>
+            <div class="code-block"><span class="prompt">sudo apt install pamtester</span>
+<span class="prompt">sudo pamtester sshd testuser authenticate</span></div>
+            <p>Test a full SSH login from another terminal:</p>
+            <div class="code-block"><span class="prompt">ssh testuser@localhost</span></div>
+            <p>Check the server-side authentication logs for Prmana events:</p>
+            <div class="code-block"><span class="prompt">journalctl -u sshd --since "5 minutes ago" | grep prmana</span>
+<div class="copy-btn">Copy</div></div>
+            <div class="note">
+                <strong>Common issues:</strong> If you see "cannot open shared object file", run <code style="color: var(--green);">sudo ldconfig</code>. If you see "invalid issuer", verify that <code>policy.yaml</code> issuer URL exactly matches the IdP's <code>iss</code> claim (including trailing slash if present).
+            </div>
+        </section>
+    </main>
+</div>
+
+</body>
+</html>

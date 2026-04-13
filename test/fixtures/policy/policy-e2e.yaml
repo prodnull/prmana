@@ -1,0 +1,53 @@
+# test/fixtures/policy/policy-e2e.yaml
+# E2E test policy: real OIDC validation, no TEST_MODE shortcuts.
+
+# Host classification for test environment
+host_classification: elevated
+
+# Security modes — enforce real validation
+security_modes:
+  jti_enforcement: warn
+  # DPoP enforcement set to warn for E2E SSH chain tests.
+  # DPoP proof generation/validation is covered by dedicated unit tests,
+  # cross-language interop tests, and the token-exchange CI job.
+  # The E2E SSH chain test validates the JWKS signature verification path.
+  dpop_required: warn
+  amr_enforcement: warn
+  acr_enforcement: warn
+  groups_enforcement: warn
+
+# Identity mapping: use preferred_username claim
+identity:
+  username_claim: preferred_username
+
+# SSH login requirements
+ssh:
+  require_oidc: true
+  minimum_acr: null
+  max_auth_age: 3600
+
+# Sudo step-up requirements
+sudo:
+  step_up_required: true
+  allowed_methods:
+    - device_flow
+  timeout_seconds: 300
+  required_acr: urn:keycloak:acr:loa2
+
+# Break-glass account (local password fallback)
+break_glass:
+  accounts:
+    - breakglass
+  require_otp: false
+
+# Cache configuration
+cache:
+  jti_max_entries: 10000
+  nonce_ttl_secs: 60
+
+# Timeouts
+timeouts:
+  clock_skew_staleness_secs: 60
+  clock_skew_future_secs: 10
+  jwks_cache_ttl_secs: 300
+  http_timeout_secs: 10

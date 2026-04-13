@@ -1,0 +1,65 @@
+# test/docker/Dockerfile.test-host
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install SSH, PAM, SSSD, sudo, and dependencies
+RUN apt-get update && apt-get install -y \
+    openssh-server \
+    sssd \
+    sssd-ldap \
+    libpam0g \
+    ldap-utils \
+    curl \
+    jq \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create SSH directory
+RUN mkdir /var/run/sshd
+
+# Configure SSH for PAM-based OIDC authentication
+# Enable keyboard-interactive for PAM (Ubuntu 22.04 uses KbdInteractiveAuthentication)
+RUN sed -i 's/KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config && \
+    echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/UsePAM no/UsePAM yes/' /etc/ssh/sshd_config && \
+    echo "UsePAM yes" >> /etc/ssh/sshd_config
+
+# Create test user (will be overridden by SSSD in real tests)
+RUN useradd -m -s /bin/bash testuser
+
+# Create prmana_users group for login_groups policy enforcement.
+# testuser is a member (can authenticate via OIDC).
+# testuser2 is a local system user but NOT a member (denied by login_groups policy in E2ET-02 Test 2).
+RUN groupadd prmana_users && \
+    usermod -aG prmana_users testuser && \
+    useradd -m -s /bin/bash -G "" testuser2
+# Note: testuser2 is created with no supplemental groups. It is explicitly
+# NOT added to prmana_users. This ensures NSS getgrouplist(testuser2)
+# returns only the private group testuser2, never prmana_users.
+
+# Copy SSSD configuration template
+COPY test/fixtures/sssd/sssd.conf /etc/sssd/sssd.conf
+RUN chmod 600 /etc/sssd/sssd.conf
+
+# Copy PAM configuration
+COPY test/fixtures/pam/sshd /etc/pam.d/sshd.prmana
+COPY test/fixtures/pam/sudo /etc/pam.d/sudo.prmana
+
+# Copy policy configuration
+RUN mkdir -p /etc/prmana
+COPY test/fixtures/policy/policy-step-up.yaml /etc/prmana/policy.yaml
+
+# Set OIDC configuration in /etc/environment (read by pam_env by default)
+RUN echo 'OIDC_ISSUER=http://keycloak:8080/realms/prmana-test' >> /etc/environment && \
+    echo 'OIDC_CLIENT_ID=prmana' >> /etc/environment
+
+# Startup script
+COPY test/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+
+CMD ["/entrypoint.sh"]

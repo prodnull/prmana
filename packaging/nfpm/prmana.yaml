@@ -1,0 +1,151 @@
+name: prmana
+# arch is substituted by envsubst before passing to nfpm:
+#   deb builds: GOARCH=amd64 or arm64
+#   rpm builds: GOARCH=x86_64 or aarch64
+# See packaging/README.md §Architecture mapping.
+arch: "${GOARCH}"
+platform: linux
+version: "1.0.0"
+release: "1"
+section: admin
+priority: optional
+maintainer: "prmana Developers <prodnull@users.noreply.github.com>"
+description: |
+  prmana — OIDC authentication for Linux.
+  Installs the pam_prmana.so PAM module and the prmana-agent daemon
+  together. Authenticate SSH, console, and sudo sessions against your
+  IdP (Okta, Entra, Auth0, Keycloak, Google) with DPoP token binding.
+  .
+  The PAM module and agent daemon are co-packaged because they are tightly
+  coupled: version mismatches cause authentication failures. Install this
+  single package to get a fully working prmana deployment.
+vendor: "prmana"
+homepage: "https://github.com/prodnull/unix-oidc"
+license: "CC-BY-NC-SA-4.0"
+
+# Default dependencies (Debian). For RPM, see overrides.rpm.depends below.
+depends:
+  - libc6
+  - libdbus-1-3
+  - libpam-runtime
+  - ca-certificates
+
+contents:
+  # --- Agent daemon binary ---
+  - src: target/${RUST_TARGET}/release/prmana-agent
+    dst: /usr/bin/prmana-agent
+    file_info:
+      mode: 0755
+
+  # --- PAM module ---
+  # Cargo names the shared object libpam_prmana.so; PAM strips the "lib" prefix
+  # when resolving module paths. nfpm installs it as pam_prmana.so.
+  # Reference: Research §1.3 (Pitfall 2 — PAM .so lib prefix).
+  - src: target/${RUST_TARGET}/release/libpam_prmana.so
+    dst: /usr/lib/security/pam_prmana.so
+    file_info:
+      mode: 0644
+
+  # --- Audit tools ---
+  - src: target/${RUST_TARGET}/release/prmana-audit-verify
+    dst: /usr/bin/prmana-audit-verify
+    file_info:
+      mode: 0755
+
+  # --- systemd units (system service, not user unit) ---
+  - src: contrib/systemd/prmana-agent.service
+    dst: /usr/lib/systemd/system/prmana-agent.service
+    file_info:
+      mode: 0644
+
+  - src: contrib/systemd/prmana-agent.socket
+    dst: /usr/lib/systemd/system/prmana-agent.socket
+    file_info:
+      mode: 0644
+
+  # tmpfiles.d: creates /run/prmana, /var/lib/prmana, /var/log/prmana on boot.
+  - src: contrib/systemd/prmana.tmpfiles.conf
+    dst: /usr/lib/tmpfiles.d/prmana.conf
+    file_info:
+      mode: 0644
+
+  # --- Config template ---
+  # Marked config|noreplace so upgrades preserve operator edits (deb conffile /
+  # rpm %config(noreplace) semantics). The .example suffix signals that
+  # operators must copy/rename this file to policy.yaml before the daemon starts.
+  - src: examples/policy.yaml
+    dst: /etc/prmana/policy.yaml.example
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+  # --- Example PAM snippet ---
+  - src: examples/pam/prmana-auth
+    dst: /usr/share/prmana/pam.d/prmana-auth
+    file_info:
+      mode: 0644
+
+  # --- Documentation ---
+  - src: docs/pam-integration.md
+    dst: /usr/share/doc/prmana/pam-integration.md
+    file_info:
+      mode: 0644
+
+  # --- Directories ---
+  # nfpm creates these with the specified permissions when the package is installed.
+  - dst: /etc/prmana
+    type: dir
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - dst: /var/lib/prmana
+    type: dir
+    file_info:
+      mode: 0750
+      owner: prmana
+      group: prmana
+
+  - dst: /var/log/prmana
+    type: dir
+    file_info:
+      mode: 0750
+      owner: prmana
+      group: prmana
+
+scripts:
+  preinstall: packaging/scripts/prmana.preinst
+  postinstall: packaging/scripts/prmana.postinst
+  preremove: packaging/scripts/prmana.prerm
+  postremove: packaging/scripts/prmana.postrm
+
+overrides:
+  deb:
+    depends:
+      - libc6
+      - libdbus-1-3
+      - libpam-runtime
+      - ca-certificates
+    contents:
+      # Debian multi-arch PAM symlink.
+      # ${DEB_PAM_MULTIARCH} is set via envsubst before calling nfpm pkg:
+      #   amd64 builds: DEB_PAM_MULTIARCH=x86_64-linux-gnu
+      #   arm64 builds: DEB_PAM_MULTIARCH=aarch64-linux-gnu
+      # See packaging/README.md §Deb multi-arch PAM symlink.
+      - src: /usr/lib/security/pam_prmana.so
+        dst: /lib/${DEB_PAM_MULTIARCH}/security/pam_prmana.so
+        type: symlink
+
+  rpm:
+    depends:
+      - dbus-libs
+      - pam
+      - ca-certificates
+    contents:
+      # RHEL/Rocky/AL2023 use /usr/lib64/security/ for PAM modules.
+      # This entry is additional to the /usr/lib/security/ entry above.
+      - src: target/${RUST_TARGET}/release/libpam_prmana.so
+        dst: /usr/lib64/security/pam_prmana.so
+        file_info:
+          mode: 0644

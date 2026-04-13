@@ -1,0 +1,90 @@
+# Dependabot configuration for automated dependency updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  # Rust (Cargo) - main project and all workspace members
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "deps(rust)"
+    groups:
+      # Group ALL Rust updates into a single PR for manual review
+      rust-all:
+        patterns:
+          - "*"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      actions-all:
+        patterns:
+          - "*"
+
+  # Python DPoP library
+  - package-ecosystem: "pip"
+    directory: "/python-oauth-dpop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps(python)"
+    groups:
+      python-all:
+        patterns:
+          - "*"
+
+  # Go DPoP library
+  - package-ecosystem: "gomod"
+    directory: "/go-oauth-dpop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "deps(go)"
+    groups:
+      go-all:
+        patterns:
+          - "*"
+
+  # Java DPoP library (Gradle)
+  - package-ecosystem: "gradle"
+    directory: "/java-oauth-dpop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "java"
+    commit-message:
+      prefix: "deps(java)"
+    groups:
+      java-all:
+        patterns:
+          - "*"

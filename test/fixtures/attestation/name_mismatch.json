@@ -1,0 +1,16 @@
+{
+  "_comment": "Valid AK signature, but certified Name does NOT match DPoP JWK thumbprint",
+  "attestation_evidence": {
+    "ak_public": "ACMACwAGAPIAAAAQABgACwADABAAIA_mmK47us8JN4XdSoh-2x-fvwrhRkTFpz3c7Zl1tUiMACAxn3PZVJizRQnx0NgH9UDIfYZQiA0Zvq42Tpf_yVoQMA",
+    "certify_info": "_1RDR4AXACIAC1FKCkkNzfep0zwyYVlpIXxCBySedlM6hhAptJhX2Q5DAAAAAAAAAAAD6AAAAAAAAAAAAQAAAAAABwACACIAC6AnKB7vnWjN-0Gwuh6TWZWck_jrPk13jtL_2E6E-vDRACIAC6AnKB7vnWjN-0Gwuh6TWZWck_jrPk13jtL_2E6E-vDR",
+    "signature": "e-Mwa9Hf5w1TmtTvMwI47Xc-a5Mq27SQS5d3Eztwj-5ycIYUdVEDPrw60JaayZL404P_6M460FRkEVddIWmdow"
+  },
+  "dpop_key": {
+    "crv": "P-256",
+    "kty": "EC",
+    "x": "rB0rEX8zlqF1JhkC7XzKOPFkJO2aflrEs-L-ikqur9M",
+    "y": "go8feGMnMZUKmn28KhXy5se55CclGr3geaFl_i9EfS8"
+  },
+  "expected_failure": "attested.name does not match SHA256(DPoP key TPMT_PUBLIC)",
+  "jwk_thumbprint": "fnpzhVZFNOgI3f4lWPlLht01DcxKhO3WCW49OIDsRVs"
+}

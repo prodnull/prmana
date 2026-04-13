@@ -1,0 +1,104 @@
+name: Test Installer
+
+on:
+  push:
+    paths:
+      - 'deploy/installer/**'
+      - '.github/workflows/test-installer.yml'
+  pull_request:
+    paths:
+      - 'deploy/installer/**'
+      - '.github/workflows/test-installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck
+        run: |
+          find deploy/installer -name '*.sh' -type f -print0 | \
+            xargs -0 shellcheck --severity=warning
+
+  dry-run:
+    name: Dry Run Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Test installer dry-run (basic)
+        run: |
+          chmod +x deploy/installer/install.sh
+          ./deploy/installer/install.sh --dry-run --issuer https://example.com --client-id test
+
+      - name: Test installer dry-run (full flags)
+        run: |
+          ./deploy/installer/install.sh --dry-run \
+            --issuer https://example.com \
+            --client-id test \
+            --configure-pam \
+            --breakglass-user root \
+            --verify-slsa
+
+      - name: Test installer rollback-pam (no backup)
+        run: |
+          ./deploy/installer/install.sh --rollback-pam 2>&1 | grep -q "No PAM backup" || true
+
+      - name: Test uninstaller dry-run
+        run: |
+          chmod +x deploy/installer/uninstall.sh
+          sudo mkdir -p /etc/prmana
+          echo "/tmp/fake-file" | sudo tee /etc/prmana/.install-manifest
+          ./deploy/installer/uninstall.sh --dry-run
+
+      - name: Test uninstaller dry-run with --purge
+        run: |
+          sudo mkdir -p /etc/prmana
+          echo "/tmp/fake-file" | sudo tee /etc/prmana/.install-manifest
+          ./deploy/installer/uninstall.sh --dry-run --purge
+
+      - name: Test uninstaller idempotency (no manifest)
+        run: |
+          sudo rm -rf /etc/prmana
+          ./deploy/installer/uninstall.sh --dry-run
+
+  docker-test:
+    name: Docker Install Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:12
+          - rockylinux:9
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Test install in container
+        run: |
+          docker run --rm -v $PWD:/workspace ${{ matrix.image }} bash -c '
+            # Install prerequisites
+            if command -v apt-get &> /dev/null; then
+              apt-get update && apt-get install -y curl jq
+            else
+              # Rocky/RHEL 9 ships with curl-minimal, use --allowerasing to install full curl
+              dnf install -y --allowerasing curl jq
+            fi
+
+            # Run installer in dry-run mode
+            cd /workspace
+            chmod +x deploy/installer/install.sh
+            ./deploy/installer/install.sh --dry-run --issuer https://test.example.com
+          '

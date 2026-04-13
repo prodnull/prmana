@@ -1,0 +1,45 @@
+# This crate is independent of the parent workspace
+[workspace]
+
+[package]
+name = "oauth-dpop"
+version = "0.1.0"
+edition = "2021"
+license = "CC-BY-NC-SA-4.0"
+description = "OAuth 2.0 DPoP (Demonstrating Proof of Possession) implementation per RFC 9449"
+repository = "https://github.com/prodnull/unix-oidc/tree/main/rust-oauth-dpop"
+documentation = "https://docs.rs/oauth-dpop"
+readme = "README.md"
+keywords = ["oauth", "dpop", "jwt", "security", "rfc9449"]
+categories = ["authentication", "cryptography", "web-programming"]
+
+[features]
+default = ["client", "server"]
+client = []          # Client-side proof generation
+server = ["subtle"]  # Server-side validation with replay protection
+
+[dependencies]
+# Crypto
+p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
+sha2 = "0.10"
+base64 = "0.21"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+
+# UUID for JTI generation (client only)
+uuid = { version = "1", features = ["v4"] }
+
+# Constant-time comparison (server only)
+subtle = { version = "2.5", optional = true }
+
+# Thread-safe caching for replay protection (server only)
+once_cell = { version = "1.19", optional = true }
+
+[dev-dependencies]
+# Additional dev deps for testing
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

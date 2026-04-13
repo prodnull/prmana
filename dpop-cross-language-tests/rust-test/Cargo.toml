@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "dpop-cross-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+oauth-dpop = { path = "../../rust-oauth-dpop" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

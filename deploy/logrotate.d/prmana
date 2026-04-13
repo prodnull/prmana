@@ -1,0 +1,38 @@
+# logrotate configuration for prmana audit and diagnostic logs
+#
+# Install: cp deploy/logrotate.d/prmana /etc/logrotate.d/prmana
+# Verify:  logrotate -d /etc/logrotate.d/prmana
+#
+# Design decisions:
+#   weekly + rotate 52  — 1 year retention satisfies SOC 2 Type II (CC7.2, CC7.3),
+#                         PCI-DSS v4.0 Req 10.7, and FedRAMP AU-11 minimum periods.
+#                         Increase rotate to 312 for HIPAA (45 CFR 164.530(j) — 6 years).
+#   compress            — gzip reduces on-disk footprint for long-retention deployments.
+#   delaycompress       — keep current-minus-one rotation uncompressed so log-shipping
+#                         agents (Filebeat, Fluent Bit, rsyslog imfile) can read it
+#                         without decompression.
+#   create 0640 root adm — audit logs contain usernames and source IPs (PII under GDPR
+#                         Art. 4(1)); world-readable logs are a data minimization
+#                         violation. The 'adm' group covers standard log-reading tools
+#                         and centralized-logging agents on Debian/Ubuntu and RHEL.
+#   missingok           — suppress error if prmana has not yet written any logs;
+#                         safe to install before the PAM module is fully deployed.
+#   notifempty          — do not create zero-byte rotated files.
+
+/var/log/prmana-audit.log /var/log/prmana/*.log {
+    weekly
+    rotate 52
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+    sharedscripts
+    postrotate
+        # Signal rsyslog to reopen log file descriptors after rotation.
+        # rsyslog uses inotify on modern distros but an explicit signal is
+        # a belt-and-suspenders measure for environments that do not have
+        # inotify support compiled in.
+        /usr/lib/rsyslog/rsyslog-rotate 2>/dev/null || true
+    endscript
+}

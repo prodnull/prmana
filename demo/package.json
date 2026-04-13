@@ -1,0 +1,13 @@
+{
+  "name": "prmana-demo",
+  "version": "1.0.0",
+  "description": "Training video capture for prmana authentication flows",
+  "scripts": {
+    "test": "playwright test",
+    "record": "playwright test --headed --project=chromium",
+    "show-report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

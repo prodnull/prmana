@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DPoP in the Terminal | Prmana Blog</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-300: #888888;
+            --font-sans: 'Inter', -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.8; margin: 0; }
+        .container { max-width: 800px; margin: 0 auto; padding: 4rem 2rem; }
+        .back-link { color: var(--green); font-family: var(--font-mono); text-decoration: none; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 2rem; display: block; }
+        h1 { font-size: 3.5rem; letter-spacing: -2px; line-height: 1.1; margin-bottom: 2rem; }
+        .metadata { color: var(--gray-300); font-family: var(--font-mono); font-size: 0.9rem; margin-bottom: 3rem; }
+        p { font-size: 1.2rem; margin-bottom: 2rem; color: #ccc; }
+        code { background: #222; color: var(--green); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: var(--font-mono); font-size: 1rem; }
+        .highlight-box { background: var(--gray-100); border-left: 4px solid var(--green); padding: 2rem; margin: 3rem 0; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <a href="../index.html" class="back-link">← Back to Prmana</a>
+    
+    <header>
+        <div class="metadata">APRIL 09, 2026 • BY PRMANA ENGINEERING</div>
+        <h1>DPoP: The End of Token Theft.</h1>
+    </header>
+
+    <p>OIDC is powerful, but it has a long-standing Achilles' heel: <strong>Bearer Tokens</strong>. A bearer token is like a 20-dollar bill—whoever holds it, owns it. If an attacker steals your OIDC Access Token from your terminal history or your system swap, they can impersonate you perfectly.</p>
+
+    <p>That era is over. Prmana implements <strong>RFC 9449 (DPoP)</strong> to bring sender-constraint to the SSH terminal.</p>
+
+    <div class="highlight-box">
+        <strong>What is DPoP?</strong><br>
+        Demonstrating Proof-of-Possession (DPoP) is an IETF standard that binds a token to a specific cryptographic key pair. In Prmana, this key pair is locked inside your machine’s hardware (TPM or Yubikey).
+    </div>
+
+    <h2>How it Works</h2>
+    <p>When you initiate an SSH session, the Prmana Agent doesn't just send a token. It generates a <strong>DPoP Proof</strong>—a short-lived JWT signed by your hardware. This proof contains a thumbprint of your public key and is bound to the specific server you are trying to access (via the <code>htu</code> and <code>htm</code> claims).</p>
+
+    <p>The server's PAM module then validates two things:
+        1. Is the OIDC token valid?
+        2. Does the DPoP proof prove that the sender has the <strong>private key</strong> bound to that token?
+    </p>
+
+    <h2>Why it Matters</h2>
+    <p>This is the difference between <strong>Probabilistic</strong> and <strong>Deterministic</strong> security. Even if an attacker captures your entire network stream and steals your OIDC token, they <strong>cannot use it</strong>. Without your physical machine to sign the DPoP proof, the token is worthless dead weight.</p>
+
+    <p>Prmana is the first production-grade implementation of DPoP for the Linux terminal. We are setting the standard for what modern infrastructure access should look like.</p>
+
+    <footer style="margin-top: 6rem; padding-top: 2rem; border-top: 1px solid #222; text-align: center;">
+        <a href="https://github.com/prodnull/prmana" style="color: var(--green); font-family: var(--font-mono);">Read the RFC 9449 Implementation →</a>
+    </footer>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,59 @@
+# Reference two-issuer policy fixture for multi-IdP configuration tests (Phase 21).
+#
+# Issuer 1: Keycloak (strict DPoP, no transforms)
+# Issuer 2: Entra ID-like (DPoP disabled per CLAUDE.md note, strip_domain transform, ACR mapping)
+#
+# This fixture exercises: MIDP-01 (per-issuer config), MIDP-02 (per-issuer DPoP enforcement),
+# MIDP-03 (per-issuer ACR mapping), MIDP-04 (per-issuer group mapping), MIDP-05 (claim mapping).
+
+host:
+  classification: elevated
+
+ssh_login:
+  require_oidc: true
+  login_groups:
+    - unix-users
+
+sudo:
+  step_up_required: true
+
+security_modes:
+  jti_enforcement: strict
+  dpop_required: strict
+
+issuers:
+  # Issuer 1: Keycloak — strict DPoP, uses preferred_username directly (no transforms)
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "prmana"
+    dpop_enforcement: strict
+    claim_mapping:
+      username_claim: preferred_username
+      transforms: []
+    acr_mapping:
+      enforcement: strict
+      mappings:
+        "urn:keycloak:loa:mfa": "urn:prmana:acr:mfa"
+        "urn:keycloak:loa:basic": "urn:prmana:acr:basic"
+    group_mapping:
+      source: nss_only
+
+  # Issuer 2: Entra ID-like — DPoP disabled (Entra uses SHR not RFC 9449 DPoP),
+  #           UPN email claim + strip_domain transform, ACR mapping for Entra levels.
+  #           See CLAUDE.md: "Entra ID is bearer-only scope — dpop_required: off".
+  #           allow_unsafe_identity_pipeline: true because strip_domain on email is non-injective
+  #           across tenants but safe for single-tenant Entra (IdP enforces domain membership).
+  - issuer_url: "https://login.microsoftonline.com/tenant-id/v2.0"
+    client_id: "prmana-entra"
+    dpop_enforcement: disabled
+    allow_unsafe_identity_pipeline: true
+    claim_mapping:
+      username_claim: email
+      transforms:
+        - strip_domain
+        - lowercase
+    acr_mapping:
+      enforcement: warn
+      mappings:
+        "http://schemas.microsoft.com/claims/authnmethodsreferences/mfa": "urn:prmana:acr:mfa"
+    group_mapping:
+      source: nss_only
