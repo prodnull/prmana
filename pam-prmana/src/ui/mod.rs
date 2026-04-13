@@ -1,11 +1,8 @@
-//! Terminal UI for device flow prompts.
+//! Terminal UI utilities.
 //!
-//! This module provides terminal-based UI components for displaying
-//! device flow authentication prompts to users.
+//! This module provides terminal-safe output helpers for PAM authentication prompts.
 
 pub mod terminal;
-
-pub use terminal::{PamDisplay, TerminalDisplay};
 
 /// Strip control characters from strings before terminal display.
 ///

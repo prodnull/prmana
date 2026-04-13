@@ -10,6 +10,4 @@ pub use config::{
     AcrConfig, CacheConfig, EnforcementMode, IssuerHealthManager, IssuerHealthState, PolicyConfig,
     PolicyError, SecurityModes,
 };
-pub use rules::{
-    AuthAction, PolicyRules, SshLoginRequirements, StepUpMethod, SudoStepUpRequirements,
-};
+pub use rules::{AuthAction, PolicyRules, SshLoginRequirements};

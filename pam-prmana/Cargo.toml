@@ -24,10 +24,11 @@ name = "prmana-audit-verify"
 path = "src/bin/audit_verify.rs"
 
 [[bin]]
-name = "prmana-evidence-export"
-path = "src/bin/evidence_export.rs"
+name = "prmana-jti-helper"
+path = "src/bin/prmana-jti-helper.rs"
 
 [dependencies]
+prmana-core = { path = "../prmana-core" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

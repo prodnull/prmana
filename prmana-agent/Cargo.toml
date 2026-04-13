@@ -9,9 +9,6 @@ description = "OIDC authentication agent with DPoP support"
 name = "prmana-agent"
 path = "src/main.rs"
 
-[[bin]]
-name = "prmana-jti-helper"
-path = "src/bin/prmana-jti-helper.rs"
 
 [dependencies]
 # Crypto
@@ -81,37 +78,10 @@ yubikey = ["dep:cryptoki", "dep:rpassword"]
 tpm = ["dep:tss-esapi", "dep:rpassword"]
 # Experimental hybrid PQC DPoP: ML-DSA-65+ES256 composite signatures
 # per draft-ietf-jose-pq-composite-sigs-01. Pre-release, unaudited crate.
-pqc = ["dep:ml-dsa", "pam-prmana/pqc"]
-# SPIFFE/SPIRE integration: fetch JWT-SVIDs via SPIRE Workload API (gRPC over UDS).
-# ADR-017: tonic + official proto chosen over spiffe crate or hand-rolled protobuf.
-spire = ["dep:tonic", "dep:prost", "dep:hyper-util", "dep:tower"]
-# WARNING: test-mode skips JWT signature verification in pam-prmana.
-# Used in tpm_signer.rs to gate swtpm/mssim TCTI backends behind test builds.
+pqc = ["dep:ml-dsa"]
+# WARNING: test-mode gates swtpm/mssim TCTI backends behind test builds.
 # NEVER enable in production binaries.
-test-mode = ["pam-prmana/test-mode"]
-
-# SPIRE Workload API client (gRPC over UDS). Only pulled in by --features spire.
-# channel: gRPC client transport (includes hyper-util for UDS connector).
-# prost: protobuf codec. codegen: not needed (stubs are checked in).
-[dependencies.tonic]
-version = "0.12"
-optional = true
-default-features = false
-features = ["channel", "prost", "codegen"]
-
-[dependencies.prost]
-version = "0.13"
-optional = true
-
-# UDS transport for tonic (SPIRE Workload API socket).
-[dependencies.hyper-util]
-version = "0.1"
-optional = true
-features = ["tokio"]
-
-[dependencies.tower]
-version = "0.4"
-optional = true
+test-mode = []
 
 [dependencies.cryptoki]
 version = "0.7"
@@ -134,10 +104,9 @@ features = ["zeroize"]
 version = "7.6"
 optional = true
 
-# CIBA step-up: import CIBA types (CibaClient, OidcDiscovery, ACR constants, error types)
-# from the PAM crate. Requires pam-prmana to expose rlib crate type.
-[dependencies.pam-prmana]
-path = "../pam-prmana"
+# Shared OIDC discovery and JWKS types (extracted from pam-prmana).
+[dependencies.prmana-core]
+path = "../prmana-core"
 
 # OPS-13: structured journal logging via sd-journal socket (Linux only).
 # tracing-journald writes directly to the systemd journal socket; it is not
@@ -146,6 +115,7 @@ path = "../pam-prmana"
 version = "0.3"
 
 [dev-dependencies]
+pam-prmana = { path = "../pam-prmana" }
 tempfile = "3"
 tokio-test = "0.4"
 # no-env-filter: allows tracing-test to capture events from all targets, including

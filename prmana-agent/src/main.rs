@@ -8,16 +8,13 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use jsonwebtoken::dangerous::insecure_decode;
-use pam_prmana::oidc::jwks::OidcDiscovery;
 use prmana_agent::auth_code::{
     build_authorization_url, exchange_code, generate_pkce, start_callback_listener,
     CallbackListener, TokenExchangeRequest, CALLBACK_TIMEOUT_SECS,
 };
-use prmana_agent::config::{AgentConfig, ClientAttestationConfig};
+use prmana_agent::config::AgentConfig;
 use prmana_agent::crypto::protected_key::mlock_probe;
-use prmana_agent::crypto::{
-    build_client_attestation_headers, DPoPSigner, MlockStatus, SoftwareSigner,
-};
+use prmana_agent::crypto::{DPoPSigner, MlockStatus, SoftwareSigner};
 use prmana_agent::daemon::{
     acquire_listener, spawn_refresh_task, AgentClient, AgentRequest, AgentResponse,
     AgentResponseData, AgentServer, AgentState,
@@ -31,6 +28,7 @@ use prmana_agent::storage::{
     SecureStorage, StorageRouter, KEY_ACCESS_TOKEN, KEY_DPOP_PRIVATE, KEY_TOKEN_METADATA,
 };
 use prmana_agent::url_policy::{validate_endpoint_url, validate_oidc_discovery};
+use prmana_core::oidc::jwks::OidcDiscovery;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -531,7 +529,7 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
         let ttl = config.timeouts.jwks_cache_ttl_secs;
         let http_timeout = config.timeouts.jwks_http_timeout_secs;
         match tokio::task::spawn_blocking(move || {
-            use pam_prmana::oidc::JwksProvider;
+            use prmana_core::oidc::JwksProvider;
             let provider = JwksProvider::with_timeouts(&issuer, ttl, http_timeout);
             provider.refresh_jwks()
         })
@@ -799,313 +797,55 @@ async fn run_login(
     println!();
 
     // ── SPIRE login path (Phase 35-02, Codex HIGH-1 fix) ────────────────────
-    //
-    // SPIRE sessions bypass device flow entirely: the JWT-SVID is the access
-    // token, fetched directly from the local SPIRE agent. No refresh tokens,
-    // no token endpoints, no client secrets.
-    #[cfg(feature = "spire")]
-    if signer_spec == "spire" {
-        println!("Fetching JWT-SVID from SPIRE agent...");
+    // ── Single-issuer login ────────────────────────────────────────────────
+    println!("Starting {flow} flow with: {issuer}");
+    println!("Client ID: {client_id}");
+    println!();
 
-        // Build a fresh SpireSigner to call fetch_svid().
-        // We already have one in signer_arc, but we need the concrete type
-        // for fetch_svid() which is not on the DPoPSigner trait.
-        let hw_config = SignerConfig::load();
-        let spire_cfg = hw_config
-            .spire
-            .as_ref()
-            .map(|s| prmana_agent::crypto::SpireConfig {
-                socket_path: s.socket_path.clone().unwrap_or_else(|| {
-                    prmana_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
-                }),
-                audience: s.audience.clone().unwrap_or_default(),
-                spiffe_id: s.spiffe_id.clone(),
-            })
-            .unwrap_or_default();
-        let spire_signer = prmana_agent::crypto::SpireSigner::new(spire_cfg)
-            .map_err(|e| anyhow::anyhow!("Failed to create SpireSigner: {e}"))?;
+    let discovery = fetch_oidc_discovery(&issuer, device_flow_timeout_secs).await?;
 
-        let (spiffe_id, svid_token) = spire_signer
-            .fetch_svid_async()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch JWT-SVID from SPIRE agent: {e}"))?;
+    let token_result = if flow == "authcode" {
+        let authorization_endpoint = discovery
+            .authorization_endpoint
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("IdP does not advertise authorization_endpoint"))?;
 
-        println!("SPIFFE ID: {spiffe_id}");
-        println!("JWT-SVID acquired from SPIRE agent");
-
-        // Parse SVID expiry for metadata.
-        let svid_exp = prmana_agent::crypto::spire_signer::parse_jwt_exp_secs(&svid_token);
-        let token_expires = svid_exp.unwrap_or_else(|| {
-            // Default: 5 minutes from now (typical SVID TTL).
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            (now + 300) as i64
-        });
-
-        // Store JWT-SVID as the access token.
-        let access_token = SecretString::from(svid_token);
-        storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
-
-        // SPIRE metadata: no refresh token, no token endpoint, no client secret.
-        let metadata = serde_json::json!({
-            "expires_at": token_expires,
-            "refresh_token": null,
-            "issuer": issuer,
-            "token_endpoint": null,
-            "client_id": client_id,
-            "client_secret": null,
-            "signer_type": "spire",
-            "revocation_endpoint": null,
-            "spiffe_id": spiffe_id,
-        });
-        storage.store(KEY_TOKEN_METADATA, metadata.to_string().as_bytes())?;
-
-        println!("JWT-SVID stored successfully");
-        println!("SVID expires at: {token_expires}");
-        println!();
-        println!("Start the agent daemon with: prmana-agent serve");
-        return Ok(());
-    }
-
-    // ── Failover-aware login (Phase 41) ──────────────────────────────────
-    //
-    // Check if the requested issuer has a failover pair configured. If so,
-    // attempt login against the primary; on availability failure, retry with
-    // the secondary. In-flight requests are never switched mid-stream — if
-    // a flow fails, the entire attempt against that issuer fails and the next
-    // attempt uses the failover target.
-    use prmana_agent::failover::{FailoverPairConfig, FailoverRuntime};
-
-    let failover_pair: Option<FailoverPairConfig> = agent_config
-        .failover_pairs
-        .iter()
-        .find(|p| {
-            p.primary_issuer_url.trim_end_matches('/') == issuer.trim_end_matches('/')
-                || p.secondary_issuer_url.trim_end_matches('/') == issuer.trim_end_matches('/')
-        })
-        .cloned();
-
-    // Attempt login against a single issuer. Returns typed error to distinguish
-    // availability failures from policy/protocol failures.
-    let attempt_login = |target_issuer: String,
-                         flow_type: String,
-                         cid: String,
-                         csecret: Option<SecretString>,
-                         signer: Arc<dyn DPoPSigner>,
-                         attestation: ClientAttestationConfig,
-                         timeout: u64| async move {
-        let discovery = match fetch_oidc_discovery(&target_issuer, timeout).await {
-            Ok(d) => d,
-            Err(e) => {
-                // Classify discovery failure: if the error message contains typical
-                // availability indicators, treat as availability failure.
-                let is_availability = e.to_string().contains("Failed to fetch OIDC discovery")
-                    || e.to_string().contains("HTTP 5");
-                return Err((e, is_availability));
-            }
-        };
-
-        let result = if flow_type == "authcode" {
-            let authorization_endpoint = discovery
-                .authorization_endpoint
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("IdP does not advertise authorization_endpoint"));
-            let authorization_endpoint = match authorization_endpoint {
-                Ok(ep) => ep,
-                Err(e) => return Err((e, false)),
-            };
-
-            if let Some(methods) = &discovery.code_challenge_methods_supported {
-                if !methods.iter().any(|m| m == "S256") {
-                    return Err((
-                        anyhow::anyhow!("IdP does not advertise PKCE S256 support"),
-                        false,
-                    ));
-                }
-            }
-
-            run_auth_code_flow(
-                authorization_endpoint,
-                &discovery.token_endpoint,
-                discovery.revocation_endpoint.clone(),
-                &cid,
-                csecret.as_ref(),
-                signer.as_ref(),
-                &attestation,
-                timeout,
-            )
-            .await
-        } else {
-            let device_endpoint = match discovery.device_authorization_endpoint.clone() {
-                Some(ep) => ep,
-                None => {
-                    return Err((
-                        anyhow::anyhow!("IdP does not support device authorization"),
-                        false,
-                    ))
-                }
-            };
-
-            run_device_flow(
-                &device_endpoint,
-                &discovery.token_endpoint,
-                discovery.revocation_endpoint.clone(),
-                &cid,
-                csecret,
-                signer,
-                attestation,
-                timeout,
-            )
-            .await
-        };
-
-        match result {
-            Ok(token_result) => Ok((token_result, target_issuer, discovery.token_endpoint)),
-            Err(e) => {
-                // Classify the login flow error for failover purposes.
-                let err_str = e.to_string();
-                let is_availability = err_str.contains("request failed")
-                    || err_str.contains("timed out")
-                    || err_str.contains("connection")
-                    || err_str.contains("connect")
-                    || err_str.contains("DNS")
-                    || err_str.contains("HTTP 5");
-                Err((e, is_availability))
+        if let Some(methods) = &discovery.code_challenge_methods_supported {
+            if !methods.iter().any(|m| m == "S256") {
+                anyhow::bail!("IdP does not advertise PKCE S256 support");
             }
         }
-    };
 
-    let (token_result, effective_issuer, token_endpoint) = if let Some(ref pair) = failover_pair {
-        let mut runtime = FailoverRuntime::new(pair.clone());
-        let resolved = runtime.resolve_issuer();
-        let target = resolved.issuer_url.clone();
+        run_auth_code_flow(
+            authorization_endpoint,
+            &discovery.token_endpoint,
+            discovery.revocation_endpoint.clone(),
+            &client_id,
+            client_secret.as_ref(),
+            signer_arc.as_ref(),
+            device_flow_timeout_secs,
+        )
+        .await?
+    } else {
+        let device_endpoint = discovery
+            .device_authorization_endpoint
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("IdP does not support device authorization"))?;
 
-        println!("Starting {flow} flow with: {target} (failover pair configured)");
-        println!("Client ID: {client_id}");
-        println!();
-
-        match attempt_login(
-            target.clone(),
-            flow.clone(),
-            client_id.clone(),
+        run_device_flow(
+            &device_endpoint,
+            &discovery.token_endpoint,
+            discovery.revocation_endpoint.clone(),
+            &client_id,
             client_secret.clone(),
             Arc::clone(&signer_arc),
-            agent_config.client_attestation.clone(),
-            pair.request_timeout_secs,
+            device_flow_timeout_secs,
         )
-        .await
-        {
-            Ok(result) => {
-                runtime.record_success(&target);
-                result
-            }
-            Err((primary_err, is_availability)) => {
-                if !is_availability {
-                    // Policy/protocol failure — no failover.
-                    return Err(primary_err);
-                }
-
-                // Availability failure — record and try secondary.
-                if let Some(event) = runtime.record_failure(&target, &primary_err.to_string()) {
-                    warn!("Failover event: {event:?}");
-                }
-
-                let fallback = runtime.resolve_issuer();
-                if fallback.issuer_url.trim_end_matches('/') == target.trim_end_matches('/') {
-                    // No different issuer to try (already exhausted or same).
-                    return Err(primary_err
-                        .context("Primary issuer unavailable and no failover target available"));
-                }
-
-                println!();
-                warn!(
-                    primary = %target,
-                    secondary = %fallback.issuer_url,
-                    "Primary issuer unavailable — failing over to secondary"
-                );
-                println!("Retrying with: {}", fallback.issuer_url);
-                println!();
-
-                match attempt_login(
-                    fallback.issuer_url.clone(),
-                    flow.clone(),
-                    client_id.clone(),
-                    client_secret.clone(),
-                    Arc::clone(&signer_arc),
-                    agent_config.client_attestation.clone(),
-                    pair.request_timeout_secs,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        runtime.record_success(&fallback.issuer_url);
-                        info!(
-                            secondary = %fallback.issuer_url,
-                            "Login succeeded via secondary issuer"
-                        );
-                        result
-                    }
-                    Err((secondary_err, _)) => {
-                        runtime.record_failure(&fallback.issuer_url, &secondary_err.to_string());
-                        Err(secondary_err.context("Both primary and secondary issuers unavailable"))?
-                    }
-                }
-            }
-        }
-    } else {
-        // No failover pair — standard single-issuer login.
-        println!("Starting {flow} flow with: {issuer}");
-        println!("Client ID: {client_id}");
-        println!();
-
-        let discovery = fetch_oidc_discovery(&issuer, device_flow_timeout_secs).await?;
-
-        let result = if flow == "authcode" {
-            let authorization_endpoint = discovery
-                .authorization_endpoint
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("IdP does not advertise authorization_endpoint"))?;
-
-            if let Some(methods) = &discovery.code_challenge_methods_supported {
-                if !methods.iter().any(|m| m == "S256") {
-                    anyhow::bail!("IdP does not advertise PKCE S256 support");
-                }
-            }
-
-            run_auth_code_flow(
-                authorization_endpoint,
-                &discovery.token_endpoint,
-                discovery.revocation_endpoint.clone(),
-                &client_id,
-                client_secret.as_ref(),
-                signer_arc.as_ref(),
-                &agent_config.client_attestation,
-                device_flow_timeout_secs,
-            )
-            .await?
-        } else {
-            let device_endpoint = discovery
-                .device_authorization_endpoint
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("IdP does not support device authorization"))?;
-
-            run_device_flow(
-                &device_endpoint,
-                &discovery.token_endpoint,
-                discovery.revocation_endpoint.clone(),
-                &client_id,
-                client_secret.clone(),
-                Arc::clone(&signer_arc),
-                agent_config.client_attestation.clone(),
-                device_flow_timeout_secs,
-            )
-            .await?
-        };
-
-        (result, issuer.clone(), discovery.token_endpoint.clone())
+        .await?
     };
+
+    let effective_issuer = issuer.clone();
+    let token_endpoint = discovery.token_endpoint.clone();
 
     println!();
     println!("Authentication successful!");
@@ -1147,7 +887,6 @@ async fn run_device_flow(
     client_id: &str,
     client_secret: Option<SecretString>,
     signer_for_poll: Arc<dyn DPoPSigner>,
-    client_attestation: ClientAttestationConfig,
     device_flow_timeout_secs: u64,
 ) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
     validate_endpoint_url(device_endpoint, "device_authorization_endpoint")
@@ -1299,24 +1038,10 @@ async fn run_device_flow(
 
             let response = http_client
                 .post(&token_endpoint)
-                .header("DPoP", &dpop_proof);
-            let response = if let Some(headers) = build_client_attestation_headers(
-                signer_for_poll.as_ref(),
-                Some(&client_attestation),
-                client_id.as_str(),
-                &token_endpoint,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to attach client attestation headers: {e}"))?
-            {
-                response
-                    .header("OAuth-Client-Attestation", headers.attestation)
-                    .header("OAuth-Client-Attestation-PoP", headers.pop)
-            } else {
-                response
-            }
-            .form(&token_params)
-            .send()
-            .map_err(|e| anyhow::anyhow!("Token request failed: {e}"))?;
+                .header("DPoP", &dpop_proof)
+                .form(&token_params)
+                .send()
+                .map_err(|e| anyhow::anyhow!("Token request failed: {e}"))?;
 
             if response.status().is_success() {
                 let token_response: serde_json::Value = response
@@ -1371,7 +1096,6 @@ async fn run_auth_code_flow(
     client_id: &str,
     client_secret: Option<&SecretString>,
     signer: &dyn DPoPSigner,
-    client_attestation: &ClientAttestationConfig,
     http_timeout_secs: u64,
 ) -> anyhow::Result<(serde_json::Value, String, Option<String>)> {
     validate_endpoint_url(authorization_endpoint, "authorization_endpoint")
@@ -1422,7 +1146,6 @@ async fn run_auth_code_flow(
             code_verifier: &code_verifier,
             client_id,
             client_secret: client_secret.map(ExposeSecret::expose_secret),
-            client_attestation: Some(client_attestation),
         },
     )
     .await?;
@@ -1610,60 +1333,6 @@ async fn run_refresh() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to parse token metadata: {e}"))?;
 
     let signer_type = metadata["signer_type"].as_str().unwrap_or("software");
-
-    // ── SPIRE sessions: re-acquire SVID instead of OAuth refresh (Codex HIGH-2) ──
-    #[cfg(feature = "spire")]
-    if signer_type == "spire" {
-        println!("Refreshing JWT-SVID from SPIRE agent...");
-        let hw_config = SignerConfig::load();
-        let spire_cfg = hw_config
-            .spire
-            .as_ref()
-            .map(|s| prmana_agent::crypto::SpireConfig {
-                socket_path: s.socket_path.clone().unwrap_or_else(|| {
-                    prmana_agent::crypto::spire_signer::DEFAULT_SPIRE_SOCKET.to_string()
-                }),
-                audience: s.audience.clone().unwrap_or_default(),
-                spiffe_id: s.spiffe_id.clone(),
-            })
-            .unwrap_or_default();
-        let spire_signer = prmana_agent::crypto::SpireSigner::new(spire_cfg)
-            .map_err(|e| anyhow::anyhow!("Failed to create SpireSigner: {e}"))?;
-
-        let (spiffe_id, svid_token) = spire_signer
-            .fetch_svid_async()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to refresh JWT-SVID from SPIRE agent: {e}"))?;
-
-        let svid_exp = prmana_agent::crypto::spire_signer::parse_jwt_exp_secs(&svid_token);
-        let token_expires = svid_exp.unwrap_or_else(|| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            (now + 300) as i64
-        });
-
-        let access_token = SecretString::from(svid_token);
-        storage.store(KEY_ACCESS_TOKEN, access_token.expose_secret().as_bytes())?;
-
-        // Update metadata with new expiry.
-        let new_metadata = serde_json::json!({
-            "expires_at": token_expires,
-            "refresh_token": null,
-            "issuer": metadata["issuer"],
-            "token_endpoint": null,
-            "client_id": metadata["client_id"],
-            "client_secret": null,
-            "signer_type": "spire",
-            "revocation_endpoint": null,
-            "spiffe_id": spiffe_id,
-        });
-        storage.store(KEY_TOKEN_METADATA, new_metadata.to_string().as_bytes())?;
-
-        println!("JWT-SVID refreshed successfully (expires at {token_expires})");
-        return Ok(());
-    }
 
     // ── Standard OAuth refresh path ──────────────────────────────────────────
 
@@ -1993,8 +1662,6 @@ async fn load_agent_state() -> anyhow::Result<AgentState> {
         presence_cache: prmana_agent::daemon::presence_cache::PresenceCache::new(
             prmana_agent::daemon::presence_cache::DEFAULT_PRESENCE_CACHE_TTL_SECS,
         ),
-        pending_step_ups: std::collections::HashMap::new(),
-        failover_runtimes: std::collections::HashMap::new(),
     })
 }
 
@@ -2488,10 +2155,6 @@ mod tests {
             .await;
 
         let signer: Arc<dyn DPoPSigner> = Arc::new(SoftwareSigner::generate());
-        let disabled = ClientAttestationConfig {
-            enabled: false,
-            lifetime_secs: 3600,
-        };
         let result = run_device_flow(
             &format!("{}/device", server.uri()),
             &format!("{}/token", server.uri()),
@@ -2499,21 +2162,11 @@ mod tests {
             "prmana",
             None,
             signer,
-            disabled,
             5,
         )
         .await;
 
         assert!(result.is_ok());
-        let requests = server.received_requests().await.unwrap();
-        let token_req = requests
-            .iter()
-            .find(|r| r.url.path() == "/token")
-            .expect("token request must be sent");
-        assert!(!token_req.headers.contains_key("OAuth-Client-Attestation"));
-        assert!(!token_req
-            .headers
-            .contains_key("OAuth-Client-Attestation-PoP"));
     }
 
     #[tokio::test]
@@ -2528,10 +2181,6 @@ mod tests {
     #[tokio::test]
     async fn test_run_device_flow_rejects_non_loopback_http_endpoints() {
         let signer: Arc<dyn DPoPSigner> = Arc::new(SoftwareSigner::generate());
-        let disabled = ClientAttestationConfig {
-            enabled: false,
-            lifetime_secs: 3600,
-        };
 
         let err = run_device_flow(
             "http://idp.example.com/device",
@@ -2540,7 +2189,6 @@ mod tests {
             "prmana",
             None,
             signer,
-            disabled,
             5,
         )
         .await
@@ -2554,10 +2202,6 @@ mod tests {
     #[tokio::test]
     async fn test_run_auth_code_flow_rejects_non_loopback_http_endpoints() {
         let signer = SoftwareSigner::generate();
-        let client_attestation = ClientAttestationConfig {
-            enabled: false,
-            lifetime_secs: 3600,
-        };
 
         let err = run_auth_code_flow(
             "http://idp.example.com/authorize",
@@ -2566,7 +2210,6 @@ mod tests {
             "prmana",
             None,
             &signer,
-            &client_attestation,
             5,
         )
         .await

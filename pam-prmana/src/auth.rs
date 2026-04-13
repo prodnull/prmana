@@ -2455,33 +2455,6 @@ timeouts:
     }
 
     #[test]
-    fn test_sbug03_sudo_user_mismatch_error_shows_sub_not_empty_string() {
-        // Verify the error message semantic: when preferred_username is None,
-        // UserMismatch should contain the sub value, not "".
-        // This test exercises the fixed SudoError::UserMismatch message format.
-        let token_user = "user-sub-123"; // what the fixed path produces
-        let sudo_user = "alice";
-        let err = crate::sudo::SudoError::UserMismatch {
-            token_user: token_user.to_string(),
-            sudo_user: sudo_user.to_string(),
-        };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("user-sub-123"),
-            "UserMismatch error must contain the sub value, not empty string. Got: {msg}"
-        );
-        assert!(
-            msg.contains("alice"),
-            "UserMismatch error must contain the sudo user. Got: {msg}"
-        );
-        // Verify it does NOT show a bare empty string token_user mismatch
-        assert!(
-            !msg.contains("token user '' does not"),
-            "UserMismatch with sub fallback must not show empty string. Got: {msg}"
-        );
-    }
-
-    #[test]
     fn test_jti_scoping_same_issuer_same_jti_is_replay() {
         // Same JTI from the same issuer IS a replay attack.
         use crate::security::jti_cache::global_jti_cache;

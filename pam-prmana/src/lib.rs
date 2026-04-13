@@ -29,12 +29,9 @@ compile_error!(
      Build without --features test-mode for production."
 );
 
-pub mod approval;
 pub mod audit;
 pub mod auth;
-pub mod ciba;
 pub mod device_flow;
-pub mod evidence;
 pub mod identity;
 pub mod oidc;
 pub mod otp;
@@ -42,7 +39,6 @@ pub mod policy;
 pub mod security;
 pub mod session;
 pub mod sssd;
-pub mod sudo;
 pub mod ui;
 
 use audit::AuditEvent;

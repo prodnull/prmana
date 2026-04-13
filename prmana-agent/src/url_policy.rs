@@ -5,7 +5,7 @@
 
 use std::net::IpAddr;
 
-use pam_prmana::oidc::jwks::OidcDiscovery;
+use prmana_core::oidc::jwks::OidcDiscovery;
 use reqwest::Url;
 
 /// Validate that an endpoint URL uses HTTPS, or loopback HTTP for local testing.

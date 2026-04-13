@@ -16,8 +16,23 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 use thiserror::Error;
 
-use super::rules::StepUpMethod;
 use crate::audit::AuditEvent;
+
+/// Methods for step-up authentication (config deserialization).
+///
+/// Retained for policy.yaml backward compatibility — existing deployments
+/// may have `sudo.allowed_methods` entries that must parse without error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepUpMethod {
+    /// OAuth 2.0 Device Authorization Grant
+    #[default]
+    DeviceFlow,
+    /// Push notification (e.g., MS Authenticator)
+    Push,
+    /// FIDO2/WebAuthn
+    Fido2,
+}
 
 // ── HTTPS URL validation (SHRD-04) ─────────────────────────────────────────
 

@@ -1,11 +1,12 @@
 # Cargo.toml
 [workspace]
 members = [
+    "prmana-core",
     "pam-prmana",
     "prmana-agent",
-    "prmana-scim",
-    "prmana-kubectl",
-    "examples/webhook-server",
+    "enterprise/crates/prmana-scim",
+    "enterprise/crates/prmana-kubectl",
+    "enterprise/examples/webhook-server",
 ]
 exclude = ["fuzz", "test/fixtures/attestation/gen"]
 resolver = "2"
@@ -14,7 +15,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-license = "CC-BY-NC-SA-4.0"
+license = "Apache-2.0"
 repository = "https://github.com/prodnull/unix-oidc"
 homepage = "https://github.com/prodnull/unix-oidc"
 documentation = "https://github.com/prodnull/unix-oidc/tree/main/docs"
