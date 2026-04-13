@@ -158,8 +158,6 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/prmana-agent
             target/${{ matrix.target }}/release/libpam_prmana.so
-            target/${{ matrix.target }}/release/prmana-audit-verify
-            target/${{ matrix.target }}/release/prmana-scim
           retention-days: 1
 
   package:
@@ -203,8 +201,6 @@ jobs:
         run: |
           chmod +x \
             target/${{ matrix.rust_target }}/release/prmana-agent \
-            target/${{ matrix.rust_target }}/release/prmana-audit-verify \
-            target/${{ matrix.rust_target }}/release/prmana-scim \
             2>/dev/null || true
 
       - name: Install nfpm v2.46.0
@@ -248,13 +244,8 @@ jobs:
           build_pkg packaging/nfpm/prmana.yaml prmana
 
           # SCIM server package
-          build_pkg packaging/nfpm/prmana-scim.yaml prmana-scim
 
-          # prmana-tools: gated on DT-A-04 (prmana-kubectl binary must exist first)
-          if [ -x "target/${RUST_TARGET}/release/prmana-kubectl" ]; then
-            build_pkg packaging/nfpm/prmana-tools.yaml prmana-tools
           else
-            echo "skip prmana-tools: prmana-kubectl not built (DT-A-04 not yet shipped)"
           fi
 
       - name: Lint deb packages

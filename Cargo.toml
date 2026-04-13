@@ -4,9 +4,6 @@ members = [
     "prmana-core",
     "pam-prmana",
     "prmana-agent",
-    "enterprise/crates/prmana-scim",
-    "enterprise/crates/prmana-kubectl",
-    "enterprise/examples/webhook-server",
 ]
 exclude = ["fuzz", "test/fixtures/attestation/gen"]
 resolver = "2"
