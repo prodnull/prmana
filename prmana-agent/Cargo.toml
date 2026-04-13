@@ -16,8 +16,8 @@ path = "src/main.rs"
 # implemented unconditionally in ecdsa-0.16 for SigningKey<C>. The `ecdsa` and
 # `jwk` features are all that is needed.
 p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
-sha2 = "0.10"
-base64 = "0.21"
+sha2 = "0.11"
+base64 = "0.22"
 # MEM-01/MEM-02: zeroize for Zeroizing<T> wrapper; ZeroizeOnDrop already implemented
 # unconditionally by ecdsa-0.16's SigningKey. secrecy is added for Plan 02+ usage.
 zeroize = { version = "1", features = ["derive"] }
@@ -27,7 +27,7 @@ libc = "0.2"
 
 # OIDC/JWT
 jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
-reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -45,7 +45,7 @@ clap = { version = "4", features = ["derive"] }
 # linux-native: keyutils syscall backend (@u keyring, no daemon needed)
 # apple-native: macOS Keychain Services
 keyring = { version = "3", features = ["sync-secret-service", "linux-native", "apple-native"] }
-directories = "5"
+directories = "6"
 
 # Error handling
 thiserror.workspace = true
@@ -57,7 +57,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
-dirs = "5"
+dirs = "6"
 open = "5"
 serde_yaml = "0.9"
 figment = { version = "0.10", features = ["yaml", "env"] }
@@ -84,7 +84,7 @@ pqc = ["dep:ml-dsa"]
 test-mode = []
 
 [dependencies.cryptoki]
-version = "0.7"
+version = "0.12"
 optional = true
 
 [dependencies.rpassword]
