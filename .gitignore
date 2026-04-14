@@ -1,0 +1,65 @@
+# .gitignore
+/target/
+fuzz/target/
+fuzz/artifacts/
+fuzz/corpus/
+**/*.rs.bk
+# Cargo.lock would normally be ignored here, but it's required for Docker builds
+# so it's excluded from .gitignore and committed to the repo
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Test artifacts
+*.log
+.coverage/
+htmlcov/
+
+# Docker
+.docker-data/
+
+# Environment and secrets
+.env
+.env.local
+.venv/
+.auth0
+.entra
+
+# Marketing materials (keep most local, track presentation)
+docs/marketing/*.md
+docs/marketing/*.py
+docs/marketing/*.pptx
+docs/marketing/executive-*
+docs/marketing/medium-*
+docs/marketing/linkedin-*
+*.cdx.json
+
+# Internal working docs (local only)
+docs/session-notes/
+docs/plans/
+docs/outreach/
+
+# GSD planning (local only)
+.planning/
+
+# Agent coordination runtime (local only)
+agent-coord/
+
+# Terraform provider cache and state (do not commit .terraform/ directories)
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+crash.log
+
+# SELinux compiled policy artifacts
+packaging/selinux/*.mod
+packaging/selinux/*.pp

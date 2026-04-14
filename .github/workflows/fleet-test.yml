@@ -1,0 +1,434 @@
+name: Fleet Test (DT-0 harness)
+
+# Manual trigger only — controls cloud costs and prevents accidental fleet spin-up.
+# Usage:
+#   gh workflow run fleet-test.yml \
+#     -f distro=ubuntu-22.04 -f count=5 -f scenario=install-smoke -f cloud=aws
+on:
+  workflow_dispatch:
+    inputs:
+      distro:
+        description: 'Distro'
+        required: true
+        type: choice
+        options:
+          - debian-12
+          - ubuntu-22.04
+          - ubuntu-24.04
+          - rocky-9
+          - amazonlinux-2023
+          - fedora-40
+      arch:
+        description: 'Arch'
+        required: false
+        default: 'amd64'
+        type: choice
+        options:
+          - amd64
+          - arm64
+      count:
+        description: 'Node count (1-10)'
+        required: false
+        default: '5'
+        type: string
+      scenario:
+        description: 'Scenario'
+        required: true
+        type: choice
+        options:
+          - install-smoke
+          - fault-503
+          - fault-slow
+          - fault-malformed-jwks
+          - fault-drop
+      cloud:
+        description: 'Cloud'
+        required: true
+        type: choice
+        options:
+          - aws
+          - azure
+      fault_duration:
+        description: 'Fault duration (e.g., 60s, 5m)'
+        required: false
+        default: '60s'
+
+# OIDC federation permissions — required for both AWS STS and Entra token exchange.
+permissions:
+  id-token: write   # required for OIDC federation
+  contents: read
+
+env:
+  FLEET_TAG: prmana-ci-${{ github.run_id }}
+  AWS_REGION: us-west-2
+  AZURE_LOCATION: westus2
+
+jobs:
+  fleet-test:
+    name: Fleet test (${{ inputs.cloud }} ${{ inputs.distro }} ${{ inputs.arch }})
+    runs-on: ubuntu-latest
+    # HARD CAP: 30 minutes per design doc §4.5.5. If the job times out,
+    # GitHub kills all steps but if: always() teardown steps still run.
+    timeout-minutes: 30
+    # Reuse existing environment protection — requires a reviewer for production clouds.
+    environment: aws-testing
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.7.5"
+
+      # -----------------------------------------------------------------------
+      # Generate an ephemeral SSH keypair for this run.
+      # The private key lives only on the runner's ephemeral filesystem.
+      # It is NEVER uploaded as an artifact or echoed to logs.
+      # -----------------------------------------------------------------------
+      - name: Generate ephemeral SSH keypair
+        id: sshkey
+        run: |
+          ssh-keygen -t ed25519 -N "" -f /tmp/fleet_key \
+            -C "prmana-ci-${GITHUB_RUN_ID}"
+          chmod 600 /tmp/fleet_key
+          echo "public_key<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/fleet_key.pub >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Cloud authentication — only one block runs per invocation.
+      # All workflow inputs are type:choice (enum-constrained); they are
+      # passed to Terraform via TF_VAR_* env vars, never interpolated into
+      # shell commands directly.
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials (OIDC)
+        if: inputs.cloud == 'aws'
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: prmana-fleet-${{ github.run_id }}
+
+      - name: Configure Azure credentials (OIDC)
+        if: inputs.cloud == 'azure'
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # azurerm Terraform provider reads these env vars to use the OIDC token
+      # issued by the azure/login action above.
+      - name: Export Azure ARM env vars
+        if: inputs.cloud == 'azure'
+        run: |
+          echo "ARM_USE_OIDC=true" >> "$GITHUB_ENV"
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
+
+      # Resolve default VPC ID via CLI. Only ec2:DescribeVpcs is needed here;
+      # the Terraform data.aws_vpc.default data source additionally calls
+      # ec2:DescribeVpcAttribute which is not in the CI role policy. By
+      # resolving the VPC ID in this step and passing it as TF_VAR_vpc_id,
+      # the data source is skipped entirely (count = 0 when var.vpc_id != "").
+      # No untrusted input is used — VPC ID is from the AWS API only.
+      - name: Resolve default VPC ID (AWS)
+        if: inputs.cloud == 'aws'
+        run: |
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=isDefault,Values=true" \
+            --query "Vpcs[0].VpcId" \
+            --output text)
+          printf 'TF_VAR_vpc_id=%s\n' "${VPC_ID}" >> "$GITHUB_ENV"
+
+      # -----------------------------------------------------------------------
+      # Terraform init — local state, ephemeral per run (-backend=false).
+      # Remote state is unnecessary for a self-contained CI workflow that
+      # always destroys at the end.
+      # -----------------------------------------------------------------------
+      - name: Terraform init (AWS)
+        if: inputs.cloud == 'aws'
+        working-directory: test/infra/aws-fleet
+        run: terraform init -backend=false
+
+      - name: Terraform init (Azure)
+        if: inputs.cloud == 'azure'
+        working-directory: test/infra/azure-fleet
+        run: terraform init -backend=false
+
+      # -----------------------------------------------------------------------
+      # Terraform apply — provision fleet.
+      # TF_VAR names match the module variable names exactly:
+      #   aws-fleet:   instance_count, aws_region
+      #   azure-fleet: vm_count,       azure_location
+      # All inputs are type:choice (enum), passed via env vars, never
+      # interpolated into shell run: blocks directly.
+      # -----------------------------------------------------------------------
+      - name: Terraform apply (AWS)
+        id: tf_aws
+        if: inputs.cloud == 'aws'
+        working-directory: test/infra/aws-fleet
+        env:
+          TF_VAR_distro: ${{ inputs.distro }}
+          TF_VAR_arch: ${{ inputs.arch }}
+          TF_VAR_instance_count: ${{ inputs.count }}
+          TF_VAR_github_run_id: ${{ github.run_id }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_ssh_public_key: ${{ steps.sshkey.outputs.public_key }}
+        run: |
+          terraform apply -auto-approve
+          echo "instance_ips=$(terraform output -json public_ips | jq -r '. | join(" ")')" >> "$GITHUB_OUTPUT"
+          echo "ssh_user=$(terraform output -raw ssh_user)" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform apply (Azure)
+        id: tf_azure
+        if: inputs.cloud == 'azure'
+        working-directory: test/infra/azure-fleet
+        env:
+          TF_VAR_distro: ${{ inputs.distro }}
+          TF_VAR_arch: ${{ inputs.arch }}
+          TF_VAR_vm_count: ${{ inputs.count }}
+          TF_VAR_github_run_id: ${{ github.run_id }}
+          TF_VAR_azure_location: ${{ env.AZURE_LOCATION }}
+          TF_VAR_ssh_public_key: ${{ steps.sshkey.outputs.public_key }}
+        run: |
+          terraform apply -auto-approve
+          echo "instance_ips=$(terraform output -json public_ips | jq -r '. | join(" ")')" >> "$GITHUB_OUTPUT"
+          echo "ssh_user=$(terraform output -raw ssh_user)" >> "$GITHUB_OUTPUT"
+
+      # Consolidate cloud-specific outputs into a single pair of step outputs.
+      - name: Collect instance metadata
+        id: collect_meta
+        env:
+          CLOUD: ${{ inputs.cloud }}
+          AWS_IPS: ${{ steps.tf_aws.outputs.instance_ips }}
+          AWS_USER: ${{ steps.tf_aws.outputs.ssh_user }}
+          AZURE_IPS: ${{ steps.tf_azure.outputs.instance_ips }}
+          AZURE_USER: ${{ steps.tf_azure.outputs.ssh_user }}
+        run: |
+          if [ "$CLOUD" = "aws" ]; then
+            echo "ips=${AWS_IPS}" >> "$GITHUB_OUTPUT"
+            echo "user=${AWS_USER}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ips=${AZURE_IPS}" >> "$GITHUB_OUTPUT"
+            echo "user=${AZURE_USER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Wait for SSH to become available on all instances (up to 5 minutes).
+      # -----------------------------------------------------------------------
+      - name: Wait for SSH readiness
+        env:
+          IPS: ${{ steps.collect_meta.outputs.ips }}
+          SSH_USER: ${{ steps.collect_meta.outputs.user }}
+        run: |
+          for ip in $IPS; do
+            echo "Waiting for SSH on ${ip}..."
+            for i in $(seq 1 30); do
+              if ssh -i /tmp/fleet_key \
+                  -o StrictHostKeyChecking=accept-new \
+                  -o ConnectTimeout=5 \
+                  -o BatchMode=yes \
+                  "${SSH_USER}@${ip}" \
+                  'echo ready' 2>/dev/null; then
+                echo "${ip}: ready"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "WARN: ${ip} did not become reachable within 5 minutes"
+              fi
+              sleep 10
+            done
+          done
+
+      # -----------------------------------------------------------------------
+      # Fault injection — only for fault-* scenarios.
+      # The proxy runs LOCALLY on the runner (not on the fleet) so DT-0 can
+      # validate the fault injection mechanism itself. End-to-end client
+      # resilience testing is DT-A's scope.
+      # -----------------------------------------------------------------------
+      - name: Build idp-proxy (fault scenarios only)
+        if: startsWith(inputs.scenario, 'fault-')
+        working-directory: test/infra/idp-proxy
+        run: cargo build --release
+
+      - name: Start idp-proxy and inject fault (fault scenarios only)
+        if: startsWith(inputs.scenario, 'fault-')
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+          FAULT_DURATION: ${{ inputs.fault_duration }}
+        run: |
+          ./test/infra/idp-proxy/target/release/idp-proxy serve \
+            --upstream http://example.invalid \
+            --listen 127.0.0.1:9443 \
+            --control 127.0.0.1:9444 &
+          PROXY_PID=$!
+          echo "proxy_pid=${PROXY_PID}" >> "$GITHUB_ENV"
+          sleep 2
+
+          case "$SCENARIO" in
+            fault-503)            MODE=503 ;;
+            fault-slow)           MODE=slow ;;
+            fault-malformed-jwks) MODE=malformed-jwks ;;
+            fault-drop)           MODE=drop-connection ;;
+            *) echo "Unknown fault scenario: ${SCENARIO}"; exit 1 ;;
+          esac
+
+          ./test/infra/idp-proxy/target/release/idp-proxy fault \
+            --control http://127.0.0.1:9444 \
+            --mode "$MODE" \
+            --duration "$FAULT_DURATION"
+
+      # -----------------------------------------------------------------------
+      # Run scenario.
+      # DT-0 scenarios are reachability-only — NO prmana install.
+      # Package install assertions are DT-A's scope.
+      # -----------------------------------------------------------------------
+      - name: Run scenario
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+          IPS: ${{ steps.collect_meta.outputs.ips }}
+          SSH_USER: ${{ steps.collect_meta.outputs.user }}
+        run: |
+          set -e
+          # install-smoke and all fault-* scenarios share the same reachability check.
+          # The fault modes are injected at the proxy level; the fleet nodes are only
+          # used for SSH reachability validation in DT-0.
+          for ip in $IPS; do
+            echo "=== ${ip} ==="
+            ssh -i /tmp/fleet_key \
+              -o StrictHostKeyChecking=accept-new \
+              -o BatchMode=yes \
+              "${SSH_USER}@${ip}" \
+              'uname -a && cat /etc/os-release'
+          done
+
+          # For fault-503: probe the local proxy to assert the fault was applied.
+          # This validates the fault injection mechanism works end-to-end.
+          if [ "$SCENARIO" = "fault-503" ]; then
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+              http://127.0.0.1:9443/probe 2>/dev/null || echo "connect-failed")
+            if [ "$STATUS" != "503" ]; then
+              echo "fault-503 assertion failed: got HTTP ${STATUS}, expected 503"
+              exit 1
+            fi
+            echo "fault-503 assertion passed: proxy returned 503"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Log collection and upload — runs on success AND failure.
+      # -----------------------------------------------------------------------
+      - name: Collect logs
+        if: always()
+        env:
+          SSH_KEY_PATH: /tmp/fleet_key
+          SSH_USER: ${{ steps.collect_meta.outputs.user }}
+          INSTANCE_IPS: ${{ steps.collect_meta.outputs.ips }}
+          OUTPUT_DIR: ./fleet-logs
+        run: |
+          bash test/infra/logcollect/aggregate.sh || \
+            echo "WARN: log collection had partial failures (teardown will still run)"
+
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fleet-logs-${{ github.run_id }}
+          path: fleet-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # Cleanup — all steps below use if: always() to guarantee execution on
+      # success, failure, AND job timeout.
+      # -----------------------------------------------------------------------
+      - name: Stop idp-proxy
+        if: always()
+        run: |
+          if [ -n "${proxy_pid:-}" ]; then
+            kill "${proxy_pid}" 2>/dev/null || true
+          fi
+
+      - name: Terraform destroy (AWS)
+        if: always()
+        working-directory: test/infra/aws-fleet
+        env:
+          INPUT_CLOUD: ${{ inputs.cloud }}
+          TF_VAR_distro: ${{ inputs.distro }}
+          TF_VAR_arch: ${{ inputs.arch }}
+          TF_VAR_instance_count: ${{ inputs.count }}
+          TF_VAR_github_run_id: ${{ github.run_id }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_ssh_public_key: ${{ steps.sshkey.outputs.public_key }}
+        run: |
+          if [ "$INPUT_CLOUD" = "aws" ]; then
+            terraform destroy -auto-approve || true
+          fi
+
+      - name: Terraform destroy (Azure)
+        if: always()
+        working-directory: test/infra/azure-fleet
+        env:
+          INPUT_CLOUD: ${{ inputs.cloud }}
+          TF_VAR_distro: ${{ inputs.distro }}
+          TF_VAR_arch: ${{ inputs.arch }}
+          TF_VAR_vm_count: ${{ inputs.count }}
+          TF_VAR_github_run_id: ${{ github.run_id }}
+          TF_VAR_azure_location: ${{ env.AZURE_LOCATION }}
+          TF_VAR_ssh_public_key: ${{ steps.sshkey.outputs.public_key }}
+        run: |
+          if [ "$INPUT_CLOUD" = "azure" ]; then
+            terraform destroy -auto-approve || true
+          fi
+
+      # -----------------------------------------------------------------------
+      # Safety-net sweeps — belt-and-suspenders if terraform destroy failed or
+      # if terraform state was corrupted. Scoped to this run via GitHubRun tag.
+      # -----------------------------------------------------------------------
+      - name: Destroy safety net — untagged resource sweep (AWS)
+        if: always()
+        env:
+          INPUT_CLOUD: ${{ inputs.cloud }}
+        run: |
+          if [ "$INPUT_CLOUD" != "aws" ]; then exit 0; fi
+          # Terminate any instances still tagged with this run ID.
+          # Handles the case where terraform destroy failed or tfstate was lost.
+          aws ec2 describe-instances \
+            --filters \
+              "Name=tag:GitHubRun,Values=${GITHUB_RUN_ID}" \
+              "Name=instance-state-name,Values=pending,running,stopped,stopping" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text \
+          | tr '\t' '\n' \
+          | while read -r id; do
+            [ -n "$id" ] && aws ec2 terminate-instances --instance-ids "$id" || true
+          done
+
+      - name: Destroy safety net — resource group sweep (Azure)
+        if: always()
+        env:
+          INPUT_CLOUD: ${{ inputs.cloud }}
+        run: |
+          if [ "$INPUT_CLOUD" != "azure" ]; then exit 0; fi
+          # Delete the per-run resource group if it still exists.
+          RG="rg-prmana-ci-${GITHUB_RUN_ID}"
+          if az group show --name "$RG" &>/dev/null; then
+            az group delete --name "$RG" --yes --no-wait || true
+          fi
+
+      - name: Destroy safety net — budget sweep (AWS)
+        if: always()
+        env:
+          INPUT_CLOUD: ${{ inputs.cloud }}
+        run: |
+          if [ "$INPUT_CLOUD" != "aws" ]; then exit 0; fi
+          # Delete the per-run budget if terraform destroy failed or state was
+          # lost before budgets:DeleteBudget could run. Silent on not-found.
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUDGET_NAME="prmana-ci-${GITHUB_RUN_ID}"
+          aws budgets delete-budget \
+            --account-id "$ACCOUNT_ID" \
+            --budget-name "$BUDGET_NAME" 2>/dev/null || true
+          echo "Budget sweep complete (${BUDGET_NAME})"

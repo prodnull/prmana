@@ -1,0 +1,21 @@
+# =============================================================================
+# Terraform Backend Configuration
+# =============================================================================
+#
+# SETUP:
+# 1. Run ./bootstrap.sh to create S3 bucket and DynamoDB table
+# 2. Copy this file to backend.tf
+# 3. Update ACCOUNT_ID with your AWS account ID
+# 4. Run: terraform init
+#
+# =============================================================================
+
+terraform {
+  backend "s3" {
+    bucket         = "unix-oidc-terraform-state-ACCOUNT_ID"  # Replace ACCOUNT_ID
+    key            = "unix-oidc-ci/terraform.tfstate"
+    region         = "us-west-2"
+    encrypt        = true
+    dynamodb_table = "unix-oidc-terraform-locks"
+  }
+}

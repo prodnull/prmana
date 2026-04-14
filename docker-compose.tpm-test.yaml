@@ -1,0 +1,31 @@
+# TPM 2.0 integration test environment using swtpm (Software TPM).
+#
+# Usage:
+#   docker compose -f docker-compose.tpm-test.yaml up -d
+#   PRMANA_TPM_TCTI=swtpm cargo test -p prmana-agent --features tpm,test-mode -- --ignored
+#   docker compose -f docker-compose.tpm-test.yaml down
+
+services:
+  swtpm:
+    image: ghcr.io/tpm2-software/swtpm:v0.9.0
+    command:
+      - socket
+      - --tpmstate
+      - dir=/tpmstate
+      - --tpm2
+      - --ctrl
+      - type=tcp,port=2322
+      - --server
+      - type=tcp,port=2321
+      - --flags
+      - not-need-init,startup-clear
+    ports:
+      - "2321:2321"   # TPM command port (MSSIM protocol)
+      - "2322:2322"   # Platform control port
+    tmpfs:
+      - /tpmstate:size=10M
+    healthcheck:
+      test: ["CMD-SHELL", "echo | nc -w1 localhost 2321"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

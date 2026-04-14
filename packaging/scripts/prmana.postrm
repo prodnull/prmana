@@ -1,0 +1,21 @@
+#!/bin/sh
+# prmana.postrm — post-removal maintainer script
+#
+# Reloads the systemd daemon after unit files have been removed so that
+# systemd's in-memory unit list is consistent with the filesystem.
+#
+# The prmana user is intentionally NOT removed: /var/lib/prmana (credential
+# storage fallback) may contain operator data. Removal of the user and its
+# data should be an explicit operator action, not automatic package removal.
+#
+# Idempotency: daemon-reload is safe to run multiple times.
+#
+# References:
+#   Debian Policy Manual §6.6 — postrm idempotency
+set -eu
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+
+exit 0

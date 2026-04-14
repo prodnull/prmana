@@ -1,0 +1,65 @@
+# prmana Policy Configuration Example
+# Copy to /etc/prmana/policy.yaml and customize for your environment.
+#
+# For additional templates, see deploy/templates/.
+
+# ── Issuers ──────────────────────────────────────────────────────────────────
+# Per-issuer configuration. Each issuer must have a unique URL.
+# Tokens are validated against the issuer matching the token's `iss` claim.
+
+issuers:
+  - issuer_url: "https://keycloak.example.com/realms/corp"
+    client_id: "prmana"
+    # client_secret: "your-secret-here"  # Uncomment for confidential clients
+    dpop_enforcement: strict  # strict | warn | disabled
+    # claim_mapping:
+    #   username_claim: preferred_username
+    #   transforms:
+    #     - type: strip_domain
+    #       domain: "example.com"
+    # acr_mapping:
+    #   required_acr: "urn:mfa"
+    #   acr_claim: "acr"
+
+# ── Security Modes ───────────────────────────────────────────────────────────
+# Enforcement levels for configurable security checks.
+# strict: reject on failure. warn: log and allow. disabled: skip check.
+
+security_modes:
+  dpop_required: strict       # DPoP proof-of-possession binding
+  jti_enforcement: warn       # JTI replay prevention
+  amr_enforcement: disabled   # Authentication Methods References
+  groups_enforcement: warn    # NSS group membership
+
+# ── Host Classification ──────────────────────────────────────────────────────
+# Affects default security posture.
+
+host:
+  classification: elevated    # standard | elevated | critical
+
+# ── SSH Login ────────────────────────────────────────────────────────────────
+
+ssh_login:
+  # Groups permitted to SSH in. Empty = no restriction (allow all).
+  login_groups: []
+  # login_groups:
+  #   - developers
+  #   - sre-team
+
+# ── Break-Glass ──────────────────────────────────────────────────────────────
+# Emergency local access when IdP is unavailable.
+# MANDATORY for production. See docs/break-glass-validation.md.
+
+break_glass:
+  enabled: true
+  accounts:
+    - breakglass             # Must exist as a local Unix account with password set
+  # Require offline TOTP/YubiKey OTP before granting break-glass bypass.
+  # requires: yubikey_otp
+  alert_on_use: true         # Emit BREAK_GLASS_AUTH audit event at CRITICAL severity
+
+# ── Audit ────────────────────────────────────────────────────────────────────
+
+audit:
+  log_file: "/var/log/prmana-audit.log"
+  syslog_enabled: true

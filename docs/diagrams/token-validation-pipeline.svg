@@ -1,0 +1,242 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <style>
+      .bg { fill: #0f1724; }
+      .title { fill: #e8edf3; font-size: 22px; font-weight: 700; }
+      .subtitle { fill: #7eb8da; font-size: 13px; }
+      .pipe-box { rx: 10; stroke-width: 2; }
+      .pipe-hard { fill: #2a1a1a; stroke: #c0392b; }
+      .pipe-warn { fill: #2a2a1a; stroke: #f39c12; }
+      .pipe-label { fill: #e8edf3; font-size: 14px; font-weight: 600; text-anchor: middle; }
+      .pipe-sub { fill: #8a9bb5; font-size: 11px; text-anchor: middle; }
+      .pipe-detail { fill: #b0c4de; font-size: 10px; text-anchor: middle; }
+      .arrow-pipe { stroke: #4a90c4; stroke-width: 2; fill: none; marker-end: url(#arrowhead-pipe); }
+      .arrow-fail { stroke: #c0392b; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead-red); }
+      .arrow-success { stroke: #27ae60; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead-green); }
+      .fail-box { fill: #1a1a1a; stroke: #c0392b; stroke-width: 1.5; rx: 6; }
+      .fail-text { fill: #e74c3c; font-size: 11px; text-anchor: middle; }
+      .success-box { fill: #1a2a1a; stroke: #27ae60; stroke-width: 2; rx: 8; }
+      .success-text { fill: #2ecc71; font-size: 14px; font-weight: 700; text-anchor: middle; }
+      .input-box { fill: #1e3148; stroke: #3b6a9b; stroke-width: 2; rx: 8; }
+      .input-label { fill: #e8edf3; font-size: 14px; font-weight: 600; text-anchor: middle; }
+      .badge-hard { fill: #c0392b; rx: 3; }
+      .badge-warn { fill: #e67e22; rx: 3; }
+      .badge-text { fill: #ffffff; font-size: 9px; font-weight: 700; text-anchor: middle; }
+      .section-label { fill: #5a7a9b; font-size: 12px; font-weight: 600; }
+      .legend-box { fill: #141e2e; stroke: #2d4a6f; stroke-width: 1; rx: 6; }
+      .legend-text { fill: #8a9bb5; font-size: 11px; }
+      .legend-title { fill: #b0c4de; font-size: 12px; font-weight: 600; }
+      .config-text { fill: #f39c12; font-size: 10px; text-anchor: middle; font-style: italic; }
+      .ref-text { fill: #5a7a9b; font-size: 9px; text-anchor: middle; }
+    </style>
+    <marker id="arrowhead-pipe" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#4a90c4"/>
+    </marker>
+    <marker id="arrowhead-red" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#c0392b"/>
+    </marker>
+    <marker id="arrowhead-green" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#27ae60"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="700"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="35">Token Validation Pipeline</text>
+  <text class="subtitle" x="40" y="55">Sequential security checks with hard-fail and configurable enforcement modes (Issue #10)</text>
+
+  <!-- Input -->
+  <rect class="input-box" x="30" y="80" width="140" height="60"/>
+  <text class="input-label" x="100" y="105">Incoming</text>
+  <text class="pipe-sub" x="100" y="120">JWT + DPoP proof</text>
+
+  <path class="arrow-pipe" d="M 170,110 L 195,110"/>
+
+  <!-- Stage 1: Signature Verification -->
+  <rect class="pipe-box pipe-hard" x="200" y="75" width="150" height="70"/>
+  <rect class="badge-hard" x="205" y="80" width="70" height="16"/>
+  <text class="badge-text" x="240" y="91">HARD-FAIL</text>
+  <text class="pipe-label" x="275" y="115">Signature</text>
+  <text class="pipe-sub" x="275" y="130">JWKS verification</text>
+  <text class="ref-text" x="275" y="142">jsonwebtoken + JWKS</text>
+
+  <path class="arrow-fail" d="M 275,145 L 275,175"/>
+  <rect class="fail-box" x="230" y="175" width="90" height="25"/>
+  <text class="fail-text" x="275" y="192">InvalidSig</text>
+
+  <path class="arrow-pipe" d="M 350,110 L 375,110"/>
+
+  <!-- Stage 2: Issuer Validation -->
+  <rect class="pipe-box pipe-hard" x="380" y="75" width="130" height="70"/>
+  <rect class="badge-hard" x="385" y="80" width="70" height="16"/>
+  <text class="badge-text" x="420" y="91">HARD-FAIL</text>
+  <text class="pipe-label" x="445" y="115">Issuer</text>
+  <text class="pipe-sub" x="445" y="130">iss == configured</text>
+
+  <path class="arrow-fail" d="M 445,145 L 445,175"/>
+  <rect class="fail-box" x="400" y="175" width="90" height="25"/>
+  <text class="fail-text" x="445" y="192">InvalidIssuer</text>
+
+  <path class="arrow-pipe" d="M 510,110 L 535,110"/>
+
+  <!-- Stage 3: Audience Validation -->
+  <rect class="pipe-box pipe-hard" x="540" y="75" width="130" height="70"/>
+  <rect class="badge-hard" x="545" y="80" width="70" height="16"/>
+  <text class="badge-text" x="580" y="91">HARD-FAIL</text>
+  <text class="pipe-label" x="605" y="115">Audience</text>
+  <text class="pipe-sub" x="605" y="130">aud contains client_id</text>
+
+  <path class="arrow-fail" d="M 605,145 L 605,175"/>
+  <rect class="fail-box" x="555" y="175" width="100" height="25"/>
+  <text class="fail-text" x="605" y="192">InvalidAudience</text>
+
+  <path class="arrow-pipe" d="M 670,110 L 695,110"/>
+
+  <!-- Stage 4: Expiration -->
+  <rect class="pipe-box pipe-hard" x="700" y="75" width="130" height="70"/>
+  <rect class="badge-hard" x="705" y="80" width="70" height="16"/>
+  <text class="badge-text" x="740" y="91">HARD-FAIL</text>
+  <text class="pipe-label" x="765" y="115">Expiration</text>
+  <text class="pipe-sub" x="765" y="130">exp + 60s skew > now</text>
+
+  <path class="arrow-fail" d="M 765,145 L 765,175"/>
+  <rect class="fail-box" x="725" y="175" width="80" height="25"/>
+  <text class="fail-text" x="765" y="192">Expired</text>
+
+  <path class="arrow-pipe" d="M 830,110 L 855,110"/>
+
+  <!-- Stage 5: Algorithm Enforcement -->
+  <rect class="pipe-box pipe-hard" x="860" y="75" width="130" height="70"/>
+  <rect class="badge-hard" x="865" y="80" width="70" height="16"/>
+  <text class="badge-text" x="900" y="91">HARD-FAIL</text>
+  <text class="pipe-label" x="925" y="115">Algorithm</text>
+  <text class="pipe-sub" x="925" y="130">alg from JWKS only</text>
+
+  <path class="arrow-fail" d="M 925,145 L 925,175"/>
+  <rect class="fail-box" x="875" y="175" width="100" height="25"/>
+  <text class="fail-text" x="925" y="192">UnsupportedAlg</text>
+
+  <path class="arrow-pipe" d="M 990,110 L 990,230 L 100,230 L 100,270"/>
+
+  <!-- Second row label -->
+  <text class="section-label" x="40" y="255">Configurable Checks (Issue #10 enforcement modes)</text>
+
+  <!-- Stage 6: JTI Replay Check -->
+  <rect class="pipe-box pipe-warn" x="50" y="275" width="160" height="90"/>
+  <rect class="badge-warn" x="55" y="280" width="90" height="16"/>
+  <text class="badge-text" x="100" y="291">CONFIGURABLE</text>
+  <text class="pipe-label" x="130" y="315">JTI Replay</text>
+  <text class="pipe-sub" x="130" y="330">100k cache, TTL-based</text>
+  <text class="config-text" x="130" y="348">strict | warn | disabled</text>
+  <text class="ref-text" x="130" y="360">Default: warn (v1.0 compat)</text>
+
+  <path class="arrow-fail" d="M 130,365 L 130,390"/>
+  <rect class="fail-box" x="75" y="390" width="110" height="40"/>
+  <text class="fail-text" x="130" y="407">TokenReplay</text>
+  <text class="fail-text" x="130" y="422">(always hard-fail)</text>
+
+  <rect class="fail-box" x="60" y="435" width="140" height="30"/>
+  <text class="fail-text" x="130" y="448" style="fill: #f39c12;">MissingJti</text>
+  <text class="fail-text" x="130" y="460" style="fill: #f39c12;">(strict only)</text>
+
+  <path class="arrow-pipe" d="M 210,320 L 245,320"/>
+
+  <!-- Stage 7: ACR/AMR Validation -->
+  <rect class="pipe-box pipe-warn" x="250" y="275" width="160" height="90"/>
+  <rect class="badge-warn" x="255" y="280" width="90" height="16"/>
+  <text class="badge-text" x="300" y="291">CONFIGURABLE</text>
+  <text class="pipe-label" x="330" y="315">ACR / AMR</text>
+  <text class="pipe-sub" x="330" y="330">Auth context level</text>
+  <text class="config-text" x="330" y="348">If required_acr set</text>
+  <text class="ref-text" x="330" y="360">EAP ACR Values 1.0</text>
+
+  <path class="arrow-fail" d="M 330,365 L 330,390"/>
+  <rect class="fail-box" x="275" y="390" width="110" height="25"/>
+  <text class="fail-text" x="330" y="407">InsufficientAcr</text>
+
+  <path class="arrow-pipe" d="M 410,320 L 445,320"/>
+
+  <!-- Stage 8: Auth Time -->
+  <rect class="pipe-box pipe-warn" x="450" y="275" width="160" height="90"/>
+  <rect class="badge-warn" x="455" y="280" width="90" height="16"/>
+  <text class="badge-text" x="500" y="291">CONFIGURABLE</text>
+  <text class="pipe-label" x="530" y="315">Auth Time</text>
+  <text class="pipe-sub" x="530" y="330">max_auth_age check</text>
+  <text class="config-text" x="530" y="348">If max_auth_age set</text>
+  <text class="ref-text" x="530" y="360">+60s clock skew tolerance</text>
+
+  <path class="arrow-fail" d="M 530,365 L 530,390"/>
+  <rect class="fail-box" x="475" y="390" width="110" height="25"/>
+  <text class="fail-text" x="530" y="407">AuthTimeTooOld</text>
+
+  <path class="arrow-pipe" d="M 610,365 L 610,468 L 45,468 L 45,510 L 48,510"/>
+
+  <!-- Third row: DPoP Pipeline -->
+  <text class="section-label" x="40" y="460">DPoP Proof Validation (RFC 9449 -- all checks are HARD-FAIL)</text>
+
+  <!-- DPoP Stage 1: Signature -->
+  <rect class="pipe-box pipe-hard" x="50" y="475" width="140" height="70"/>
+  <rect class="badge-hard" x="55" y="480" width="70" height="16"/>
+  <text class="badge-text" x="90" y="491">HARD-FAIL</text>
+  <text class="pipe-label" x="120" y="515">DPoP Signature</text>
+  <text class="pipe-sub" x="120" y="530">ES256 only (P-256)</text>
+
+  <path class="arrow-pipe" d="M 190,510 L 215,510"/>
+
+  <!-- DPoP Stage 2: Method+Target -->
+  <rect class="pipe-box pipe-hard" x="220" y="475" width="140" height="70"/>
+  <rect class="badge-hard" x="225" y="480" width="70" height="16"/>
+  <text class="badge-text" x="260" y="491">HARD-FAIL</text>
+  <text class="pipe-label" x="290" y="515">htm / htu</text>
+  <text class="pipe-sub" x="290" y="530">Method + target bind</text>
+
+  <path class="arrow-pipe" d="M 360,510 L 385,510"/>
+
+  <!-- DPoP Stage 3: Freshness -->
+  <rect class="pipe-box pipe-hard" x="390" y="475" width="140" height="70"/>
+  <rect class="badge-hard" x="395" y="480" width="70" height="16"/>
+  <text class="badge-text" x="430" y="491">HARD-FAIL</text>
+  <text class="pipe-label" x="460" y="515">Proof Age</text>
+  <text class="pipe-sub" x="460" y="530">iat within 60s + 5s</text>
+
+  <path class="arrow-pipe" d="M 530,510 L 555,510"/>
+
+  <!-- DPoP Stage 4: JTI Replay -->
+  <rect class="pipe-box pipe-hard" x="560" y="475" width="140" height="70"/>
+  <rect class="badge-hard" x="565" y="480" width="70" height="16"/>
+  <text class="badge-text" x="600" y="491">HARD-FAIL</text>
+  <text class="pipe-label" x="630" y="515">DPoP JTI</text>
+  <text class="pipe-sub" x="630" y="530">100k cache, ct_eq</text>
+
+  <path class="arrow-pipe" d="M 700,510 L 725,510"/>
+
+  <!-- DPoP Stage 5: cnf Binding -->
+  <rect class="pipe-box pipe-hard" x="730" y="475" width="160" height="70"/>
+  <rect class="badge-hard" x="735" y="480" width="70" height="16"/>
+  <text class="badge-text" x="770" y="491">HARD-FAIL</text>
+  <text class="pipe-label" x="810" y="515">cnf.jkt Binding</text>
+  <text class="pipe-sub" x="810" y="530">thumbprint ct_eq (RFC 7638)</text>
+
+  <path class="arrow-success" d="M 890,510 L 940,510"/>
+
+  <!-- Success -->
+  <rect class="success-box" x="945" y="490" width="150" height="45"/>
+  <text class="success-text" x="1020" y="517">PAM_SUCCESS</text>
+  <text class="pipe-sub" x="1020" y="532" style="fill: #2ecc71;">Session established</text>
+
+  <!-- Legend -->
+  <rect class="legend-box" x="30" y="570" width="1140" height="120"/>
+  <text class="legend-title" x="50" y="595">Security Check Decision Matrix</text>
+
+  <rect class="badge-hard" x="50" y="610" width="70" height="16"/>
+  <text class="badge-text" x="85" y="621">HARD-FAIL</text>
+  <text class="legend-text" x="130" y="621">Check can NEVER be skipped or made lenient. Failure = immediate rejection.</text>
+
+  <rect class="badge-warn" x="50" y="635" width="90" height="16"/>
+  <text class="badge-text" x="95" y="646">CONFIGURABLE</text>
+  <text class="legend-text" x="150" y="646">Enforcement mode per policy.yaml (Issue #10): strict = reject, warn = log + allow, disabled = skip.</text>
+
+  <text class="legend-text" x="50" y="670">Hard-fail checks: Signature, Issuer, Audience, Expiration, Algorithm, DPoP signature, DPoP binding, DPoP method/target, DPoP freshness, DPoP JTI, Token replay</text>
+  <text class="legend-text" x="50" y="685">Configurable checks: JTI presence (missing claim, not replay), ACR/AMR claims, Auth time freshness</text>
+</svg>

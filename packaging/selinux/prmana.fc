@@ -1,0 +1,7 @@
+/usr/bin/prmana-agent          --  gen_context(system_u:object_r:prmana_agent_exec_t,s0)
+/etc/prmana(/.*)?                  gen_context(system_u:object_r:prmana_conf_t,s0)
+/run/prmana-agent\.sock        -s  gen_context(system_u:object_r:prmana_runtime_t,s0)
+/run/user/[0-9]+/prmana-agent\.sock -s gen_context(system_u:object_r:prmana_runtime_t,s0)
+
+/home/[^/]+/\.local/share/prmana(/.*)?  gen_context(system_u:object_r:prmana_user_data_t,s0)
+/home/[^/]+/\.config/prmana(/.*)?       gen_context(system_u:object_r:prmana_user_data_t,s0)

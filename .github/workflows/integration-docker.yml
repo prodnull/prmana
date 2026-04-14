@@ -1,0 +1,95 @@
+name: Integration Tests (Docker services)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'prmana-agent/src/**'
+      - 'prmana-agent/tests/**'
+      - 'pam-prmana/src/**'
+      - 'pam-prmana/tests/**'
+      - '.github/workflows/integration-docker.yml'
+  pull_request:
+    paths:
+      - 'prmana-agent/src/**'
+      - 'prmana-agent/tests/**'
+      - 'pam-prmana/src/**'
+      - 'pam-prmana/tests/**'
+      - '.github/workflows/integration-docker.yml'
+
+permissions:
+  contents: read
+
+jobs:
+
+  # step-up-ipc: enterprise test — parked in enterprise/staging/prmana-agent/tests/
+  # Reactivate when enterprise crate build pipeline is set up.
+
+  keyutils-storage:
+    name: Keyutils storage tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-integ-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integ-
+      - name: Install keyutils
+        run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev libkeyutils-dev keyutils pkg-config
+      - name: Verify kernel keyring available
+        run: keyctl show @u
+      - name: Run headless_storage tests (no D-Bus, keyutils fallback)
+        run: cargo test -p prmana-agent --test headless_storage -- --ignored
+        env:
+          DBUS_SESSION_BUS_ADDRESS: ""
+      - name: Run storage router FileStorage migration test
+        run: cargo test -p prmana-agent storage::router::tests::maybe_migrate_no_op -- --ignored
+
+  tpm-swtpm:
+    name: TPM 2.0 tests (swtpm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-integ-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integ-
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y libpam0g-dev libssl-dev libdbus-1-dev libtss2-dev pkg-config swtpm
+      - name: Start swtpm
+        run: |
+          mkdir -p /tmp/swtpm-state
+          swtpm socket \
+            --tpmstate dir=/tmp/swtpm-state \
+            --tpm2 \
+            --ctrl type=tcp,port=2322 \
+            --server type=tcp,port=2321 \
+            --flags not-need-init,startup-clear \
+            --daemon
+          for i in $(seq 1 10); do
+            exec 3<>/dev/tcp/localhost/2321 2>/dev/null && echo "swtpm ready" && break
+            echo "Waiting... ($i/10)"; sleep 1
+          done
+      - name: Run TPM tests
+        run: cargo test -p prmana-agent --features tpm,test-mode -- --ignored tpm
+        env:
+          PRMANA_TPM_TCTI: swtpm
+          RUST_LOG: prmana_agent=debug
+      - name: Stop swtpm
+        if: always()
+        run: pkill swtpm || true
+
+  # spire-integration: enterprise test — spire feature removed from prmana-agent,
+  # test moved to enterprise/staging. Reactivate when enterprise crate build pipeline is set up.

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prmana Engine | Architectural Integrity</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-200: #222222;
+            --gray-300: #444444;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.6; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
+        
+        nav { padding: 2rem 0; display: flex; justify-content: space-between; border-bottom: 1px solid var(--gray-200); }
+        .logo { font-family: var(--font-mono); font-weight: bold; color: var(--white); text-decoration: none; }
+
+        .hero { padding: 8rem 0 4rem; text-align: center; }
+        .hero h1 { font-size: 4.5rem; letter-spacing: -3px; line-height: 1; margin-bottom: 1.5rem; color: var(--white); }
+        .hero p { font-size: 1.5rem; color: #E2E8F0; max-width: 800px; margin: 0 auto; line-height: 1.4; }
+
+        /* V4 Precision Sequence Diagram */
+        .diagram-section { padding: 4rem 0; background: rgba(255,255,255,0.01); border-radius: 24px; border: 1px solid var(--gray-200); margin: 2rem 0; }
+        .diagram-container { display: flex; justify-content: space-between; align-items: center; padding: 5rem 2rem 3rem; position: relative; max-width: 950px; margin: 0 auto; }
+        
+        .node { 
+            width: 180px; 
+            padding: 1.5rem; 
+            border: 2px solid var(--gray-300); 
+            border-radius: 12px; 
+            background: linear-gradient(180deg, #222222 0%, #000000 100%); 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+            text-align: center; 
+            z-index: 2; 
+            position: relative; 
+        }
+        
+        .node h4 { font-family: var(--font-mono); color: var(--green); font-size: 0.8rem; font-weight: 800; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 1px; }
+        .node p { font-size: 0.9rem; color: var(--white); font-weight: 500; line-height: 1.2; }
+
+        .svg-arrow {
+            flex-grow: 1;
+            height: 40px;
+            margin: 0; /* No negative margin to prevent clipping */
+            z-index: 5; /* Sit on top of everything */
+            overflow: visible; /* Allow arrowhead to breathe */
+        }
+
+        .interaction-label { 
+            position: absolute;
+            top: -45px; /* More clearance */
+            left: 50%;
+            transform: translateX(-50%);
+            color: var(--green);
+            font-family: var(--font-mono); 
+            font-size: 0.7rem; 
+            text-transform: uppercase; 
+            font-weight: 900; 
+            white-space: nowrap;
+            letter-spacing: 2px; /* Stronger tracking */
+        }
+
+        .arrow-wrapper {
+            position: relative;
+            flex-grow: 1;
+            display: flex;
+            align-items: center;
+            padding: 0 5px; /* Tiny buffer */
+        }
+
+        .section-title-mono { text-align: center; font-family: var(--font-mono); font-size: 1rem; font-weight: 900; letter-spacing: 6px; color: var(--white); margin-bottom: 0; text-transform: uppercase; }
+        .diagram-caption { text-align: center; color: #E2E8F0; font-size: 1.1rem; max-width: 700px; margin: 2rem auto 0; line-height: 1.6; }
+
+        /* Pillars Section */
+        .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-bottom: 8rem; }
+        .pillar-card { padding: 2.5rem; border: 1px solid var(--gray-200); border-radius: 8px; }
+        .pillar-card h3 { font-family: var(--font-mono); color: var(--white); font-size: 1.25rem; margin-bottom: 1rem; }
+        .pillar-card p { color: #888; font-size: 0.95rem; }
+
+        .code-block { background: var(--gray-100); padding: 2rem; border-radius: 8px; font-family: var(--font-mono); font-size: 0.9rem; color: #ccc; border: 1px solid #222; margin-top: 4rem; overflow-x: auto; }
+        .keyword { color: var(--green); }
+        .comment { color: #555; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <nav>
+        <a href="../index.html" class="logo">PRMANA</a>
+        <div style="color: var(--gray-300); font-size: 0.8rem; font-family: var(--font-mono);">TECHNICAL BLUEPRINT</div>
+    </nav>
+
+    <header class="hero">
+        <h1>Engineered for Integrity.</h1>
+        <p>A deep dive into the Prmana sequence of evidence. Built in Rust for memory safety, anchored in hardware for cryptographic certainty.</p>
+    </header>
+
+    <section class="diagram-section">
+        <h2 class="section-title-mono">THE SEQUENCE OF EVIDENCE</h2>
+        <div class="diagram-container">
+            <div class="node">
+                <h4>User Node</h4>
+                <p>Prmana Agent<br>+ TPM 2.0</p>
+            </div>
+            
+            <div class="arrow-wrapper">
+                <div class="interaction-label">Signed DPoP Proof</div>
+                <svg class="svg-arrow" preserveAspectRatio="none" viewBox="0 0 100 20">
+                    <!-- Stop exactly at 100 -->
+                    <line x1="0" y1="10" x2="98" y2="10" stroke="#00FF41" stroke-width="4" />
+                    <polyline points="90,4 98,10 90,16" fill="none" stroke="#00FF41" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" />
+                </svg>
+            </div>
+
+            <div class="node">
+                <h4>Target Server</h4>
+                <p>sshd + PAM<br>+ FsAtomicStore</p>
+            </div>
+
+            <div class="arrow-wrapper">
+                <div class="interaction-label">Verification</div>
+                <svg class="svg-arrow" preserveAspectRatio="none" viewBox="0 0 100 20">
+                    <line x1="0" y1="10" x2="98" y2="10" stroke="#00FF41" stroke-width="4" />
+                    <polyline points="90,4 98,10 90,16" fill="none" stroke="#00FF41" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" />
+                </svg>
+            </div>
+
+            <div class="node">
+                <h4>IdP</h4>
+                <p>OIDC / Entra<br>JWKS Keys</p>
+            </div>
+        </div>
+        <p class="diagram-caption">Prmana performs a three-way cryptographic handshake, ensuring that the token presented matches the hardware that signed it.</p>
+    </section>
+
+    <div class="pillars">
+        <div class="pillar-card">
+            <h3>Rust-Native</h3>
+            <p>Written entirely in memory-safe Rust. We eliminate 70% of common vulnerabilities (buffer overflows, use-after-free) at the compiler level. No C-based TCB risk.</p>
+        </div>
+        <div class="pillar-card">
+            <h3>DPoP Binding</h3>
+            <p>We implement RFC 9449 to provide sender-constraint. Access tokens are cryptographically tethered to the machine's hardware, rendering stolen tokens inert.</p>
+        </div>
+        <div class="pillar-card">
+            <h3>Kernel Atomicity</h3>
+            <p>Our JTI/Nonce store uses O_CREAT | O_EXCL filesystem primitives. We leverage the Linux kernel's atomic guarantees to prevent multi-process replay attacks.</p>
+        </div>
+    </div>
+
+    <div class="code-block">
+        <span class="comment">// Prmana Engine: Atomic Replay Check</span><br>
+        <span class="keyword">match</span> OpenOptions::<span class="keyword">new</span>()<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;.write(<span class="keyword">true</span>)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;.create_new(<span class="keyword">true</span>) <span class="comment">// O_CREAT | O_EXCL</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;.open(&jti_path) {<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;Ok(_) => <span class="keyword">Ok</span>(Evidence::Verified),<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;Err(e) <span class="keyword">if</span> e.kind() == ErrorKind::AlreadyExists => <span class="keyword">Err</span>(Error::ReplayDetected),<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;Err(e) => <span class="keyword">Err</span>(Error::IntegrityFailure(e)),<br>
+        }
+    </div>
+
+    <section style="padding: 8rem 0; text-align: center;">
+        <a href="https://github.com/prodnull/prmana" class="btn" style="padding: 1rem 3rem; background: var(--white); color: var(--black); font-weight: bold; font-family: var(--font-mono); text-transform: uppercase; border-radius: 4px; text-decoration: none;">View the Source</a>
+    </section>
+</div>
+
+<footer style="padding: 4rem 0; text-align: center; color: var(--gray-300); font-size: 0.8rem; border-top: 1px solid #111;">
+    &copy; 2026 Prmana Project. Integrity by Design.
+</footer>
+
+</body>
+</html>

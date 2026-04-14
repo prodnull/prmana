@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prmana Documentation | Getting Started</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-200: #222222;
+            --gray-300: #444444;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.6; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; display: flex; gap: 4rem; padding: 0 2rem; }
+        
+        aside { width: 250px; padding: 4rem 0; position: sticky; top: 0; height: 100vh; }
+        aside h4 { font-family: var(--font-mono); font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; margin-bottom: 1.5rem; letter-spacing: 1px; }
+        aside ul { list-style: none; padding: 0; }
+        aside li { margin-bottom: 1rem; font-size: 0.95rem; color: #888; cursor: pointer; }
+        aside li.active { color: var(--green); font-weight: bold; }
+        aside li:hover { color: var(--white); }
+        aside a { text-decoration: none; color: inherit; }
+
+        main { flex-grow: 1; padding: 4rem 0; }
+        h1 { font-size: 3rem; letter-spacing: -2px; margin-bottom: 1.5rem; }
+        p { font-size: 1.1rem; color: #CBD5E1; margin-bottom: 2rem; }
+
+        .step { margin-bottom: 4rem; }
+        .step h3 { font-size: 1.5rem; margin-bottom: 1rem; color: var(--white); }
+        
+        .code-block { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 8px; padding: 1.5rem; font-family: var(--font-mono); font-size: 0.9rem; color: var(--white); position: relative; margin-bottom: 1.5rem; overflow-x: auto; }
+        .code-block::before { content: '$'; color: var(--green); margin-right: 1rem; }
+        .copy-btn { position: absolute; right: 1rem; top: 1rem; font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; cursor: pointer; }
+
+        .note { background: rgba(0, 255, 65, 0.05); border-left: 4px solid var(--green); padding: 1.5rem; border-radius: 4px; color: #ccc; font-size: 0.95rem; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <aside>
+        <a href="../index.html" style="font-family: var(--font-mono); font-weight: 900; color: var(--white); text-decoration: none; font-size: 1.2rem; display: block; margin-bottom: 3rem;">PRMANA</a>
+        
+        <ul class="nav-links" style="margin-bottom: 4rem; list-style: none; padding: 0; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;">
+            <li style="margin-bottom: 0.75rem;"><a href="engine.html" style="color: var(--white); text-decoration: none; opacity: 0.6;">Engine</a></li>
+            <li style="margin-bottom: 0.75rem;"><a href="../index.html#blog" style="color: var(--white); text-decoration: none; opacity: 0.6;">Blog</a></li>
+        </ul>
+
+        <h4>Introduction</h4>
+        <ul>
+            <li class="active"><a href="docs.html">Getting Started</a></li>
+            <li><a href="core-concepts.html">Core Concepts</a></li>
+            <li><a href="dpop-architecture.html">DPoP Architecture</a></li>
+        </ul>
+
+        <h4 style="margin-top: 2rem;">Deployment</h4>
+        <ul>
+            <li><a href="pam-installation.html">PAM Installation</a></li>
+            <li><a href="agent-setup.html">Agent Setup</a></li>
+            <li><a href="policy-config.html">Policy Configuration</a></li>
+        </ul>
+
+    </aside>
+
+    <main>
+        <h1>Getting Started</h1>
+        <p>Deploy Prmana to your first server in under 60 seconds. Replace static SSH keys with hardware-rooted identity evidence.</p>
+
+        <section class="step">
+            <h3>1. Install the Prmana Engine</h3>
+            <p>Our one-liner installer handles binary deployment, OS-level dependencies, and initial PAM configuration.</p>
+            <div class="code-block">
+                curl -sSf https://get.prmana.com | sh
+                <div class="copy-btn">Copy</div>
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>2. Start the Local Agent</h3>
+            <p>The Prmana Agent manages your hardware-bound keys and DPoP proofs. It should run on your local workstation.</p>
+            <div class="code-block">
+                prmana-agent start --yubikey
+                <div class="copy-btn">Copy</div>
+            </div>
+            <div class="note">
+                <strong>Hardware Check:</strong> Prmana will automatically detect your Yubikey or TPM. Ensure your device is plugged in or enabled.
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>3. Authenticate via SSH</h3>
+            <p>Use your standard SSH client. Prmana hooks into the protocol to provide the necessary cryptographic evidence automatically.</p>
+            <div class="code-block">
+                ssh user@server.example.com
+                <div class="copy-btn">Copy</div>
+            </div>
+            <p style="margin-top: 1rem; color: var(--gray-300); font-size: 0.9rem;">Wait for the flashing light on your hardware, then touch to verify presence.</p>
+        </section>
+
+        <section class="step" style="border-top: 1px solid var(--gray-200); padding-top: 4rem;">
+            <h3>Verify the Evidence</h3>
+            <p>Check your system logs to see the structured audit trail generated by the Prmana PAM module.</p>
+            <div class="code-block" style="color: #888;">
+                tail -f /var/log/prmana/audit.json
+            </div>
+        </section>
+    </main>
+</div>
+
+</body>
+</html>

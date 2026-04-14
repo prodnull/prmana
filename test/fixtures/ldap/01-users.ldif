@@ -1,0 +1,55 @@
+# test/fixtures/ldap/01-users.ldif
+# Create organizational units
+dn: ou=people,dc=test,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=test,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+# Test user - matches Keycloak testuser
+dn: uid=testuser,ou=people,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: testuser
+cn: Test User
+sn: User
+givenName: Test
+mail: testuser@test.local
+uidNumber: 10001
+gidNumber: 10001
+homeDirectory: /home/testuser
+loginShell: /bin/bash
+userPassword: {SSHA}placeholder
+
+# Admin user - matches Keycloak adminuser
+dn: uid=adminuser,ou=people,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: adminuser
+cn: Admin User
+sn: User
+givenName: Admin
+mail: adminuser@test.local
+uidNumber: 10002
+gidNumber: 10002
+homeDirectory: /home/adminuser
+loginShell: /bin/bash
+userPassword: {SSHA}placeholder
+
+# Groups
+dn: cn=users,ou=groups,dc=test,dc=local
+objectClass: posixGroup
+cn: users
+gidNumber: 10001
+memberUid: testuser
+memberUid: adminuser
+
+dn: cn=admins,ou=groups,dc=test,dc=local
+objectClass: posixGroup
+cn: admins
+gidNumber: 10002
+memberUid: adminuser

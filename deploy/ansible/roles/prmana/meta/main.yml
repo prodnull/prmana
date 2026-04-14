@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  role_name: prmana
+  author: prmana Developers
+  description: Install and configure Prmana OIDC PAM module for SSH authentication
+  license: CC-BY-NC-SA-4.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions: ["22.04", "24.04"]
+    - name: EL
+      versions: ["9"]
+    - name: Debian
+      versions: ["12"]
+  galaxy_tags:
+    - security
+    - ssh
+    - oidc
+    - pam
+    - authentication
+
+dependencies: []

@@ -1,0 +1,25 @@
+#!/bin/sh
+# prmana.prerm — pre-removal maintainer script
+#
+# Stops and disables the prmana-agent socket and service before files are
+# removed. Order matters: stop service first, then socket.
+#
+# Idempotency: all systemctl calls use || true — safe to re-run.
+#
+# Note: the prmana system user is NOT removed here. User removal is a destructive
+# operation (it may delete files owned by the user) and is deferred to a purge
+# script. For nfpm packages, the user persists after removal; this is consistent
+# with the behavior of other system daemons (e.g., postgres, nginx).
+#
+# References:
+#   Debian Policy Manual §6.4 — prerm idempotency
+set -eu
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl stop prmana-agent.service >/dev/null 2>&1 || true
+    systemctl stop prmana-agent.socket >/dev/null 2>&1 || true
+    systemctl disable prmana-agent.service >/dev/null 2>&1 || true
+    systemctl disable prmana-agent.socket >/dev/null 2>&1 || true
+fi
+
+exit 0

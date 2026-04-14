@@ -1,0 +1,80 @@
+{
+  "_comment": "Cryptographically valid synthetic TPM attestation fixture",
+  "ak_public_hex": "0023000b000600f2000000100018000b0003001000200fe698ae3bbacf093785dd4a887edb1f9fbf0ae14644c5a73ddced9975b5488c0020319f73d95498b34509f1d0d807f540c87d8650880d19beae364e97ffc95a1030",
+  "attestation_evidence": {
+    "ak_public": "ACMACwAGAPIAAAAQABgACwADABAAIA_mmK47us8JN4XdSoh-2x-fvwrhRkTFpz3c7Zl1tUiMACAxn3PZVJizRQnx0NgH9UDIfYZQiA0Zvq42Tpf_yVoQMA",
+    "certify_info": "_1RDR4AXACIAC1FKCkkNzfep0zwyYVlpIXxCBySedlM6hhAptJhX2Q5DAAAAAAAAAAAD6AAAAAAAAAAAAQAAAAAABwACACIACx1H0mYGc2FQCFd666MK7iu8azj1r-AJGRkvTdq2GdoMACIACx1H0mYGc2FQCFd666MK7iu8azj1r-AJGRkvTdq2GdoM",
+    "signature": "B2AdfKQ3LwkAUK8HgAf8b1F2oh-0fDYqYsz9jsnnJ7g_arG2fueBXLdddjFLizzGIZV9O_-0wZK2LPPmf9Iosg"
+  },
+  "certify_info_hex": "ff54434780170022000b514a0a490dcdf7a9d33c32615969217c4207249e76533a861029b49857d90e43000000000000000003e800000000000000000100000000000700020022000b1d47d2660673615008577aeba30aee2bbc6b38f5afe00919192f4ddab619da0c0022000b1d47d2660673615008577aeba30aee2bbc6b38f5afe00919192f4ddab619da0c",
+  "dpop_key": {
+    "crv": "P-256",
+    "kty": "EC",
+    "x": "rB0rEX8zlqF1JhkC7XzKOPFkJO2aflrEs-L-ikqur9M",
+    "y": "go8feGMnMZUKmn28KhXy5se55CclGr3geaFl_i9EfS8"
+  },
+  "dpop_key_public_area_hex": "0023000b000600f2000000100018000b000300100020ac1d2b117f3396a175261902ed7cca38f16424ed9a7e5ac4b3e2fe8a4aaeafd30020828f1f78632731950a9a7dbc2a15f2e6c7b9e427251abde079a165fe2f447d2f",
+  "jwk_thumbprint": "fnpzhVZFNOgI3f4lWPlLht01DcxKhO3WCW49OIDsRVs",
+  "parsing_guide": {
+    "tpm_name_format": "0x000B (SHA-256 alg ID, 2 bytes) || SHA256(TPMT_PUBLIC) (32 bytes) = 34 bytes total",
+    "tpms_attest_layout": [
+      {
+        "field": "magic",
+        "offset": 0,
+        "size": 4,
+        "value": "FF544347"
+      },
+      {
+        "field": "type",
+        "offset": 4,
+        "size": 2,
+        "value": "8017 (ATTEST_CERTIFY)"
+      },
+      {
+        "field": "qualifiedSigner (TPM2B_NAME of AK)",
+        "offset": 6,
+        "size": "2+34"
+      },
+      {
+        "field": "extraData length (0000 = empty)",
+        "offset": 42,
+        "size": 2
+      },
+      {
+        "field": "clockInfo (clock:8 + resetCount:4 + restartCount:4 + safe:1)",
+        "offset": 44,
+        "size": 17
+      },
+      {
+        "field": "firmwareVersion",
+        "offset": 61,
+        "size": 8
+      },
+      {
+        "field": "attested.name (TPM2B_NAME of DPoP key) — MATCH THIS",
+        "offset": 69,
+        "size": "2+34"
+      },
+      {
+        "field": "attested.qualifiedName",
+        "offset": 105,
+        "size": "2+34"
+      }
+    ],
+    "tpmt_public_layout": "type(2) nameAlg(2) attrs(4) authPolicy(2+0) sym(2) scheme(2) schemeHash(2) curve(2) kdf(2) x(2+32) y(2+32) = 86 bytes",
+    "verification_algorithm": [
+      "1. base64url-decode certify_info, signature, ak_public",
+      "2. Verify certify_info[0..4] == FF544347 (TPM_GENERATED_VALUE)",
+      "3. Verify certify_info[4..6] == 8017 (ATTEST_CERTIFY)",
+      "4. Parse past qualifiedSigner(2+N), extraData(2+N), clockInfo(17), firmwareVersion(8)",
+      "5. Read attested.name: 2-byte length, then hash_alg(2) + hash(32)",
+      "6. Extract AK EC point from ak_public: skip 18 bytes of header, read x(2+32), y(2+32)",
+      "7. Build VerifyingKey from AK (x, y), verify ECDSA(ak, certify_info) == signature",
+      "8. Build expected TPMT_PUBLIC from DPoP JWK (same 86-byte structure)",
+      "9. Compute expected Name = 0x000B || SHA256(expected_TPMT_PUBLIC)",
+      "10. Compare attested.name == expected Name"
+    ]
+  },
+  "signature_hex": "07601d7ca4372f090050af078007fc6f5176a21fb47c362a62ccfd8ec9e727b83f6ab1b67ee7815cb75d76314b8b3cc621957d3bffb4c192b62cf3e67fd228b2",
+  "tpm_name_hex": "000b1d47d2660673615008577aeba30aee2bbc6b38f5afe00919192f4ddab619da0c"
+}

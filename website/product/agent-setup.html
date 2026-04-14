@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prmana Documentation | Agent Setup</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-200: #222222;
+            --gray-300: #444444;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.6; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; display: flex; gap: 4rem; padding: 0 2rem; }
+
+        aside { width: 250px; padding: 4rem 0; position: sticky; top: 0; height: 100vh; }
+        aside h4 { font-family: var(--font-mono); font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; margin-bottom: 1.5rem; letter-spacing: 1px; }
+        aside ul { list-style: none; padding: 0; }
+        aside li { margin-bottom: 1rem; font-size: 0.95rem; color: #888; cursor: pointer; }
+        aside li.active { color: var(--green); font-weight: bold; }
+        aside li:hover { color: var(--white); }
+        aside a { text-decoration: none; color: inherit; }
+
+        main { flex-grow: 1; padding: 4rem 0; }
+        h1 { font-size: 3rem; letter-spacing: -2px; margin-bottom: 1.5rem; }
+        p { font-size: 1.1rem; color: #CBD5E1; margin-bottom: 2rem; }
+
+        .step { margin-bottom: 4rem; }
+        .step h3 { font-size: 1.5rem; margin-bottom: 1rem; color: var(--white); }
+
+        .code-block { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 8px; padding: 1.5rem; font-family: var(--font-mono); font-size: 0.9rem; color: var(--white); position: relative; margin-bottom: 1.5rem; overflow-x: auto; white-space: pre; line-height: 1.7; }
+        .code-block .prompt::before { content: '$ '; color: var(--green); }
+        .code-block .comment { color: #666; }
+        .code-block .key { color: var(--green); }
+        .code-block .str { color: #f8c555; }
+
+        .copy-btn { position: absolute; right: 1rem; top: 1rem; font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; cursor: pointer; }
+
+        .note { background: rgba(0, 255, 65, 0.05); border-left: 4px solid var(--green); padding: 1.5rem; border-radius: 4px; color: #ccc; font-size: 0.95rem; margin-bottom: 2rem; }
+
+        table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; font-size: 0.95rem; }
+        th { text-align: left; color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; padding: 0.75rem 1rem; border-bottom: 1px solid var(--gray-200); }
+        td { padding: 0.75rem 1rem; color: #CBD5E1; border-bottom: 1px solid var(--gray-100); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <aside>
+        <a href="../index.html" style="font-family: var(--font-mono); font-weight: 900; color: var(--white); text-decoration: none; font-size: 1.2rem; display: block; margin-bottom: 3rem;">PRMANA</a>
+
+        <ul class="nav-links" style="margin-bottom: 4rem; list-style: none; padding: 0; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;">
+            <li style="margin-bottom: 0.75rem;"><a href="engine.html" style="color: var(--white); text-decoration: none; opacity: 0.6;">Engine</a></li>
+            <li style="margin-bottom: 0.75rem;"><a href="../index.html#blog" style="color: var(--white); text-decoration: none; opacity: 0.6;">Blog</a></li>
+        </ul>
+
+        <h4>Introduction</h4>
+        <ul>
+            <li><a href="docs.html">Getting Started</a></li>
+            <li><a href="core-concepts.html">Core Concepts</a></li>
+            <li><a href="dpop-architecture.html">DPoP Architecture</a></li>
+        </ul>
+
+        <h4 style="margin-top: 2rem;">Deployment</h4>
+        <ul>
+            <li><a href="pam-installation.html">PAM Installation</a></li>
+            <li class="active"><a href="agent-setup.html">Agent Setup</a></li>
+            <li><a href="policy-config.html">Policy Configuration</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>Agent Setup</h1>
+        <p>Install and configure the Prmana Agent on your local workstation. The agent handles token acquisition, DPoP proof generation, and credential storage.</p>
+
+        <section class="step">
+            <h3>Install the Agent</h3>
+            <p>The agent binary is included in the <code style="color: var(--green);">prmana</code> package. If you installed via the package manager on the server, the agent is already available. On your local workstation:</p>
+            <div class="code-block"><span class="comment"># One-liner install (includes agent)</span>
+<span class="prompt">curl -sSf https://get.prmana.com | sh</span>
+<div class="copy-btn">Copy</div></div>
+            <p>Or build from source:</p>
+            <div class="code-block"><span class="prompt">cargo build --release -p prmana-agent</span>
+<span class="prompt">sudo cp target/release/prmana-agent /usr/local/bin/</span>
+<div class="copy-btn">Copy</div></div>
+            <p>The agent binary is installed at <code style="color: var(--green);">/usr/local/bin/prmana-agent</code>. Verify it is available:</p>
+            <div class="code-block"><span class="prompt">prmana-agent --version</span>
+prmana-agent 1.0.0
+<div class="copy-btn">Copy</div></div>
+        </section>
+
+        <section class="step">
+            <h3>Login Flow</h3>
+            <p>Authenticate to your Identity Provider using the device authorization flow. This is a one-time action (tokens are cached and refreshed automatically).</p>
+            <div class="code-block"><span class="prompt">prmana-agent login --issuer https://keycloak.example.com/realms/corp</span>
+
+To sign in, open your browser to:
+  https://keycloak.example.com/realms/corp/device
+
+Enter code: <span class="key">ABCD-EFGH</span>
+
+Waiting for authorization...
+Login successful. Token cached.
+DPoP thumbprint: <span class="str">x5t#S256=abc123...</span>
+<div class="copy-btn">Copy</div></div>
+            <p>The agent acquires an access token from the IdP, generates an ephemeral DPoP key pair (if not already provisioned), and stores both securely. Subsequent SSH connections use the cached token automatically.</p>
+            <div class="note">
+                <strong>Token refresh:</strong> The agent automatically refreshes tokens before they expire. You do not need to re-run <code style="color: var(--green);">prmana-agent login</code> unless the refresh token itself expires (typically after days or weeks, depending on your IdP configuration).
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>Signer Backends</h3>
+            <p>The signer backend determines where the DPoP private key is stored. The default software signer works everywhere. Hardware signers provide stronger extraction resistance.</p>
+            <table>
+                <tr>
+                    <th>Backend</th>
+                    <th>Flag</th>
+                    <th>Key Storage</th>
+                    <th>Platform</th>
+                </tr>
+                <tr>
+                    <td>Software (default)</td>
+                    <td><code>--signer software</code></td>
+                    <td>OS keyring or encrypted file</td>
+                    <td>All</td>
+                </tr>
+                <tr>
+                    <td>YubiKey PIV</td>
+                    <td><code>--signer yubikey:9a</code></td>
+                    <td>Non-exportable on device</td>
+                    <td>Linux, macOS</td>
+                </tr>
+                <tr>
+                    <td>TPM 2.0</td>
+                    <td><code>--signer tpm</code></td>
+                    <td>Non-exportable on chip</td>
+                    <td>Linux</td>
+                </tr>
+            </table>
+            <p>Hardware signer support requires feature flags at build time:</p>
+            <div class="code-block"><span class="comment"># Build with YubiKey support</span>
+<span class="prompt">cargo build --release -p prmana-agent --features yubikey</span>
+
+<span class="comment"># Build with TPM support (Linux only)</span>
+<span class="prompt">cargo build --release -p prmana-agent --features tpm</span>
+
+<span class="comment"># Build with both</span>
+<span class="prompt">cargo build --release -p prmana-agent --features yubikey,tpm</span>
+<div class="copy-btn">Copy</div></div>
+            <p>Provision a hardware key before first use:</p>
+            <div class="code-block"><span class="comment"># Generate a P-256 key on YubiKey slot 9a</span>
+<span class="prompt">prmana-agent provision --signer yubikey:9a</span>
+
+Provisioning key on yubikey (slot 9a)...
+Key provisioned successfully on yubikey (slot 9a).
+DPoP thumbprint: <span class="str">abc123...</span>
+Run `prmana-agent login --signer yubikey:9a` to authenticate.
+<div class="copy-btn">Copy</div></div>
+            <div class="note">
+                <strong>No silent fallback.</strong> If a hardware signer is configured but the device is unavailable (YubiKey unplugged, TPM inaccessible), the agent logs an error and refuses to sign. There is no automatic downgrade to a software key. Re-insert the device and re-run login.
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>Configuration</h3>
+            <p>The agent reads configuration from <code style="color: var(--green);">~/.config/prmana/config.yaml</code> (user-level) with environment variable overrides prefixed with <code style="color: var(--green);">PRMANA_</code>.</p>
+            <div class="code-block"><span class="comment"># ~/.config/prmana/config.yaml</span>
+
+<span class="key">issuer</span>: <span class="str">"https://keycloak.example.com/realms/corp"</span>
+<span class="key">client_id</span>: <span class="str">"prmana-agent"</span>
+
+<span class="comment"># Timeout and clock-skew tuning</span>
+<span class="key">timeouts</span>:
+  <span class="key">jwks_http_timeout_secs</span>: 10
+  <span class="key">device_flow_http_timeout_secs</span>: 30
+  <span class="key">clock_skew_future_secs</span>: 5
+  <span class="key">clock_skew_staleness_secs</span>: 60
+  <span class="key">jwks_cache_ttl_secs</span>: 300
+  <span class="key">ipc_idle_timeout_secs</span>: 60
+<div class="copy-btn">Copy</div></div>
+            <table>
+                <tr>
+                    <th>Field</th>
+                    <th>Default</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td><code>issuer</code></td>
+                    <td>(required)</td>
+                    <td>OIDC issuer URL</td>
+                </tr>
+                <tr>
+                    <td><code>client_id</code></td>
+                    <td><code>prmana-agent</code></td>
+                    <td>OAuth client ID registered at the IdP</td>
+                </tr>
+                <tr>
+                    <td><code>socket_path</code></td>
+                    <td>auto (UID-derived)</td>
+                    <td>Unix socket path for daemon IPC</td>
+                </tr>
+                <tr>
+                    <td><code>timeouts.jwks_cache_ttl_secs</code></td>
+                    <td>300</td>
+                    <td>JWKS cache lifetime in seconds</td>
+                </tr>
+                <tr>
+                    <td><code>timeouts.clock_skew_staleness_secs</code></td>
+                    <td>60</td>
+                    <td>Max age for DPoP proofs and token clock skew</td>
+                </tr>
+            </table>
+            <p>Environment variable overrides use double underscores for nested keys:</p>
+            <div class="code-block"><span class="prompt">PRMANA_ISSUER="https://login.microsoftonline.com/tenant-id/v2.0" prmana-agent login</span>
+<div class="copy-btn">Copy</div></div>
+        </section>
+
+        <section class="step" style="border-top: 1px solid var(--gray-200); padding-top: 4rem;">
+            <h3>Daemon Mode</h3>
+            <p>For production use, run the agent as a background daemon. It listens on a Unix socket for proof requests from SSH clients.</p>
+            <div class="code-block"><span class="comment"># Start the daemon (foreground, for testing)</span>
+<span class="prompt">prmana-agent serve</span>
+
+<span class="comment"># The socket path is UID-derived by default:</span>
+<span class="comment"># /run/user/&lt;UID&gt;/prmana-agent.sock</span>
+<div class="copy-btn">Copy</div></div>
+            <p>For persistent operation, use the systemd user service:</p>
+            <div class="code-block"><span class="comment"># Enable and start the agent as a systemd user service</span>
+<span class="prompt">systemctl --user enable prmana-agent.socket</span>
+<span class="prompt">systemctl --user start prmana-agent.socket</span>
+
+<span class="comment"># Check status</span>
+<span class="prompt">systemctl --user status prmana-agent.socket</span>
+<div class="copy-btn">Copy</div></div>
+            <p>Socket activation means the agent starts on first connection and idles when not in use. The socket permissions are <code style="color: var(--green);">0600</code> (owner-only), and the daemon verifies peer credentials on every connection -- only processes running as the same UID can connect.</p>
+            <p>Credential storage uses the best available backend automatically:</p>
+            <table>
+                <tr>
+                    <th>Platform</th>
+                    <th>Priority</th>
+                </tr>
+                <tr>
+                    <td>Linux</td>
+                    <td>D-Bus Secret Service &rarr; keyutils user keyring &rarr; encrypted file</td>
+                </tr>
+                <tr>
+                    <td>macOS</td>
+                    <td>macOS Keychain &rarr; encrypted file</td>
+                </tr>
+            </table>
+            <div class="note">
+                <strong>File fallback advisory:</strong> On CoW filesystems (btrfs, APFS) and SSDs, secure deletion of the file-backed credential store cannot guarantee the original data blocks are overwritten. Prefer a keyring backend, and use full-disk encryption as the primary at-rest protection.
+            </div>
+        </section>
+    </main>
+</div>
+
+</body>
+</html>

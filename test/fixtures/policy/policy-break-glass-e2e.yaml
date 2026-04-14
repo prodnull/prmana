@@ -1,0 +1,48 @@
+# test/fixtures/policy/policy-break-glass-e2e.yaml
+# Policy fixture for E2ET-02: break-glass PAM bypass + NSS group policy denial.
+#
+# Key difference from policy-e2e.yaml:
+#   ssh_login.login_groups restricts SSH to prmana_users members only.
+#   testuser is in prmana_users (authenticated by Test 3).
+#   testuser2 is NOT in prmana_users (denied by Test 2).
+
+host_classification: elevated
+
+security_modes:
+  jti_enforcement: warn
+  dpop_required: warn
+  amr_enforcement: warn
+  acr_enforcement: warn
+  groups_enforcement: warn
+
+identity:
+  username_claim: preferred_username
+
+ssh_login:
+  require_oidc: true
+  minimum_acr: null
+  max_auth_age: 3600
+  login_groups:
+    - prmana_users
+
+sudo:
+  step_up_required: false
+
+# Break-glass account bypasses OIDC and login_groups entirely.
+# pam-prmana returns PAM_IGNORE for break-glass users, falling through
+# to pam_unix (local password auth). See CLAUDE.md §"Break-Glass Access".
+break_glass:
+  accounts:
+    - breakglass
+  require_otp: false
+  alert_on_use: true
+
+cache:
+  jti_max_entries: 10000
+  nonce_ttl_secs: 60
+
+timeouts:
+  clock_skew_staleness_secs: 60
+  clock_skew_future_secs: 10
+  jwks_cache_ttl_secs: 300
+  http_timeout_secs: 10

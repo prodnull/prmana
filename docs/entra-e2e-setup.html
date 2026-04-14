@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Entra ID E2E Test Setup Guide</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Entra ID E2E Test Setup Guide</h1>
+</header>
+<h1 id="entra-id-e2e-test-setup-guide">Entra ID E2E Test Setup
+Guide</h1>
+<p>Step-by-step setup for running prmana integration tests against a
+live Entra ID (Azure AD) tenant. This covers tenant creation through
+passing CI tests.</p>
+<p>For production deployment configuration, see
+<code>docs/entra-setup-guide.md</code>.</p>
+<hr />
+<h2 id="create-a-free-entra-id-test-tenant">1. Create a Free Entra ID
+Test Tenant</h2>
+<p>You need an Azure Entra ID tenant where you are a <strong>Global
+Administrator</strong> or <strong>Application Administrator</strong>. A
+personal Azure subscription will not work if your organization’s
+Conditional Access policies lock down ROPC.</p>
+<p><strong>Option A – New free tenant (recommended for
+testing):</strong></p>
+<ol type="1">
+<li>Sign up at <a href="https://azure.microsoft.com/en-us/free/"
+class="uri">https://azure.microsoft.com/en-us/free/</a>.</li>
+<li>Once the subscription is active, navigate to <strong>Entra
+ID</strong> in the Azure Portal.</li>
+<li>If your subscription was created under an existing organization,
+create a separate tenant: <strong>Entra ID -&gt; Manage tenants -&gt; +
+Create</strong> -&gt; <strong>Entra ID</strong> (not Entra ID B2C).</li>
+<li>Name it something recognizable (e.g., <code>prmana-test</code>).
+The default domain will be
+<code>prmana-test.onmicrosoft.com</code>.</li>
+</ol>
+<p><strong>Option B – Existing tenant you control:</strong></p>
+<p>Works fine as long as you can exclude a test user from MFA
+Conditional Access policies (Step 4).</p>
+<p><strong>What you need from the tenant:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Where to find it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tenant ID (GUID)</td>
+<td>Azure Portal -&gt; Entra ID -&gt; Overview -&gt; Tenant ID</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="register-the-application">2. Register the Application</h2>
+<ol type="1">
+<li>Navigate to <strong>Entra ID -&gt; App registrations -&gt; New
+registration</strong>.</li>
+<li>Fill in the form:
+<ul>
+<li><strong>Name:</strong> <code>prmana-test</code></li>
+<li><strong>Supported account types:</strong> <strong>Accounts in this
+organizational directory only (Single tenant)</strong>. Multi-tenant
+would accept tokens from any Entra tenant – a security violation for PAM
+auth.</li>
+<li><strong>Redirect URI:</strong> Select <strong>Mobile and desktop
+applications</strong> -&gt; <code>http://localhost</code></li>
+</ul></li>
+<li>Click <strong>Register</strong>.</li>
+<li>On the app’s <strong>Overview</strong> page, copy:
+<ul>
+<li><strong>Application (client) ID</strong> – this is
+<code>ENTRA_CLIENT_ID</code></li>
+<li><strong>Directory (tenant) ID</strong> – this is
+<code>ENTRA_TENANT_ID</code></li>
+</ul></li>
+<li>Navigate to <strong>Authentication -&gt; Advanced
+settings</strong>.</li>
+<li>Set <strong>Allow public client flows</strong> to
+<strong>Yes</strong> and click <strong>Save</strong>.</li>
+</ol>
+<p>This enables both ROPC (used in CI) and Device Code flow (used in
+production). ROPC requires a public client because there is no secure
+location to store a client secret on every PAM-authenticated server.</p>
+<hr />
+<h2 id="configure-api-permissions">3. Configure API Permissions</h2>
+<ol type="1">
+<li>Navigate to <strong>API permissions</strong> in your app
+registration.</li>
+<li>Click <strong>Add a permission -&gt; Microsoft Graph -&gt; Delegated
+permissions</strong>.</li>
+<li>Add exactly these scopes:
+<ul>
+<li><code>openid</code></li>
+<li><code>profile</code></li>
+<li><code>email</code></li>
+</ul></li>
+<li><strong>Do NOT add <code>User.Read</code>.</strong> This is the most
+common setup mistake. Adding <code>User.Read</code> changes the token
+audience (<code>aud</code> claim) from your client ID to
+<code>00000003-0000-0000-c000-000000000000</code> (Microsoft Graph),
+which fails PAM audience validation.</li>
+<li>Click <strong>Grant admin consent for [Your Tenant]</strong> and
+confirm. Verify each permission shows status
+<strong>Granted</strong>.</li>
+</ol>
+<h3 id="optional-configure-token-claims">Optional: Configure Token
+Claims</h3>
+<p>Entra may not include <code>preferred_username</code> in access
+tokens by default.</p>
+<ol type="1">
+<li>Navigate to <strong>Token configuration -&gt; Add optional
+claim</strong>.</li>
+<li>Select <strong>Access</strong> token type.</li>
+<li>Add <code>preferred_username</code> and <code>email</code>.</li>
+<li>Click <strong>Add</strong>.</li>
+</ol>
+<hr />
+<h2 id="create-a-test-user">4. Create a Test User</h2>
+<ol type="1">
+<li>Navigate to <strong>Entra ID -&gt; Users -&gt; New user -&gt; Create
+new user</strong>.</li>
+<li>Fill in:
+<ul>
+<li><strong>User principal name:</strong>
+<code>prmana-ci@yourtenant.onmicrosoft.com</code></li>
+<li><strong>Display name:</strong> <code>prmana CI Test</code></li>
+<li><strong>Password:</strong> Set a strong password. Record it
+immediately.</li>
+</ul></li>
+<li>Click <strong>Create</strong>.</li>
+<li>After creation, navigate to the user’s profile and set an
+<strong>Email</strong> under Contact info (the <code>email</code> claim
+depends on this).</li>
+</ol>
+<h3 id="exclude-from-mfa-required">Exclude from MFA (Required)</h3>
+<p>ROPC is incompatible with MFA. If your tenant has Conditional Access
+policies requiring MFA, the test user must be excluded.</p>
+<p><strong>Option A – User/group exclusion (simpler):</strong></p>
+<ol type="1">
+<li>Navigate to <strong>Protection -&gt; Conditional
+Access</strong>.</li>
+<li>Edit each MFA policy.</li>
+<li>Under <strong>Assignments -&gt; Users -&gt; Exclude</strong>, add
+the test user or a <code>CI-Users</code> group.</li>
+</ol>
+<p><strong>Option B – Named Location exclusion (for CI
+runners):</strong></p>
+<ol type="1">
+<li>Navigate to <strong>Protection -&gt; Conditional Access -&gt; Named
+locations</strong>.</li>
+<li>Create a named location for your CI runner IP range.</li>
+<li>Edit the MFA policy and add the named location to the
+<strong>Exclude</strong> list.</li>
+</ol>
+<p>Verify the exclusion works before proceeding to Step 6.</p>
+<hr />
+<h2 id="configure-local-credentials">5. Configure Local Credentials</h2>
+<p>Create a <code>.entra</code> file in the project root (already
+gitignored):</p>
+<pre><code>ENTRA_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ENTRA_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ENTRA_TEST_USER=prmana-ci@yourtenant.onmicrosoft.com
+ENTRA_TEST_PASSWORD=YourStrongPassword123!</code></pre>
+<p>This file uses <code>KEY=VALUE</code> format, one per line. The token
+acquisition script and test runner source it automatically.</p>
+<hr />
+<h2 id="verify-token-acquisition">6. Verify Token Acquisition</h2>
+<p>Run the token acquisition script manually:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> .entra</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./test/scripts/get-entra-token.sh</span></span></code></pre></div>
+<p>On success, it prints a JWT access token (a long base64url string
+with two dots). On failure, it prints an error code and description to
+stderr.</p>
+<p>Decode and inspect the token claims:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="va">TOKEN</span><span class="op">=</span><span class="va">$(</span><span class="ex">./test/scripts/get-entra-token.sh</span><span class="va">)</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;</span><span class="va">$TOKEN</span><span class="st">&quot;</span> <span class="kw">|</span> <span class="fu">cut</span> <span class="at">-d.</span> <span class="at">-f2</span> <span class="kw">|</span> <span class="fu">base64</span> <span class="at">-d</span> <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="kw">|</span> <span class="ex">python3</span> <span class="at">-m</span> json.tool</span></code></pre></div>
+<p>Verify these claims:</p>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 68%" />
+</colgroup>
+<thead>
+<tr>
+<th>Claim</th>
+<th>Expected Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>iss</code></td>
+<td><code>https://login.microsoftonline.com/{your-tenant-id}/v2.0</code></td>
+</tr>
+<tr>
+<td><code>aud</code></td>
+<td>Your client ID GUID (NOT <code>00000003-...</code> or
+<code>https://graph.microsoft.com</code>)</td>
+</tr>
+<tr>
+<td><code>preferred_username</code></td>
+<td><code>prmana-ci@yourtenant.onmicrosoft.com</code></td>
+</tr>
+<tr>
+<td><code>email</code></td>
+<td>The email set on the test user’s profile</td>
+</tr>
+<tr>
+<td><code>sub</code></td>
+<td>An opaque GUID (stable per user per app)</td>
+</tr>
+</tbody>
+</table>
+<p>If <code>aud</code> is the Graph API GUID, you added
+<code>User.Read</code> to the scopes – go back to Step 3.</p>
+<hr />
+<h2 id="run-e2e-tests">7. Run E2E Tests</h2>
+<h3 id="rust-integration-tests">Rust Integration Tests</h3>
+<p>These tests validate token signature verification, claim mapping, and
+the multi-issuer auth pipeline against live Entra JWKS:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> .entra</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Acquire a token for the test suite</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">ENTRA_TOKEN</span><span class="op">=</span><span class="va">$(</span><span class="ex">./test/scripts/get-entra-token.sh</span><span class="va">)</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Run the Entra integration tests</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> test <span class="at">-p</span> pam-prmana <span class="at">--test</span> entra_integration <span class="at">--</span> <span class="at">--include-ignored</span></span></code></pre></div>
+<p>The test suite
+(<code>pam-prmana/tests/entra_integration.rs</code>) includes:</p>
+<table>
+<colgroup>
+<col style="width: 24%" />
+<col style="width: 76%" />
+</colgroup>
+<thead>
+<tr>
+<th>Test</th>
+<th>What it validates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_entra_discovery_returns_valid_jwks_uri</code></td>
+<td>OIDC discovery + JWKS fetch with RS256 keys</td>
+</tr>
+<tr>
+<td><code>test_entra_rs256_token_validates</code></td>
+<td>Real signature verification against live JWKS</td>
+</tr>
+<tr>
+<td><code>test_entra_token_has_expected_claims</code></td>
+<td><code>preferred_username</code>, <code>email</code>,
+<code>sub</code> present</td>
+</tr>
+<tr>
+<td><code>test_entra_upn_strip_domain_maps_to_bare_username</code></td>
+<td><code>email</code> -&gt; <code>strip_domain</code> -&gt;
+<code>lowercase</code> pipeline</td>
+</tr>
+<tr>
+<td><code>test_entra_raw_preferred_username_preserves_domain</code></td>
+<td>UPN format preserved without transforms</td>
+</tr>
+<tr>
+<td><code>test_entra_bearer_auth_completes_without_dpop_error</code></td>
+<td>Bearer-only auth (no DPoP) works with Entra</td>
+</tr>
+<tr>
+<td><code>test_entra_wrong_tenant_rejected</code></td>
+<td>Wrong tenant ID -&gt; rejected</td>
+</tr>
+<tr>
+<td><code>test_entra_tampered_token_rejected</code></td>
+<td>Modified payload -&gt; signature verification fails</td>
+</tr>
+<tr>
+<td><code>test_entra_unknown_issuer_rejected_by_multi_issuer</code></td>
+<td>Entra token rejected when issuer not in policy</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>test_policy_entra_yaml_deserializes</code> test runs
+without secrets in every CI build to catch YAML schema regressions.</p>
+<h3 id="policy-fixture">Policy Fixture</h3>
+<p>The test policy fixture is at
+<code>test/fixtures/policy/policy-entra.yaml</code>. Key settings:</p>
+<ul>
+<li><code>dpop_enforcement: disabled</code> – Entra uses SHR, not RFC
+9449 DPoP</li>
+<li><code>jti_enforcement: warn</code> – Entra emits <code>uti</code>,
+not standard <code>jti</code></li>
+<li><code>username_claim: email</code> with <code>strip_domain</code> +
+<code>lowercase</code> transforms</li>
+<li><code>allow_unsafe_identity_pipeline: true</code> – safe for
+single-tenant Entra (IdP enforces domain)</li>
+</ul>
+<hr />
+<h2 id="configure-ci-secrets">8. Configure CI Secrets</h2>
+<p>Add these secrets in <strong>GitHub repo -&gt; Settings -&gt; Secrets
+and variables -&gt; Actions</strong>:</p>
+<table>
+<colgroup>
+<col style="width: 53%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr>
+<th>Secret</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ENTRA_TENANT_ID</code></td>
+<td>Directory (tenant) ID</td>
+</tr>
+<tr>
+<td><code>ENTRA_CLIENT_ID</code></td>
+<td>Application (client) ID</td>
+</tr>
+<tr>
+<td><code>ENTRA_TEST_USER</code></td>
+<td>Full UPN (e.g.,
+<code>prmana-ci@yourtenant.onmicrosoft.com</code>)</td>
+</tr>
+<tr>
+<td><code>ENTRA_TEST_PASSWORD</code></td>
+<td>Test user password</td>
+</tr>
+</tbody>
+</table>
+<p>The CI workflow (<code>.github/workflows/provider-tests.yml</code>,
+<code>entra</code> job) auto-detects whether secrets are configured.
+When present, it:</p>
+<ol type="1">
+<li>Verifies OIDC discovery and JWKS availability</li>
+<li>Acquires a token via ROPC (masked in logs with
+<code>::add-mask::</code>)</li>
+<li>Runs
+<code>cargo test -p pam-prmana --test entra_integration -- --ignored --test-threads=1</code></li>
+</ol>
+<p>When secrets are absent, the job skips gracefully.</p>
+<hr />
+<h2 id="troubleshooting">9. Troubleshooting</h2>
+<h3 id="ropc-errors">ROPC Errors</h3>
+<table>
+<colgroup>
+<col style="width: 44%" />
+<col style="width: 36%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>Error Code</th>
+<th>Meaning</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AADSTS50126</code></td>
+<td>Invalid username or password</td>
+<td>Check <code>ENTRA_TEST_USER</code> and
+<code>ENTRA_TEST_PASSWORD</code>. UPN must include the full
+<code>@domain</code>.</td>
+</tr>
+<tr>
+<td><code>AADSTS50076</code></td>
+<td>MFA required</td>
+<td>Exclude the test user from Conditional Access MFA policies (Step
+4).</td>
+</tr>
+<tr>
+<td><code>AADSTS700016</code></td>
+<td>Application not found in the directory</td>
+<td>Verify <code>ENTRA_TENANT_ID</code> and <code>ENTRA_CLIENT_ID</code>
+match. Ensure the app was created in the correct tenant.</td>
+</tr>
+<tr>
+<td><code>AADSTS65001</code></td>
+<td>User or admin has not consented</td>
+<td>Return to Step 3 and click <strong>Grant admin
+consent</strong>.</td>
+</tr>
+<tr>
+<td><code>AADSTS53003</code></td>
+<td>Access blocked by Conditional Access</td>
+<td>A CA policy beyond MFA is blocking ROPC. Check all policies that
+apply to the test user.</td>
+</tr>
+<tr>
+<td><code>AADSTS50079</code></td>
+<td>User needs to register for MFA</td>
+<td>The user was created but hasn’t completed MFA registration. Exclude
+from MFA instead.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="token-claim-issues">Token Claim Issues</h3>
+<p><strong><code>aud</code> is
+<code>00000003-0000-0000-c000-000000000000</code> (Graph API):</strong>
+<code>User.Read</code> was included in the scope string or API
+permissions are misconfigured. Remove <code>User.Read</code> from the
+scope parameter. The scope must be exactly
+<code>openid profile email</code>.</p>
+<p><strong><code>preferred_username</code> or <code>email</code> is
+missing from the access token:</strong> Add the optional claims in
+<strong>Token configuration</strong> (Step 3). For <code>email</code>,
+also verify the test user has an email address set in their profile
+under Contact info.</p>
+<p><strong><code>iss</code> does not match
+<code>issuer_url</code>:</strong> The Entra v2.0 issuer is
+<code>https://login.microsoftonline.com/{tenant-id}/v2.0</code> where
+<code>{tenant-id}</code> is the GUID, not the domain name. The
+<code>/v2.0</code> suffix is required.</p>
+<h3 id="test-failures">Test Failures</h3>
+<p><strong><code>test_entra_bearer_auth_completes_without_dpop_error</code>
+returns <code>UnknownIssuer</code>:</strong> The
+<code>ENTRA_TENANT_ID</code> in the environment does not match the
+<code>iss</code> claim in the token. Decode the token and compare.</p>
+<p><strong><code>test_entra_rs256_token_validates</code> fails with
+signature error:</strong> Token may have expired. Entra access tokens
+typically expire after 60-90 minutes. Re-acquire via
+<code>./test/scripts/get-entra-token.sh</code>.</p>
+<p><strong>CI job is skipped:</strong> The <code>ENTRA_TENANT_ID</code>
+secret is not set. Verify it was added to the correct scope (repository
+secrets, not environment secrets) and that the workflow has access.</p>
+<h3 id="entra-specific-quirks">Entra-Specific Quirks</h3>
+<ul>
+<li><strong><code>uti</code> vs <code>jti</code>:</strong> Entra emits
+<code>uti</code> (unique token identifier) instead of standard
+<code>jti</code>. The prmana replay cache checks <code>jti</code>, so
+<code>jti_enforcement</code> must be set to <code>warn</code> for Entra
+issuers. Strict mode rejects all Entra tokens.</li>
+<li><strong>SHR vs DPoP:</strong> Entra implements Signed HTTP Requests
+(SHR/PoP), not RFC 9449 DPoP. The two are not interoperable.
+<code>dpop_enforcement</code> must be <code>disabled</code>.</li>
+<li><strong>ROPC deprecation:</strong> ROPC is deprecated in OAuth 2.1
+and Microsoft discourages its use. It is used here strictly for CI
+automation with a dedicated test user. Device Code flow is the
+production path.</li>
+<li><strong>Token lifetime:</strong> Entra access tokens are valid for
+60-90 minutes by default. CI acquires a fresh token per run. For local
+testing, re-run <code>get-entra-token.sh</code> if tests fail with
+expiration errors.</li>
+</ul>
+<hr />
+<h2 id="references">References</h2>
+<ul>
+<li><a
+href="https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth-ropc">Microsoft
+Learn: ROPC grant</a></li>
+<li><a
+href="https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims">Microsoft
+Learn: Optional claims</a></li>
+<li><a
+href="https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-conditional-access-users-groups">Microsoft
+Learn: Conditional Access exclusions</a></li>
+<li><code>docs/entra-setup-guide.md</code> – Full Entra app registration
+and production configuration</li>
+<li><code>test/fixtures/policy/policy-entra.yaml</code> – Test policy
+fixture</li>
+<li><code>test/scripts/get-entra-token.sh</code> – Token acquisition
+script</li>
+<li><code>pam-prmana/tests/entra_integration.rs</code> – Rust
+integration test suite</li>
+<li><code>.github/workflows/provider-tests.yml</code> – CI workflow
+(Entra job)</li>
+</ul>
+</body>
+</html>

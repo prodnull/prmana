@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <!-- Gradient for shield - darker version -->
+    <linearGradient id="shieldGradDark" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1E40AF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1E3A8A;stop-opacity:1" />
+    </linearGradient>
+
+    <!-- Drop shadow -->
+    <filter id="shadowDark" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- Shield shape -->
+  <path d="M100 15 L170 45 L170 95 C170 140 140 175 100 190 C60 175 30 140 30 95 L30 45 Z"
+        fill="url(#shieldGradDark)"
+        filter="url(#shadowDark)"/>
+
+  <!-- Shield highlight -->
+  <path d="M100 20 L165 48 L165 95 C165 137 137 170 100 184 C63 170 35 137 35 95 L35 48 Z"
+        fill="none"
+        stroke="rgba(255,255,255,0.1)"
+        stroke-width="2"/>
+
+  <!-- Terminal/Key symbol combining Unix and OIDC concepts -->
+  <g transform="translate(100, 95)">
+    <!-- Key ring (OIDC/authentication) -->
+    <circle cx="0" cy="-25" r="20" fill="none" stroke="#E2E8F0" stroke-width="4"/>
+    <circle cx="0" cy="-25" r="12" fill="none" stroke="#E2E8F0" stroke-width="2"/>
+
+    <!-- Key shaft -->
+    <rect x="-4" y="-5" width="8" height="55" rx="2" fill="#E2E8F0"/>
+
+    <!-- Key teeth (representing Unix/access) -->
+    <rect x="4" y="25" width="12" height="6" rx="1" fill="#E2E8F0"/>
+    <rect x="4" y="35" width="18" height="6" rx="1" fill="#E2E8F0"/>
+    <rect x="4" y="45" width="10" height="6" rx="1" fill="#E2E8F0"/>
+  </g>
+
+  <!-- Decorative dots -->
+  <circle cx="50" cy="70" r="3" fill="#3B82F6" opacity="0.5"/>
+  <circle cx="150" cy="70" r="3" fill="#3B82F6" opacity="0.5"/>
+  <circle cx="45" cy="130" r="2" fill="#3B82F6" opacity="0.3"/>
+  <circle cx="155" cy="130" r="2" fill="#3B82F6" opacity="0.3"/>
+</svg>

@@ -1,0 +1,49 @@
+# SCIM 2.0 provisioning integration test environment.
+#
+# Runs Keycloak as an OIDC provider for Bearer token validation against
+# the prmana-scim service.
+#
+# Usage:
+#   docker compose -f docker-compose.scim-test.yaml up -d
+#   # Wait for Keycloak health check (~30s)
+#   # Obtain a Bearer token:
+#   #   curl -s -X POST http://localhost:8080/realms/scim-test/protocol/openid-connect/token \
+#   #     -d grant_type=client_credentials \
+#   #     -d client_id=prmana-scim \
+#   #     -d client_secret=scim-test-secret | jq -r .access_token
+#   # Then test SCIM endpoints with the token.
+#   docker compose -f docker-compose.scim-test.yaml down
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.2
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+      - "9000:9000"
+    volumes:
+      - ./test/fixtures/keycloak/scim-test-realm.json:/opt/keycloak/data/import/scim-test-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - scim-test
+
+  # The SCIM service is built from the workspace.
+  # For local testing, build and run natively:
+  #   cargo build -p prmana-scim
+  #   ./target/debug/prmana-scim
+  #
+  # In CI, this would be a container built from a Dockerfile.
+  # For Phase 37, we document the manual testing flow above.
+
+networks:
+  scim-test:
+    driver: bridge

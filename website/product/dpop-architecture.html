@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prmana Documentation | DPoP Architecture</title>
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --green: #00ff41;
+            --gray-100: #111111;
+            --gray-200: #222222;
+            --gray-300: #444444;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        body { background: var(--black); color: var(--white); font-family: var(--font-sans); line-height: 1.6; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; display: flex; gap: 4rem; padding: 0 2rem; }
+
+        aside { width: 250px; padding: 4rem 0; position: sticky; top: 0; height: 100vh; }
+        aside h4 { font-family: var(--font-mono); font-size: 0.7rem; color: var(--gray-300); text-transform: uppercase; margin-bottom: 1.5rem; letter-spacing: 1px; }
+        aside ul { list-style: none; padding: 0; }
+        aside li { margin-bottom: 1rem; font-size: 0.95rem; color: #888; cursor: pointer; }
+        aside li.active { color: var(--green); font-weight: bold; }
+        aside li:hover { color: var(--white); }
+        aside a { text-decoration: none; color: inherit; }
+
+        main { flex-grow: 1; padding: 4rem 0; }
+        h1 { font-size: 3rem; letter-spacing: -2px; margin-bottom: 1.5rem; }
+        p { font-size: 1.1rem; color: #CBD5E1; margin-bottom: 2rem; }
+
+        .step { margin-bottom: 4rem; }
+        .step h3 { font-size: 1.5rem; margin-bottom: 1rem; color: var(--white); }
+
+        .code-block { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 8px; padding: 1.5rem; font-family: var(--font-mono); font-size: 0.9rem; color: var(--white); position: relative; margin-bottom: 1.5rem; overflow-x: auto; white-space: pre; line-height: 1.7; }
+        .code-block .prompt::before { content: '$ '; color: var(--green); }
+        .code-block .comment { color: #666; }
+        .code-block .key { color: var(--green); }
+        .code-block .str { color: #f8c555; }
+
+        .note { background: rgba(0, 255, 65, 0.05); border-left: 4px solid var(--green); padding: 1.5rem; border-radius: 4px; color: #ccc; font-size: 0.95rem; margin-bottom: 2rem; }
+
+        table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; font-size: 0.95rem; }
+        th { text-align: left; color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; padding: 0.75rem 1rem; border-bottom: 1px solid var(--gray-200); }
+        td { padding: 0.75rem 1rem; color: #CBD5E1; border-bottom: 1px solid var(--gray-100); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <aside>
+        <a href="../index.html" style="font-family: var(--font-mono); font-weight: 900; color: var(--white); text-decoration: none; font-size: 1.2rem; display: block; margin-bottom: 3rem;">PRMANA</a>
+
+        <ul class="nav-links" style="margin-bottom: 4rem; list-style: none; padding: 0; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;">
+            <li style="margin-bottom: 0.75rem;"><a href="engine.html" style="color: var(--white); text-decoration: none; opacity: 0.6;">Engine</a></li>
+            <li style="margin-bottom: 0.75rem;"><a href="../index.html#blog" style="color: var(--white); text-decoration: none; opacity: 0.6;">Blog</a></li>
+        </ul>
+
+        <h4>Introduction</h4>
+        <ul>
+            <li><a href="docs.html">Getting Started</a></li>
+            <li><a href="core-concepts.html">Core Concepts</a></li>
+            <li class="active"><a href="dpop-architecture.html">DPoP Architecture</a></li>
+        </ul>
+
+        <h4 style="margin-top: 2rem;">Deployment</h4>
+        <ul>
+            <li><a href="pam-installation.html">PAM Installation</a></li>
+            <li><a href="agent-setup.html">Agent Setup</a></li>
+            <li><a href="policy-config.html">Policy Configuration</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>DPoP Architecture</h1>
+        <p>How Prmana uses RFC 9449 Demonstrating Proof-of-Possession to bind tokens to a client key pair, making stolen tokens unusable.</p>
+
+        <section class="step">
+            <h3>Why Not Bearer Tokens?</h3>
+            <p>Standard OAuth access tokens are bearer tokens. Anyone who has the token can use it. If an attacker intercepts a bearer token from a log file, a network capture, or a compromised intermediary, they can replay it from any machine until it expires.</p>
+            <p>For SSH authentication, this risk is severe. A bearer token grants shell access. Lateral movement becomes trivial.</p>
+            <table>
+                <tr>
+                    <th>Scenario</th>
+                    <th>Bearer Token</th>
+                    <th>DPoP-Bound Token</th>
+                </tr>
+                <tr>
+                    <td>Token intercepted in transit</td>
+                    <td>Attacker has full access</td>
+                    <td>Useless without private key</td>
+                </tr>
+                <tr>
+                    <td>Token found in log file</td>
+                    <td>Attacker has full access</td>
+                    <td>Useless without private key</td>
+                </tr>
+                <tr>
+                    <td>Token expires</td>
+                    <td>Minutes to hours</td>
+                    <td>Minutes to hours</td>
+                </tr>
+                <tr>
+                    <td>Centralized revocation</td>
+                    <td>Yes (IdP action)</td>
+                    <td>Yes (IdP action)</td>
+                </tr>
+            </table>
+            <p>DPoP does not eliminate all credential theft risks. If an attacker can extract both the token and the private key from a compromised client, they can act as that client until the token expires. But DPoP dramatically reduces the blast radius: a stolen token alone is worthless.</p>
+        </section>
+
+        <section class="step">
+            <h3>RFC 9449 in 60 Seconds</h3>
+            <p>DPoP adds three steps to the standard OAuth flow:</p>
+            <p><strong>1.</strong> The client (prmana-agent) generates an ephemeral P-256 ECDSA key pair at startup.</p>
+            <p><strong>2.</strong> When requesting a token from the IdP, the client includes a DPoP proof -- a JWT signed with the private key, containing the public key in the header. The IdP binds the issued token to that key by embedding the key's thumbprint in the token's <code style="color: var(--green);">cnf.jkt</code> claim.</p>
+            <p><strong>3.</strong> On every subsequent use, the client sends a fresh DPoP proof alongside the token. The server verifies that the proof was signed by the key matching the token's thumbprint.</p>
+            <div class="code-block"><span class="comment">Token Request:</span>
+  Client --&gt; IdP:  Authorization + DPoP Proof (containing public key)
+  IdP --&gt; Client:  Access token with <span class="key">cnf</span>: { <span class="key">jkt</span>: <span class="str">"thumbprint"</span> }
+
+<span class="comment">Token Use (every SSH connection):</span>
+  Client --&gt; Server:  Access token + fresh DPoP Proof (signed)
+  Server:  Verify proof signature matches token's <span class="key">jkt</span> claim</div>
+            <div class="note">
+                <strong>Algorithm choice: ES256 (P-256 ECDSA).</strong> NIST-approved, 128-bit security level, fast signing/verification, compact 64-byte signatures. DPoP proofs in Prmana always use ES256. The <code>alg: "none"</code> and symmetric algorithms are rejected unconditionally.
+            </div>
+        </section>
+
+        <section class="step">
+            <h3>JWK Thumbprint</h3>
+            <p>The binding between a token and its key is a JWK Thumbprint (RFC 7638). The thumbprint is computed by hashing the canonical JSON representation of the public key:</p>
+            <div class="code-block"><span class="comment">1. Construct canonical JSON (RFC 7638 member ordering)</span>
+{"<span class="key">crv</span>":"<span class="str">P-256</span>","<span class="key">kty</span>":"<span class="str">EC</span>","<span class="key">x</span>":"<span class="str">&lt;base64url&gt;</span>","<span class="key">y</span>":"<span class="str">&lt;base64url&gt;</span>"}
+
+<span class="comment">2. SHA-256 hash the canonical JSON</span>
+
+<span class="comment">3. Base64url-encode the hash = thumbprint</span></div>
+            <p>Prmana uses hardcoded canonical values <code style="color: var(--green);">"EC"</code> and <code style="color: var(--green);">"P-256"</code> for <code>kty</code> and <code>crv</code> in the thumbprint computation, ignoring user-supplied values. This prevents an attacker from supplying non-canonical values to produce a different thumbprint while using a valid key. All thumbprint comparisons use constant-time operations to prevent timing attacks.</p>
+        </section>
+
+        <section class="step">
+            <h3>Proof Structure</h3>
+            <p>A DPoP proof is a JWT with specific claims that bind it to a single request:</p>
+            <div class="code-block"><span class="comment">DPoP Proof Header:</span>
+{
+  "<span class="key">typ</span>": "<span class="str">dpop+jwt</span>",
+  "<span class="key">alg</span>": "<span class="str">ES256</span>",
+  "<span class="key">jwk</span>": {
+    "<span class="key">kty</span>": "<span class="str">EC</span>",
+    "<span class="key">crv</span>": "<span class="str">P-256</span>",
+    "<span class="key">x</span>": "<span class="str">&lt;base64url-encoded x coordinate&gt;</span>",
+    "<span class="key">y</span>": "<span class="str">&lt;base64url-encoded y coordinate&gt;</span>"
+  }
+}
+
+<span class="comment">DPoP Proof Payload:</span>
+{
+  "<span class="key">jti</span>": "<span class="str">unique-id-per-proof</span>",
+  "<span class="key">htm</span>": "<span class="str">SSH</span>",
+  "<span class="key">htu</span>": "<span class="str">server.example.com</span>",
+  "<span class="key">iat</span>": 1713000000,
+  "<span class="key">exp</span>": 1713000060
+}</div>
+            <table>
+                <tr>
+                    <th>Claim</th>
+                    <th>Purpose</th>
+                    <th>Validation</th>
+                </tr>
+                <tr>
+                    <td><code style="color: var(--green);">jti</code></td>
+                    <td>Unique proof identifier</td>
+                    <td>Must not have been seen before (replay protection)</td>
+                </tr>
+                <tr>
+                    <td><code style="color: var(--green);">htm</code></td>
+                    <td>HTTP method binding</td>
+                    <td>Must match the request method (SSH for Prmana)</td>
+                </tr>
+                <tr>
+                    <td><code style="color: var(--green);">htu</code></td>
+                    <td>Target URI binding</td>
+                    <td>Must match the target server hostname</td>
+                </tr>
+                <tr>
+                    <td><code style="color: var(--green);">iat</code></td>
+                    <td>Issued-at timestamp</td>
+                    <td>Must be recent (within max proof age, default 60s)</td>
+                </tr>
+            </table>
+        </section>
+
+        <section class="step">
+            <h3>Replay Protection</h3>
+            <p>Even with DPoP binding, an attacker who captures both the token and a valid proof could attempt to replay them. Prmana uses three layers of defense:</p>
+            <p><strong>1. JTI uniqueness.</strong> Every DPoP proof carries a unique <code style="color: var(--green);">jti</code> claim. The PAM module records seen JTI values and rejects duplicates. The JTI store uses filesystem-based atomic operations, making it safe across forked sshd worker processes -- a critical property for real PAM deployments.</p>
+            <p><strong>2. Server-issued nonce.</strong> The server can issue a nonce that the client must include in the next proof. Nonces are single-use with no TOCTOU window (atomic removal from cache). Each nonce is 256 bits from a CSPRNG.</p>
+            <p><strong>3. Proof freshness.</strong> The <code style="color: var(--green);">iat</code> claim is checked against a configurable maximum proof age (default 60 seconds) and clock skew tolerance (default 5 seconds into the future). Old proofs are rejected even if their JTI has not been seen.</p>
+            <div class="note">
+                <strong>Cross-process safety.</strong> PAM runs inside sshd, which may fork worker processes. In-memory-only replay caches would miss replays sent to sibling workers. Prmana's filesystem-backed JTI store ensures replay detection works across all sshd processes on the host.
+            </div>
+        </section>
+
+        <section class="step" style="border-top: 1px solid var(--gray-200); padding-top: 4rem;">
+            <h3>Hardware Key Binding</h3>
+            <p>Software DPoP keys are stored encrypted in the OS keyring or a file fallback. This protects against casual theft but not against a determined attacker with root access to the client machine. For higher assurance, Prmana supports a progression of hardware-backed signers:</p>
+            <table>
+                <tr>
+                    <th>Backend</th>
+                    <th>Key Storage</th>
+                    <th>Extraction Resistance</th>
+                </tr>
+                <tr>
+                    <td>Software (default)</td>
+                    <td>OS keyring / encrypted file</td>
+                    <td>Protected by OS permissions; root can extract</td>
+                </tr>
+                <tr>
+                    <td>YubiKey PIV</td>
+                    <td>On-device, non-exportable</td>
+                    <td>Key never leaves the hardware; requires physical touch</td>
+                </tr>
+                <tr>
+                    <td>TPM 2.0</td>
+                    <td>On-chip, non-exportable</td>
+                    <td>Key bound to physical TPM; survives OS compromise</td>
+                </tr>
+            </table>
+            <p>With hardware-backed keys, the DPoP private key material is never accessible to software. Even a root-level attacker cannot extract it. The agent acts as a signing oracle -- it can request signatures from the hardware, but cannot export the key itself.</p>
+            <div class="code-block"><span class="comment"># Provision a YubiKey-backed DPoP key</span>
+<span class="prompt">prmana-agent provision --signer yubikey:9a</span>
+
+<span class="comment"># Or a TPM-backed key (Linux only)</span>
+<span class="prompt">prmana-agent provision --signer tpm</span></div>
+            <p>See the <a href="agent-setup.html" style="color: var(--green);">Agent Setup</a> guide for detailed hardware signer configuration.</p>
+        </section>
+    </main>
+</div>
+
+</body>
+</html>

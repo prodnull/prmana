@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <style>
+      .bg { fill: #0f1724; }
+      .zone { fill: #1a2332; stroke: #2d4a6f; stroke-width: 1.5; rx: 12; }
+      .zone-label { fill: #7eb8da; font-size: 13px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; }
+      .component { fill: #1e3148; stroke: #3b6a9b; stroke-width: 1.5; rx: 8; }
+      .component-critical { fill: #2a1a1a; stroke: #c0392b; stroke-width: 1.5; rx: 8; }
+      .component-label { fill: #e8edf3; font-size: 14px; font-weight: 600; }
+      .component-sub { fill: #8a9bb5; font-size: 11px; }
+      .arrow { stroke: #4a90c4; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .arrow-secure { stroke: #27ae60; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead-green); stroke-dasharray: 8 4; }
+      .arrow-label { fill: #b0c4de; font-size: 11px; }
+      .arrow-label-secure { fill: #2ecc71; font-size: 11px; font-weight: 600; }
+      .title { fill: #e8edf3; font-size: 22px; font-weight: 700; }
+      .subtitle { fill: #7eb8da; font-size: 13px; }
+      .legend-box { fill: #141e2e; stroke: #2d4a6f; stroke-width: 1; rx: 6; }
+      .legend-text { fill: #8a9bb5; font-size: 11px; }
+      .legend-title { fill: #b0c4de; font-size: 12px; font-weight: 600; }
+      .idp-zone { fill: #1a2a1a; stroke: #2d6f2d; stroke-width: 1.5; rx: 12; }
+      .idp-component { fill: #1e3a1e; stroke: #3b9b3b; stroke-width: 1.5; rx: 8; }
+      .icon-text { fill: #5a7a9b; font-size: 28px; }
+    </style>
+    <marker id="arrowhead" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#4a90c4"/>
+    </marker>
+    <marker id="arrowhead-green" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#27ae60"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect class="bg" width="1200" height="720"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="40">prmana System Architecture</text>
+  <text class="subtitle" x="40" y="60">OIDC + DPoP authentication for Unix PAM with step-up via CIBA</text>
+
+  <!-- User's Machine Zone -->
+  <rect class="zone" x="30" y="85" width="420" height="350"/>
+  <text class="zone-label" x="50" y="108">User's Machine</text>
+
+  <!-- SSH Client -->
+  <rect class="component" x="55" y="125" width="170" height="65"/>
+  <text class="icon-text" x="70" y="162">&#x1F5A5;</text>
+  <text class="component-label" x="105" y="155">SSH Client</text>
+  <text class="component-sub" x="105" y="172">openssh / PuTTY</text>
+
+  <!-- oidc-ssh-agent -->
+  <rect class="component" x="55" y="220" width="370" height="90"/>
+  <text class="component-label" x="75" y="248">oidc-ssh-agent (daemon)</text>
+  <text class="component-sub" x="75" y="266">Unix socket IPC  |  Token cache  |  DPoP proof generation</text>
+  <text class="component-sub" x="75" y="282">ProtectedSigningKey (mlock + ZeroizeOnDrop)</text>
+  <text class="component-sub" x="75" y="298">Storage: Keychain / Secret Service / keyutils / file</text>
+
+  <!-- Browser -->
+  <rect class="component" x="55" y="340" width="170" height="60"/>
+  <text class="component-label" x="75" y="368">Browser / Phone</text>
+  <text class="component-sub" x="75" y="384">OIDC login / CIBA</text>
+
+  <!-- Identity Provider Zone -->
+  <rect class="idp-zone" x="500" y="85" width="260" height="350"/>
+  <text class="zone-label" x="520" y="108" style="fill: #7eda7e;">Identity Provider</text>
+
+  <!-- IdP components -->
+  <rect class="idp-component" x="520" y="125" width="220" height="55"/>
+  <text class="component-label" x="540" y="152" style="fill: #c8e8c8;">OIDC / OAuth 2.0</text>
+  <text class="component-sub" x="540" y="168" style="fill: #7eda7e;">Keycloak / Okta / Azure AD / Auth0</text>
+
+  <rect class="idp-component" x="520" y="195" width="220" height="45"/>
+  <text class="component-label" x="540" y="218" style="fill: #c8e8c8;">JWKS Endpoint</text>
+  <text class="component-sub" x="540" y="232" style="fill: #7eda7e;">Public keys for signature verification</text>
+
+  <rect class="idp-component" x="520" y="255" width="220" height="45"/>
+  <text class="component-label" x="540" y="278" style="fill: #c8e8c8;">Token Endpoint</text>
+  <text class="component-sub" x="540" y="292" style="fill: #7eda7e;">Device code grant / CIBA grant</text>
+
+  <rect class="idp-component" x="520" y="315" width="220" height="45"/>
+  <text class="component-label" x="540" y="338" style="fill: #c8e8c8;">CIBA Backchannel</text>
+  <text class="component-sub" x="540" y="352" style="fill: #7eda7e;">Push notification to authenticator</text>
+
+  <rect class="idp-component" x="520" y="375" width="220" height="45"/>
+  <text class="component-label" x="540" y="398" style="fill: #c8e8c8;">Revocation Endpoint</text>
+  <text class="component-sub" x="540" y="412" style="fill: #7eda7e;">RFC 7009 token revocation</text>
+
+  <!-- Linux Server Zone -->
+  <rect class="zone" x="30" y="465" width="730" height="230"/>
+  <text class="zone-label" x="50" y="488">Linux Server</text>
+
+  <!-- sshd -->
+  <rect class="component" x="55" y="505" width="150" height="55"/>
+  <text class="component-label" x="75" y="532">sshd</text>
+  <text class="component-sub" x="75" y="548">OpenSSH server</text>
+
+  <!-- PAM Module -->
+  <rect class="component-critical" x="230" y="505" width="180" height="55"/>
+  <text class="component-label" x="250" y="532" style="fill: #f5c6c6;">pam_prmana</text>
+  <text class="component-sub" x="250" y="548" style="fill: #e8a0a0;">PAM auth + account</text>
+
+  <!-- Token Validator -->
+  <rect class="component-critical" x="435" y="505" width="160" height="55"/>
+  <text class="component-label" x="455" y="532" style="fill: #f5c6c6;">Token Validator</text>
+  <text class="component-sub" x="455" y="548" style="fill: #e8a0a0;">JWKS + claims checks</text>
+
+  <!-- DPoP Validator -->
+  <rect class="component-critical" x="435" y="580" width="160" height="55"/>
+  <text class="component-label" x="455" y="607" style="fill: #f5c6c6;">DPoP Validator</text>
+  <text class="component-sub" x="455" y="623" style="fill: #e8a0a0;">ES256 + JTI replay</text>
+
+  <!-- Sudo Step-up -->
+  <rect class="component" x="230" y="580" width="180" height="55"/>
+  <text class="component-label" x="250" y="607">Sudo Step-Up</text>
+  <text class="component-sub" x="250" y="623">Device flow / CIBA IPC</text>
+
+  <!-- SSSD/NSS -->
+  <rect class="component" x="55" y="580" width="150" height="55"/>
+  <text class="component-label" x="75" y="607">SSSD / NSS</text>
+  <text class="component-sub" x="75" y="623">Group resolution</text>
+
+  <!-- Break Glass -->
+  <rect class="component" x="620" y="505" width="125" height="55"/>
+  <text class="component-label" x="640" y="532">Break Glass</text>
+  <text class="component-sub" x="640" y="548">Local fallback</text>
+
+  <!-- Audit Log -->
+  <rect class="component" x="620" y="580" width="125" height="55"/>
+  <text class="component-label" x="640" y="607">Audit Log</text>
+  <text class="component-sub" x="640" y="623">Structured tracing</text>
+
+  <!-- Arrows: User Machine to IdP -->
+  <path class="arrow" d="M 425,265 L 518,265"/>
+  <text class="arrow-label" x="440" y="258">Token request</text>
+
+  <path class="arrow" d="M 225,375 L 518,345"/>
+  <text class="arrow-label" x="310" y="338">Browser auth / CIBA approval</text>
+
+  <!-- Arrow: SSH Client to Agent (IPC) -->
+  <path class="arrow" d="M 140,190 L 140,218"/>
+  <text class="arrow-label" x="148" y="208">IPC</text>
+
+  <!-- Arrow: Agent to IdP -->
+  <path class="arrow-secure" d="M 425,240 L 518,175"/>
+  <text class="arrow-label-secure" x="445" y="195">OIDC + DPoP (TLS)</text>
+
+  <!-- Arrow: SSH Client to Server (routed left of user zone) -->
+  <path class="arrow-secure" d="M 55,160 L 22,160 L 22,530 L 53,530"/>
+  <text class="arrow-label-secure" x="5" y="380" writing-mode="tb">SSH + token + DPoP proof</text>
+
+  <!-- Arrow: sshd to PAM -->
+  <path class="arrow" d="M 205,532 L 228,532"/>
+  <text class="arrow-label" x="208" y="524">PAM</text>
+
+  <!-- Arrow: PAM to Token Validator -->
+  <path class="arrow" d="M 410,525 L 433,525"/>
+
+  <!-- Arrow: PAM to DPoP Validator -->
+  <path class="arrow" d="M 410,555 L 435,590"/>
+
+  <!-- Arrow: PAM to Step-up -->
+  <path class="arrow" d="M 320,560 L 320,578"/>
+
+  <!-- Arrow: Step-up to SSSD -->
+  <path class="arrow" d="M 228,607 L 207,607"/>
+
+  <!-- Arrow: PAM to Audit (routed below DPoP Validator) -->
+  <path class="arrow" d="M 350,560 L 350,650 L 682,650 L 682,637"/>
+
+  <!-- Arrow: Server to IdP JWKS (routed right of Break Glass / Audit Log) -->
+  <path class="arrow-secure" d="M 595,520 L 768,520 L 768,217 L 742,217"/>
+  <text class="arrow-label-secure" x="775" y="370">JWKS fetch (TLS)</text>
+
+  <!-- Legend -->
+  <rect class="legend-box" x="810" y="470" width="370" height="230"/>
+  <text class="legend-title" x="830" y="495">Legend</text>
+
+  <line x1="830" y1="515" x2="880" y2="515" stroke="#4a90c4" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text class="legend-text" x="890" y="519">Data flow</text>
+
+  <line x1="830" y1="540" x2="880" y2="540" stroke="#27ae60" stroke-width="2.5" stroke-dasharray="8 4" marker-end="url(#arrowhead-green)"/>
+  <text class="legend-text" x="890" y="544">TLS-protected channel</text>
+
+  <rect x="830" y="558" width="50" height="20" fill="#1e3148" stroke="#3b6a9b" stroke-width="1.5" rx="4"/>
+  <text class="legend-text" x="890" y="573">Standard component</text>
+
+  <rect x="830" y="588" width="50" height="20" fill="#2a1a1a" stroke="#c0392b" stroke-width="1.5" rx="4"/>
+  <text class="legend-text" x="890" y="603">Security-critical component</text>
+
+  <rect x="830" y="618" width="50" height="20" fill="#1e3a1e" stroke="#3b9b3b" stroke-width="1.5" rx="4"/>
+  <text class="legend-text" x="890" y="633">Identity Provider</text>
+
+  <text class="legend-text" x="830" y="660">DPoP: RFC 9449 Demonstrating Proof of Possession</text>
+  <text class="legend-text" x="830" y="676">CIBA: OpenID Connect Client-Initiated Backchannel Auth</text>
+  <text class="legend-text" x="830" y="692">PAM: Pluggable Authentication Modules</text>
+
+  <!-- Protocol annotations -->
+  <rect class="legend-box" x="810" y="85" width="370" height="180"/>
+  <text class="legend-title" x="830" y="110">Key Protocols</text>
+  <text class="legend-text" x="830" y="132">SSH Login: OIDC token + DPoP proof via keyboard-interactive</text>
+  <text class="legend-text" x="830" y="152">Token Binding: ES256 ephemeral key pair (P-256 ECDSA)</text>
+  <text class="legend-text" x="830" y="172">Replay Protection: JTI cache (100k entries, TTL-based)</text>
+  <text class="legend-text" x="830" y="192">Step-Up Auth: Device flow (RFC 8628) or CIBA push</text>
+  <text class="legend-text" x="830" y="212">Key Storage: Keychain > Secret Service > keyutils > file</text>
+  <text class="legend-text" x="830" y="232">Memory Protection: mlock + ZeroizeOnDrop + no core dumps</text>
+  <text class="legend-text" x="830" y="252">Session Cleanup: RFC 7009 revocation + credential wipe</text>
+
+  <!-- RFC annotations on components -->
+  <text class="component-sub" x="810" y="280" style="fill: #5a7a9b; font-size: 10px;">RFC 9449 | RFC 8628 | RFC 7009 | RFC 7638 | CIBA Core 1.0 | EAP ACR Values 1.0</text>
+</svg>

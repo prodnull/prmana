@@ -1,0 +1,78 @@
+{
+  "realm": "scim-test",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "clients": [
+    {
+      "clientId": "prmana-scim",
+      "name": "Unix OIDC SCIM Provisioning Service",
+      "description": "Confidential client for SCIM 2.0 provisioning — used by IdP to provision/deprovision users",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "scim-test-secret",
+      "redirectUris": ["http://localhost:*"],
+      "webOrigins": ["*"],
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "preferred_username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "username",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "prmana-scim",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "scim-admin",
+      "enabled": true,
+      "email": "scim-admin@test.example.com",
+      "firstName": "SCIM",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "scim-admin-pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["default-roles-scim-test"]
+    }
+  ]
+}

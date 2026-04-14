@@ -1,0 +1,22 @@
+[Unit]
+Description=prmana Agent IPC Socket
+Documentation=https://github.com/prodnull/prmana
+
+[Socket]
+# System-wide socket for the prmana system service (User=prmana).
+# The PAM module and SSH client connect here when using the system daemon.
+# User installations use %t/prmana-agent.sock (XDG_RUNTIME_DIR) instead;
+# see docs/installation.md for per-user vs. system deployment guidance.
+ListenStream=/run/prmana/agent.sock
+# Mode 0660 allows the prmana user and group to connect.
+# The preinst script adds the login user (or sssd) to the prmana group to
+# permit PAM-module connections from sshd running as root.
+SocketMode=0660
+SocketUser=prmana
+SocketGroup=prmana
+DirectoryMode=0755
+# Clean up the socket file when the unit stops.
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

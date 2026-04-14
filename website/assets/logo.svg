@@ -1,0 +1,55 @@
+<svg width="200" height="200" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Sharp, high-energy glow for the Diamond and Core -->
+    <filter id="prmanaGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="1.2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    
+    <!-- Metallic Gradient for the Tether bars -->
+    <linearGradient id="metalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#CBD5E1" />
+    </linearGradient>
+  </defs>
+
+  <!-- THE STANDALONE DIAMOND SEAL (The primary boundary) -->
+  <path d="M50 5 L95 50 L50 95 L5 50 Z" 
+        stroke="#00FF41" 
+        stroke-width="3" 
+        fill="#000000" 
+        filter="url(#prmanaGlow)" />
+        
+  <!-- Subtle inner bevel for the diamond -->
+  <path d="M50 10 L90 50 L50 90 L10 50 Z" 
+        stroke="#00FF41" 
+        stroke-width="0.5" 
+        fill="none" 
+        opacity="0.3" />
+
+  <!-- THE INTERLOCKING TETHER -->
+  <!-- Horizontal Machine Identity Link -->
+  <path d="M25 46 H75 V54 H25 Z" 
+        fill="url(#metalGrad)" 
+        opacity="0.9" />
+        
+  <!-- Vertical User Identity Link - Interlocked -->
+  <path d="M46 25 V75 H54 V25 Z" 
+        fill="url(#metalGrad)" />
+
+  <!-- THE HARDWARE ROOT (The Active Anchor) -->
+  
+  <!-- 1. The Focus Ring -->
+  <circle cx="50" cy="50" r="14" stroke="#00FF41" stroke-width="0.5" fill="none" stroke-dasharray="3 2" opacity="0.6" />
+  
+  <!-- 2. The Active Core -->
+  <circle cx="50" cy="50" r="6" fill="#00FF41" filter="url(#prmanaGlow)" />
+  
+  <!-- 3. Precision Alignment Crosshairs -->
+  <path d="M50 32 V40 M50 60 V68 M32 50 H40 M60 50 H68" 
+        stroke="#00FF41" 
+        stroke-width="1.5" />
+        
+  <!-- 4. Inner Die detail -->
+  <rect x="48.5" y="48.5" width="3" height="3" fill="#000000" opacity="0.6" />
+</svg>

@@ -1,0 +1,45 @@
+#include <tunables/global>
+
+/usr/bin/prmana-agent {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/openssl>
+
+  # Capabilities
+  capability ipc_lock,
+
+  # Configuration
+  /etc/prmana/*.yaml r,
+  /etc/prmana/ r,
+
+  # User Credentials and State (Owner-restricted)
+  owner /home/*/.local/share/prmana/ rw,
+  owner /home/*/.local/share/prmana/** rwk,
+  owner /home/*/.config/prmana/ rw,
+  owner /home/*/.config/prmana/** rwk,
+
+  # Runtime Socket (Global or per-user)
+  /run/prmana-agent.sock rw,
+  /run/user/[0-9]*/prmana-agent.sock rw,
+
+  # Systemd Journal/Logging
+  /run/systemd/journal/stdout w,
+  /run/systemd/journal/socket w,
+
+  # Proc entries
+  /proc/self/attr/current r,
+
+  # Outbound Network
+  network inet stream,
+  network inet6 stream,
+
+  # Unix socket mediation (required on Ubuntu 22.04+ with AppArmor unix mediation)
+  unix (create, bind, listen, accept, send, receive) type=stream,
+  unix (connect, send, receive) type=stream peer=(label=/usr/bin/prmana-agent),
+
+  # sysfs: rotational-device detection (detect_rotational_device in storage layer)
+  /sys/block/ r,
+  /sys/block/*/ r,
+  /sys/block/*/queue/ r,
+  /sys/block/*/queue/rotational r,
+}

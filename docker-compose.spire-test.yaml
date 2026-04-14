@@ -1,0 +1,74 @@
+# SPIRE integration test environment for Phase 35 SPIFFE/SPIRE bridge.
+#
+# Runs a SPIRE server + agent pair with a pre-registered workload identity.
+# The agent exposes the Workload API on a Unix domain socket that the
+# SpireSigner connects to via gRPC.
+#
+# Usage:
+#   docker compose -f docker-compose.spire-test.yaml up -d
+#   # Wait for agent health check
+#   PRMANA_SPIRE_SOCKET=/tmp/spire-agent/public/api.sock \
+#     cargo test -p prmana-agent --features spire -- --ignored spire
+#   docker compose -f docker-compose.spire-test.yaml down -v
+
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.14.5
+    # SPIRE server runs as uid 1000 inside the container. Docker-managed
+    # named volumes default to root:root ownership, so the server's attempt
+    # to create /opt/spire/data/server.sock and friends fails with EACCES.
+    # Running the container as root avoids the permission denial for test-
+    # only throw-away data directories. See ADR-017 / CI failure 2026-04-11.
+    user: "0:0"
+    command:
+      - -config
+      - /opt/spire/conf/server.conf
+    volumes:
+      - ./test/fixtures/spire/server.conf:/opt/spire/conf/server.conf:ro
+      - spire-data:/opt/spire/data
+    healthcheck:
+      # The server listens on /opt/spire/data/server.sock (see server.conf),
+      # not the default /tmp/spire-server/private/api.sock. Without the
+      # explicit -socketPath flag, `spire-server healthcheck` probes the
+      # wrong path and the container is marked unhealthy even though the
+      # server is fully booted. Matches the path used by spire-register
+      # below.
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck", "-socketPath", "/opt/spire/data/server.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.14.5
+    command:
+      - -config
+      - /opt/spire/conf/agent.conf
+    volumes:
+      - ./test/fixtures/spire/agent.conf:/opt/spire/conf/agent.conf:ro
+      - spire-socket:/tmp/spire-agent/public
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    pid: "host"
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # NOTE: workload registration was previously handled by a spire-register
+  # one-shot sidecar, but ghcr.io/spiffe/spire-server:1.14.5 is a distroless
+  # image with no /bin/sh.  Registration is now performed by the CI workflow
+  # step via `docker compose exec spire-server /opt/spire/bin/spire-server ...`
+  # which runs the binary directly inside the healthy server container (no
+  # shell required).  See .github/workflows/ci.yml spire-integration job.
+
+volumes:
+  spire-data:
+  spire-socket:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /tmp/spire-agent/public

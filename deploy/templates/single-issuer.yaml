@@ -1,0 +1,24 @@
+# Prmana Policy Template: Single Issuer
+#
+# The simplest production configuration. One IdP, DPoP enforced,
+# break-glass enabled.
+#
+# Usage: Copy to /etc/prmana/policy.yaml and fill in your values.
+
+issuers:
+  - issuer_url: "https://your-idp.example.com/realms/corp"
+    client_id: "prmana"
+    # client_secret: "your-secret-here"  # Uncomment for confidential clients
+    dpop_enforcement: strict
+
+break_glass:
+  enabled: true
+  # Account names that bypass OIDC and use local system password auth.
+  # Create the user: sudo useradd -m breakglass && sudo passwd breakglass
+  accounts:
+    - breakglass
+  alert_on_use: true
+
+security_modes:
+  jti_enforcement: warn
+  dpop_required: strict
