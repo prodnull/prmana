@@ -33,6 +33,7 @@ pub mod audit;
 pub mod auth;
 pub mod device_flow;
 pub mod identity;
+pub mod keyring;
 pub mod oidc;
 pub mod otp;
 pub mod policy;
@@ -703,6 +704,39 @@ impl PamServiceModule for PamUnixOidc {
                 }
                 if let Err(e) = pamh.putenv(&format!("PRMANA_ISSUER={}", result.token_issuer)) {
                     tracing::warn!(error = ?e, "Failed to set PRMANA_ISSUER in PAM env");
+                }
+
+                // Publish a kernel-keyring entry holding selected token-derived
+                // claims, then expose its serial through PAM env. The key lives
+                // in the session keyring with UID-only ACL and a TTL aligned
+                // with the upstream token; see keyring.rs and keyrings(7).
+                // Failure is non-fatal: a missing key is functionally identical
+                // to the pre-existing behaviour.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let ttl = (result.token_exp - now).clamp(1, 86_400) as u32;
+                let payload = keyring::format_claims(&[
+                    ("jti", result.token_jti.as_deref().unwrap_or("")),
+                    ("exp", &result.token_exp.to_string()),
+                    ("iss", &result.token_issuer),
+                    ("sid", &result.session_id),
+                ]);
+                match keyring::publish(
+                    &format!("prmana_{}", result.session_id),
+                    payload.as_bytes(),
+                    keyring::Anchor::Session,
+                    ttl,
+                ) {
+                    Ok(serial) => {
+                        if let Err(e) = pamh.putenv(&format!("PRMANA_KEY={}", serial)) {
+                            tracing::warn!(error = ?e, "Failed to set PRMANA_KEY in PAM env");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "keyring publish failed; PRMANA_KEY not set");
+                    }
                 }
 
                 PamError::SUCCESS
