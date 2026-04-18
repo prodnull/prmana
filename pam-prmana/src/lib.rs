@@ -717,12 +717,34 @@ impl PamServiceModule for PamUnixOidc {
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
                 let ttl = (result.token_exp - now).clamp(1, 86_400) as u32;
-                let payload = keyring::format_claims(&[
+                // Build the keyring payload with all available session metadata.
+                // pam_authnft's §2.4 treats this as opaque printable ASCII;
+                // the operator sees it in `nft list set` element comments and
+                // in AUTHNFT_CLAIMS_TAG journal fields.
+                //
+                // Field ordering is by priority: security-bearing fields
+                // (jti, exp) first, identity (iss, sid) next, operational
+                // context (user, uid, acr, dpop) last. nftables limits
+                // element comments to 128 characters; pam_authnft truncates
+                // from the end so high-priority fields survive. The full
+                // payload is always in the journal and session JSON.
+                let exp_str = result.token_exp.to_string();
+                let uid_str = result.uid.to_string();
+                let mut pairs: Vec<(&str, &str)> = vec![
                     ("jti", result.token_jti.as_deref().unwrap_or("")),
-                    ("exp", &result.token_exp.to_string()),
+                    ("exp", &exp_str),
                     ("iss", &result.token_issuer),
                     ("sid", &result.session_id),
-                ]);
+                    ("user", &result.username),
+                    ("uid", &uid_str),
+                ];
+                if let Some(ref acr) = result.token_acr {
+                    pairs.push(("acr", acr));
+                }
+                if let Some(ref dpop) = result.dpop_thumbprint {
+                    pairs.push(("dpop", dpop));
+                }
+                let payload = keyring::format_claims(&pairs);
                 match keyring::publish(
                     &format!("prmana_{}", result.session_id),
                     payload.as_bytes(),
@@ -737,6 +759,16 @@ impl PamServiceModule for PamUnixOidc {
                     Err(e) => {
                         tracing::warn!(error = %e, "keyring publish failed; PRMANA_KEY not set");
                     }
+                }
+
+                // Export a correlation token so pam_authnft's §6.2 journald
+                // audit events can be joined to prmana's auth events.
+                // See pam_authnft INTEGRATIONS.txt §6.2.4.
+                if let Err(e) = pamh.putenv(&format!(
+                    "AUTHNFT_CORRELATION=prmana-{}",
+                    result.session_id
+                )) {
+                    tracing::warn!(error = ?e, "Failed to set AUTHNFT_CORRELATION in PAM env");
                 }
 
                 PamError::SUCCESS
