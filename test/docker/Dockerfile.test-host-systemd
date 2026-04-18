@@ -17,7 +17,7 @@
 #
 # The systemd-e2e compose file (docker-compose.systemd-e2e.yaml) supplies these.
 
-FROM jrei/systemd-ubuntu:22.04
+FROM jrei/systemd-ubuntu:22.04@sha256:54c9e8f258bcce83348358ce20e77dd958c860bb1e04a86fc2f761223e15b1f8
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -2,7 +2,7 @@
 # Multi-architecture test container that builds the PAM module inside
 # Supports: linux/amd64, linux/arm64
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.85-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -23,8 +23,8 @@ COPY examples ./examples
 # Only build the packages we need (skip examples)
 RUN cargo build --release --locked -p pam-prmana -p prmana-agent
 
-# Runtime image
-FROM ubuntu:22.04
+# Runtime image (digest pinned per OSSF Scorecard Pinned-Dependencies guidance)
+FROM ubuntu:22.04@sha256:962f6cadeae0ea6284001009daa4cc9a8c37e75d1f5191cf0eb83fe565b63dd7
 
 ENV DEBIAN_FRONTEND=noninteractive
 
