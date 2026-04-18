@@ -12,10 +12,16 @@ on:
       - 'packaging/apparmor/**'
       - 'test/mac/**'
 
+# Default to minimal permissions (OSSF Scorecard)
+permissions:
+  contents: read
+
 jobs:
   static-validate:
     name: Static policy checks (no kernel required)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -43,6 +49,8 @@ jobs:
   apparmor-runtime:
     name: AppArmor runtime (Ubuntu, AppArmor active)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
