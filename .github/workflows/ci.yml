@@ -732,7 +732,7 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('java-oauth-dpop/build.gradle.kts') }}
 
       - name: Install Python cryptography
-        run: pip install cryptography
+        run: pip install 'cryptography==46.0.7'
 
       - name: Build Java dependencies
         run: cd java-oauth-dpop && gradle compileJava --no-daemon -q
