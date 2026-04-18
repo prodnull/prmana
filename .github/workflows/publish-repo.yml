@@ -10,8 +10,7 @@ on:
         required: true
 
 permissions:
-  contents: write  # required to push to gh-pages branch
-  actions: read
+  contents: read
 
 concurrency:
   group: publish-repo
@@ -21,6 +20,9 @@ jobs:
   publish:
     name: Publish APT + YUM repo to gh-pages
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write  # required to push package metadata to gh-pages branch
+      actions: read
 
     steps:
       - name: Checkout
