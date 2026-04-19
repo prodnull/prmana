@@ -165,6 +165,9 @@ jobs:
               },
               {
                 "pattern": "^https://www\\.aicpa\\.org"
+              },
+              {
+                "pattern": "^https://man\\.openbsd\\.org"
               }
             ],
             "replacementPatterns": [
