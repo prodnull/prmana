@@ -67,5 +67,5 @@
 
 By submitting this PR, I confirm that:
 - [ ] I have read and agree to the [Contributing Guidelines](../CONTRIBUTING.md)
-- [ ] My contribution is made under the project's dual license (Apache-2.0 OR MIT)
-- [ ] I have signed off my commits (DCO)
+- [ ] My contribution is made under the project's license ([Apache-2.0](../LICENSE))
+- [ ] I have signed my commits via Gitsign, or signed off via DCO (`git commit -s`) — either is accepted (see [Contributing Guidelines](../CONTRIBUTING.md#commit-signing))

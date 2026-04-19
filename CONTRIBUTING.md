@@ -134,9 +134,22 @@ Prevents timing attacks when validating DPoP proof bindings.
 Security: Timing attack mitigation
 ```
 
-### Commit Signing (Required)
+### Commit Signing
 
-All commits must be cryptographically signed. We use **Gitsign** for keyless signing via Sigstore, which aligns with our project's security philosophy (same infrastructure we use for release signing).
+Every commit must carry a verifiable provenance record. We accept two forms:
+
+1. **Gitsign (preferred)** — keyless cryptographic signing via Sigstore, tied to your OIDC identity. Gives a transparency-log-backed identity binding. Maintainer commits use this path.
+2. **DCO (`Signed-off-by`)** — the Developer Certificate of Origin trailer, added with `git commit -s`. Plain-text assertion that you have the right to contribute the code under the project's license. Accepted for external contributions to reduce friction.
+
+Choose one. You don't need both. DCO is the industry-default path for external contributors to most Linux-ecosystem projects; Gitsign is stricter and fits teams already invested in Sigstore tooling.
+
+#### DCO (simplest path)
+
+```bash
+git commit -s -m "feat: add new feature"
+```
+
+That appends a `Signed-off-by: Your Name <you@example.com>` trailer. Configure `user.name` and `user.email` in git first. By signing off, you assert the statements at https://developercertificate.org.
 
 #### Install Gitsign
 
@@ -397,7 +410,7 @@ docs: update installation guide for Ubuntu 24.04
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same
-terms as the project: [CC BY-NC-SA 4.0](LICENSE) (Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International).
+terms as the project: [Apache License 2.0](LICENSE).
 
 See [LICENSE](LICENSE) for details.
 
