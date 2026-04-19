@@ -27,18 +27,12 @@ permissions:
   contents: read
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'pam/**'
-      - 'nss/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/platform-tests.yml'
-  push:
-    tags:
-      - 'v*'
+  # Platform Tests provisions real EC2 instances and requires AWS_ROLE_ARN,
+  # EC2_SUBNET_ID, EC2_SECURITY_GROUP_ID, EC2_KEY_NAME, EC2_SSH_PRIVATE_KEY
+  # secrets — none of which are configured on this public repo. Until
+  # those secrets are set up, the automatic push/PR triggers are dropped so
+  # the workflow stops surfacing red checks on unrelated PRs. Re-enable
+  # push/pull_request stanzas once the secrets are in place.
   workflow_dispatch:
     inputs:
       platforms:
