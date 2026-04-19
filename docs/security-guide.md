@@ -499,6 +499,7 @@ The most important non-obvious trust statement is:
 - protect policy and audit files with root ownership and restrictive permissions
 - prefer hardware-backed signers where operationally feasible
 - use keyring-backed storage over file fallback where available
+- if downstream PAM modules consume `PRMANA_KEY` / the kernel session-claims keyring (ADR-026), put `session required pam_keyinit.so force revoke` at the top of the PAM stack so each login gets an isolated session keyring rather than the shared `@us`
 - configure and test break-glass deliberately, not implicitly
 
 ### File Permissions

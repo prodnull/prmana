@@ -287,4 +287,84 @@ The agent daemon treats any process running as the same UID as fully trusted. Th
 
 ---
 
-*Last updated: 2026-04-09. Revision required when new trust boundaries, authentication flows, or storage backends are introduced.*
+## TB-8: pam_prmana → Linux kernel keyring (session-claims publication)
+
+Added 2026-04-19 per ADR-026. Triggered by PR #14 (contribution from @Strykar). Adversarially reviewed by Codex and Gemini-3-pro before acceptance.
+
+### Scope
+
+After a successful `pam_sm_authenticate`, `pam-prmana` publishes a printable-ASCII payload of selected token claims (`v=1;jti=…;exp=…;iss=…;sid=…;user=…;uid=…[;acr=…][;dpop=…]`) into a Linux keyring of type `user`, and exports the key's serial number as `PRMANA_KEY` in PAM env. The key is intended as a durable cross-fork channel for same-session consumers that run later in the sshd privsep sequence.
+
+### Attacker model
+
+- **Same-UID local process inside the intended login tree** (the user's own shell and descendants). By design these are possessors and can read the payload. Confidentiality against this class is out of scope; they already have the user's full authority.
+- **Same-UID local process OUTSIDE the intended login tree.** Occurs when publication lands in the shared user-session keyring `@us` rather than a distinct per-login session keyring (T8.1). Possessors span every concurrent login for the UID. Mitigated by refusing to publish when `@us` is detected.
+- **Same-UID race-window attacker.** Any possessor that wins the race between `add_key` and the final ACL, before prmana locks the key down (T8.2, T8.3). Mitigated by publishing to the process keyring first and linking to the session keyring only after ACL lands.
+- **Compromised or misconfigured downstream consumer.** A PAM consumer that parses the payload and acts on it may mis-grant if the payload is not canonically escaped (T8.4). Mitigated by publisher-owned percent-encoding.
+- **Non-root host-level observer** (another UID on the same host) is NOT in the attacker model for this boundary. Possession is UID-scoped; other UIDs cannot see the payload.
+- **Root/local-admin attacker** is systemic out-of-scope.
+
+### Trust boundary / POSSESSOR semantics
+
+Access is governed by **kernel keyring possession**, not UID alone. From `keyrings(7)`:
+
+- A process directly possesses its session, process, and thread keyrings, plus (where applicable) the user-session keyring and user keyring.
+- Possession is recursive: a key linked from a keyring the process possesses is itself possessed.
+- Possession is inherited across `fork(2)` and preserved across `execve(2)`, **including setuid transitions** (`session-keyring(7)`). This is intentional kernel behaviour: setuid programs invoked from a user's shell are expected to see the invoking user's keys.
+
+Consequences that any consumer or integrator MUST understand:
+
+1. The user's shell and every descendant possess the session keyring and can `KEYCTL_READ` any key prmana published into it. POSSESSOR-only ACLs are NOT "current process only."
+2. After `sudo` (or any setuid descendant) the now-root process remains a possessor of the pre-sudo user's session keyring unless the PAM stack replaces it. Consumers MUST key off `sid` and MUST NOT assume a singleton `prmana_*` key per session tree.
+3. `setsid(2)` changes the POSIX session/process group but does NOT change keyring subscription.
+4. `systemd-logind ReleaseSession` closes the login session via PAM; key reclamation depends on keyring revocation (`pam_keyinit.so revoke`) or last-reference exit. A possessor that `KEYCTL_LINK`ed the key elsewhere can keep it alive past normal teardown.
+
+### Threats
+
+| Threat | Category | Description | Severity |
+|--------|----------|-------------|----------|
+| T8.1 | Information disclosure | `add_key(KEY_SPEC_SESSION_KEYRING)` resolves to the shared user-session keyring `@us` on stacks without `pam_keyinit.so force revoke`. Payload becomes readable by every concurrent login for the same UID. | High |
+| T8.2 | Tampering / EoP | Between `add_key` return and the final restrictive `SETPERM`, the key carries default `KEY_USR_ALL \| KEY_POS_ALL` perms. A same-UID possessor that wins the race can `KEYCTL_UPDATE` (forge claims like `acr=3`), `KEYCTL_LINK` to persist past TTL, `KEYCTL_SET_TIMEOUT` to extend lifetime, or `KEYCTL_SETPERM` to widen permanently. | High |
+| T8.3 | Tampering | Publisher process crashes or is killed after `add_key` but before the final ACL lands. Key persists in the session keyring with default broad perms until TTL and is readable/mutable by any possessor. | Medium |
+| T8.4 | Tampering / EoP | Raw `k=v;…` payload: if any claim value (e.g. `iss`, `username`) contains `;` or `=`, a downstream consumer parsing key-value pairs can be fed attacker-chosen claims (`;acr=3;`). A consumer that trusts `acr` for policy decisions mis-grants. | Critical |
+| T8.5 | Information disclosure | `PRMANA_KEY` env var stripped by sshd privsep or a restrictive PAM stack while the kernel key survives. Consumer sees no serial handle but the key remains live until TTL, creating orphaned state. | Low |
+| T8.6 | Information disclosure | `dpop` (JWK thumbprint) + `exp` + `uid` in the payload enables same-possession local correlation of the user's DPoP-bound device across sessions. Thumbprint is public per RFC 9449 §6; correlation handle is the privacy delta. | Low |
+| T8.7 | Clarification | Sudo (or any setuid-root descendant) inherits the user's session keyring and becomes a possessor of the user's pre-sudo key by kernel design. This is documented behaviour, not a defect. | Documentation |
+| T8.8 | Clarification | Multiple successful authentications in the same session tree publish multiple `prmana_<sid>` entries. Consumers that assume singleton keys will mis-correlate. | Documentation |
+| T8.9 | Tampering | `libc::syscall(SYS_add_key, …)` raw FFI: supply-chain risk is whatever the project already accepts for `libc`. Switching to a `keyutils` crate wrapper would reduce FFI hand-rolling at the cost of a new dependency; chose not to per ADR-026 (materially-equivalent trust surface). | Low |
+
+### Mitigations (normative, enforced by ADR-026 §Invariants)
+
+- **T8.1:** publisher detects `@us` via `KEYCTL_GET_KEYRING_ID` comparison and refuses to publish (warn + continue, non-fatal). Operator PAM-stack configuration (`pam_keyinit.so force revoke`) is required for the capability to be usable, but is not relied on as the sole guarantee.
+- **T8.2 / T8.3:** publisher uses the process-keyring-first pattern. `add_key` into `KEY_SPEC_PROCESS_KEYRING` (exclusively possessed by the publishing process), apply `SETPERM` + `SET_TIMEOUT` there, then `KEYCTL_LINK` into the session keyring. On any failure before LINK, `KEYCTL_REVOKE`. No partial state escapes into a multi-possessor keyring.
+- **T8.4:** payload MUST be prefixed `v=1;`. Publisher MUST percent-encode `;`, `=`, `%`, `\0`, CR, LF in every claim value. Egress sanitisation is the publisher's responsibility. Pairs that would overflow the size bound are skipped whole — never truncated mid-escape.
+- **T8.5:** documented. Non-fatal failure semantics mean consumers treat `PRMANA_KEY` absence as fall-through to prior (env-var-only) behaviour. Orphan keys self-expire via TTL.
+- **T8.6:** accepted and documented. `dpop` field may be suppressed in a future `v=2` schema if threat model shifts.
+- **T8.7 / T8.8:** consumer documentation. ADR-026 and [pam-integration.md](pam-integration.md) state that POSSESSOR-only means "possession set", not "publishing process only", and that multiple `prmana_*` keys per session tree are expected.
+- **T8.9:** accept libc supply-chain posture. No crate addition.
+
+### Residual risks
+
+| # | Risk | Mitigated by | Accepted because |
+|---|------|--------------|-------------------|
+| R8.1 | Same-possession local processes can `KEYCTL_READ` the payload including `dpop` thumbprint | POSSESSOR-only ACL, T8.6/T8.7 docs | These processes already act under the user's authority; thumbprint is a public value per RFC 9449 §6 |
+| R8.2 | A `KEYCTL_LINK` by a possessor persists the key past prmana's intended TTL into a keyring the attacker controls | Process-keyring anchor limits the race window to before LINK-to-session | Post-publish persistence by a possessor inside their own authority set is not a boundary crossing |
+| R8.3 | `PRMANA_KEY` env var stripped while kernel key survives until TTL | Non-fatal semantics, consumer fall-through | Kernel-managed TTL bounds exposure; fall-through behaviour is the safe default |
+| R8.4 | Root attacker can read any key on the host | Out of scope | Systemic |
+
+### Required tests
+
+- **Positive:** sshd auth-worker publishes → session-worker reads via `PRMANA_KEY`; payload parses; TTL aligned to token `exp` within clock-skew bounds; `KEYCTL_READ` succeeds for the user's shell; multiple successful auth events create distinct keys keyed by distinct `sid`; `v=1;` prefix present; Linux-only `mod keyring;` compiles on Linux with `--all-features`.
+- **Negative:** publication attempted against `@us` → publisher refuses with `SharedSessionKeyring` before any kernel state is created; claim value containing `;` → percent-encoded, never concatenated raw; macOS/non-Linux `cargo check -p pam-prmana --all-features` → compiles without the keyring module; break-glass path → publish step NOT invoked (break-glass returns `PamError::IGNORE` before the success path).
+- **Adversarial:** concurrent same-UID possessor attempts `KEYCTL_READ`/`UPDATE`/`SETPERM`/`SET_TIMEOUT`/`LINK`/`INVALIDATE` on the key during the publication window → all MUST fail because the key is in the process keyring until after ACL lands; `SETPERM` failure mid-publish → `KEYCTL_REVOKE` leaves no residual key in the session keyring; process SIGKILL mid-publish → process-keyring death reaps the partial key; IdP-supplied `iss` / `username` containing `;` or `=` → payload remains un-injectable (parse round-trip test); `KEYCTL_JOIN_SESSION_KEYRING(NULL)` refused by kernel (LSM policy) → publish fails non-fatally, `PRMANA_KEY` absent, rest of auth flow unaffected.
+- **Fuzz:** `format_claims` input fuzzer (arbitrary-byte claim values, oversize values, multi-byte UTF-8).
+
+### Security invariants referenced
+
+- ADR-026 §Invariants #1–5 (keyring anchor integrity, atomic ACL, versioned escaped payload, Linux-only build, ABI commitment).
+- RFC 9449 §6 (JWK thumbprint as public confirmation material; informs R8.1 acceptance).
+- `keyrings(7)` possession model, `session-keyring(7)` inheritance semantics, `user-session-keyring(7)` `@us` fallback, `KEYCTL_SETPERM(2const)`, `KEYCTL_SET_TIMEOUT(2const)`, `KEYCTL_LINK(2const)`, `KEYCTL_JOIN_SESSION_KEYRING(2const)`, `add_key(2)`.
+
+---
+
+*Last updated: 2026-04-19. Revision required when new trust boundaries, authentication flows, or storage backends are introduced.*

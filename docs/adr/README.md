@@ -22,6 +22,7 @@ ADRs document significant architectural decisions made during the project's deve
 | [013](./013-same-uid-ipc-trust-model.md) | Same-UID IPC Trust Model | Accepted | 2026-04-09 |
 | [014](./014-tpm-object-attributes.md) | TPM 2.0 Object Attributes | Accepted | 2026-04-09 |
 | [018](./018-hardware-attestation.md) | TPM 2.0 Key Attestation via TPM2_CC_Certify | Accepted | 2026-04-09 |
+| [026](./026-kernel-keyring-session-claims.md) | Kernel Keyring Session-Claims Publication | Proposed | 2026-04-19 |
 
 ## ADR Format
 
