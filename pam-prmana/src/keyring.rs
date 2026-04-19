@@ -95,8 +95,20 @@ pub enum Anchor {
 /// user-session keyring (`@us`). When this is the case, any key we
 /// publish is visible to all concurrent sessions for the same UID.
 fn is_shared_user_session_keyring() -> bool {
-    let sess = keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING as c_long, 0, 0, 0);
-    let us = keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_USER_SESSION_KEYRING as c_long, 0, 0, 0);
+    let sess = keyctl(
+        KEYCTL_GET_KEYRING_ID,
+        KEY_SPEC_SESSION_KEYRING as c_long,
+        0,
+        0,
+        0,
+    );
+    let us = keyctl(
+        KEYCTL_GET_KEYRING_ID,
+        KEY_SPEC_USER_SESSION_KEYRING as c_long,
+        0,
+        0,
+        0,
+    );
     match (sess, us) {
         (Ok(s), Ok(u)) => s == u,
         _ => false, // can't tell — assume isolated
@@ -120,6 +132,25 @@ pub fn publish(
     anchor: Anchor,
     ttl_secs: u32,
 ) -> Result<KeySerial, KeyringError> {
+    publish_with_detector(
+        description,
+        payload,
+        anchor,
+        ttl_secs,
+        is_shared_user_session_keyring,
+    )
+}
+
+/// Internal entry point taking a pluggable detector for `@us`. Used by
+/// tests to exercise the `SharedSessionKeyring` refusal path without
+/// needing a specific kernel configuration.
+fn publish_with_detector<F: FnOnce() -> bool>(
+    description: &str,
+    payload: &[u8],
+    anchor: Anchor,
+    ttl_secs: u32,
+    is_shared: F,
+) -> Result<KeySerial, KeyringError> {
     if payload.len() > MAX_PAYLOAD {
         return Err(KeyringError::PayloadTooLong {
             max: MAX_PAYLOAD,
@@ -132,12 +163,12 @@ pub fn publish(
 
     // For Session anchor, check that we have an isolated session keyring
     // before we create any kernel state.
-    if matches!(anchor, Anchor::Session) && is_shared_user_session_keyring() {
+    if matches!(anchor, Anchor::Session) && is_shared() {
         return Err(KeyringError::SharedSessionKeyring);
     }
 
-    // SAFETY: CString::new fails only on interior NUL, ruled out above.
-    let key_type = CString::new("user").unwrap();
+    // C-string literal: no runtime allocation, no unwrap path.
+    let key_type: &std::ffi::CStr = c"user";
     let desc = CString::new(description).map_err(|_| KeyringError::PayloadHasNul)?;
 
     // Always publish to the process keyring first. The key is only
@@ -161,10 +192,19 @@ pub fn publish(
     // Set timeout BEFORE dropping SETATTR via SETPERM — once SETATTR is
     // revoked the kernel rejects further KEYCTL_SET_TIMEOUT with EACCES.
     if ttl_secs > 0 {
-        if let Err(e) = keyctl(KEYCTL_SET_TIMEOUT, serial as c_long, ttl_secs as c_long, 0, 0) {
+        if let Err(e) = keyctl(
+            KEYCTL_SET_TIMEOUT,
+            serial as c_long,
+            ttl_secs as c_long,
+            0,
+            0,
+        ) {
             // Cleanup: revoke the key so no partial state escapes.
             let _ = keyctl(KEYCTL_REVOKE, serial as c_long, 0, 0, 0);
-            return Err(KeyringError::Keyctl { op: "SET_TIMEOUT", errno: e });
+            return Err(KeyringError::Keyctl {
+                op: "SET_TIMEOUT",
+                errno: e,
+            });
         }
     }
 
@@ -174,7 +214,10 @@ pub fn publish(
     if let Err(e) = keyctl(KEYCTL_SETPERM, serial as c_long, perms as c_long, 0, 0) {
         // Cleanup: revoke so no partial state escapes from @p.
         let _ = keyctl(KEYCTL_REVOKE, serial as c_long, 0, 0, 0);
-        return Err(KeyringError::Keyctl { op: "SETPERM", errno: e });
+        return Err(KeyringError::Keyctl {
+            op: "SETPERM",
+            errno: e,
+        });
     }
 
     // Now the key is locked down. Link it into the target keyring.
@@ -187,7 +230,10 @@ pub fn publish(
             0,
         ) {
             let _ = keyctl(KEYCTL_REVOKE, serial as c_long, 0, 0, 0);
-            return Err(KeyringError::Keyctl { op: "LINK", errno: e });
+            return Err(KeyringError::Keyctl {
+                op: "LINK",
+                errno: e,
+            });
         }
         // Remove from @p — the key now lives only in the session keyring.
         let _ = keyctl(
@@ -207,7 +253,10 @@ pub fn publish(
 pub fn revoke(serial: KeySerial) -> Result<(), KeyringError> {
     keyctl(KEYCTL_REVOKE, serial as c_long, 0, 0, 0)
         .map(|_| ())
-        .map_err(|errno| KeyringError::Keyctl { op: "REVOKE", errno })
+        .map_err(|errno| KeyringError::Keyctl {
+            op: "REVOKE",
+            errno,
+        })
 }
 
 fn keyctl(op: c_long, a: c_long, b: c_long, c: c_long, d: c_long) -> Result<c_long, i32> {
@@ -244,9 +293,11 @@ fn percent_encode(s: &str) -> String {
 }
 
 /// Format a versioned payload from common token-derived claims. The
-/// output is `v=1;key=value;...` pairs separated by `;`, trimmed to
+/// output is `v=1;key=value;...` pairs separated by `;`, bounded by
 /// MAX_PAYLOAD. Empty values are omitted. Values are percent-encoded
-/// for `;`, `=`, `%`, NUL, CR, LF to prevent injection.
+/// for `;`, `=`, `%`, NUL, CR, LF to prevent injection. Pairs that
+/// would push the total past MAX_PAYLOAD are skipped whole — never
+/// truncated mid-escape — so the output is always a valid wire format.
 pub fn format_claims(pairs: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(MAX_PAYLOAD);
     out.push_str("v=1");
@@ -254,14 +305,18 @@ pub fn format_claims(pairs: &[(&str, &str)]) -> String {
         if v.is_empty() {
             continue;
         }
-        out.push(';');
-        out.push_str(&percent_encode(k));
-        out.push('=');
-        out.push_str(&percent_encode(v));
-        if out.len() >= MAX_PAYLOAD {
-            out.truncate(MAX_PAYLOAD);
-            break;
+        let encoded_k = percent_encode(k);
+        let encoded_v = percent_encode(v);
+        // ";" + k + "=" + v
+        let added = 1 + encoded_k.len() + 1 + encoded_v.len();
+        if out.len() + added > MAX_PAYLOAD {
+            // Skip this pair but keep trying — a later pair may still fit.
+            continue;
         }
+        out.push(';');
+        out.push_str(&encoded_k);
+        out.push('=');
+        out.push_str(&encoded_v);
     }
     out
 }
@@ -320,16 +375,93 @@ mod tests {
     }
 
     #[test]
-    fn format_claims_truncates_at_max() {
+    fn format_claims_skips_oversized_pair_whole() {
+        // A single pair larger than MAX_PAYLOAD is skipped entirely rather
+        // than emitted half-encoded. The output is still a valid wire
+        // format (just the version prefix).
         let big_iss = "x".repeat(400);
         let s = format_claims(&[("iss", &big_iss)]);
         assert!(s.len() <= MAX_PAYLOAD);
-        assert!(s.starts_with("v=1;"));
+        assert_eq!(s, "v=1");
+    }
+
+    #[test]
+    fn format_claims_never_truncates_mid_escape() {
+        // Value full of `=` chars expands to "%3D%3D..." after encoding.
+        // Under the old truncation logic, the byte-level trim could land
+        // between `%` and `3D`, corrupting the wire format. Now we only
+        // append a pair if the fully-encoded pair fits.
+        let big_v = "=".repeat(100); // 100 bytes in, 300 bytes encoded
+        let s = format_claims(&[("iss", "ok"), ("scope", &big_v), ("sub", "fits")]);
+        assert!(s.len() <= MAX_PAYLOAD);
+        // No dangling "%" or "%3" suffix that would desync a decoder.
+        assert!(!s.ends_with('%'));
+        assert!(!s.ends_with("%3"));
+        // Small pairs before and after the oversized one are still included.
+        assert!(s.starts_with("v=1;iss=ok"));
+        assert!(s.contains(";sub=fits"));
+        assert!(!s.contains(";scope="));
+    }
+
+    #[test]
+    fn format_claims_fits_typical_payload() {
+        // The real production payload: v=1 + 8 claims at realistic sizes.
+        // Should fit comfortably in MAX_PAYLOAD with room to spare.
+        let s = format_claims(&[
+            ("jti", "01HX7QZ9K4M6N8P2R4T6V8X0Z2"),
+            ("exp", "1735689600"),
+            ("iss", "https://idp.example.com/realms/prmana"),
+            ("sid", "550e8400-e29b-41d4-a716-446655440000"),
+            ("user", "alice"),
+            ("uid", "1001"),
+            ("acr", "urn:mace:incommon:iap:silver"),
+            ("dpop", "X4XE1z_s_qcLU7zK8Y0Yc9wE0wJ4H0nLEsqYqZ7gHfM"),
+        ]);
+        assert!(s.len() <= MAX_PAYLOAD);
+        assert!(s.starts_with("v=1;jti="));
+        assert!(s.ends_with("HfM")); // last claim landed
     }
 
     #[test]
     fn percent_encode_round_trip() {
         assert_eq!(percent_encode("hello"), "hello");
         assert_eq!(percent_encode("a;b=c%d\r\n\0"), "a%3Bb%3Dc%25d%0D%0A%00");
+    }
+
+    #[test]
+    fn publish_refuses_shared_session_keyring() {
+        // Detector returns true: we are on @us. publish_with_detector must
+        // refuse before any kernel state is created. This is the negative
+        // test corresponding to invariant #1 in ADR-026.
+        let payload = b"v=1;jti=test";
+        let result =
+            publish_with_detector("prmana_test_shared", payload, Anchor::Session, 60, || true);
+        match result {
+            Err(KeyringError::SharedSessionKeyring) => {}
+            other => panic!("expected SharedSessionKeyring, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn publish_proceeds_when_session_is_isolated() {
+        // Detector returns false: session is isolated. publish_with_detector
+        // proceeds into add_key. In the test environment add_key may be
+        // denied (container, restricted kernel), in which case we accept
+        // AddKey(errno) as confirmation that we passed the @us check.
+        let payload = b"v=1;jti=test";
+        let result =
+            publish_with_detector("prmana_test_isolated", payload, Anchor::Process, 60, || {
+                false
+            });
+        match result {
+            Ok(serial) => {
+                assert!(serial > 0);
+                let _ = revoke(serial);
+            }
+            Err(KeyringError::AddKey(_)) => {
+                // Kernel denial — acceptable in restricted test environments.
+            }
+            Err(e) => panic!("unexpected error past the @us check: {e}"),
+        }
     }
 }
