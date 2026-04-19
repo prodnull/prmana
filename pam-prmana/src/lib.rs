@@ -33,6 +33,8 @@ pub mod audit;
 pub mod auth;
 pub mod device_flow;
 pub mod identity;
+#[cfg(target_os = "linux")]
+pub mod keyring;
 pub mod oidc;
 pub mod otp;
 pub mod policy;
@@ -703,6 +705,60 @@ impl PamServiceModule for PamUnixOidc {
                 }
                 if let Err(e) = pamh.putenv(&format!("PRMANA_ISSUER={}", result.token_issuer)) {
                     tracing::warn!(error = ?e, "Failed to set PRMANA_ISSUER in PAM env");
+                }
+
+                // Publish a kernel-keyring entry holding selected token-derived
+                // claims, then expose its serial through PAM env. The key is
+                // published to the process keyring first with locked-down
+                // permissions, then linked into the session keyring — closing
+                // the TOCTOU window between add_key and SETPERM.
+                // See keyring.rs and keyrings(7).
+                //
+                // Failure is non-fatal: a missing key is functionally identical
+                // to the pre-existing behaviour. SharedSessionKeyring means
+                // pam_keyinit.so hasn't run — the operator needs to fix their
+                // PAM stack, not us.
+                #[cfg(target_os = "linux")]
+                {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let ttl = (result.token_exp - now).clamp(1, 86_400) as u32;
+                    // Build the versioned keyring payload. format_claims
+                    // prefixes with v=1; and percent-encodes values.
+                    let exp_str = result.token_exp.to_string();
+                    let uid_str = result.uid.to_string();
+                    let mut pairs: Vec<(&str, &str)> = vec![
+                        ("jti", result.token_jti.as_deref().unwrap_or("")),
+                        ("exp", &exp_str),
+                        ("iss", &result.token_issuer),
+                        ("sid", &result.session_id),
+                        ("user", &result.username),
+                        ("uid", &uid_str),
+                    ];
+                    if let Some(ref acr) = result.token_acr {
+                        pairs.push(("acr", acr));
+                    }
+                    if let Some(ref dpop) = result.dpop_thumbprint {
+                        pairs.push(("dpop", dpop));
+                    }
+                    let payload = keyring::format_claims(&pairs);
+                    match keyring::publish(
+                        &format!("prmana_{}", result.session_id),
+                        payload.as_bytes(),
+                        keyring::Anchor::Session,
+                        ttl,
+                    ) {
+                        Ok(serial) => {
+                            if let Err(e) = pamh.putenv(&format!("PRMANA_KEY={}", serial)) {
+                                tracing::warn!(error = ?e, "Failed to set PRMANA_KEY in PAM env");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "keyring publish failed; PRMANA_KEY not set");
+                        }
+                    }
                 }
 
                 PamError::SUCCESS
