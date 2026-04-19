@@ -3,18 +3,32 @@
 //! Provides [`get_peer_credentials`], which reads the UID (and, on Linux, PID)
 //! of the process on the other end of a connected Unix-domain socket.
 //!
-//! ## Platform support
+//! ## Platform support and per-platform semantics
 //!
-//! | Platform | Syscall          | PID available |
-//! |----------|------------------|---------------|
-//! | Linux    | `SO_PEERCRED`    | Yes           |
-//! | macOS    | `getpeereid(3)`  | No            |
-//! | Other    | N/A              | Err (fail-closed) |
+//! | Platform | Syscall          | PID available | Snapshot point             | What "UID" means |
+//! |----------|------------------|---------------|----------------------------|---------------------|
+//! | Linux    | `SO_PEERCRED`    | Yes           | `connect(2)` / `socketpair(2)` | Peer's effective UID at connect time (from `struct ucred`; `socket(7)`) |
+//! | macOS    | `getpeereid(3)`  | No            | `connect(2)`                   | Peer's effective UID at connect time (`getpeereid(3)`) |
+//! | Other    | N/A              | Err (fail-closed) | — | — |
+//!
+//! Both mechanisms snapshot the peer's effective credentials at the moment the
+//! connection is established. Subsequent UID changes in the peer (e.g. a later
+//! `seteuid(2)`) do NOT propagate to the reported value. This is a load-bearing
+//! property for ADR-025: the connector child calls `setuid(target_user)` **before**
+//! calling `connect(2)`, so the agent's credential check sees the target user's
+//! UID — not the root UID of the PAM parent process.
+//!
+//! **Documentation correction (2026-04-17, Codex tb7-review finding 1):** prior
+//! revisions of this comment collapsed the two platforms into one "effective UID"
+//! abstraction. That was imprecise: `SO_PEERCRED` returns `struct ucred` which on
+//! Linux also exposes PID and GID, while `getpeereid(3)` returns only effective
+//! UID + GID. Both are "effective-UID-at-connect-time" for our purposes, but
+//! callers that reason about PID (e.g. audit correlation) only get it on Linux.
 //!
 //! ## Security rationale
 //!
 //! The agent socket is protected by `0600` file-system permissions, which already
-//! prevents other users from *connecting*.  Peer credential checking adds a
+//! prevents other users from *connecting*. Peer credential checking adds a
 //! defense-in-depth layer: even if an attacker obtains a file descriptor for the
 //! socket (e.g., via a setuid binary or inherited fd), the kernel credential check
 //! rejects any connection from a process running as a different UID.
@@ -23,11 +37,11 @@
 //! This is consistent with the security invariant in CLAUDE.md: if a security
 //! check cannot be performed, log it prominently and deny access.
 //!
-//! ## Accepted trust model: same-UID equivalence (SSH-agent model)
+//! ## Trust model and its scope
 //!
-//! **Design decision (reviewed April 2026, Codex finding 2):** Any process
-//! running as the same UID is treated as fully trusted. This matches the
-//! well-established `ssh-agent` trust model used by OpenSSH.
+//! **Scope (ADR-013):** Any process running as the same UID as the daemon is
+//! treated as fully trusted. This matches the well-established `ssh-agent` trust
+//! model used by OpenSSH.
 //!
 //! **Implication:** A same-UID process can request DPoP proofs, trigger token
 //! refresh, shut down the daemon, or wipe credentials. If your threat model
@@ -35,14 +49,28 @@
 //! with hardware-bound keys (TPM/YubiKey), SELinux/AppArmor confinement, or
 //! full-disk encryption.
 //!
+//! **Out of scope (ADR-025):** ADR-013 does NOT authorize root callers. The
+//! sudo PAM path runs as root; if sudo PAM tried to connect here directly, the
+//! credential check below would reject it (correctly). Sudo PAM must instead
+//! go through the non-SUID connector child defined in ADR-025, which calls
+//! `setuid(target_user)` before connecting — the agent then sees a same-UID
+//! peer. Do not "widen" this check to accept root to accommodate sudo: ADR-013
+//! keeps its scope, ADR-025 owns the sudo boundary.
+//!
 //! **v3.1 plan:** IPC channel separation — crypto operations (GetProof) on one
 //! socket, admin operations (Shutdown, SessionClosed) on a root-only socket.
 //! See `docs/security-audit-2026-04.md` Finding 2 for details.
 //!
 //! ## References
 //!
-//! - `socket(7)` Linux man page, `SO_PEERCRED` option.
-//! - `getpeereid(3)` BSD/macOS man page.
+//! - `socket(7)` Linux man page, `SO_PEERCRED` option — explicitly defines the
+//!   peer credential as "that which was in effect at the time of the call to
+//!   `connect(2)`, `listen(2)`, or `socketpair(2)`."
+//! - `getpeereid(3)` BSD/macOS man page — "returns the effective user and group
+//!   IDs of the peer connected to a UNIX-domain socket."
+//! - ADR-013 (`docs/adr/013-same-uid-ipc-trust-model.md`) — scope statement.
+//! - ADR-025 (`docs/adr/025-sudo-ipc-boundary.md`) — sudo PAM → agent boundary
+//!   via non-SUID connector child.
 //! - libc 0.2 — <https://docs.rs/libc/latest/libc/>
 
 use std::os::unix::io::AsRawFd;
@@ -50,14 +78,17 @@ use std::os::unix::io::AsRawFd;
 /// Extract the UID (and optionally PID) of the connected peer.
 ///
 /// Returns `(uid, Option<pid>)`:
-/// - `uid`: effective UID of the peer process.
-/// - `pid`: PID of the peer process on Linux; `None` on macOS (`getpeereid` does
-///   not expose PID).
+/// - `uid`: the peer's effective UID **at the time the connection was established**.
+///   On Linux this comes from `SO_PEERCRED`'s `struct ucred.uid`; on macOS from
+///   `getpeereid(3)`. Both snapshot at `connect(2)` / `socketpair(2)`; later UID
+///   changes in the peer do not propagate.
+/// - `pid`: PID of the peer process on Linux (from `struct ucred.pid`);
+///   `None` on macOS (`getpeereid(3)` does not expose PID).
 ///
 /// # Errors
 ///
 /// Returns `Err` with `ErrorKind::Unsupported` on platforms other than Linux and
-/// macOS.  Returns `Err` with the OS error if the underlying syscall fails.
+/// macOS. Returns `Err` with the OS error if the underlying syscall fails.
 ///
 /// Callers must treat any `Err` as a connection rejection (fail-closed).
 pub fn get_peer_credentials(

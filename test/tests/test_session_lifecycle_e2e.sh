@@ -37,8 +37,17 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.e2e.yaml}"
 TEST_HOST_SERVICE="${TEST_HOST_SERVICE:-test-host-e2e}"
 SESSION_DIR="/run/prmana/sessions"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
-REALM="${REALM:-prmana}"
+# The realm imported by test/fixtures/keycloak/prmana-test-realm.json is
+# `prmana-test` (not `prmana`). Defaulting to the wrong name made every
+# token request return HTTP 404 which `curl -sf` mapped to the generic
+# `{"error":"request_failed"}` fallback — this was misread as a
+# "transient Keycloak flake" for weeks.
+REALM="${REALM:-prmana-test}"
 CLIENT_ID="${CLIENT_ID:-prmana}"
+# The `prmana` client in prmana-test-realm.json is confidential
+# (publicClient=false), so ROPC token requests must include the
+# client secret alongside grant_type=password.
+CLIENT_SECRET="${CLIENT_SECRET:-prmana-test-secret}"
 SSH_PORT="${SSH_PORT:-2222}"
 
 PASS=0
@@ -84,17 +93,28 @@ if ! docker compose -f "$COMPOSE_FILE" ps --quiet "$TEST_HOST_SERVICE" 2>/dev/nu
 fi
 result "PASS" "Compose stack running ($TEST_HOST_SERVICE)"
 
-# Acquire a real token from Keycloak (ROPC — test environment only)
-TOKEN_RESPONSE=$(curl -sf -X POST \
+# Acquire a real token from Keycloak (ROPC — test environment only).
+# Capture both body and HTTP status so we can distinguish a Keycloak 4xx/5xx
+# (stale realm import, bad creds, service not ready) from a network/connection
+# failure (curl exit code non-zero). Previously, `curl -sf … || echo '{"error":"request_failed"}'`
+# collapsed every non-2xx into the same opaque fallback and made real
+# configuration bugs look like transient flakes.
+TOKEN_BODY=$(mktemp)
+trap 'rm -f "$TOKEN_BODY"' EXIT
+TOKEN_HTTP=$(curl -sS -o "$TOKEN_BODY" -w '%{http_code}' -X POST \
     "${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "grant_type=password&client_id=${CLIENT_ID}&username=testuser&password=testpass&scope=openid" \
-    2>/dev/null || echo '{"error":"request_failed"}')
+    -d "grant_type=password&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&username=testuser&password=testpass&scope=openid" \
+    2>&1 || echo "000")
+TOKEN_RESPONSE=$(cat "$TOKEN_BODY")
 
 ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty' 2>/dev/null || echo "")
 
 if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
-    echo "FATAL: Could not acquire token from Keycloak. Response: $TOKEN_RESPONSE"
+    echo "FATAL: Could not acquire token from Keycloak."
+    echo "  URL:       ${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token"
+    echo "  HTTP:      ${TOKEN_HTTP}"
+    echo "  Response:  ${TOKEN_RESPONSE}"
     exit 1
 fi
 result "PASS" "Token acquired from Keycloak"

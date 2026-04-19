@@ -9,14 +9,27 @@ no-default-features = false
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Unmaintained crates are informational, not security vulnerabilities
-# These are transitive dependencies we don't control directly
+# Transitive advisories we track but don't currently fix in-line.
+# Each entry MUST carry justification + remediation path.
+# Entries are pruned when `cargo deny check advisories` reports `advisory-not-detected`.
 ignore = [
-    "RUSTSEC-2024-0388",  # derivative - unmaintained (via zbus/keyring)
-    "RUSTSEC-2024-0384",  # instant - unmaintained (via async-io/zbus)
-    "RUSTSEC-2025-0134",  # rustls-pemfile - unmaintained (via reqwest 0.11; fix: upgrade reqwest to 0.12)
-    "RUSTSEC-2024-0436",  # paste - unmaintained (transitive via proc-macro deps; no runtime risk)
-    "RUSTSEC-2026-0097",  # rand 0.8.5 - unsound with custom logger; prmana uses OsRng only, zero exposure
+    # rustls-pemfile - unmaintained (via reqwest 0.11).
+    # Fix: upgrade reqwest to 0.12 (pulls rustls 0.23 + rustls-webpki 0.103).
+    # Bundled with the rustls-webpki CVE fixes below; tracked for DT-POS follow-up.
+    "RUSTSEC-2025-0134",
+
+    # rustls-webpki 0.101.7: name constraints for URI names were incorrectly accepted.
+    # GHSA-965h-392x-2mh5. Low severity. Not exploitable in prmana:
+    # we do not issue certificates nor accept URI-name constraints from untrusted CAs.
+    # Fix: same as above (reqwest 0.11 -> 0.12 upgrade).
+    "RUSTSEC-2026-0098",
+
+    # rustls-webpki 0.101.7: permitted-subtree DNS name constraints accepted wildcard names.
+    # GHSA-xgp8-3hg3-c2mh. Low severity. Not exploitable in prmana:
+    # our JWKS/discovery fetches pin to configured issuer URLs; we do not consume
+    # third-party certificate chains that rely on permitted-subtree wildcard semantics.
+    # Fix: same as above (reqwest 0.11 -> 0.12 upgrade).
+    "RUSTSEC-2026-0099",
 ]
 
 [licenses]
@@ -32,8 +45,12 @@ allow = [
     "BSL-1.0",
     # pamsm uses GPL-3.0 for PAM bindings (dynamic linking)
     "GPL-3.0",
-    # Project license (educational/non-commercial use)
-    "CC-BY-NC-SA-4.0",
+    # webpki-roots (Mozilla-maintained root CA trust bundle pulled in via
+    # rustls/reqwest 0.12) is licensed under the Linux Foundation's Community
+    # Data License Agreement Permissive 2.0. This is a permissive data license
+    # for curated datasets (in this case, Mozilla's root CA list). Added when
+    # rustls-webpki was upgraded to fix RUSTSEC-2026-0098 and -0099.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

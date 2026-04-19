@@ -274,10 +274,10 @@ pub fn validate_dpop_proof(
     // Validate nonce (constant-time comparison to prevent timing attacks)
     if config.require_nonce {
         match (&claims.nonce, &config.expected_nonce) {
-            (Some(proof_nonce), Some(expected_nonce)) => {
-                if !constant_time_eq(proof_nonce, expected_nonce) {
-                    return Err(DPoPValidationError::NonceMismatch);
-                }
+            (Some(proof_nonce), Some(expected_nonce))
+                if !constant_time_eq(proof_nonce, expected_nonce) =>
+            {
+                return Err(DPoPValidationError::NonceMismatch);
             }
             (None, _) => return Err(DPoPValidationError::MissingNonce),
             _ => {}
