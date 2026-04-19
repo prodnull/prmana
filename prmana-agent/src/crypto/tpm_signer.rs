@@ -749,17 +749,6 @@ mod linux_impl {
             std::env::var("PRMANA_TPM_TCTI").unwrap_or_else(|_| "tabrmd".to_string())
         }
 
-        fn test_config() -> SignerConfig {
-            SignerConfig {
-                tpm: Some(TpmConfig {
-                    tcti: Some(test_tcti()),
-                    persistent_handle: Some(DEFAULT_HANDLE),
-                    pin_cache_timeout: None,
-                }),
-                ..Default::default()
-            }
-        }
-
         /// Build a test config pinned to a caller-chosen persistent handle so
         /// each integration test gets its own slot. Running against a shared
         /// swtpm (the CI pattern) means DEFAULT_HANDLE state from one test
