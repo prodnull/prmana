@@ -16,7 +16,7 @@
 use anyhow::{anyhow, bail, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use cryptoki::{
-    context::{CInitializeArgs, Pkcs11},
+    context::{CInitializeArgs, CInitializeFlags, Pkcs11},
     error::{Error as Pkcs11Error, RvError},
     mechanism::Mechanism,
     object::{Attribute, AttributeType, KeyType, ObjectClass},
@@ -186,8 +186,8 @@ impl YubiKeySigner {
             .open_rw_session(slot)
             .map_err(|e| anyhow!("Cannot open RW session: {e}"))?;
 
-        // Login with PIN.
-        let auth_pin = AuthPin::new(pin_str);
+        // Login with PIN. cryptoki 0.12 takes Box<str>; older versions took String.
+        let auth_pin = AuthPin::new(pin_str.into());
         login_with_pin(&session, &auth_pin, None)?;
 
         // Check if a key already exists in this slot.
@@ -282,8 +282,8 @@ impl DPoPSigner for YubiKeySigner {
             .open_rw_session(slot)
             .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
-        // Login.
-        let auth_pin = AuthPin::new(pin_str);
+        // Login. cryptoki 0.12 takes Box<str>.
+        let auth_pin = AuthPin::new(pin_str.into());
         login_with_pin(&session, &auth_pin, Some(&self.pin_cache))
             .map_err(|e| DPoPError::HardwareSigner(e.to_string()))?;
 
@@ -359,15 +359,22 @@ fn open_pkcs11_context(path: &str) -> anyhow::Result<Pkcs11> {
              macOS: brew install yubico-piv-tool)."
         )
     })?;
-    ctx.initialize(CInitializeArgs::OsThreads).or_else(|e| {
-        // AlreadyInitialized is OK — some PKCS#11 libraries return this on
-        // the second call within the same process.
-        if matches!(e, Pkcs11Error::AlreadyInitialized) {
-            Ok(())
-        } else {
-            Err(anyhow!("C_Initialize failed: {e}"))
-        }
-    })?;
+    // cryptoki 0.12 replaced CInitializeArgs::OsThreads with new(CInitializeFlags);
+    // OS_LOCKING_OK is the equivalent of the prior OS-threading default.
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
+        .or_else(|e| {
+            // CryptokiAlreadyInitialized is OK — some PKCS#11 libraries return this
+            // on the second C_Initialize call within the same process. cryptoki 0.12
+            // wraps the code in Error::Pkcs11(RvError::CryptokiAlreadyInitialized, fn).
+            if matches!(
+                &e,
+                Pkcs11Error::Pkcs11(RvError::CryptokiAlreadyInitialized, _)
+            ) {
+                Ok(())
+            } else {
+                Err(anyhow!("C_Initialize failed: {e}"))
+            }
+        })?;
     Ok(ctx)
 }
 

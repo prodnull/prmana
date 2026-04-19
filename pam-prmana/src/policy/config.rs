@@ -1669,18 +1669,27 @@ impl PolicyConfig {
     /// Load policy from environment variables (for testing / runtime override).
     ///
     /// Priority:
-    /// 1. `PRMANA_POLICY_FILE` — path to a YAML file (validated via `load_from`)
+    /// 1. `PRMANA_POLICY_FILE` — path to a YAML file (**test-mode only**, TB-7.11 SU-28)
     /// 2. `PRMANA_POLICY_YAML` — inline YAML string (**test-mode only**, Codex finding 4)
     /// 3. `PRMANA_TEST_MODE=true|1` — return `Default::default()`
     /// 4. Default file location `/etc/prmana/policy.yaml`
     ///
     /// # Security
     ///
-    /// `PRMANA_POLICY_YAML` is restricted to test-mode builds to prevent
-    /// environment injection attacks from silently overriding security policy.
-    /// Production policy MUST come from the validated file path.
+    /// `PRMANA_POLICY_FILE` and `PRMANA_POLICY_YAML` are both restricted to
+    /// test-mode builds (TB-7.11 SU-28, Codex tb7-review finding 2, 2026-04-17).
+    /// A release build will ignore both; production policy MUST come from the
+    /// fixed `/etc/prmana/policy.yaml` path.
+    ///
+    /// Rationale: sudo preserves env vars configured via `env_keep`; without
+    /// compile-time gating, a user with even one preserved `PRMANA_POLICY_*`
+    /// variable could redirect PAM at a user-writable permissive policy file,
+    /// bypassing the root-owned policy entirely. This is a privileged-path
+    /// downgrade vector and is closed by compile-time gating (not runtime checks).
     pub fn from_env() -> Result<Self, PolicyError> {
-        // Check for test policy file path — goes through load_from() validation.
+        // Security (TB-7.11 SU-28): test-mode-only. Release builds skip this entirely
+        // and fall through to the fixed /etc/prmana/policy.yaml path.
+        #[cfg(feature = "test-mode")]
         if let Ok(path) = std::env::var("PRMANA_POLICY_FILE") {
             return Self::load_from(&path);
         }
@@ -1732,14 +1741,22 @@ impl PolicyConfig {
     /// the previous valid config from the cache. If no cache exists yet and the
     /// initial load fails, returns the error.
     ///
-    /// The config file path is resolved from `PRMANA_POLICY` env var or
-    /// `/etc/prmana/policy.yaml` (same as `from_env()`). The `PRMANA_POLICY`
-    /// var is used (not `PRMANA_POLICY_FILE`) so tests can set a unique path
-    /// per test without conflicting with `from_env()`.
+    /// # Security
+    ///
+    /// In release builds, the config file path is fixed at `/etc/prmana/policy.yaml`.
+    /// In test-mode builds only, the path may be overridden via the `PRMANA_POLICY`
+    /// env var (TB-7.11 SU-28, Codex tb7-review finding 2, 2026-04-17). This prevents
+    /// env-var injection attacks (e.g. via sudoers `env_keep`) from redirecting PAM
+    /// at a user-writable permissive policy file on a production host.
     pub fn load_fresh() -> Result<Self, PolicyError> {
+        // Security (TB-7.11 SU-28): test-mode-only env override; release builds
+        // compile-time bind to the fixed production path.
+        #[cfg(feature = "test-mode")]
         let config_path: PathBuf = std::env::var("PRMANA_POLICY")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/etc/prmana/policy.yaml"));
+        #[cfg(not(feature = "test-mode"))]
+        let config_path: PathBuf = PathBuf::from("/etc/prmana/policy.yaml");
 
         // Acquire the global cache lock. Best-effort: if lock is poisoned, log WARN
         // and fall through to a fresh load.
@@ -2931,6 +2948,102 @@ issuers:
         assert!(
             result.is_ok(),
             "HTTP issuer URL with allow_insecure_http_for_testing must be accepted: {result:?}"
+        );
+    }
+
+    // ── SU-28: env-var policy-selector test-mode gating (TB-7.11 / Codex tb7-review #2) ──
+    //
+    // `PRMANA_POLICY_FILE` and `PRMANA_POLICY` are gated behind
+    // `#[cfg(feature = "test-mode")]` so sudo-preserved env vars cannot redirect
+    // PAM at a user-writable permissive policy file in production. These tests
+    // exercise the gated path in test-mode builds. The negative case — env var
+    // ignored in release build — is verified by the cfg-guard itself being
+    // syntactically present; `cargo check --release` exercises the release path.
+
+    /// SU-28: under test-mode, `PRMANA_POLICY_FILE` env var IS honored by
+    /// `from_env()`. A valid file path in the env var loads that file.
+    #[test]
+    #[cfg(feature = "test-mode")]
+    fn test_su28_from_env_honors_prmana_policy_file_in_test_mode() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("su28_policy.yaml");
+        std::fs::write(
+            &path,
+            r#"
+issuers:
+  - issuer_url: "https://idp.example.com/realms/su28"
+    client_id: "prmana"
+"#,
+        )
+        .unwrap();
+
+        // Isolate env for the duration of this test.
+        let prev_file = std::env::var("PRMANA_POLICY_FILE").ok();
+        let prev_yaml = std::env::var("PRMANA_POLICY_YAML").ok();
+        std::env::remove_var("PRMANA_POLICY_YAML");
+        std::env::set_var("PRMANA_POLICY_FILE", &path);
+
+        let result = PolicyConfig::from_env();
+
+        // Restore env before assertions so a panic does not leak state.
+        match prev_file {
+            Some(v) => std::env::set_var("PRMANA_POLICY_FILE", v),
+            None => std::env::remove_var("PRMANA_POLICY_FILE"),
+        }
+        if let Some(v) = prev_yaml {
+            std::env::set_var("PRMANA_POLICY_YAML", v);
+        }
+
+        let config = result.expect("from_env must honor PRMANA_POLICY_FILE under test-mode");
+        assert_eq!(config.issuers.len(), 1);
+        assert_eq!(
+            config.issuers[0].issuer_url,
+            "https://idp.example.com/realms/su28"
+        );
+    }
+
+    /// SU-28: under test-mode, `PRMANA_POLICY` env var IS honored by
+    /// `load_fresh()`. A valid file path in the env var loads that file.
+    #[test]
+    #[cfg(feature = "test-mode")]
+    fn test_su28_load_fresh_honors_prmana_policy_in_test_mode() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("su28_load_fresh.yaml");
+        std::fs::write(
+            &path,
+            r#"
+issuers:
+  - issuer_url: "https://idp.example.com/realms/su28-fresh"
+    client_id: "prmana"
+"#,
+        )
+        .unwrap();
+
+        let prev = std::env::var("PRMANA_POLICY").ok();
+        std::env::set_var("PRMANA_POLICY", &path);
+
+        // Clear the cache so load_fresh actually re-reads. The cache mutex is a
+        // sibling module item; best-effort clear via explicit reset is not
+        // exposed. We verify the path was used by checking the loaded content,
+        // which is correct regardless of caching (cache may already hold the
+        // previous-test config; we compare to the file we just wrote).
+        let result = PolicyConfig::load_fresh();
+
+        match prev {
+            Some(v) => std::env::set_var("PRMANA_POLICY", v),
+            None => std::env::remove_var("PRMANA_POLICY"),
+        }
+
+        let config = result.expect("load_fresh must honor PRMANA_POLICY under test-mode");
+        // Loaded from the test file we wrote.
+        assert_eq!(config.issuers.len(), 1);
+        assert_eq!(
+            config.issuers[0].issuer_url,
+            "https://idp.example.com/realms/su28-fresh"
         );
     }
 

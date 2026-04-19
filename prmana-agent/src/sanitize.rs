@@ -156,14 +156,13 @@ fn consume_until_st(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
             '\u{009C}' => return,
             // BEL — common OSC terminator (xterm extension)
             '\x07' => return,
-            // ESC — check for ESC \ (7-bit ST)
-            '\x1b' => {
-                if chars.peek() == Some(&'\\') {
-                    chars.next(); // consume '\'
-                    return;
-                }
-                // Bare ESC inside the sequence — continue consuming
+            // ESC \ — 7-bit ST terminator
+            '\x1b' if chars.peek() == Some(&'\\') => {
+                chars.next(); // consume '\'
+                return;
             }
+            // Bare ESC inside the sequence — continue consuming
+            '\x1b' => {}
             _ => {} // consume payload
         }
     }

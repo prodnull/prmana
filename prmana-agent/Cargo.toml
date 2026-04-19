@@ -27,7 +27,7 @@ libc = "0.2"
 
 # OIDC/JWT
 jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
-reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -84,7 +84,7 @@ pqc = ["dep:ml-dsa"]
 test-mode = []
 
 [dependencies.cryptoki]
-version = "0.7"
+version = "0.12"
 optional = true
 
 [dependencies.rpassword]

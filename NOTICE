@@ -1,13 +1,17 @@
 prmana
 Copyright 2024-2026 prmana Contributors
 
-EDUCATIONAL USE ONLY - NOT FOR PRODUCTION
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-This project is provided for educational and discussion purposes only.
-It demonstrates concepts related to OIDC authentication, DPoP token binding,
-and PAM module development. It is NOT intended for production use.
+    http://www.apache.org/licenses/LICENSE-2.0
 
-Licensed under CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0)
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 
 --------------------------------------------------------------------------------
 
@@ -17,7 +21,7 @@ A PAM module and client agent enabling OpenID Connect (OIDC) authentication
 for SSH and sudo on Unix/Linux systems, with DPoP (Demonstrating Proof of
 Possession) support for enhanced token security.
 
-Project Homepage: https://github.com/prodnull/unix-oidc
+Project Homepage: https://github.com/prodnull/prmana
 
 --------------------------------------------------------------------------------
 
@@ -27,13 +31,7 @@ This project implements the following IETF standards:
 - RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP)
 - RFC 7638: JSON Web Key (JWK) Thumbprint
 - RFC 7519: JSON Web Token (JWT)
-
---------------------------------------------------------------------------------
-
-ATTRIBUTION
-
-This project was created by the prmana contributors with assistance from
-Claude (Anthropic's AI assistant).
+- RFC 8693: OAuth 2.0 Token Exchange
 
 --------------------------------------------------------------------------------
 

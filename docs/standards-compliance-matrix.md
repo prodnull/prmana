@@ -91,7 +91,7 @@ This document tracks every standards reference in the prmana codebase -- RFCs, N
 | FIPS 186-4/5 | Digital Signature Standard | SS6 (approved curves: P-256, P-384, P-521) | `pam-prmana/src/oidc/dpop.rs`, all DPoP signing code | Full | ES256 (P-256 ECDSA) is the primary algorithm |
 | FIPS 204 | ML-DSA (Module-Lattice-Based Digital Signature) | SS3.2 (implementation security) | `prmana-agent/src/crypto/pqc_signer.rs` | Full | ML-DSA-65 (NIST level 3, 192-bit classical); `mlock` gap noted (finding F-07) |
 | FIPS 203 | ML-KEM (Module-Lattice-Based Key Encapsulation) | -- | -- | Referenced-Only | Cited in NIST audit for completeness; not implemented (KEM not needed for DPoP) |
-| FIPS 140-3 | Security Requirements for Cryptographic Modules | AS05.10 (zeroization) | `docs/research/libcrux-zeroize-contribution.md` | Referenced-Only | No FIPS-validated Rust crypto libraries yet; OpenSSL FIPS backend planned |
+| FIPS 140-3 | Security Requirements for Cryptographic Modules | AS05.10 (zeroization) | — | Referenced-Only | No FIPS-validated Rust crypto libraries yet; OpenSSL FIPS backend planned. Zeroization is implemented via the `zeroize` crate and `ZeroizeOnDrop` across key material in `pam-prmana/src/oidc/dpop.rs` and `prmana-agent/src/crypto/`. |
 
 ### Other Government Standards
 

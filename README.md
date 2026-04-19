@@ -34,7 +34,7 @@
 
 ## Why prmana?
 
-SSH keys get copied, shared, and never rotated. When someone leaves, finding all their access is archaeology. Enterprise MFA stops at the browser — you need it for email but not for root on production.
+SSH keys get copied, shared, and never rotated. When someone leaves, finding all their access is archaeology. Corporate MFA stops at the browser — you need it for email but not for root on production.
 
 `prmana` bridges this gap by bringing OIDC (the same protocol behind "Sign in with Google/Microsoft/Okta") to Linux PAM, with DPoP token binding to prevent token theft.
 
@@ -160,6 +160,8 @@ See the [installation guide](docs/installation.md) for detailed setup including 
 | [Keycloak Reference](docs/keycloak-dpop-reference.md) | Keycloak DPoP setup |
 | [Entra ID Setup](docs/entra-setup-guide.md) | Azure Entra ID configuration |
 | [Community Testing](docs/community-testing-guide.md) | Testing on various platforms |
+| [Threat Model](docs/threat-model.md) | STRIDE model and residual risks |
+| [Competitive Threat Surface](docs/competitive-threat-surface.md) | Head-to-head security comparison vs alternatives (fact-checked against primary sources) |
 
 ### Architecture Decision Records
 
@@ -195,7 +197,7 @@ We'd love your feedback — questions, ideas, bug reports, or just sharing how y
 
 ## Maintained By
 
-Built by [Chiradeep Chhaya](https://www.linkedin.com/in/chiradeepchhaya/), cybersecurity architect focused on identity and access management for enterprise infrastructure.
+Built by [Chiradeep Chhaya](https://www.linkedin.com/in/chiradeepchhaya/), cybersecurity architect focused on identity and access management for production infrastructure.
 
 All [releases are signed](SECURITY.md#binary-verification) with Sigstore (keyless) and GPG. Commits are signed with the project's GPG key.
 
