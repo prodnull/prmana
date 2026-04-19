@@ -17,6 +17,10 @@ and console authentication.
 Edit `/etc/pam.d/sshd`:
 
 ```
+# Must run first so prmana gets a fresh per-login session keyring
+# rather than the shared per-UID @us keyring.
+session required    pam_keyinit.so  force revoke
+
 # prmana OIDC authentication — must appear before pam_unix.so
 auth    sufficient  pam_prmana.so  config=/etc/prmana/policy.yaml
 auth    required    pam_unix.so    use_first_pass
@@ -27,6 +31,8 @@ account required    pam_unix.so
 session required    pam_prmana.so  config=/etc/prmana/policy.yaml
 session required    pam_unix.so
 ```
+
+The `pam_keyinit.so force revoke` line is required when downstream PAM consumers read session claims from the kernel keyring via `PRMANA_KEY` (see §"Session Claims in the Kernel Keyring" below). Without it, the session keyring falls back to the shared per-UID `@us` keyring, and prmana refuses to publish there (warn + continue, non-fatal). Integrators that only consume PAM env vars (`PRMANA_SESSION_ID`, `PRMANA_TOKEN_JTI`, `PRMANA_TOKEN_EXP`, `PRMANA_ISSUER`) don't need this line, but it's recommended anyway.
 
 Or use the included snippet:
 
@@ -127,11 +133,67 @@ sudo ldconfig
 Check that `policy.yaml` `issuers[].issuer` matches the `iss` claim in the JWT exactly
 (including trailing slash if present in the IdP's configuration).
 
+## Session Claims in the Kernel Keyring
+
+On successful authentication, `pam_prmana` publishes a small, versioned,
+printable-ASCII payload of selected token claims into the Linux kernel
+session keyring and exposes the key's serial number as `PRMANA_KEY` in
+the PAM environment. Downstream PAM modules in the same transaction
+(audit correlators, nftables session gating, attestation-aware helpers)
+can retrieve the payload via `keyctl read $PRMANA_KEY` without needing
+the agent or trusting PAM env vars to survive the sshd privsep fork.
+
+**Payload format (wire contract, ABI-stable within version 1):**
+
+```
+v=1;jti=<token jti>;exp=<unix ts>;iss=<issuer url>;sid=<prmana session id>;user=<unix user>;uid=<unix uid>[;acr=<value>][;dpop=<jwk thumbprint>]
+```
+
+Values are percent-encoded for `;`, `=`, `%`, NUL, CR, LF. Oversized
+claims that would push the payload past 256 bytes are skipped whole —
+the output is always a valid wire format.
+
+**Keyring semantics:**
+
+- Anchor: per-login session keyring (`KEY_SPEC_SESSION_KEYRING`). prmana
+  refuses to publish if the resolved target is the shared `@us` keyring
+  (see `pam_keyinit.so` note above).
+- ACL: POSSESSOR view/read/search only. The user's shell, descendants,
+  and any setuid helpers (including `sudo`) possess the key. Other UIDs
+  cannot access it.
+- TTL: aligned to the token's `exp` claim, clamped to `[1, 86400]`
+  seconds. Kernel reaps the key on expiry or last-reference drop.
+- Failure: non-fatal. If publication fails for any reason (kernel quota,
+  `@us` detected, LSM policy), `PRMANA_KEY` is absent and consumers
+  MUST fall through to the env-var-only path.
+
+**Consuming the payload from a downstream PAM module:**
+
+```c
+const char *serial_str = pam_getenv(pamh, "PRMANA_KEY");
+if (serial_str) {
+    key_serial_t serial = atoi(serial_str);
+    char buf[256];
+    long n = keyctl_read(serial, buf, sizeof buf);
+    // parse v=1;k=v;... with percent-decoding
+}
+```
+
+Consumers MUST key off the `sid` field (or the key description
+`prmana_<sid>`) rather than assuming a singleton `prmana_*` key per
+session tree. Multiple successful authentications in the same tree
+each publish a distinct entry.
+
+Details in [ADR-026](adr/026-kernel-keyring-session-claims.md) and
+[TB-8 in the threat model](threat-model.md).
+
 ## References
 
 - [Installation guide](installation.md)
 - [User guide](user-guide.md)
 - [Deployment patterns](deployment-patterns.md)
 - [Rollout checklist](rollout-checklist.md)
+- [ADR-026](adr/026-kernel-keyring-session-claims.md) — kernel-keyring session-claims ABI
 - RFC 7468 — PAM API specification
 - RFC 9449 — DPoP
+- `keyrings(7)`, `session-keyring(7)`, `pam_keyinit(8)`
