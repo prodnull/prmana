@@ -760,6 +760,61 @@ mod linux_impl {
             }
         }
 
+        /// Build a test config pinned to a caller-chosen persistent handle so
+        /// each integration test gets its own slot. Running against a shared
+        /// swtpm (the CI pattern) means DEFAULT_HANDLE state from one test
+        /// would otherwise collide with another: re-provisioning through the
+        /// same handle relies on `evict_control(Owner, …)` succeeding, and a
+        /// silent evict failure leaves the slot occupied — the next test
+        /// then fails with `TPM_RC_NV_DEFINED`. Unique handles per test
+        /// sidesteps that entirely.
+        fn test_config_with_handle(handle: u32) -> SignerConfig {
+            SignerConfig {
+                tpm: Some(TpmConfig {
+                    tcti: Some(test_tcti()),
+                    persistent_handle: Some(handle),
+                    pin_cache_timeout: None,
+                }),
+                ..Default::default()
+            }
+        }
+
+        /// RAII helper that evicts a test's persistent handle on drop so
+        /// the swtpm state is clean for the next `cargo test` invocation.
+        struct HandleGuard {
+            tcti: String,
+            handle: u32,
+        }
+
+        impl HandleGuard {
+            fn new(tcti: String, handle: u32) -> Self {
+                Self { tcti, handle }
+            }
+        }
+
+        impl Drop for HandleGuard {
+            fn drop(&mut self) {
+                let Ok(tcti_conf) = parse_tcti(&self.tcti) else {
+                    return;
+                };
+                let Ok(mut ctx) = Context::new(tcti_conf) else {
+                    return;
+                };
+                let Ok(persistent) = PersistentTpmHandle::new(self.handle) else {
+                    return;
+                };
+                if let Ok(existing) = ctx.tr_from_tpm_public(TpmHandle::Persistent(persistent)) {
+                    let _ = ctx.execute_with_nullauth_session(|c| {
+                        c.evict_control(
+                            Provision::Owner,
+                            existing,
+                            Persistent::Persistent(persistent),
+                        )
+                    });
+                }
+            }
+        }
+
         #[test]
         #[ignore = "Requires TPM 2.0 or swtpm (set PRMANA_TPM_TCTI=swtpm for CI)"]
         fn test_tpm_probe_p256() {
@@ -770,7 +825,11 @@ mod linux_impl {
         #[test]
         #[ignore = "Requires TPM 2.0 or swtpm (set PRMANA_TPM_TCTI=swtpm for CI)"]
         fn test_tpm_provision_and_sign() {
-            let config = test_config();
+            // Unique handle so test state doesn't collide with other tests
+            // sharing the same swtpm.
+            let handle = 0x8100_0010;
+            let config = test_config_with_handle(handle);
+            let _guard = HandleGuard::new(test_tcti(), handle);
 
             // Provision — returns TpmSigner directly (CRIT-2 fix).
             let signer = TpmSigner::provision(&config).expect("TpmSigner::provision failed");
@@ -824,11 +883,17 @@ mod linux_impl {
         #[test]
         #[ignore = "Requires TPM 2.0 or swtpm (set PRMANA_TPM_TCTI=swtpm for CI)"]
         fn test_tpm_load_existing_key() {
-            let config = test_config();
+            // Unique handle + self-provision so this test doesn't depend on
+            // execution order or leftover state from other tests.
+            let handle = 0x8100_0011;
+            let config = test_config_with_handle(handle);
+            let _guard = HandleGuard::new(test_tcti(), handle);
 
-            // Load requires a key already provisioned at the default handle.
+            TpmSigner::provision(&config).expect("setup: provision failed");
+
+            // Now load the key we just provisioned.
             let signer = TpmSigner::load(&config)
-                .expect("TpmSigner::load requires an existing key at handle 0x81000001");
+                .expect("TpmSigner::load failed for a handle we just provisioned");
 
             let proof = signer
                 .sign_proof("SSH", "server.example.com", Some("test-nonce"))
@@ -841,7 +906,9 @@ mod linux_impl {
         #[test]
         #[ignore = "Requires TPM 2.0 or swtpm (set PRMANA_TPM_TCTI=swtpm for CI)"]
         fn test_certify_returns_attestation_evidence() {
-            let config = test_config();
+            let handle = 0x8100_0012;
+            let config = test_config_with_handle(handle);
+            let _guard = HandleGuard::new(test_tcti(), handle);
             let signer = TpmSigner::provision(&config).unwrap();
             let evidence = match signer.certify() {
                 Ok(e) => e,
@@ -893,7 +960,9 @@ mod linux_impl {
         #[test]
         #[ignore = "Requires TPM 2.0 or swtpm (set PRMANA_TPM_TCTI=swtpm for CI)"]
         fn test_certify_evidence_serializes_to_json() {
-            let config = test_config();
+            let handle = 0x8100_0013;
+            let config = test_config_with_handle(handle);
+            let _guard = HandleGuard::new(test_tcti(), handle);
             let signer = TpmSigner::provision(&config).unwrap();
             let evidence = match signer.certify() {
                 Ok(e) => e,
