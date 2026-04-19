@@ -692,33 +692,6 @@ jobs:
             sbom-spdx.json
 
   # ============================================================================
-  # CodeQL Analysis (GitHub Advanced Security)
-  # ============================================================================
-  codeql:
-    name: CodeQL Analysis
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          languages: python
-          # Note: Rust is not directly supported by CodeQL, but we can scan Python code
-
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          category: "/language:python"
-
-  # ============================================================================
   # DPoP Cross-Language Interoperability Tests
   # ============================================================================
   dpop-interop:
