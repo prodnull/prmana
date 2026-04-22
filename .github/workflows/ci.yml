@@ -624,7 +624,9 @@ jobs:
           sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@e401a4d879f25c0a52eebd872384bf6b2f533695 # cargo-llvm-cov
+        uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: cargo-llvm-cov
 
       - name: Cache cargo
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
