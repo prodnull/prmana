@@ -37,10 +37,10 @@ fi
 
 echo ""
 
-# Ensure npm dependencies are installed
+# Ensure npm dependencies are installed from pinned lockfile (OSSF Scorecard: Pinned-Dependencies)
 echo "Installing npm dependencies..."
 cd "$SCRIPT_DIR"
-npm install --silent
+npm ci --silent
 npx playwright install chromium --quiet
 
 # Start test environment

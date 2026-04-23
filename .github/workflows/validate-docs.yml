@@ -39,7 +39,7 @@ jobs:
           node-version: '20'
 
       - name: Install markdownlint-cli2
-        run: npm install -g markdownlint-cli2
+        run: npm install -g markdownlint-cli2@0.22.0
 
       - name: Create markdownlint config
         run: |
@@ -105,7 +105,7 @@ jobs:
           node-version: '20'
 
       - name: Install markdown-link-check
-        run: npm install -g markdown-link-check
+        run: npm install -g markdown-link-check@3.14.2
 
       - name: Create link check config
         run: |
@@ -332,7 +332,7 @@ jobs:
           node-version: '20'
 
       - name: Install cspell
-        run: npm install -g cspell
+        run: npm install -g cspell@10.0.0
 
       - name: Create cspell config
         run: |
