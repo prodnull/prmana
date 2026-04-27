@@ -59,7 +59,7 @@ jobs:
 
       - name: Upload Snyk results to GitHub Security tab
         if: steps.check-token.outputs.skip != 'true'
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
         with:
           sarif_file: snyk.sarif
 
@@ -88,7 +88,7 @@ jobs:
           fi
 
       - name: Upload audit results
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: cargo-audit-results
@@ -129,7 +129,7 @@ jobs:
 
       - name: TruffleHog Secret Scan (PR)
         if: github.event_name == 'pull_request'
-        uses: trufflesecurity/trufflehog@580628bb9d5455140899afe2cb981ff5640bf399 # main
+        uses: trufflesecurity/trufflehog@3fc0c2aa6648d54242e4af6fbfde0701796e4fb0 # main
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha }}
@@ -138,7 +138,7 @@ jobs:
 
       - name: TruffleHog Secret Scan (Push)
         if: github.event_name == 'push'
-        uses: trufflesecurity/trufflehog@580628bb9d5455140899afe2cb981ff5640bf399 # main
+        uses: trufflesecurity/trufflehog@3fc0c2aa6648d54242e4af6fbfde0701796e4fb0 # main
         with:
           path: ./
           base: ${{ github.event.before }}
@@ -147,7 +147,7 @@ jobs:
 
       - name: TruffleHog Secret Scan (Scheduled)
         if: github.event_name == 'schedule'
-        uses: trufflesecurity/trufflehog@580628bb9d5455140899afe2cb981ff5640bf399 # main
+        uses: trufflesecurity/trufflehog@3fc0c2aa6648d54242e4af6fbfde0701796e4fb0 # main
         with:
           path: ./
           extra_args: --only-verified --since-commit HEAD~100
@@ -177,7 +177,7 @@ jobs:
           publish_results: true
 
       - name: Upload Scorecard results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
         if: always()
         with:
           sarif_file: scorecard-results.sarif
