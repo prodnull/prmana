@@ -1,0 +1,89 @@
+name: Cleanup old workflow runs
+
+# Scheduled retention for the Actions run history. GitHub's default is to
+# keep every run forever (artifacts/logs respect the repo's retention
+# setting; run metadata does not). Dependabot, Dependency Graph, and
+# every CI push stack up quickly — 300+ runs in a few weeks for this
+# repo. This workflow trims anything older than KEEP_DAYS.
+#
+# Triggers:
+#   - schedule: Mondays 07:00 UTC (weekly).
+#   - workflow_dispatch: manual run with optional keep_days override.
+#
+# Never runs on push/pull_request, so a malicious PR cannot invoke it
+# (no injection path). `actions: write` is requested only for this job.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      keep_days:
+        description: 'Keep runs newer than N days (default 14)'
+        required: false
+        default: '14'
+
+permissions: {}
+
+concurrency:
+  group: cleanup-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delete runs older than KEEP_DAYS
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to list and delete workflow runs via the REST API.
+      actions: write
+      # Read-only token scope on repo contents (no code changes).
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      KEEP_DAYS: ${{ inputs.keep_days || '14' }}
+    steps:
+      - name: Delete old completed runs
+        run: |
+          set -euo pipefail
+
+          # Validate KEEP_DAYS is a small positive integer so we never pass
+          # a crafted string into `date -d`. Only workflow_dispatch can
+          # change this value (schedule uses the default), and
+          # workflow_dispatch already requires repo write access — but the
+          # regex check is cheap belt-and-braces hygiene.
+          if ! [[ "${KEEP_DAYS}" =~ ^[0-9]+$ ]] || [ "${KEEP_DAYS}" -lt 1 ] || [ "${KEEP_DAYS}" -gt 365 ]; then
+            echo "error: KEEP_DAYS must be an integer in [1, 365], got: ${KEEP_DAYS}" >&2
+            exit 1
+          fi
+
+          cutoff=$(date -u -d "${KEEP_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Repository : ${REPO}"
+          echo "Keep window: ${KEEP_DAYS} days"
+          echo "Cutoff     : ${cutoff}"
+
+          # Paginate through runs 1000 at a time (gh's cap per call); loop
+          # again in case more remain after the first batch.
+          deleted=0
+          while : ; do
+            mapfile -t ids < <(
+              gh run list --repo "${REPO}" --limit 1000 \
+                --json databaseId,status,createdAt \
+                --jq '.[] | select(.status == "completed" and .createdAt < "'"${cutoff}"'") | .databaseId'
+            )
+            if [ "${#ids[@]}" -eq 0 ]; then
+              break
+            fi
+            for id in "${ids[@]}"; do
+              if gh run delete --repo "${REPO}" "${id}" >/dev/null 2>&1; then
+                deleted=$((deleted + 1))
+              else
+                echo "warn: failed to delete run ${id}"
+              fi
+            done
+            if [ "${#ids[@]}" -lt 1000 ]; then
+              break
+            fi
+          done
+
+          echo "Deleted ${deleted} run(s)."
