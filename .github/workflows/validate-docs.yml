@@ -140,6 +140,9 @@ jobs:
                 "pattern": "^https://manage\\.auth0\\.com"
               },
               {
+                "pattern": "^https://(www\\.)?linkedin\\.com"
+              },
+              {
                 "pattern": "^mailto:"
               },
               {
