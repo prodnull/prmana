@@ -17,7 +17,7 @@ path = "src/main.rs"
 # `jwk` features are all that is needed.
 p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
 sha2 = "0.10"
-base64 = "0.21"
+base64 = "0.22"
 # MEM-01/MEM-02: zeroize for Zeroizing<T> wrapper; ZeroizeOnDrop already implemented
 # unconditionally by ecdsa-0.16's SigningKey. secrecy is added for Plan 02+ usage.
 zeroize = { version = "1", features = ["derive"] }
