@@ -16,10 +16,15 @@ updates:
     commit-message:
       prefix: "deps(rust)"
     groups:
-      # Group ALL Rust updates into a single PR for manual review
+      # Group minor + patch Rust updates into a single PR; majors stay
+      # individual so a breaking API change (e.g. hmac 0.12 → 0.13) doesn't
+      # mask the rest of the group.
       rust-all:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
@@ -37,6 +42,9 @@ updates:
       actions-all:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Python DPoP library
   - package-ecosystem: "pip"
@@ -54,6 +62,9 @@ updates:
       python-all:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Go DPoP library
   - package-ecosystem: "gomod"
@@ -71,6 +82,9 @@ updates:
       go-all:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Java DPoP library (Gradle)
   - package-ecosystem: "gradle"
@@ -88,3 +102,6 @@ updates:
       java-all:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
