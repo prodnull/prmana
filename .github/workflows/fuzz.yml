@@ -49,7 +49,12 @@ jobs:
           sudo apt-get install -y libpam0g-dev libssl-dev pkg-config
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # Avoids `cargo install cargo-fuzz --locked` pinning to rustix 0.36.5
+        # which fails to compile on current Rust toolchains. taiki-e fetches a
+        # prebuilt binary, sidestepping the from-source rebuild.
+        uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: cargo-fuzz
 
       - name: Cache fuzz corpus
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
