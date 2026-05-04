@@ -92,7 +92,7 @@ version = "7"
 optional = true
 
 [dependencies.ml-dsa]
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.9"
 optional = true
 features = ["zeroize"]
 
@@ -101,7 +101,7 @@ features = ["zeroize"]
 # available via homebrew. The `--features tpm` feature compiles on both platforms
 # but TpmSigner is only available on Linux (cfg(target_os = "linux")).
 [target.'cfg(target_os = "linux")'.dependencies.tss-esapi]
-version = "7.6"
+version = "7.7"
 optional = true
 
 # Shared OIDC discovery and JWKS types (extracted from pam-prmana).
