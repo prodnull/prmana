@@ -718,7 +718,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.21'
+          # Must match go.mod's `go 1.23` directive. setup-go v6 tightens
+          # toolchain handling; mismatched go-version + go.mod fails the build.
+          go-version: '1.23'
           cache-dependency-path: dpop-cross-language-tests/go-test/go.sum
 
       - name: Set up Java
