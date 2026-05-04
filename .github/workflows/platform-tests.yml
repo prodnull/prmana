@@ -152,6 +152,11 @@ jobs:
   platform-tests:
     name: Test ${{ matrix.platform }} (${{ matrix.arch }})
     needs: build
+    # Dependabot PRs run with restricted secret scope, so the AWS OIDC role
+    # cannot be assumed; the EC2 launch matrix would fail at the credential
+    # step. Skip these defense-in-depth tests on bot PRs — Build, Check,
+    # Integration Tests, and Cargo Audit still validate the dep bump.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
