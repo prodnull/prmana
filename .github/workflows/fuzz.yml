@@ -42,6 +42,8 @@ jobs:
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
 
       - name: Install system dependencies
         run: |
@@ -49,7 +51,12 @@ jobs:
           sudo apt-get install -y libpam0g-dev libssl-dev pkg-config
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # Avoids `cargo install cargo-fuzz --locked` pinning to rustix 0.36.5
+        # which fails to compile on current Rust toolchains. taiki-e fetches a
+        # prebuilt binary, sidestepping the from-source rebuild.
+        uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: cargo-fuzz
 
       - name: Cache fuzz corpus
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
@@ -60,10 +67,15 @@ jobs:
             fuzz-corpus-${{ matrix.target }}-
 
       - name: Run fuzzer
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
         run: |
-          echo "Fuzzing ${{ matrix.target }} for ${FUZZ_DURATION}s"
+          echo "Fuzzing ${FUZZ_TARGET} for ${FUZZ_DURATION}s"
           cd fuzz
-          cargo +nightly fuzz run ${{ matrix.target }} -- \
+          # Pin --target to gnu host triple. Newer cargo-fuzz defaults to musl,
+          # which would require installing that target into the toolchain.
+          cargo +nightly fuzz run "${FUZZ_TARGET}" \
+            --target x86_64-unknown-linux-gnu -- \
             -max_total_time="${FUZZ_DURATION}" \
             -max_len=4096
 
