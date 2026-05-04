@@ -42,6 +42,8 @@ jobs:
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
 
       - name: Install system dependencies
         run: |
@@ -65,10 +67,15 @@ jobs:
             fuzz-corpus-${{ matrix.target }}-
 
       - name: Run fuzzer
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
         run: |
-          echo "Fuzzing ${{ matrix.target }} for ${FUZZ_DURATION}s"
+          echo "Fuzzing ${FUZZ_TARGET} for ${FUZZ_DURATION}s"
           cd fuzz
-          cargo +nightly fuzz run ${{ matrix.target }} -- \
+          # Pin --target to gnu host triple. Newer cargo-fuzz defaults to musl,
+          # which would require installing that target into the toolchain.
+          cargo +nightly fuzz run "${FUZZ_TARGET}" \
+            --target x86_64-unknown-linux-gnu -- \
             -max_total_time="${FUZZ_DURATION}" \
             -max_len=4096
 
