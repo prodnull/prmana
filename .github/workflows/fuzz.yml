@@ -54,7 +54,7 @@ jobs:
         # Avoids `cargo install cargo-fuzz --locked` pinning to rustix 0.36.5
         # which fails to compile on current Rust toolchains. taiki-e fetches a
         # prebuilt binary, sidestepping the from-source rebuild.
-        uses: taiki-e/install-action@711e1c3275189d76dcc4d34ddea63bf96ac49090 # v2.76.0
+        uses: taiki-e/install-action@c070f87102a1c75b3183910f391c1cb887fe13c8 # v2.77.6
         with:
           tool: cargo-fuzz
 
