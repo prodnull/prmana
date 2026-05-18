@@ -57,7 +57,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
-dirs = "5"
+dirs = "6"
 open = "5"
 serde_yaml = "0.9"
 figment = { version = "0.10", features = ["yaml", "env"] }
