@@ -1667,7 +1667,7 @@ dependencies = [
 name = "pam-prmana"
 version = "0.1.0"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "data-encoding",
@@ -1910,7 +1910,7 @@ name = "prmana-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.21.7",
+ "base64 0.22.1",
  "clap",
  "cryptoki",
  "directories",
