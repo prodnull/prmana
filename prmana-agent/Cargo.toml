@@ -45,7 +45,7 @@ clap = { version = "4", features = ["derive"] }
 # linux-native: keyutils syscall backend (@u keyring, no daemon needed)
 # apple-native: macOS Keychain Services
 keyring = { version = "3", features = ["sync-secret-service", "linux-native", "apple-native"] }
-directories = "5"
+directories = "6"
 
 # Error handling
 thiserror.workspace = true
