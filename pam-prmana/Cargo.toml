@@ -44,7 +44,7 @@ once_cell = "1.19"
 moka = { version = "0.12", features = ["sync"] }
 base64 = "0.21"
 uzers = "0.12"
-syslog = "6.1"
+syslog = "7.0"
 figment = { version = "0.10", features = ["yaml", "env"] }
 gethostname = "0.4"
 getrandom = "0.3"
