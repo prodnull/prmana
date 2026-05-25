@@ -33,7 +33,7 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.21.3")
 
     // Testing (5.10.x is the latest version supporting Java 11)
-    testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
