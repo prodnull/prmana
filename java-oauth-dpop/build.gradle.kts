@@ -30,10 +30,10 @@ dependencies {
     implementation("org.eclipse.collections:eclipse-collections:13.0.0")
 
     // JSON processing
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.21.3")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.0")
 
     // Testing (5.10.x is the latest version supporting Java 11)
-    testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
