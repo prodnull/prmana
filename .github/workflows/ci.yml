@@ -624,7 +624,7 @@ jobs:
           sudo apt-get install -y libpam0g-dev libssl-dev pkg-config libdbus-1-dev libtss2-dev
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@711e1c3275189d76dcc4d34ddea63bf96ac49090 # v2.76.0
+        uses: taiki-e/install-action@9bcaee1dcae34154180f412e2fa69355a7cda9f6 # v2.82.6
         with:
           tool: cargo-llvm-cov
 
@@ -716,7 +716,7 @@ jobs:
           key: ${{ runner.os }}-dpop-rust-${{ hashFiles('dpop-cross-language-tests/rust-test/Cargo.lock') }}
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           # Must match go.mod's `go 1.23` directive. setup-go v6 tightens
           # toolchain handling; mismatched go-version + go.mod fails the build.
@@ -724,7 +724,7 @@ jobs:
           cache-dependency-path: dpop-cross-language-tests/go-test/go.sum
 
       - name: Set up Java
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
         with:
           java-version: '21'
           distribution: 'temurin'
