@@ -18,7 +18,7 @@ path = "src/main.rs"
 # feature is all that is needed (the `jwk` feature was removed upstream in 0.14).
 p256 = { version = "0.14", features = ["ecdsa"] }
 sha2 = "0.11"
-base64 = "0.21"
+base64 = "0.23"
 # MEM-01/MEM-02: zeroize for Zeroizing<T> wrapper; ZeroizeOnDrop already implemented
 # unconditionally by ecdsa-0.17's SigningKey. secrecy is added for Plan 02+ usage.
 zeroize = { version = "1", features = ["derive"] }
@@ -48,7 +48,7 @@ clap = { version = "4", features = ["derive"] }
 # linux-native: keyutils syscall backend (@u keyring, no daemon needed)
 # apple-native: macOS Keychain Services
 keyring = { version = "3", features = ["sync-secret-service", "linux-native", "apple-native"] }
-directories = "5"
+directories = "6"
 
 # Error handling
 thiserror.workspace = true
@@ -60,7 +60,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
-dirs = "5"
+dirs = "7"
 open = "5"
 serde_yaml = "0.9"
 figment = { version = "0.10", features = ["yaml", "env"] }
