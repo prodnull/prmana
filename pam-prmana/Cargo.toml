@@ -37,7 +37,7 @@ thiserror.workspace = true
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 pamsm = { version = "0.5", features = ["libpam"] }
-jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12.0", features = ["aws_lc_rs"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 url = "2.5"
 # RFC 3339 audit timestamps. Already in the tree via syslog and jsonwebtoken.
