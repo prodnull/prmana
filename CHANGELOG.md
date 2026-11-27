@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Resolved RUSTSEC-2026-0387 (`crypto-bigint` timing variability) by moving to `p256` 0.14 and the
+  matching RustCrypto releases (`sha2`/`sha1` 0.11, `hmac` 0.13) across all Rust crates.
+- Removed `chrono` (RUSTSEC-2026-0543, unmaintained). Audit log timestamps keep the same format.
+- Token expiry validation now rejects tokens when the system clock reads before the Unix epoch,
+  instead of treating every token as unexpired.
+- `jsonwebtoken` 10 → 12 (claim type-confusion fixes, unknown critical header rejection).
+- `ml-dsa` release candidate → stable 0.1.2 for the experimental `pqc` feature; the ML-DSA key's
+  heap allocations are now `mlock`ed explicitly.
+
+### Changed
+- **Java DPoP library now requires Java 17** (was declared as 11). The previous target could not
+  work at runtime: Eclipse Collections 13 ships Java 17 bytecode.
+- Crates declare `rust-version = 1.88`; dependency resolution is MSRV-aware (resolver 3).
+- Dependency refresh: `base64` 0.23, `dirs` 7, `directories` 6, `gethostname` 1.1, `syslog` 7,
+  `thiserror` 2, `getrandom` 0.4.
+
+### Fixed
+- Java DPoP library unit tests compile and run again (broken since the JUnit 6 upgrade).
+
 ## [1.0.0] - 2026-04-XX — prmana rename
 
 ### Changed

@@ -12,9 +12,11 @@ group = "com.github.prodnull"
 version = "0.1.0"
 
 java {
-    // Target Java 11 - lowest non-EOL LTS version
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    // Target Java 17. This is the real floor: Eclipse Collections 13 ships
+    // Java 17 bytecode and JUnit 6 requires 17+, so an 11 target could never
+    // actually run. Consumers on 17 and 21 are both supported.
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 
     withJavadocJar()
     withSourcesJar()
@@ -32,16 +34,14 @@ dependencies {
     // JSON processing
     implementation("com.fasterxml.jackson.core:jackson-databind:2.22.0")
 
-    // Testing. JUnit 6 requires Java 17+, so the test source set is compiled
-    // at 17 (see compileTestJava below) while the library itself targets 11.
+    // Testing (JUnit 6 requires Java 17+, matching the library target)
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-// JUnit 6 only publishes Java 17+ variants. Without this, Gradle resolves the
-// test classpath for JVM 11 (the library target) and fails with "only
-// compatible with JVM runtime version 17 or newer", so the tests never compile.
-tasks.named<JavaCompile>("compileTestJava") {
+// Compile with --release so that building on a newer JDK (CI uses 21) cannot
+// accidentally link against APIs that do not exist on Java 17.
+tasks.withType<JavaCompile>().configureEach {
     options.release.set(17)
 }
 

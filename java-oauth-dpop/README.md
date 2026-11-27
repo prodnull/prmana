@@ -8,7 +8,7 @@ DPoP is a mechanism for sender-constraining OAuth 2.0 tokens by binding them to 
 
 ## Requirements
 
-- Java 11+ (targets Java 11, the lowest non-EOL LTS version)
+- Java 17+ (targets Java 17; tested on 21)
 
 ## Installation
 
