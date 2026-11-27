@@ -35,14 +35,14 @@ jobs:
             name: linux-aarch64
             build_pam: true
           # macOS x86_64 (agent only - PAM not supported)
-          # Using macos-14 (Apple Silicon) with cross-compilation since macos-13 is retired
+          # Using macos-15 (Apple Silicon) with cross-compilation; the macos-13 and macos-14 images are retired
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             name: macos-x86_64
             build_pam: false
           # macOS Apple Silicon (agent only - PAM not supported)
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             name: macos-aarch64
             build_pam: false
 

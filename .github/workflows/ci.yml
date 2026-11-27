@@ -147,7 +147,7 @@ jobs:
             name: ubuntu-24.04
             build_pam: true
           # macOS (agent only, Apple Silicon)
-          - os: macos-14
+          - os: macos-15
             name: macos-aarch64
             build_pam: false
     steps:
