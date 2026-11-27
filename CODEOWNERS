@@ -1,18 +1,24 @@
 # prmana Code Owners
-# These owners will be requested for review on PRs affecting their areas
+# These owners will be requested for review on PRs affecting their areas.
+# Owners must be GitHub users or teams with write access; see MAINTAINERS.md.
 
 # Default owners for everything
-* @prmana-project
+* @prodnull
 
 # Security-critical code requires security review
-/pam-prmana/src/dpop/ @prmana-project
-/pam-prmana/src/validation/ @prmana-project
-/pam-prmana/src/crypto/ @prmana-project
-SECURITY.md @prmana-project
+/prmana-core/src/oidc/ @prodnull
+/pam-prmana/src/oidc/ @prodnull
+/pam-prmana/src/security/ @prodnull
+/pam-prmana/src/auth.rs @prodnull
+/pam-prmana/src/lib.rs @prodnull
+/prmana-agent/src/crypto/ @prodnull
+/prmana-agent/src/storage/ @prodnull
+SECURITY.md @prodnull
+deny.toml @prodnull
 
 # Documentation
-/docs/ @prmana-project
-*.md @prmana-project
+/docs/ @prodnull
+*.md @prodnull
 
 # CI/CD configuration
-/.github/ @prmana-project
+/.github/ @prodnull

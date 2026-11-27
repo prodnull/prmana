@@ -12,9 +12,11 @@ group = "com.github.prodnull"
 version = "0.1.0"
 
 java {
-    // Target Java 11 - lowest non-EOL LTS version
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    // Target Java 17. This is the real floor: Eclipse Collections 13 ships
+    // Java 17 bytecode and JUnit 6 requires 17+, so an 11 target could never
+    // actually run. Consumers on 17 and 21 are both supported.
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 
     withJavadocJar()
     withSourcesJar()
@@ -30,11 +32,17 @@ dependencies {
     implementation("org.eclipse.collections:eclipse-collections:13.0.0")
 
     // JSON processing
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.21.3")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.0")
 
-    // Testing (5.10.x is the latest version supporting Java 11)
-    testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+    // Testing (JUnit 6 requires Java 17+, matching the library target)
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+// Compile with --release so that building on a newer JDK (CI uses 21) cannot
+// accidentally link against APIs that do not exist on Java 17.
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(17)
 }
 
 tasks.test {

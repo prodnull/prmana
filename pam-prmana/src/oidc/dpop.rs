@@ -508,7 +508,7 @@ fn validate_composite_proof(
 mod tests {
     use super::*;
     use p256::ecdsa::{signature::Signer, SigningKey};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
 
     // ── Test isolation for filesystem JTI store ───────────────────────────────
     //
@@ -527,9 +527,9 @@ mod tests {
     // tests do not fail due to a missing/unwritable /run/prmana/jti/.
     fn create_test_proof(method: &str, target: &str, nonce: Option<&str>) -> (String, String) {
         setup_jti_dir();
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
 
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
@@ -726,9 +726,9 @@ mod tests {
     fn test_replay_detection() {
         setup_jti_dir();
         // Create a proof with a specific JTI
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
 
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());

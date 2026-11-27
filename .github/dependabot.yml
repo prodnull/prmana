@@ -3,9 +3,15 @@
 
 version: 2
 updates:
-  # Rust (Cargo) - main project and all workspace members
+  # Rust (Cargo) - the root workspace plus the crates that sit outside it and
+  # carry their own manifest/lockfile (they are not reached via "/").
   - package-ecosystem: "cargo"
-    directory: "/"
+    directories:
+      - "/"
+      - "/fuzz"
+      - "/rust-oauth-dpop"
+      - "/dpop-cross-language-tests/rust-test"
+      - "/test/fixtures/attestation/gen"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -100,6 +106,28 @@ updates:
       prefix: "deps(java)"
     groups:
       java-all:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Playwright test tooling (E2E suite and demo recorder)
+  - package-ecosystem: "npm"
+    directories:
+      - "/test/e2e"
+      - "/demo"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "deps(npm)"
+    groups:
+      npm-all:
         patterns:
           - "*"
         update-types:

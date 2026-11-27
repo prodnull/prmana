@@ -13,7 +13,7 @@ use crate::jwk::EcPublicJwk;
 ///
 /// Note: Members MUST be in lexicographic order per RFC 7638.
 pub fn compute_thumbprint(verifying_key: &VerifyingKey) -> String {
-    let point = verifying_key.to_encoded_point(false);
+    let point = verifying_key.to_sec1_point(false);
     // SAFETY: Uncompressed points always have x,y coordinates
     let x = URL_SAFE_NO_PAD.encode(point.x().expect("uncompressed point has x"));
     let y = URL_SAFE_NO_PAD.encode(point.y().expect("uncompressed point has y"));
@@ -47,11 +47,11 @@ pub fn compute_thumbprint_from_jwk(jwk: &EcPublicJwk) -> String {
 mod tests {
     use super::*;
     use p256::ecdsa::SigningKey;
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
 
     #[test]
     fn test_thumbprint_is_deterministic() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
         let thumb1 = compute_thumbprint(verifying_key);
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn test_thumbprint_format() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
         let thumb = compute_thumbprint(verifying_key);
@@ -77,8 +77,8 @@ mod tests {
 
     #[test]
     fn test_different_keys_different_thumbprints() {
-        let key1 = SigningKey::random(&mut OsRng);
-        let key2 = SigningKey::random(&mut OsRng);
+        let key1 = SigningKey::generate();
+        let key2 = SigningKey::generate();
 
         let thumb1 = compute_thumbprint(key1.verifying_key());
         let thumb2 = compute_thumbprint(key2.verifying_key());
@@ -89,10 +89,10 @@ mod tests {
     #[test]
     fn test_canonical_json_order() {
         // Verify the canonical JSON has correct member ordering
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
 
@@ -104,10 +104,10 @@ mod tests {
 
     #[test]
     fn test_thumbprint_from_coordinates_matches() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
 
@@ -119,10 +119,10 @@ mod tests {
 
     #[test]
     fn test_thumbprint_from_jwk_matches() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
 
@@ -142,10 +142,10 @@ mod tests {
     fn test_f09_thumbprint_from_jwk_equals_coordinates() {
         // Positive: compute_thumbprint_from_jwk delegates to
         // compute_thumbprint_from_coordinates, so results must match.
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
 
@@ -164,10 +164,10 @@ mod tests {
     fn test_f09_manipulated_kty_crv_ignored_in_thumbprint() {
         // Negative: attacker-supplied kty/crv values in the JWK struct
         // must not alter the computed thumbprint.
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
 

@@ -9,7 +9,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
@@ -78,9 +78,9 @@ fn main() {
     std::fs::create_dir_all(out_dir).unwrap();
 
     // === DPoP signing key (the certified key) ===
-    let dpop_sk = SigningKey::random(&mut OsRng);
+    let dpop_sk = SigningKey::generate();
     let dpop_vk = dpop_sk.verifying_key();
-    let dpop_pt = dpop_vk.to_encoded_point(false);
+    let dpop_pt = dpop_vk.to_sec1_point(false);
     let dpop_x = dpop_pt.x().unwrap();
     let dpop_y = dpop_pt.y().unwrap();
 
@@ -95,9 +95,9 @@ fn main() {
     let dpop_name = compute_tpm_name(&dpop_public);
 
     // === Attestation Key (AK) ===
-    let ak_sk = SigningKey::random(&mut OsRng);
+    let ak_sk = SigningKey::generate();
     let ak_vk = ak_sk.verifying_key();
-    let ak_pt = ak_vk.to_encoded_point(false);
+    let ak_pt = ak_vk.to_sec1_point(false);
     let ak_x = ak_pt.x().unwrap();
     let ak_y = ak_pt.y().unwrap();
 
@@ -172,7 +172,7 @@ fn main() {
     });
 
     // === Fixture 3: Wrong AK signature ===
-    let wrong_sk = SigningKey::random(&mut OsRng);
+    let wrong_sk = SigningKey::generate();
     let wrong_sig: Signature = wrong_sk.sign(&attest);
     let wrong_fixture = serde_json::json!({
         "_comment": "Valid certify_info but signed by WRONG AK — signature mismatch",
@@ -184,9 +184,9 @@ fn main() {
     });
 
     // === Fixture 4: Name mismatch ===
-    let other_sk = SigningKey::random(&mut OsRng);
+    let other_sk = SigningKey::generate();
     let other_vk = other_sk.verifying_key();
-    let other_pt = other_vk.to_encoded_point(false);
+    let other_pt = other_vk.to_sec1_point(false);
     let other_pub = build_tpmt_public(other_pt.x().unwrap(), other_pt.y().unwrap());
     let other_name = compute_tpm_name(&other_pub);
 

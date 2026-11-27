@@ -42,4 +42,4 @@ The test matrix covers all 16 combinations (4 generators × 4 validators).
 - Rust (cargo)
 - Go 1.21+
 - Python 3.9+ with cryptography
-- Java 11+ with Gradle
+- Java 17+ with Gradle

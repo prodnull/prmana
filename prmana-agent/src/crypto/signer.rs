@@ -146,7 +146,7 @@ impl DPoPSigner for SoftwareSigner {
     }
 
     fn public_key_jwk(&self) -> serde_json::Value {
-        let point = self.key.verifying_key().to_encoded_point(false);
+        let point = self.key.verifying_key().to_sec1_point(false);
         // SAFETY: Uncompressed points always have x,y coordinates
         let x = URL_SAFE_NO_PAD.encode(point.x().expect("uncompressed point has x"));
         let y = URL_SAFE_NO_PAD.encode(point.y().expect("uncompressed point has y"));
@@ -243,8 +243,8 @@ mod tests {
 
     #[test]
     fn test_from_key_roundtrip() {
-        use p256::elliptic_curve::rand_core::OsRng;
-        let signing_key = SigningKey::random(&mut OsRng);
+        use p256::elliptic_curve::Generate;
+        let signing_key = SigningKey::generate();
         let expected_thumb = {
             use crate::crypto::thumbprint::compute_ec_thumbprint;
             compute_ec_thumbprint(signing_key.verifying_key())

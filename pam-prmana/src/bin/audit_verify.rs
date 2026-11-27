@@ -30,7 +30,7 @@
 //! distinguish a wrong key from a tampered log.
 
 use clap::Parser;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::fs;
 use std::io::{self, BufRead};
@@ -330,7 +330,7 @@ fn run_verification<R: BufRead>(reader: R, key: &[u8]) -> VerificationResult {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod audit_verify_tests {
     use super::*;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     use std::io::Cursor;
 
