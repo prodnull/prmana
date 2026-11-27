@@ -32,9 +32,17 @@ dependencies {
     // JSON processing
     implementation("com.fasterxml.jackson.core:jackson-databind:2.22.0")
 
-    // Testing (5.10.x is the latest version supporting Java 11)
+    // Testing. JUnit 6 requires Java 17+, so the test source set is compiled
+    // at 17 (see compileTestJava below) while the library itself targets 11.
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+// JUnit 6 only publishes Java 17+ variants. Without this, Gradle resolves the
+// test classpath for JVM 11 (the library target) and fails with "only
+// compatible with JVM runtime version 17 or newer", so the tests never compile.
+tasks.named<JavaCompile>("compileTestJava") {
+    options.release.set(17)
 }
 
 tasks.test {

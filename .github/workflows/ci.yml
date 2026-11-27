@@ -741,6 +741,15 @@ jobs:
       - name: Build Java dependencies
         run: cd java-oauth-dpop && gradle compileJava --no-daemon -q
 
+      # The interop matrix below only exercises the generate/validate happy
+      # path. Run each library's own unit tests too: the Java tests silently
+      # stopped compiling for months because nothing in CI ran them.
+      - name: Run DPoP library unit tests (Rust, Go, Java)
+        run: |
+          (cd rust-oauth-dpop && cargo test)
+          (cd go-oauth-dpop && go vet ./... && go test ./...)
+          (cd java-oauth-dpop && gradle test --no-daemon -q)
+
       - name: Run cross-language interop tests
         run: |
           chmod +x ./dpop-cross-language-tests/run-cross-language-tests.sh
