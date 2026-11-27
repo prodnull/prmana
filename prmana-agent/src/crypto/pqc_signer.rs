@@ -11,19 +11,24 @@
 //! `ml_dsa::SigningKey<MlDsa65>` zeroes key bytes on drop via `ZeroizeOnDrop`
 //! when `features = ["zeroize"]` is active (MEM-02, verified in tests).
 //!
+//! As of ml-dsa 0.1 (stable), `SigningKey` keeps its expanded key and seed in
+//! separate heap allocations when the crate's `alloc` feature is on (the default),
+//! so mlock'ing the `HybridPqcSigner` Box alone no longer covers the ML-DSA key
+//! bytes. Those two allocations are mlock'd explicitly (`_pq_heap_guards`).
+//!
 //! # Feature gate
 //!
 //! This module is only compiled when `--features pqc` is active.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use ml_dsa::{KeyGen, MlDsa65, Seed};
+use ml_dsa::{Keypair as _, MlDsa65, Seed};
 use p256::ecdsa::{signature::Signer as _, Signature as Es256Signature};
 use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::crypto::dpop::{assemble_dpop_proof_composite, build_dpop_message_with_alg, DPoPError};
-use crate::crypto::protected_key::{try_mlock, MlockGuard, ProtectedSigningKey};
+use crate::crypto::protected_key::{try_mlock, try_mlock_ref, MlockGuard, ProtectedSigningKey};
 use crate::crypto::signer::{DPoPSigner, SignerError};
 
 /// JWS algorithm identifier for composite ML-DSA-65 + ES256.
@@ -56,6 +61,14 @@ const ES256_SIG_SIZE: usize = 64;
 pub struct HybridPqcSigner {
     /// Traditional ES256 key with memory protection (mlock, ZeroizeOnDrop).
     ec_key: Box<ProtectedSigningKey>,
+    /// RAII guards for the mlock regions covering the heap allocations that
+    /// `pq_key` owns internally (expanded key, seed). `None` entries mean mlock
+    /// was unavailable or failed (best-effort, MEM-04).
+    ///
+    /// Declared before `pq_key` on purpose: struct fields drop in declaration
+    /// order, so these guards `munlock` while the allocations are still live,
+    /// honouring the `try_mlock_ref` safety contract (never munlock freed memory).
+    _pq_heap_guards: [Option<MlockGuard>; 2],
     /// ML-DSA-65 signing key. ZeroizeOnDrop via `features = ["zeroize"]` on ml-dsa.
     pq_key: ml_dsa::SigningKey<MlDsa65>,
     /// ML-DSA-65 verifying key (cached for JWK construction).
@@ -83,8 +96,28 @@ impl HybridPqcSigner {
         let thumbprint = Self::compute_composite_thumbprint(&ec_key, &pq_vk);
 
         // Box the struct first — gives key material a stable heap address for mlock.
+        // mlock the heap allocations ml-dsa owns for the expanded key and seed.
+        //
+        // SAFETY: both references point into Box allocations owned by `pq_key`,
+        // whose addresses are stable when `pq_key` is moved into the struct
+        // below (moving a Box moves the pointer, not the pointee). The guards
+        // are stored in the same struct and declared before `pq_key`, so they
+        // are dropped before `pq_key` frees those allocations.
+        let pq_heap_guards = unsafe {
+            [
+                try_mlock_ref(pq_key.expanded_key()),
+                try_mlock_ref(pq_key.as_seed()),
+            ]
+        };
+        if pq_heap_guards.iter().any(Option::is_none) {
+            tracing::debug!(
+                "ML-DSA key heap mlock skipped (unavailable or EPERM; ML-DSA key may be swappable)"
+            );
+        }
+
         let mut boxed = Box::new(Self {
             ec_key,
+            _pq_heap_guards: pq_heap_guards,
             pq_key,
             pq_vk,
             thumbprint,
@@ -139,8 +172,8 @@ impl HybridPqcSigner {
         let mut seed_bytes = Zeroizing::new([0u8; 32]);
         OsRng.fill_bytes(seed_bytes.as_mut());
         let seed = Seed::from(*seed_bytes);
-        let pq_key = MlDsa65::from_seed(&seed);
-        let pq_vk = pq_key.signing_key().verifying_key();
+        let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
+        let pq_vk = pq_key.verifying_key();
 
         let signer = Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes);
         let key_id = &signer.thumbprint[..signer.thumbprint.len().min(8)];
@@ -169,8 +202,8 @@ impl HybridPqcSigner {
         let mut seed_bytes = Zeroizing::new([0u8; 32]);
         seed_bytes.copy_from_slice(pq_seed_bytes);
         let seed = Seed::from(*seed_bytes);
-        let pq_key = MlDsa65::from_seed(&seed);
-        let pq_vk = pq_key.signing_key().verifying_key();
+        let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
+        let pq_vk = pq_key.verifying_key();
 
         Ok(Self::new_inner(ec_key, pq_key, pq_vk, seed_bytes))
     }
@@ -340,6 +373,31 @@ impl Drop for HybridPqcSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MEM-04: ml-dsa (stable) keeps the expanded key and seed in their own
+    /// heap allocations, outside the `HybridPqcSigner` Box. When mlock is
+    /// available on the host, both of those allocations must be locked too —
+    /// otherwise the ML-DSA key would silently lose swap protection.
+    #[test]
+    fn test_ml_dsa_heap_key_material_is_mlocked() {
+        use crate::crypto::protected_key::{mlock_probe, MlockStatus};
+
+        if !matches!(mlock_probe(), MlockStatus::Active) {
+            // mlock unavailable (e.g. EPERM/RLIMIT_MEMLOCK in a container):
+            // best-effort contract, nothing to assert.
+            return;
+        }
+
+        let signer = HybridPqcSigner::generate();
+        assert!(
+            signer._pq_heap_guards.iter().all(Option::is_some),
+            "ML-DSA expanded key and seed heap allocations must be mlock'd when mlock is available"
+        );
+        assert!(
+            signer._mlock_guard.is_some(),
+            "HybridPqcSigner Box allocation must be mlock'd when mlock is available"
+        );
+    }
 
     // -------------------------------------------------------------------------
     // PQC key lifecycle audit event tests (27-02)

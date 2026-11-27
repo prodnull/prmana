@@ -519,11 +519,7 @@ async fn run_serve(socket: Option<String>) -> anyhow::Result<()> {
     // Fetches discovery + JWKS for the configured issuer to warm the cache.
     // Failure downgrades to WARN — the daemon will retry on the first auth request.
     // This is run in a blocking task because JwksProvider uses reqwest::blocking.
-    let issuer_for_prefetch = {
-        AgentConfig::load()
-            .ok()
-            .and_then(|c| if c.issuer.is_empty() { None } else { Some(c) })
-    };
+    let issuer_for_prefetch = { AgentConfig::load().ok().filter(|c| !c.issuer.is_empty()) };
     if let Some(config) = issuer_for_prefetch {
         let issuer = config.issuer.clone();
         let ttl = config.timeouts.jwks_cache_ttl_secs;

@@ -2,6 +2,7 @@
 name = "prmana-agent"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "OIDC authentication agent with DPoP support"
 
@@ -92,7 +93,7 @@ version = "7"
 optional = true
 
 [dependencies.ml-dsa]
-version = "0.1.0-rc.7"
+version = "0.1.2"
 optional = true
 features = ["zeroize"]
 

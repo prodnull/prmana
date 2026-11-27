@@ -138,6 +138,43 @@ pub(crate) unsafe fn try_mlock(data: &mut [u8]) -> Option<MlockGuard> {
     }
 }
 
+/// Attempt to mlock the memory backing `value`, addressed by shared reference.
+///
+/// Used for key material that a dependency keeps in its own heap allocation
+/// (and which therefore is not covered by mlock'ing the owning struct), e.g.
+/// `ml_dsa::SigningKey`, which boxes its expanded key and seed. `mlock(2)` does
+/// not write to the region, so a shared reference is sufficient.
+///
+/// # Safety
+/// `value` must remain at a stable address for the lifetime of the returned guard.
+/// Callers must ensure the guard is dropped before the allocation is freed.
+#[cfg(feature = "pqc")]
+pub(crate) unsafe fn try_mlock_ref<T: ?Sized>(value: &T) -> Option<MlockGuard> {
+    #[cfg(unix)]
+    {
+        let ptr = value as *const T as *const u8;
+        let len = std::mem::size_of_val(value);
+        if len == 0 {
+            return None;
+        }
+        let ret = libc::mlock(ptr as *const libc::c_void, len);
+        if ret == 0 {
+            Some(MlockGuard {
+                ptr: ptr as *mut u8,
+                len,
+            })
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = value;
+        None
+    }
+}
+
 /// Memory-protected DPoP signing key.
 ///
 /// ## Construction
