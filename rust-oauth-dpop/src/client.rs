@@ -2,7 +2,7 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -40,7 +40,7 @@ pub struct DPoPClient {
 impl DPoPClient {
     /// Generate a new DPoP client with a random P-256 keypair
     pub fn generate() -> Self {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let thumbprint = compute_thumbprint(signing_key.verifying_key());
         Self {
             signing_key,
@@ -68,7 +68,7 @@ impl DPoPClient {
     /// Get the public key as a JWK
     pub fn public_key_jwk(&self) -> EcPublicJwk {
         let verifying_key = self.signing_key.verifying_key();
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
 
         let x = URL_SAFE_NO_PAD.encode(point.x().expect("uncompressed point has x"));
         let y = URL_SAFE_NO_PAD.encode(point.y().expect("uncompressed point has y"));
@@ -129,7 +129,7 @@ impl DPoPClient {
         ath: Option<String>,
     ) -> Result<String, DPoPError> {
         let verifying_key = self.signing_key.verifying_key();
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
 
         let x = URL_SAFE_NO_PAD.encode(point.x().ok_or(DPoPError::InvalidKey)?);
         let y = URL_SAFE_NO_PAD.encode(point.y().ok_or(DPoPError::InvalidKey)?);
