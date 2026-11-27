@@ -23,7 +23,7 @@
 //! When the key is absent or empty, tamper-evidence is disabled with a WARNING log.
 //! The key MUST NOT be logged or included in error messages.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -1180,7 +1180,38 @@ impl AuditEvent {
 
 /// Get the current timestamp in ISO 8601 format.
 fn iso_timestamp() -> String {
-    chrono::Utc::now().to_rfc3339()
+    format_rfc3339_utc(time::OffsetDateTime::now_utc())
+}
+
+/// Format a UTC instant as RFC 3339 with a numeric `+00:00` offset.
+///
+/// The output shape is deliberately identical to what this module emitted
+/// when it used `chrono::DateTime::<Utc>::to_rfc3339()` (fractional seconds
+/// printed as 0, 3, 6 or 9 digits depending on precision; `+00:00` rather
+/// than `Z`), so SIEM parsers and the HMAC-chained audit log format are
+/// unaffected by the switch away from chrono (RUSTSEC-2026-0543, unmaintained).
+fn format_rfc3339_utc(t: time::OffsetDateTime) -> String {
+    let t = t.to_offset(time::UtcOffset::UTC);
+    let nanos = t.nanosecond();
+    let fraction = if nanos == 0 {
+        String::new()
+    } else if nanos.is_multiple_of(1_000_000) {
+        format!(".{:03}", nanos / 1_000_000)
+    } else if nanos.is_multiple_of(1_000) {
+        format!(".{:06}", nanos / 1_000)
+    } else {
+        format!(".{nanos:09}")
+    };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}+00:00",
+        t.year(),
+        u8::from(t.month()),
+        t.day(),
+        t.hour(),
+        t.minute(),
+        t.second(),
+        fraction
+    )
 }
 
 /// Get the hostname of the current machine.
@@ -1452,6 +1483,48 @@ mod hmac_chain_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    /// The audit timestamp format must stay byte-compatible with the
+    /// chrono-era output (`to_rfc3339()`): numeric `+00:00` offset and
+    /// 0/3/6/9 fractional digits. Expected values were generated with
+    /// chrono 0.4 before it was removed (RUSTSEC-2026-0543).
+    #[test]
+    fn test_format_rfc3339_utc_matches_legacy_chrono_output() {
+        let cases: &[(i128, &str)] = &[
+            (0, "1970-01-01T00:00:00+00:00"),
+            (1, "1970-01-01T00:00:00.000000001+00:00"),
+            (1_000, "1970-01-01T00:00:00.000001+00:00"),
+            (1_000_000, "1970-01-01T00:00:00.001+00:00"),
+            (951_782_400_000_000_000, "2000-02-29T00:00:00+00:00"),
+            (
+                1_709_251_199_999_999_999,
+                "2024-02-29T23:59:59.999999999+00:00",
+            ),
+            (1_709_251_200_000_000_000, "2024-03-01T00:00:00+00:00"),
+            (1_795_813_476_123_000_000, "2026-11-27T21:04:36.123+00:00"),
+            (
+                1_795_813_476_123_456_000,
+                "2026-11-27T21:04:36.123456+00:00",
+            ),
+            (
+                1_795_813_476_123_456_789,
+                "2026-11-27T21:04:36.123456789+00:00",
+            ),
+        ];
+        for (nanos, expected) in cases {
+            let t = time::OffsetDateTime::from_unix_timestamp_nanos(*nanos).unwrap();
+            assert_eq!(&format_rfc3339_utc(t), expected, "unix nanos {nanos}");
+        }
+    }
+
+    /// A non-UTC input must be normalised to UTC, not printed with a bogus
+    /// `+00:00` suffix on local wall-clock fields.
+    #[test]
+    fn test_format_rfc3339_utc_normalises_offset() {
+        let t = time::OffsetDateTime::from_unix_timestamp(951_782_400)
+            .unwrap()
+            .to_offset(time::UtcOffset::from_hms(5, 30, 0).unwrap());
+        assert_eq!(format_rfc3339_utc(t), "2000-02-29T00:00:00+00:00");
+    }
     use super::*;
 
     // Serial mutex for hostname tests that mutate PRMANA_HOSTNAME env var.

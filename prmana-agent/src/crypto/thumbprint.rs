@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 /// For EC keys, the thumbprint is SHA-256 of the canonical JSON:
 /// {"crv":"P-256","kty":"EC","x":"...","y":"..."}
 pub fn compute_ec_thumbprint(verifying_key: &VerifyingKey) -> String {
-    let point = verifying_key.to_encoded_point(false);
+    let point = verifying_key.to_sec1_point(false);
     // SAFETY: Uncompressed points always have x,y coordinates
     let x = URL_SAFE_NO_PAD.encode(point.x().expect("uncompressed point has x"));
     let y = URL_SAFE_NO_PAD.encode(point.y().expect("uncompressed point has y"));
@@ -26,11 +26,11 @@ pub fn compute_ec_thumbprint(verifying_key: &VerifyingKey) -> String {
 mod tests {
     use super::*;
     use p256::ecdsa::SigningKey;
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
 
     #[test]
     fn test_thumbprint_is_deterministic() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
         let thumb1 = compute_ec_thumbprint(verifying_key);
@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn test_thumbprint_format() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
         let thumb = compute_ec_thumbprint(verifying_key);
@@ -56,8 +56,8 @@ mod tests {
 
     #[test]
     fn test_different_keys_different_thumbprints() {
-        let key1 = SigningKey::random(&mut OsRng);
-        let key2 = SigningKey::random(&mut OsRng);
+        let key1 = SigningKey::generate();
+        let key2 = SigningKey::generate();
 
         let thumb1 = compute_ec_thumbprint(key1.verifying_key());
         let thumb2 = compute_ec_thumbprint(key2.verifying_key());
@@ -68,10 +68,10 @@ mod tests {
     #[test]
     fn test_canonical_json_order() {
         // Verify the canonical JSON has correct member ordering
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
-        let point = verifying_key.to_encoded_point(false);
+        let point = verifying_key.to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
 

@@ -12,7 +12,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
-use p256::EncodedPoint;
+use p256::Sec1Point;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -160,12 +160,17 @@ fn verify_ak_signature(
         )));
     }
 
-    let point = EncodedPoint::from_affine_coordinates(
-        (&ak_public[x_start..x_end]).into(),
-        (&ak_public[y_start..y_end]).into(),
-        false,
-    );
-    let verifying_key = VerifyingKey::from_encoded_point(&point)
+    // Lengths were checked above (x_len == y_len == 32). The conversions are
+    // still fallible rather than panicking: this runs in the PAM auth path,
+    // where a panic would lock users out.
+    let x: &p256::FieldBytes = ak_public[x_start..x_end].try_into().map_err(|_| {
+        AttestationError::InvalidAkPublic("AK x coordinate is not 32 bytes".to_string())
+    })?;
+    let y: &p256::FieldBytes = ak_public[y_start..y_end].try_into().map_err(|_| {
+        AttestationError::InvalidAkPublic("AK y coordinate is not 32 bytes".to_string())
+    })?;
+    let point = Sec1Point::from_affine_coordinates(x, y, false);
+    let verifying_key = VerifyingKey::from_sec1_point(&point)
         .map_err(|e| AttestationError::InvalidAkPublic(e.to_string()))?;
     let signature =
         Signature::from_slice(signature).map_err(|_| AttestationError::InvalidAkSignature)?;

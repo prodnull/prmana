@@ -349,7 +349,20 @@ impl TokenValidator {
 
         // Validate expiration with clock skew tolerance.
         // clock_skew_tolerance_secs is operator-configurable (default 60s).
-        let now = chrono::Utc::now().timestamp();
+        //
+        // Security: expiration is a HARD-FAIL check. If the system clock reads
+        // before the Unix epoch (severely misconfigured host) `exp` cannot be
+        // evaluated, so reject instead of treating every token as unexpired.
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(elapsed) => i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "System clock is before the Unix epoch; cannot evaluate token expiration"
+                );
+                return Err(ValidationError::Expired);
+            }
+        };
         if claims.exp + self.config.clock_skew_tolerance_secs < now {
             return Err(ValidationError::Expired);
         }

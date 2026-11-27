@@ -31,7 +31,7 @@ use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use crate::crypto::fill_random;
 use thiserror::Error;
 use tracing::warn;
 
@@ -148,19 +148,18 @@ pub fn secure_remove(path: &Path) -> Result<(), SecureDeleteError> {
 /// Takes ownership of the `File` to ensure the fd is not shared. The caller
 /// has already verified via `fstat` that the fd refers to a regular file.
 fn overwrite_three_pass_fd(mut file: File, size: usize) -> Result<(), SecureDeleteError> {
-    let mut rng = OsRng;
     let mut buf = vec![0u8; OVERWRITE_BUF.min(size)];
 
     // Pass 1: random bytes
     overwrite_pass(&mut file, &mut buf, size, |buf| {
-        rng.fill_bytes(buf);
+        fill_random(buf);
     })?;
 
     // Pass 2: complement of pass-1 buffer (XOR 0xFF)
     // Re-read current buf content for complement; buf still holds last chunk
     // from pass 1, so we XOR from scratch with fill then complement in place.
     overwrite_pass(&mut file, &mut buf, size, |buf| {
-        rng.fill_bytes(buf);
+        fill_random(buf);
         for b in buf.iter_mut() {
             *b ^= 0xFF;
         }
@@ -168,7 +167,7 @@ fn overwrite_three_pass_fd(mut file: File, size: usize) -> Result<(), SecureDele
 
     // Pass 3: new random bytes
     overwrite_pass(&mut file, &mut buf, size, |buf| {
-        rng.fill_bytes(buf);
+        fill_random(buf);
     })?;
 
     Ok(())

@@ -13,16 +13,18 @@ path = "src/main.rs"
 
 [dependencies]
 # Crypto
-# Note: p256 0.13 does NOT have a `zeroize` feature flag — ZeroizeOnDrop is
-# implemented unconditionally in ecdsa-0.16 for SigningKey<C>. The `ecdsa` and
-# `jwk` features are all that is needed.
-p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
-sha2 = "0.10"
+# Note: p256 0.14 does NOT have a `zeroize` feature flag — ZeroizeOnDrop is
+# implemented unconditionally in ecdsa-0.17 for SigningKey<C>. The `ecdsa`
+# feature is all that is needed (the `jwk` feature was removed upstream in 0.14).
+p256 = { version = "0.14", features = ["ecdsa"] }
+sha2 = "0.11"
 base64 = "0.21"
 # MEM-01/MEM-02: zeroize for Zeroizing<T> wrapper; ZeroizeOnDrop already implemented
-# unconditionally by ecdsa-0.16's SigningKey. secrecy is added for Plan 02+ usage.
+# unconditionally by ecdsa-0.17's SigningKey. secrecy is added for Plan 02+ usage.
 zeroize = { version = "1", features = ["derive"] }
 secrecy = "0.10"
+# OS CSPRNG access (PKCE verifier, ML-DSA seed, secure-delete overwrite data).
+getrandom = "0.4"
 # MEM-04: libc for mlock/munlock syscalls (memory locking of key pages)
 libc = "0.2"
 

@@ -4,7 +4,7 @@
 //! with the following protections:
 //!
 //! 1. **ZeroizeOnDrop** (MEM-02): The inner `SigningKey` is zeroed when the struct is dropped.
-//!    `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.16`
+//!    `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.17`
 //!    — no feature flag required (see CLAUDE.md §Memory Protection Invariants).
 //!
 //! 2. **Memory locking** (MEM-04): On Linux, `mlock(2)` is called on the key bytes after
@@ -20,7 +20,7 @@
 //!    exported bytes are wiped on drop by the caller.
 
 use p256::ecdsa::SigningKey;
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use zeroize::Zeroizing;
 
 use crate::crypto::signer::SignerError;
@@ -183,7 +183,7 @@ pub(crate) unsafe fn try_mlock_ref<T: ?Sized>(value: &T) -> Option<MlockGuard> {
 /// stable address that can be memory-locked via `mlock(2)`.
 ///
 /// ## Memory safety properties
-/// - `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.16`.
+/// - `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.17`.
 ///   When `ProtectedSigningKey` is dropped, the key bytes are overwritten with zeros
 ///   before deallocation (MEM-02).
 /// - `mlock(2)` is attempted on the key bytes after Box allocation to prevent
@@ -191,7 +191,7 @@ pub(crate) unsafe fn try_mlock_ref<T: ?Sized>(value: &T) -> Option<MlockGuard> {
 /// - `export_key()` returns `Zeroizing<Vec<u8>>`, ensuring the caller's copy of
 ///   key bytes is also wiped on drop (MEM-01).
 pub struct ProtectedSigningKey {
-    /// The inner signing key. `ecdsa-0.16` derives `ZeroizeOnDrop` unconditionally,
+    /// The inner signing key. `ecdsa-0.17` derives `ZeroizeOnDrop` unconditionally,
     /// so key material is zeroed when dropped.
     signing_key: SigningKey,
 
@@ -210,7 +210,7 @@ impl ProtectedSigningKey {
     /// We mlock the whole `ProtectedSigningKey` allocation rather than trying to
     /// compute a pointer to the opaque internals of `SigningKey`. This is simpler,
     /// correct, and ensures all sensitive fields (including cached verifying key bytes
-    /// stored internally by ecdsa-0.16) are covered.
+    /// stored internally by ecdsa-0.17) are covered.
     fn new_inner(signing_key: SigningKey) -> Box<Self> {
         let thumbprint = compute_ec_thumbprint(signing_key.verifying_key());
 
@@ -252,13 +252,14 @@ impl ProtectedSigningKey {
 
     /// Generate a new random DPoP signing key.
     ///
-    /// Uses the OS random number generator (`OsRng`) via `p256::ecdsa::SigningKey::random`.
+    /// Uses the OS random number generator via `p256::ecdsa::SigningKey::generate`
+    /// (the `Generate` trait, backed by `getrandom`).
     /// The returned key is heap-allocated and memory-locked where supported.
     ///
     /// Emits a structured audit event with `target: "prmana_audit"` so that
     /// SIEM pipelines can trace the complete lifecycle of DPoP key material.
     pub fn generate() -> Box<Self> {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let key = Self::new_inner(signing_key);
         let key_id = &key.thumbprint[..key.thumbprint.len().min(8)];
         tracing::info!(
@@ -328,7 +329,7 @@ impl ProtectedSigningKey {
 /// Emit `KEY_DESTROYED` audit event before the key material is zeroed.
 ///
 /// `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in
-/// `ecdsa-0.16` and runs automatically via the compiler-generated drop glue.
+/// `ecdsa-0.17` and runs automatically via the compiler-generated drop glue.
 /// We emit the audit event here — before the struct fields are dropped — so
 /// the thumbprint is still accessible when we log it.
 ///

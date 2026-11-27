@@ -7,7 +7,7 @@
 //! This module runs ONLY in the break-glass path — never in normal OIDC auth.
 //! No network calls; verification is entirely local.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 use std::collections::HashMap;
 use std::path::Path;

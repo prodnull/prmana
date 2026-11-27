@@ -6,9 +6,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::crypto::fill_random;
 use anyhow::{anyhow, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use reqwest::Url;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -72,7 +72,7 @@ pub struct TokenExchangeRequest<'a> {
 /// Generate an RFC 7636 PKCE verifier/challenge pair using the S256 method.
 pub fn generate_pkce() -> (String, String) {
     let mut random = [0u8; 32];
-    OsRng.fill_bytes(&mut random);
+    fill_random(&mut random);
     let verifier = URL_SAFE_NO_PAD.encode(random);
     let challenge = compute_pkce_challenge(&verifier);
     (verifier, challenge)

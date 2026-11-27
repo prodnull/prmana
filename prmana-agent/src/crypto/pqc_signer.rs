@@ -20,10 +20,10 @@
 //!
 //! This module is only compiled when `--features pqc` is active.
 
+use crate::crypto::fill_random;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ml_dsa::{Keypair as _, MlDsa65, Seed};
 use p256::ecdsa::{signature::Signer as _, Signature as Es256Signature};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -156,7 +156,7 @@ impl HybridPqcSigner {
 
     /// Generate a new hybrid key pair with random keys.
     ///
-    /// Uses `OsRng` (via p256's rand_core 0.6) for the 32-byte ML-DSA seed,
+    /// Uses the OS CSPRNG (`getrandom`) for the 32-byte ML-DSA seed,
     /// and `ProtectedSigningKey::generate()` for the EC key.
     ///
     /// Returns `Box<Self>` — no stack allocation of key material (MEM-05).
@@ -167,10 +167,10 @@ impl HybridPqcSigner {
     pub fn generate() -> Box<Self> {
         let ec_key = ProtectedSigningKey::generate();
 
-        // Generate ML-DSA-65 seed using OsRng (rand_core 0.6 from p256).
+        // Generate ML-DSA-65 seed from the OS CSPRNG.
         // SigningKey::from_seed is deterministic — the seed IS the private key.
         let mut seed_bytes = Zeroizing::new([0u8; 32]);
-        OsRng.fill_bytes(seed_bytes.as_mut());
+        fill_random(seed_bytes.as_mut());
         let seed = Seed::from(*seed_bytes);
         let pq_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed);
         let pq_vk = pq_key.verifying_key();
@@ -220,7 +220,7 @@ impl HybridPqcSigner {
 
     /// Build the composite JWK (for embedding in DPoP proof headers).
     fn composite_jwk(&self) -> serde_json::Value {
-        let ec_point = self.ec_key.verifying_key().to_encoded_point(false);
+        let ec_point = self.ec_key.verifying_key().to_sec1_point(false);
         let ec_x = URL_SAFE_NO_PAD.encode(ec_point.x().expect("uncompressed point has x"));
         let ec_y = URL_SAFE_NO_PAD.encode(ec_point.y().expect("uncompressed point has y"));
 
@@ -253,7 +253,7 @@ impl HybridPqcSigner {
         ec_key: &ProtectedSigningKey,
         pq_vk: &ml_dsa::VerifyingKey<MlDsa65>,
     ) -> String {
-        let ec_point = ec_key.verifying_key().to_encoded_point(false);
+        let ec_point = ec_key.verifying_key().to_sec1_point(false);
         let ec_x = URL_SAFE_NO_PAD.encode(ec_point.x().expect("uncompressed point has x"));
         let ec_y = URL_SAFE_NO_PAD.encode(ec_point.y().expect("uncompressed point has y"));
         let pq_pub = URL_SAFE_NO_PAD.encode(pq_vk.encode().as_slice());
@@ -327,7 +327,7 @@ impl DPoPSigner for HybridPqcSigner {
     }
 
     fn client_attestation_jwk(&self) -> Result<serde_json::Value, DPoPError> {
-        let point = self.ec_key.verifying_key().to_encoded_point(false);
+        let point = self.ec_key.verifying_key().to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().ok_or(DPoPError::InvalidKey)?);
         let y = URL_SAFE_NO_PAD.encode(point.y().ok_or(DPoPError::InvalidKey)?);
         Ok(serde_json::json!({

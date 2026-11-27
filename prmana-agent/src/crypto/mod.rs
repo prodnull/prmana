@@ -32,6 +32,21 @@ pub use protected_key::{mlock_probe, MlockStatus, ProtectedSigningKey};
 pub use signer::{DPoPSigner, SignerError, SoftwareSigner};
 pub use thumbprint::compute_ec_thumbprint;
 
+/// Fill `buf` with bytes from the OS CSPRNG.
+///
+/// Security: fails closed. If the OS RNG is unavailable we panic rather than
+/// return, because every caller uses the output as secret material (PKCE
+/// verifier, ML-DSA seed) or as overwrite data, and continuing with a
+/// zeroed or partially filled buffer would silently produce predictable
+/// secrets. This matches the behaviour of the `rand_core::OsRng` it replaces.
+/// The agent is a CLI/daemon, not a PAM path, so panicking here cannot lock
+/// a user out of a host.
+pub(crate) fn fill_random(buf: &mut [u8]) {
+    if let Err(e) = getrandom::fill(buf) {
+        panic!("OS CSPRNG unavailable, refusing to continue: {e}");
+    }
+}
+
 #[cfg(feature = "yubikey")]
 pub use yubikey_signer::YubiKeySigner;
 

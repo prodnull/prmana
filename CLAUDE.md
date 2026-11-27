@@ -250,8 +250,8 @@ These invariants apply to the client-side agent daemon, where DPoP private keys 
 #### In-memory protection
 
 1. **SigningKey zeroed on drop via `ZeroizeOnDrop`**
-   - `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.16` — no feature flag required. Key material is volatile-written to zero when the struct is dropped.
-   - Do NOT add a `zeroize` feature to `p256 = "0.13"` — the feature does not exist in that version.
+   - `p256::ecdsa::SigningKey` implements `ZeroizeOnDrop` unconditionally in `ecdsa-0.17` — no feature flag required. Key material is volatile-written to zero when the struct is dropped.
+   - Do NOT add a `zeroize` feature to `p256 = "0.14"` — the feature does not exist in that version.
 
 2. **Key material pages locked via `mlock(2)`** (best-effort, MEM-04)
    - `ProtectedSigningKey` calls `libc::mlock()` over the entire `Box<Self>` allocation at construction. This prevents the OS from swapping the key page to disk.

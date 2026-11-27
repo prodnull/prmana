@@ -204,7 +204,7 @@ pub fn generate_dpop_proof(
     nonce: Option<&str>,
 ) -> Result<String, DPoPError> {
     let verifying_key = signing_key.verifying_key();
-    let point = verifying_key.to_encoded_point(false);
+    let point = verifying_key.to_sec1_point(false);
 
     let x = URL_SAFE_NO_PAD.encode(point.x().ok_or(DPoPError::InvalidKey)?);
     let y = URL_SAFE_NO_PAD.encode(point.y().ok_or(DPoPError::InvalidKey)?);
@@ -341,11 +341,11 @@ pub enum DPoPError {
 mod tests {
     use super::*;
     use crate::crypto::thumbprint::compute_ec_thumbprint;
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
 
     #[test]
     fn test_generate_proof_format() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let proof = generate_dpop_proof(&signing_key, "SSH", "server.example.com", None).unwrap();
 
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_proof_contains_correct_header() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let proof = generate_dpop_proof(&signing_key, "SSH", "server.example.com", None).unwrap();
 
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_proof_contains_correct_claims() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let proof = generate_dpop_proof(
             &signing_key,
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_proof_thumbprint_matches_key() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let expected_thumbprint = compute_ec_thumbprint(signing_key.verifying_key());
 
         let proof = generate_dpop_proof(&signing_key, "SSH", "server.example.com", None).unwrap();
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_unique_jti_per_proof() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let proof1 = generate_dpop_proof(&signing_key, "SSH", "server.example.com", None).unwrap();
         let proof2 = generate_dpop_proof(&signing_key, "SSH", "server.example.com", None).unwrap();
@@ -644,7 +644,7 @@ mod tests {
         // Verify that generate_dpop_proof produces the same format as manual build+assemble.
         // We can't easily verify the signature matches (different random key), but we
         // verify the structural invariant: 3 parts, header/claims decode correctly.
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let proof = generate_dpop_proof(&signing_key, "GET", "https://example.com", None).unwrap();
         let parts: Vec<&str> = proof.split('.').collect();
         assert_eq!(parts.len(), 3);
