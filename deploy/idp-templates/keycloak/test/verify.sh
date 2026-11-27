@@ -103,9 +103,18 @@ decode_jwt_payload() {
     local jwt="$1"
     local payload
     payload=$(echo "$jwt" | cut -d'.' -f2)
-    # Add padding if needed and decode
-    local padded="${payload}$(printf '%s' '==' | cut -c 1-$((4 - ${#payload} % 4)))"
-    echo "$padded" | tr '_-' '/+' | base64 -d 2>/dev/null || echo "{}"
+    # Add base64 padding (0, 1 or 2 '=') and decode.
+    # The pad length must be 0 when the payload length is already a multiple
+    # of 4. Appending '==' in that case yields invalid base64: GNU coreutils
+    # tolerates it by emitting the data and then failing, stricter decoders
+    # (e.g. on newer runner images) emit nothing.
+    local pad=$(( (4 - ${#payload} % 4) % 4 ))
+    local padded="$payload"
+    while [ "$pad" -gt 0 ]; do
+        padded="${padded}="
+        pad=$((pad - 1))
+    done
+    printf '%s' "$padded" | tr '_-' '/+' | base64 -d 2>/dev/null || echo "{}"
 }
 
 # ============================================================================
