@@ -50,7 +50,11 @@ jobs:
           # Create test directory structure
           mkdir -p test/fixtures/keycloak-template-test
 
-          # Copy the production realm template and modify for testing
+          # Copy the production realm template and modify for testing.
+          # The test user's password must satisfy the template's own
+          # passwordPolicy (length(8), digits(1), upperCase(1), lowerCase(1),
+          # notUsername); otherwise --import-realm aborts and Keycloak never
+          # starts, which surfaces only as a health-check timeout.
           cat deploy/idp-templates/keycloak/realm-export.json | \
             jq '.realm = "prmana-template-test" |
                 .sslRequired = "none" |
@@ -66,7 +70,7 @@ jobs:
                     "lastName": "User",
                     "credentials": [{
                       "type": "password",
-                      "value": "testpass",
+                      "value": "TestPass123",
                       "temporary": false
                     }]
                   }
@@ -153,7 +157,7 @@ jobs:
           CLIENT_ID=prmana \
           CLIENT_SECRET=test-secret-12345 \
           TEST_USER=testuser \
-          TEST_PASS=testpass \
+          TEST_PASS=TestPass123 \
           ./deploy/idp-templates/keycloak/test/verify.sh --skip-pamtester --verbose
 
       - name: Test Device Authorization Grant flow
